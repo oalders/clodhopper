@@ -77,7 +77,12 @@ func openDB(path string) (*sql.DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
-	if _, err := db.Exec(schema); err != nil {
+	// On a brand-new file, several processes opening at once race to initialise
+	// the WAL: the journal-mode switch needs a brief exclusive lock that
+	// _busy_timeout does not reliably cover, so the schema DDL can come back
+	// "database is locked". Retry it (bounded to the same ~5s window as the busy
+	// timeout) rather than failing — a lost openDB means a silently dropped event.
+	if err := retryOnLock(func() error { _, e := db.Exec(schema); return e }); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
@@ -85,6 +90,22 @@ func openDB(path string) (*sql.DB, error) {
 		_, _ = db.Exec(m) // best-effort; already-applied migrations error harmlessly
 	}
 	return db, nil
+}
+
+// retryOnLock re-runs fn while SQLite reports the database (or a table) is
+// locked, backing off briefly between attempts up to roughly the busy-timeout
+// window. Any other error — or success — returns immediately.
+func retryOnLock(fn func() error) error {
+	const attempts = 50
+	var err error
+	for range attempts {
+		err = fn()
+		if err == nil || !strings.Contains(err.Error(), "is locked") {
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return err
 }
 
 func insertEvent(db *sql.DB, ev Event) error {
