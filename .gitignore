@@ -1,0 +1,8 @@
+# Runtime data (the SQLite DB and WAL files live here by default)
+/var/
+
+# Built binary
+/clodhopper
+
+# Local sandbox tooling
+/.nono/

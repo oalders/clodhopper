@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {{ if .RefreshSecs }}<meta http-equiv="refresh" content="{{ .RefreshSecs }}">{{ end }}
+  <title>clodhopper dashboard</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 1rem; font-size: 13px; }
+    h1 { font-size: 1.1rem; margin: 0 0 .25rem; }
+    h2 { font-size: .95rem; margin: 1.5rem 0 .4rem; }
+    .meta { color: #888; margin-bottom: 1rem; }
+    form { margin-bottom: 1rem; }
+    .controls label { margin-left: .6rem; }
+    /* table-layout: fixed + an explicit colgroup pin every column width so the
+       layout does not reflow (and visibly "flash") when the page meta-refreshes
+       with different-length content. */
+    table { border-collapse: collapse; width: 100%; table-layout: fixed; margin-bottom: .5rem; }
+    th, td { text-align: left; padding: .2rem .5rem; border-bottom: 1px solid #ddd; vertical-align: top; overflow: hidden; text-overflow: ellipsis; }
+    th { position: sticky; top: 0; background: Canvas; }
+    td.time, td.branch, td.tool, td.idle, td.sess { white-space: nowrap; }
+    td.summary { white-space: pre-wrap; word-break: break-word; }
+    .type { font-weight: bold; }
+    .empty { color: #888; padding: 1rem 0; }
+    /* Agent roster */
+    tr.alert td { background: color-mix(in srgb, orange 22%, Canvas); }
+    .status { font-weight: bold; }
+    .status.waiting, .status.approval, .status.needs { color: #b35900; }
+    .ci.green { color: #1a7f37; }
+    .ci.failing { color: #c00; font-weight: bold; }
+    .ci.pending { color: #9a6700; }
+    .ci.none { color: #aaa; }
+  </style>
+</head>
+<body>
+  <h1>clodhopper dashboard</h1>
+  <div class="meta">
+    rendered {{ .Generated }} ·
+    {{ if .RefreshSecs }}auto-refresh every {{ .RefreshSecs }}s{{ else }}auto-refresh off{{ end }}
+  </div>
+
+  <form method="get" class="controls">
+    <label for="source_app">source_app</label>
+    <select name="source_app" id="source_app" onchange="this.form.submit()">
+      <option value="">all</option>
+      {{ range .SourceApps }}
+        <option value="{{ . }}" {{ if eq . $.FilterSource }}selected{{ end }}>{{ . }}</option>
+      {{ end }}
+    </select>
+    <label for="branch">branch</label>
+    <select name="branch" id="branch" onchange="this.form.submit()">
+      <option value="">all</option>
+      {{ range .Branches }}
+        <option value="{{ . }}" {{ if eq . $.FilterBranch }}selected{{ end }}>{{ . }}</option>
+      {{ end }}
+    </select>
+    <label for="event_type">event_type</label>
+    <input type="text" name="event_type" id="event_type" value="{{ .FilterType }}" placeholder="e.g. PreToolUse">
+    <button type="submit">filter</button>
+    <label for="refresh">auto-refresh</label>
+    <select name="refresh" id="refresh" onchange="this.form.submit()">
+      {{ range .RefreshOptions }}
+        <option value="{{ .Secs }}" {{ if .Selected }}selected{{ end }}>{{ .Label }}</option>
+      {{ end }}
+    </select>
+  </form>
+
+  <h2>Agents (live, last 30 min)</h2>
+  {{ if .Agents }}
+  <table>
+    <colgroup>
+      <col style="width: 16ch"><col style="width: 8ch"><col style="width: 17ch">
+      <col style="width: 20ch"><col style="width: 9ch"><col style="width: 6ch"><col style="width: 10ch">
+    </colgroup>
+    <thead>
+      <tr><th>branch</th><th>app</th><th>status</th><th>doing</th><th>CI</th><th>idle</th><th>session</th></tr>
+    </thead>
+    <tbody>
+      {{ range .Agents }}
+      <tr {{ if le .StatusRank 1 }}class="alert"{{ end }}>
+        <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
+        <td>{{ .SourceApp }}</td>
+        <td class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs you" }}needs{{ end }}">{{ .Status }}</td>
+        <td class="summary">{{ if .Doing }}{{ .Doing }}{{ else }}—{{ end }}</td>
+        <td class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if .CI }}{{ .CI }}{{ else }}—{{ end }}</td>
+        <td class="idle">{{ .Idle }}</td>
+        <td class="sess">{{ short .SessionID }}</td>
+      </tr>
+      {{ end }}
+    </tbody>
+  </table>
+  {{ else }}
+  <div class="empty">No live agents in the last 30 min. (Detecting "waiting for you" needs the <code>Stop</code> and <code>Notification</code> hooks wired in <code>.claude/settings.json</code>.)</div>
+  {{ end }}
+
+  <h2>Recent events</h2>
+  {{ if .Events }}
+  <table>
+    <colgroup>
+      <col style="width: 16ch"><col style="width: 9ch"><col style="width: 16ch">
+      <col style="width: 15ch"><col style="width: 8ch"><col>
+    </colgroup>
+    <thead>
+      <tr><th>time</th><th>source_app</th><th>branch</th><th>event</th><th>tool</th><th>summary</th></tr>
+    </thead>
+    <tbody>
+      {{ range .Events }}
+      <tr>
+        <td class="time">{{ shortTS .TS }}</td>
+        <td>{{ .SourceApp }}</td>
+        <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
+        <td class="type">{{ .EventType }}</td>
+        <td class="tool">{{ .ToolName }}</td>
+        <td class="summary">{{ .Summary }}</td>
+      </tr>
+      {{ end }}
+    </tbody>
+  </table>
+  {{ else }}
+  <div class="empty">No events match. Is <code>clodhopper</code> on PATH, are the hooks wired in <code>.claude/settings.json</code>, and is a session active? (Capture is off when <code>CLODHOPPER_DISABLED=1</code>.)</div>
+  {{ end }}
+</body>
+</html>
