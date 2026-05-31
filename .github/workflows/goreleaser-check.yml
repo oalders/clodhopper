@@ -1,0 +1,31 @@
+name: goreleaser-check
+
+# Validate .goreleaser.yaml on every PR (and pushes to main) so config errors
+# surface here instead of when a release tag is cut. `check` only parses and
+# validates the config — it does not build, so it is fast and needs no zig.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: GoReleaser check
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check

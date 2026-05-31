@@ -4,5 +4,8 @@
 # Built binary
 /clodhopper
 
+# GoReleaser build output
+/dist/
+
 # Local sandbox tooling
 /.nono/
