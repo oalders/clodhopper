@@ -345,8 +345,10 @@ type SourceCount struct {
 // activeCounts returns per-(source_app, branch) event counts within the last
 // window. Grouping by branch as well as app means each concurrent worktree shows
 // up as its own row, which is the signal that tells you which session is busy.
-func activeCounts(db *sql.DB, window time.Duration) ([]SourceCount, error) {
-	since := time.Now().UTC().Add(-window).Format(time.RFC3339)
+// now is passed in (not read from the clock) so the result is deterministic
+// under test, matching agentRoster.
+func activeCounts(db *sql.DB, window time.Duration, now time.Time) ([]SourceCount, error) {
+	since := now.UTC().Add(-window).Format(time.RFC3339)
 	rows, err := db.Query(
 		`SELECT source_app, COALESCE(branch, ''), COUNT(*) FROM events WHERE ts >= ?
 		 GROUP BY source_app, branch ORDER BY COUNT(*) DESC`,
