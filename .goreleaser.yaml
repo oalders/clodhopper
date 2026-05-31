@@ -10,7 +10,8 @@ project_name: clodhopper
 
 before:
   hooks:
-    - go mod tidy
+    # Verify modules without mutating go.mod/go.sum during a release.
+    - go mod download
 
 builds:
   - id: clodhopper
@@ -24,7 +25,7 @@ builds:
       - -s -w
       - -X main.version={{ .Version }}
       - -X main.commit={{ .Commit }}
-      - -X main.date={{ .CommitDate }}
+      - -X main.date={{ .Date }} # RFC3339 build timestamp (not the epoch .CommitDate)
     goos:
       - linux
       - darwin
