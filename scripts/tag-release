@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+#
+# tag-release — bump the release number, create an annotated git tag, and push it.
+# Pushing the tag triggers .github/workflows/release.yml, which runs GoReleaser.
+#
+# Usage:
+#   ./scripts/tag-release            # bump patch (default): v1.2.3 -> v1.2.4
+#   ./scripts/tag-release patch      # same as above
+#   ./scripts/tag-release minor      # v1.2.3 -> v1.3.0
+#   ./scripts/tag-release major      # v1.2.3 -> v2.0.0
+#   ./scripts/tag-release v1.5.0     # tag an explicit version
+#
+# Env:
+#   REMOTE   git remote to push to (default: origin)
+#   DRY_RUN=1  print what would happen without tagging or pushing
+
+set -euo pipefail
+
+REMOTE="${REMOTE:-origin}"
+arg="${1:-patch}"
+
+die() {
+  echo "tag-release: $*" >&2
+  exit 1
+}
+
+# Must be in a clean repo so the tag captures a meaningful state.
+if [ -n "$(git status --porcelain)" ]; then
+  die "working tree is not clean; commit or stash changes first"
+fi
+
+# Latest semver-ish tag, or v0.0.0 if none exist yet.
+latest="$(git tag --list 'v*' --sort=-version:refname | head -n1)"
+latest="${latest:-v0.0.0}"
+
+if [[ "$arg" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  next="$arg"
+else
+  [[ "$latest" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]] || die "cannot parse latest tag: $latest"
+  major="${BASH_REMATCH[1]}"
+  minor="${BASH_REMATCH[2]}"
+  patch="${BASH_REMATCH[3]}"
+  case "$arg" in
+    major) major=$((major + 1)); minor=0; patch=0 ;;
+    minor) minor=$((minor + 1)); patch=0 ;;
+    patch) patch=$((patch + 1)) ;;
+    *) die "unknown bump '$arg'; expected major|minor|patch or an explicit vX.Y.Z" ;;
+  esac
+  next="v${major}.${minor}.${patch}"
+fi
+
+if git rev-parse -q --verify "refs/tags/${next}" >/dev/null; then
+  die "tag ${next} already exists"
+fi
+
+echo "tag-release: ${latest} -> ${next} (pushing to ${REMOTE})"
+
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  echo "tag-release: DRY_RUN set, not tagging or pushing"
+  exit 0
+fi
+
+git tag -a "${next}" -m "Release ${next}"
+git push "${REMOTE}" "${next}"
+
+echo "tag-release: pushed ${next}; GoReleaser will run via the release workflow"

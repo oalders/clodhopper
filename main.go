@@ -15,6 +15,19 @@ const (
 	fallbackRefresh   = 5
 )
 
+// Build metadata, overridden at release time via -ldflags -X (see .goreleaser.yaml).
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
+// versionString is the single source of truth for --version output; kept as a
+// pure function so it can be tested without capturing stdout.
+func versionString() string {
+	return fmt.Sprintf("clodhopper %s (commit %s, built %s)", version, commit, date)
+}
+
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
@@ -34,6 +47,9 @@ func run(args []string) int {
 		return runPrune(rest)
 	case "-h", "--help", "help":
 		usage()
+		return 0
+	case "-v", "--version", "version":
+		fmt.Println(versionString())
 		return 0
 	default:
 		fmt.Fprintf(os.Stderr, "clodhopper: unknown command %q\n\n", cmd)
@@ -70,6 +86,7 @@ USAGE
   clodhopper ingest --source-app NAME   read one hook event (JSON on stdin), store it
   clodhopper serve [--port N] [--host H] serve the dashboard (default 127.0.0.1; --host 0.0.0.0 for container/LAN)
   clodhopper prune [--days N]           delete events older than N days
+  clodhopper --version                  print version and build metadata
 
 ENV
   CLODHOPPER_DB           SQLite path (default ~/.claude/clodhopper/var/events.db)

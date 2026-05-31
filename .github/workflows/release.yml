@@ -1,0 +1,64 @@
+name: release
+
+# Releases are driven by tags. Use ./scripts/tag-release to bump, tag and push;
+# the pushed tag triggers a full GoReleaser release. workflow_dispatch lets you
+# run the pipeline by hand — as a snapshot dry-run when HEAD is not a tag, or a
+# real release when you dispatch on a tag ref.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed for GoReleaser to create the GitHub release
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + tags so GoReleaser can build the changelog
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      # zig is our CGO cross-compiler (see .goreleaser.yaml).
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+
+      - name: Determine GoReleaser args
+        id: args
+        # On a tag ref -> real release. Otherwise (manual dispatch on a branch)
+        # -> snapshot build that uploads artifacts without publishing a release.
+        run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "args=release --clean" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=release --clean --snapshot" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: ${{ steps.args.outputs.args }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # When dispatched manually (snapshot), there is no GitHub release to attach
+      # to, so surface the built binaries as workflow artifacts instead.
+      - name: Upload snapshot artifacts
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: clodhopper-snapshot
+          path: dist/*
+          retention-days: 7
