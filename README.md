@@ -85,8 +85,29 @@ Redactions appear as `«redacted»`.
 
 ## Wiring a project
 
-Add hooks to the project's `.claude/settings.json` (or `settings.local.json`).
-Guard on the binary existing so environments without `clodhopper` simply no-op:
+The easiest way is `clodhopper init`, run from the project's root. It writes the
+ingest hooks for every Claude Code lifecycle event into the project's settings,
+idempotently (safe to re-run):
+
+```bash
+clodhopper init --project                 # -> .claude/settings.json (committed)
+clodhopper init --local                   # -> .claude/settings.local.json (gitignored)
+clodhopper init --project --dry-run       # preview without writing
+```
+
+With neither `--project` nor `--local` it prompts you to choose. `--source-app`
+defaults to the git repo name; pass `--source-app NAME` to override (required
+outside a git repo). The generated command is guarded so environments without the
+binary simply no-op; `--guard command` (default) uses the portable
+`command -v clodhopper` check, `--guard is` uses the `is there clodhopper` helper.
+
+`init` writes 2-space-indented JSON; the first run on an existing committed
+settings file will re-sort its keys (a one-time noisy diff) — preview with
+`--dry-run`.
+
+Or, by hand: add hooks to the project's `.claude/settings.json` (or
+`settings.local.json`). Guard on the binary existing so environments without
+`clodhopper` simply no-op:
 
 ```json
 {
