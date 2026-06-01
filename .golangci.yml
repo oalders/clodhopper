@@ -1,0 +1,40 @@
+version: "2"
+
+linters:
+  # Start from golangci-lint's curated default set (errcheck, govet,
+  # ineffassign, staticcheck, unused) and layer on a few high-signal extras.
+  default: standard
+  enable:
+    - bodyclose      # HTTP response bodies must be closed (server.go shells out)
+    - errorlint      # correct error wrapping / %w usage
+    - gocritic       # opinionated but valuable diagnostics
+    - misspell       # catch typos in comments and strings
+    - nilerr         # returning nil after a non-nil error check
+    - revive         # golint successor, style + correctness
+    - unconvert      # redundant type conversions
+    - unparam        # unused function parameters
+  settings:
+    errcheck:
+      # The Close/Fprint family is intentionally fire-and-forget here:
+      # ingest must never fail a tool call (see CLAUDE.md), and writes to
+      # stdout/diagnostics aren't actionable on error.
+      exclude-functions:
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+  exclusions:
+    rules:
+      # Test helpers favour brevity over checking every return value.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/oalders/clodhopper
