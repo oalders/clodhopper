@@ -160,6 +160,44 @@ func TestSessPaletteIsHex(t *testing.T) {
 	}
 }
 
+func TestHandleDashboard_SessionColors(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	// One event with a session id, one without (some hooks carry no session_id).
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "br", SessionID: "sess-abc",
+		EventType: "PreToolUse", ToolName: "Bash", Summary: "Bash: ls", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "SessionStart",
+		Summary: "SessionStart", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	want := sessColor("sess-abc")
+
+	// A colored chip is rendered for the session.
+	if !strings.Contains(body, `class="chip"`) {
+		t.Errorf("expected a session chip in output:\n%s", body)
+	}
+	// The session's color appears (chip + row tint both derive from it).
+	if !strings.Contains(body, want) {
+		t.Errorf("expected session color %q in output:\n%s", want, body)
+	}
+	// The row is tinted via color-mix against Canvas.
+	if !strings.Contains(body, "color-mix") {
+		t.Errorf("expected a color-mix row tint:\n%s", body)
+	}
+	// The new "session" column header exists.
+	if !strings.Contains(body, "<th>session</th>") {
+		t.Errorf("expected a session column header:\n%s", body)
+	}
+	// Exactly one row carries an inline tint: the session-bearing Recent-events
+	// row. The empty-session row's {{ if .SessionID }} guard skips the style attr
+	// entirely, and the roster chip uses a solid background (not color-mix), so
+	// neither matches. This proves the empty-session row is left untinted.
+	if n := strings.Count(body, `style="background: color-mix`); n != 1 {
+		t.Errorf("expected exactly 1 tinted row, got %d:\n%s", n, body)
+	}
+}
+
 func getBody(t *testing.T, db *sql.DB, target string) string {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, target, nil)

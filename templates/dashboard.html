@@ -34,6 +34,9 @@
     .ci.failing { color: #c00; font-weight: bold; }
     .ci.pending { color: #9a6700; }
     .ci.none { color: #aaa; }
+    /* Per-session color key: a small swatch whose color comes from sessColor.
+       Pairs with the row tint on Recent events to link a session to the roster. */
+    .chip { display: inline-block; width: .7em; height: .7em; border-radius: 50%; margin-right: .4em; vertical-align: baseline; }
   </style>
 </head>
 <body data-refresh="{{ .RefreshSecs }}" data-signature="{{ .Signature }}">
@@ -140,7 +143,7 @@
         <td class="summary">{{ if .Doing }}{{ .Doing }}{{ else }}—{{ end }}</td>
         <td class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if .CI }}{{ .CI }}{{ else }}—{{ end }}</td>
         <td class="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
-        <td class="sess">{{ short .SessionID }}</td>
+        <td class="sess">{{ if .SessionID }}<span class="chip" style="background: {{ sessColor .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
       </tr>
       {{ end }}
     </tbody>
@@ -175,17 +178,18 @@
   <table>
     <colgroup>
       <col style="width: 15ch"><col style="width: 14ch"><col style="width: 16ch">
-      <col style="width: 15ch"><col style="width: 8ch"><col>
+      <col style="width: 10ch"><col style="width: 15ch"><col style="width: 8ch"><col>
     </colgroup>
     <thead>
-      <tr><th>time</th><th>source_app</th><th>branch</th><th>event</th><th>tool</th><th>summary</th></tr>
+      <tr><th>time</th><th>source_app</th><th>branch</th><th>session</th><th>event</th><th>tool</th><th>summary</th></tr>
     </thead>
     <tbody>
       {{ range .Events }}
-      <tr>
+      <tr {{ if .SessionID }}style="background: color-mix(in srgb, {{ sessColor .SessionID }} 14%, Canvas)"{{ end }}>
         <td class="time">{{ shortTS .TS $.Now }}</td>
         <td>{{ .SourceApp }}</td>
         <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
+        <td class="sess">{{ if .SessionID }}<span class="chip" style="background: {{ sessColor .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
         <td class="type">{{ .EventType }}</td>
         <td class="tool">{{ .ToolName }}</td>
         <td class="summary">{{ .Summary }}</td>
