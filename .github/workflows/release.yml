@@ -29,10 +29,13 @@ jobs:
           go-version: stable
 
       # zig is our CGO cross-compiler (see .goreleaser.yaml).
+      # NOTE: keep zig >= 0.14.0. zig 0.13.0 has a regression that breaks CGO
+      # cross-compilation to macOS targets with "unable to create compilation:
+      # AccessDenied" (ziglang/zig#20689); the fix shipped in 0.14.0.
       - name: Set up Zig
         uses: mlugg/setup-zig@v1
         with:
-          version: 0.13.0
+          version: 0.14.1
 
       - name: Determine GoReleaser args
         id: args
