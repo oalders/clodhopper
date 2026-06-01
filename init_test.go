@@ -140,6 +140,20 @@ func TestReadSettings_Missing(t *testing.T) {
 	}
 }
 
+func TestReadSettings_Empty(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "empty.json")
+	if err := os.WriteFile(p, []byte("   \n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readSettings(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("want empty map, got %v", got)
+	}
+}
+
 func TestReadSettings_Invalid(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "s.json")
 	if err := os.WriteFile(p, []byte("{not json"), 0o644); err != nil {
