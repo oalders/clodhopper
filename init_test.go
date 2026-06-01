@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
 
 // A realistic command string used across merge/orchestration tests. It MUST
 // contain "clodhopper ingest" so the idempotency check recognizes it.
@@ -96,5 +99,23 @@ func TestMergeClodhopperHooks_WrongHooksType(t *testing.T) {
 	}
 	if settings["hooks"] != "garbage" {
 		t.Error("settings mutated despite error")
+	}
+}
+
+func TestGitRepoName(t *testing.T) {
+	dir := t.TempDir()
+	gitInitOnBranch(t, dir, "main")
+	want := filepath.Base(dir)
+	if got := gitRepoName(dir); got != want {
+		t.Errorf("gitRepoName = %q, want %q", got, want)
+	}
+}
+
+func TestGitRepoName_EmptyAndNonRepo(t *testing.T) {
+	if got := gitRepoName(""); got != "" {
+		t.Errorf("empty: want \"\", got %q", got)
+	}
+	if got := gitRepoName("/nonexistent/path/xyzzy"); got != "" {
+		t.Errorf("nonexistent: want \"\", got %q", got)
 	}
 }

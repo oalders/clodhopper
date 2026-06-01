@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"time"
 )
 
 // guardPrefix returns the shell guard that precedes the clodhopper invocation
@@ -89,6 +93,27 @@ func mergeClodhopperHooks(settings map[string]any, command string) (added, skipp
 	}
 	settings["hooks"] = hooks
 	return added, skipped, nil
+}
+
+// gitRepoName returns the basename of the git work-tree root containing dir, or
+// "" if dir is empty, not a repo, or git is unavailable. Like gitBranch it is
+// deliberately best-effort with a tight timeout.
+func gitRepoName(dir string) string {
+	if dir == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	top := strings.TrimSpace(string(out))
+	if top == "" {
+		return ""
+	}
+	return filepath.Base(top)
 }
 
 // hasClodhopperHook reports whether any hook command in groups already invokes
