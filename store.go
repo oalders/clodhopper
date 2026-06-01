@@ -307,13 +307,34 @@ const (
 	statusNeedsYou = "needs you"
 	statusApproval = "needs approval"
 	statusWorking  = "working"
+	statusIdle     = "idle"
 	statusEnded    = "ended"
 )
 
-// deriveStatus maps a session's most recent event_type to a status label, a sort
-// rank (lower = more urgent), and whether the agent is still active (an ended
-// session drops off the board).
-func deriveStatus(lastEvent string) (label string, rank int, active bool) {
+// staleWorkingSecs is how long a "working" session may go silent before the
+// roster stops calling it working. An active agent emits a hook on every tool
+// use, so a mid-flight session quiet this long was killed, crashed, or never
+// fired its Stop hook — it is idle, not working. (Sessions that ended cleanly
+// carry a Stop/SessionEnd event and never reach this branch.)
+//
+// This is a hook-driven heuristic: a session running a single long tool call
+// (e.g. a 6-minute build) also goes silent and will flip to idle, since without
+// a PostToolUse/heartbeat there is no way to tell "in a long call" from
+// "crashed". That trade-off is intentional — "idle" is the honest label for "no
+// signal", and beats the old contradictory "working" + climbing-idle. Don't
+// lower this to chase long-call false positives; if PostToolUse is ever
+// captured, that would be the real disambiguator. An idle session is kept on the
+// board (it does not drop) until it leaves the waitingCap query window or its
+// session ends — see agentRoster.
+const staleWorkingSecs = 5 * 60
+
+// deriveStatus maps a session's most recent event_type (and how long it has been
+// silent) to a status label, a sort rank (lower = more urgent), and whether the
+// agent is still active (an ended session drops off the board). idleSecs only
+// matters for the working case: a mid-flight session quiet past
+// staleWorkingSecs is reported as idle rather than working, since a genuinely
+// busy agent keeps emitting hooks.
+func deriveStatus(lastEvent string, idleSecs int) (label string, rank int, active bool) {
 	switch lastEvent {
 	case "Stop":
 		return statusWaiting, 0, true
@@ -324,17 +345,20 @@ func deriveStatus(lastEvent string) (label string, rank int, active bool) {
 	case "SessionEnd":
 		return statusEnded, 9, false
 	default:
+		if idleSecs >= staleWorkingSecs {
+			return statusIdle, 6, true
+		}
 		return statusWorking, 5, true
 	}
 }
 
 // agentRoster folds recent events into one row per session, reflecting each
-// agent's current state. It applies two windows: a "working" session is live
-// only within liveWindow (a silent worker is stale and drops off), while a
-// session waiting on you (waiting / needs-you / needs-approval) is retained out
-// to waitingCap — so it survives a lunch or overnight gap and only leaves on a
-// SessionEnd. now is injected so the result is deterministic under test.
-func agentRoster(db *sql.DB, liveWindow, waitingCap time.Duration, now time.Time) ([]Agent, error) {
+// agent's current state. Every live session within waitingCap is kept — a
+// working agent that goes quiet is relabeled idle (see deriveStatus) rather than
+// dropped, so it survives a lunch or overnight gap and only leaves the board on
+// a SessionEnd or once it falls out of the waitingCap query window. now is
+// injected so the result is deterministic under test.
+func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, error) {
 	since := now.Add(-waitingCap).UTC().Format(time.RFC3339)
 	rows, err := db.Query(
 		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(cwd,''), COALESCE(session_id,''),
@@ -381,16 +405,9 @@ func agentRoster(db *sql.DB, liveWindow, waitingCap time.Duration, now time.Time
 
 	out := make([]Agent, 0, len(byID))
 	for _, s := range byID {
-		label, rank, active := deriveStatus(s.a.LastEvent)
-		if !active {
-			continue
-		}
 		idleSecs := idleSeconds(s.lastTS, now)
-		// A "working" agent is live only within the short window; once it goes
-		// quiet it is stale and drops off. Needs-me statuses persist out to
-		// waitingCap (already bounded by the query window above), so an agent
-		// genuinely waiting on you is not lost when you step away.
-		if label == statusWorking && time.Duration(idleSecs)*time.Second > liveWindow {
+		label, rank, active := deriveStatus(s.a.LastEvent, idleSecs)
+		if !active {
 			continue
 		}
 		a := s.a

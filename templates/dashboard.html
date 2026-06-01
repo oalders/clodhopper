@@ -30,6 +30,7 @@
     tr.alert td { background: color-mix(in srgb, orange 22%, Canvas); }
     .status { font-weight: bold; }
     .status.waiting, .status.approval, .status.needs { color: #b35900; }
+    .status.idle { color: #888; font-weight: normal; }
     .ci.green { color: #1a7f37; }
     .ci.failing { color: #c00; font-weight: bold; }
     .ci.pending { color: #9a6700; }
@@ -136,7 +137,7 @@
       <tr {{ if le .StatusRank 1 }}class="alert"{{ end }}>
         <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
         <td>{{ .SourceApp }}</td>
-        <td class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs you" }}needs{{ end }}">{{ .Status }}</td>
+        <td class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
         <td class="summary">{{ if .Doing }}{{ .Doing }}{{ else }}—{{ end }}</td>
         <td class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if .CI }}{{ .CI }}{{ else }}—{{ end }}</td>
         <td class="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>

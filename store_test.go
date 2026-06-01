@@ -119,7 +119,7 @@ func TestEndSessions_ByBranchSkipsAlreadyEnded(t *testing.T) {
 		t.Fatalf("want 1 session ended (s1; s3 already ended), got %d", n)
 	}
 
-	agents, err := agentRoster(db, 30*time.Minute, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, now)
 	if err != nil {
 		t.Fatal(err)
 	}
