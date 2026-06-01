@@ -90,6 +90,77 @@ func TestPruneOldDeletesOnlyOld(t *testing.T) {
 	}
 }
 
+func TestEndSessions_ByBranchSkipsAlreadyEnded(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, sess, branch, cwd, etype string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: branch, Cwd: cwd, SessionID: sess, EventType: etype, PayloadJSON: "{}"})
+	}
+	// Live session on b1 (latest = Stop) -> should be ended.
+	ins(at(20), "s1", "b1", "/w/b1", "PreToolUse")
+	ins(at(5), "s1", "b1", "/w/b1", "Stop")
+	// Live session on b2 -> must be untouched by --branch b1.
+	ins(at(4), "s2", "b2", "/w/b2", "Stop")
+	// Already-ended session on b1 -> must be skipped (not double-counted).
+	ins(at(30), "s3", "b1", "/w/b1", "PreToolUse")
+	ins(at(10), "s3", "b1", "/w/b1", "SessionEnd")
+
+	n, err := endSessions(db, EndSelector{Branch: "b1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 session ended (s1; s3 already ended), got %d", n)
+	}
+
+	agents, err := agentRoster(db, 30*time.Minute, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawS1, sawS2 bool
+	for _, a := range agents {
+		switch a.SessionID {
+		case "s1":
+			sawS1 = true
+		case "s2":
+			sawS2 = true
+		}
+	}
+	if sawS1 {
+		t.Error("s1 should be off the roster after end")
+	}
+	if !sawS2 {
+		t.Error("s2 (different branch) must be untouched")
+	}
+}
+
+func TestEndSessions_ByCwd(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	ts := now.Add(-3 * time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "b1", Cwd: "/w/one", SessionID: "s1", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "b1", Cwd: "/w/two", SessionID: "s2", EventType: "Stop", PayloadJSON: "{}"})
+
+	n, err := endSessions(db, EndSelector{Cwd: "/w/one"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 session ended for cwd /w/one, got %d", n)
+	}
+}
+
 func TestConcurrentWritersWAL(t *testing.T) {
 	path := testDB(t)
 	const writers = 8

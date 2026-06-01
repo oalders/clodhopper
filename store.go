@@ -117,6 +117,76 @@ func insertEvent(db *sql.DB, ev Event) error {
 	return err
 }
 
+// EndSelector identifies which live sessions clodhopper end should mark ended.
+// Each non-empty field narrows the match; the caller must set at least one.
+type EndSelector struct {
+	SessionID string
+	Branch    string
+	Cwd       string
+}
+
+// endSessions writes a synthetic SessionEnd row for every currently-live session
+// (one whose latest event is not already SessionEnd) matching sel, so an agent
+// that was hard-killed — and therefore never emitted its own SessionEnd — drops
+// off the roster at once instead of lingering until the waiting cap. It returns
+// the number of sessions ended. now is injected for deterministic tests.
+func endSessions(db *sql.DB, sel EndSelector, now time.Time) (int, error) {
+	// Resolve the selector against the latest row of each session, so branch/cwd
+	// match the session's current values.
+	q := `SELECT session_id, source_app, COALESCE(branch,''), COALESCE(cwd,''), event_type
+	      FROM events e
+	      WHERE session_id IS NOT NULL AND session_id <> ''
+	        AND id = (SELECT MAX(id) FROM events WHERE session_id = e.session_id)`
+	var args []any
+	if sel.SessionID != "" {
+		q += " AND session_id = ?"
+		args = append(args, sel.SessionID)
+	}
+	if sel.Branch != "" {
+		q += " AND branch = ?"
+		args = append(args, sel.Branch)
+	}
+	if sel.Cwd != "" {
+		q += " AND cwd = ?"
+		args = append(args, sel.Cwd)
+	}
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	type live struct{ sess, app, branch, cwd string }
+	var targets []live
+	for rows.Next() {
+		var l live
+		var etype string
+		if err := rows.Scan(&l.sess, &l.app, &l.branch, &l.cwd, &etype); err != nil {
+			return 0, err
+		}
+		if etype == "SessionEnd" {
+			continue // already ended
+		}
+		targets = append(targets, l)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	ts := now.UTC().Format(time.RFC3339)
+	for _, l := range targets {
+		ev := Event{
+			TS: ts, SourceApp: l.app, Branch: l.branch, Cwd: l.cwd,
+			SessionID: l.sess, EventType: "SessionEnd", Summary: "ended via clodhopper end",
+			PayloadJSON: "{}",
+		}
+		if err := insertEvent(db, ev); err != nil {
+			return 0, err
+		}
+	}
+	return len(targets), nil
+}
+
 // pruneOld deletes events older than the given number of days and returns the
 // number of rows removed.
 func pruneOld(db *sql.DB, days int) (int64, error) {

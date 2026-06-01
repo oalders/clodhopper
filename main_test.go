@@ -33,6 +33,13 @@ func TestRun_VersionFlagExitsZero(t *testing.T) {
 	}
 }
 
+func TestRun_EndRequiresSelector(t *testing.T) {
+	// No selector must fail fast (exit 2) before touching the database.
+	if code := run([]string{"end"}); code != 2 {
+		t.Errorf("run(end) with no selector = %d, want 2", code)
+	}
+}
+
 func TestWaitingRetainHours_DefaultAndOverride(t *testing.T) {
 	if got := waitingRetainHours(); got != 16 {
 		t.Errorf("default waitingRetainHours() = %d, want 16", got)
