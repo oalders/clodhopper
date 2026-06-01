@@ -227,6 +227,7 @@ type Agent struct {
 	LastEvent  string
 	Idle       string // humanised time since last event ("4m", "1h")
 	IdleSecs   int
+	IdleSince  int64  // unix seconds of the last event, so the client can tick idle in place
 	CI         string // merge-readiness; filled by the server layer via gh
 }
 
@@ -318,6 +319,10 @@ func agentRoster(db *sql.DB, window time.Duration, now time.Time) ([]Agent, erro
 		}
 		a.IdleSecs = idleSeconds(s.lastTS, now)
 		a.Idle = humanizeSeconds(a.IdleSecs)
+		// Absolute last-event time (derived from now − idle so it stays consistent
+		// with IdleSecs); the dashboard's JS reads it from data-since to advance the
+		// idle column locally, without a server round-trip.
+		a.IdleSince = now.Unix() - int64(a.IdleSecs)
 		out = append(out, a)
 	}
 	// Most urgent first (waiting/needs-you), then longest-idle within a rank.

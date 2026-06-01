@@ -114,17 +114,23 @@ func TestHandleDashboard_RefreshConfigurable(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
 
+	// The cadence now drives the JS poller (read from data-refresh), not a
+	// meta-refresh tag.
 	on := getBody(t, db, "/")
-	if !strings.Contains(on, `content="5"`) {
+	if !strings.Contains(on, `data-refresh="5"`) {
 		t.Errorf("default cadence should be 5s:\n%s", on)
 	}
 	custom := getBody(t, db, "/?refresh=30")
-	if !strings.Contains(custom, `content="30"`) {
-		t.Errorf("refresh=30 must set the meta refresh interval:\n%s", custom)
+	if !strings.Contains(custom, `data-refresh="30"`) {
+		t.Errorf("refresh=30 must set the poll interval:\n%s", custom)
 	}
 	off := getBody(t, db, "/?refresh=0")
+	// A hard meta-refresh is gone entirely; off means the poller never starts.
 	if strings.Contains(off, `http-equiv="refresh"`) {
-		t.Errorf("refresh=0 must drop the meta refresh tag:\n%s", off)
+		t.Errorf("the dashboard must never use a meta-refresh tag:\n%s", off)
+	}
+	if !strings.Contains(off, `data-refresh="0"`) {
+		t.Errorf("refresh=0 must disable the poller:\n%s", off)
 	}
 	if !strings.Contains(off, "auto-refresh off") {
 		t.Errorf("off state not shown in meta line")
@@ -153,10 +159,16 @@ func TestBuildSummary_Skill(t *testing.T) {
 }
 
 func TestShortTS(t *testing.T) {
-	if got := shortTS("2026-05-31T14:14:28Z"); got != "05-31 14:14:28" {
-		t.Errorf("shortTS = %q, want 05-31 14:14:28", got)
+	now := time.Date(2026, 5, 31, 20, 0, 0, 0, time.UTC)
+	// Same UTC day: time only, no redundant date.
+	if got := shortTS("2026-05-31T14:14:28Z", now); got != "14:14:28" {
+		t.Errorf("shortTS same-day = %q, want 14:14:28", got)
 	}
-	if got := shortTS("not-a-time"); got != "not-a-time" {
+	// An earlier day keeps MM-DD so it is not mistaken for today.
+	if got := shortTS("2026-05-30T14:14:28Z", now); got != "05-30 14:14:28" {
+		t.Errorf("shortTS other-day = %q, want 05-30 14:14:28", got)
+	}
+	if got := shortTS("not-a-time", now); got != "not-a-time" {
 		t.Errorf("shortTS passthrough = %q, want not-a-time", got)
 	}
 }

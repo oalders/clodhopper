@@ -97,7 +97,7 @@ ENV
   CLODHOPPER_DISABLED=1   make ingest a no-op
   CLODHOPPER_PORT         dashboard port (default 4555)
   CLODHOPPER_HOST         dashboard bind address (default 127.0.0.1)
-  CLODHOPPER_REFRESH_SECS dashboard auto-refresh cadence, 0 = off (default 5)
+  CLODHOPPER_REFRESH_SECS dashboard live-update poll cadence, 0 = off (default 5)
   CLODHOPPER_DEBUG        write ingest errors to stderr (otherwise silent)
 `)
 }
