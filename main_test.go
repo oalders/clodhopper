@@ -32,3 +32,17 @@ func TestRun_VersionFlagExitsZero(t *testing.T) {
 		}
 	}
 }
+
+func TestWaitingRetainHours_DefaultAndOverride(t *testing.T) {
+	if got := waitingRetainHours(); got != 16 {
+		t.Errorf("default waitingRetainHours() = %d, want 16", got)
+	}
+	t.Setenv("CLODHOPPER_WAITING_RETAIN_HOURS", "24")
+	if got := waitingRetainHours(); got != 24 {
+		t.Errorf("override waitingRetainHours() = %d, want 24", got)
+	}
+	t.Setenv("CLODHOPPER_WAITING_RETAIN_HOURS", "0") // non-positive is ignored
+	if got := waitingRetainHours(); got != 16 {
+		t.Errorf("zero override should fall back to 16, got %d", got)
+	}
+}

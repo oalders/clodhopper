@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	defaultRetainDays = 14
-	fallbackPort      = 4555
-	fallbackRefresh   = 5
+	defaultRetainDays         = 14
+	defaultWaitingRetainHours = 16
+	fallbackPort              = 4555
+	fallbackRefresh           = 5
 )
 
 // Build metadata, overridden at release time via -ldflags -X (see .goreleaser.yaml).
@@ -92,13 +93,14 @@ USAGE
   clodhopper --version                  print version and build metadata
 
 ENV
-  CLODHOPPER_DB           SQLite path (default ~/.claude/clodhopper/var/events.db)
-  CLODHOPPER_RETAIN_DAYS  retention window in days (default 14)
-  CLODHOPPER_DISABLED=1   make ingest a no-op
-  CLODHOPPER_PORT         dashboard port (default 4555)
-  CLODHOPPER_HOST         dashboard bind address (default 127.0.0.1)
-  CLODHOPPER_REFRESH_SECS dashboard live-update poll cadence, 0 = off (default 5)
-  CLODHOPPER_DEBUG        write ingest errors to stderr (otherwise silent)
+  CLODHOPPER_DB                    SQLite path (default ~/.claude/clodhopper/var/events.db)
+  CLODHOPPER_RETAIN_DAYS           retention window in days (default 14)
+  CLODHOPPER_DISABLED=1            make ingest a no-op
+  CLODHOPPER_PORT                  dashboard port (default 4555)
+  CLODHOPPER_HOST                  dashboard bind address (default 127.0.0.1)
+  CLODHOPPER_REFRESH_SECS          dashboard live-update poll cadence, 0 = off (default 5)
+  CLODHOPPER_WAITING_RETAIN_HOURS  hours a waiting agent stays on the roster (default 16)
+  CLODHOPPER_DEBUG                 write ingest errors to stderr (otherwise silent)
 `)
 }
 
@@ -110,6 +112,20 @@ func retainDays() int {
 		}
 	}
 	return defaultRetainDays
+}
+
+// waitingRetainHours reads CLODHOPPER_WAITING_RETAIN_HOURS or returns the
+// default. It bounds how long an agent that is waiting on you (Stop /
+// Notification / PermissionRequest) stays on the roster when no SessionEnd ever
+// arrives — long enough to survive a lunch or overnight gap, short enough that a
+// hard-killed "zombie" session cannot linger indefinitely.
+func waitingRetainHours() int {
+	if v := os.Getenv("CLODHOPPER_WAITING_RETAIN_HOURS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return defaultWaitingRetainHours
 }
 
 // defaultPort reads CLODHOPPER_PORT or returns the fallback.
