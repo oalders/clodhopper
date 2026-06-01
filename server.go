@@ -26,8 +26,9 @@ var dashboardHTML string
 
 var dashboardTmpl = template.Must(
 	template.New("dashboard").Funcs(template.FuncMap{
-		"short":   shortID,
-		"shortTS": shortTS,
+		"short":     shortID,
+		"shortTS":   shortTS,
+		"sessColor": sessColor,
 	}).Parse(dashboardHTML),
 )
 
@@ -54,6 +55,35 @@ func shortTS(ts string, now time.Time) string {
 		return tu.Format("15:04:05")
 	}
 	return tu.Format("01-02 15:04:05")
+}
+
+// sessPalette is the set of colors sessColor cycles through. Entries MUST be
+// escaper-safe #rrggbb hex literals: html/template passes a bare hex color
+// through a style attribute unchanged, but a non-color token would be rewritten
+// to "ZgotmplZ". TestSessPaletteIsHex enforces the format.
+var sessPalette = []string{
+	"#3b82f6", // blue
+	"#16a34a", // green
+	"#d97706", // amber
+	"#9333ea", // purple
+	"#dc2626", // red
+	"#0891b2", // cyan
+	"#db2777", // pink
+	"#65a30d", // lime
+}
+
+// sessColor maps a session id to a stable palette color via FNV-1a, so the same
+// session renders the same color in both the roster and the Recent events table
+// without any server-side coordination, and the color survives auto-refresh.
+// Collisions on ~8 colors are possible but the short id text disambiguates.
+// An empty id yields "" so callers can skip the chip/tint entirely.
+func sessColor(s string) string {
+	if s == "" {
+		return ""
+	}
+	h := fnv.New32a()
+	h.Write([]byte(s))
+	return sessPalette[h.Sum32()%uint32(len(sessPalette))]
 }
 
 // dashboardData is the view model rendered by the dashboard template.

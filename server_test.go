@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +124,39 @@ func TestViewSignature_IgnoresIdleButTracksEvents(t *testing.T) {
 	flipped.Agents = []Agent{{SessionID: "s1", Status: statusWaiting, IdleSecs: 10, IdleSince: 100}}
 	if viewSignature(base) == viewSignature(flipped) {
 		t.Error("signature unchanged after a status change")
+	}
+}
+
+func TestSessColor(t *testing.T) {
+	// Deterministic: same id -> same color across calls.
+	first := sessColor("abc123")
+	second := sessColor("abc123")
+	if first != second {
+		t.Errorf("sessColor not deterministic: %q != %q", first, second)
+	}
+	// Empty id -> empty string (no chip/tint).
+	if got := sessColor(""); got != "" {
+		t.Errorf("sessColor(\"\") = %q, want \"\"", got)
+	}
+	// Any non-empty id maps into the palette.
+	for _, id := range []string{"a", "session-1", "7f3c9a01", "xyz", "deadbeef"} {
+		if c := sessColor(id); !slices.Contains(sessPalette, c) {
+			t.Errorf("sessColor(%q) = %q, not in palette", id, c)
+		}
+	}
+}
+
+func TestSessPaletteIsHex(t *testing.T) {
+	re := regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+	if len(sessPalette) == 0 {
+		t.Fatal("sessPalette is empty")
+	}
+	for _, c := range sessPalette {
+		// Guards against a future non-hex token being silently blanked to
+		// "ZgotmplZ" by html/template's style-attribute escaper.
+		if !re.MatchString(c) {
+			t.Errorf("palette entry %q is not a #rrggbb hex literal", c)
+		}
 	}
 }
 
