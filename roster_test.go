@@ -55,7 +55,7 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	defer db.Close()
 
 	now := time.Now().UTC()
-	at := func(min int) string { return now.Add(time.Duration(-min) * time.Minute).Format(time.RFC3339) }
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
 	ins := func(ts, sess, branch, etype, tool, summary string) {
 		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: branch, SessionID: sess, EventType: etype, ToolName: tool, Summary: summary, PayloadJSON: "{}"})
 	}
