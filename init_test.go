@@ -256,6 +256,29 @@ func TestDoInit_WritesProjectSettings(t *testing.T) {
 	}
 }
 
+func TestDoInit_MalformedFileNotClobbered(t *testing.T) {
+	dir := t.TempDir()
+	path := settingsPath(dir, false)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const bad = "{ this is not valid json"
+	if err := os.WriteFile(path, []byte(bad), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opts := initOptions{dir: dir, project: true, sourceApp: "x", guard: "command"}
+	if err := doInit(opts, strings.NewReader(""), io.Discard); err == nil {
+		t.Fatal("want error for malformed settings file, got nil")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != bad {
+		t.Errorf("malformed file was modified:\n got: %q\nwant: %q", string(raw), bad)
+	}
+}
+
 func TestDoInit_DryRunWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	var out bytes.Buffer
