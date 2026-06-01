@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -200,4 +202,85 @@ func resolveSourceApp(explicit, dir string) (string, error) {
 		return name, nil
 	}
 	return "", fmt.Errorf("could not determine source-app: not in a git repo; pass --source-app NAME")
+}
+
+// initOptions are the resolved inputs to doInit, kept separate from flag parsing
+// so the orchestration is testable with injected I/O and a temp dir.
+type initOptions struct {
+	dir       string // working directory whose .claude/ is targeted
+	project   bool   // --project: write settings.json
+	local     bool   // --local: write settings.local.json
+	sourceApp string // --source-app override ("" = derive)
+	guard     string // --guard kind ("command" | "is")
+	dryRun    bool   // --dry-run: compute but don't write
+}
+
+// doInit performs the wiring described by opts, reading the prompt response from
+// in and writing human output to out. It returns an error on any failure; the
+// caller maps that to a non-zero exit code.
+func doInit(opts initOptions, in io.Reader, out io.Writer) error {
+	if opts.project && opts.local {
+		return fmt.Errorf("--project and --local are mutually exclusive")
+	}
+	guard, err := guardPrefix(opts.guard)
+	if err != nil {
+		return err
+	}
+	sourceApp, err := resolveSourceApp(opts.sourceApp, opts.dir)
+	if err != nil {
+		return err
+	}
+	local, err := chooseLocal(opts, in, out)
+	if err != nil {
+		return err
+	}
+
+	path := settingsPath(opts.dir, local)
+	settings, err := readSettings(path)
+	if err != nil {
+		return err
+	}
+	added, skipped, err := mergeClodhopperHooks(settings, ingestCommand(guard, sourceApp))
+	if err != nil {
+		return err
+	}
+
+	if opts.dryRun {
+		blob, _ := json.MarshalIndent(settings["hooks"], "", "  ")
+		fmt.Fprintf(out, "[dry-run] would wire %d event(s), %d already present -> %s\n", added, skipped, path)
+		fmt.Fprintf(out, "%s\n", blob)
+		return nil
+	}
+	if err := writeSettings(path, settings); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "wired %d event(s), %d already present -> %s\n", added, skipped, path)
+	return nil
+}
+
+// chooseLocal decides whether to target the local settings file. --project and
+// --local are explicit; with neither, it prompts on out and reads p/l from in.
+// A non-interactive run (empty stdin) with no flag is an error rather than a
+// silent default.
+func chooseLocal(opts initOptions, in io.Reader, out io.Writer) (bool, error) {
+	if opts.local {
+		return true, nil
+	}
+	if opts.project {
+		return false, nil
+	}
+	fmt.Fprint(out, "Write clodhopper hooks to (p)roject .claude/settings.json or (l)ocal .claude/settings.local.json? [p/l] ")
+	line, err := bufio.NewReader(in).ReadString('\n')
+	resp := strings.ToLower(strings.TrimSpace(line))
+	if resp == "" && err != nil {
+		return false, fmt.Errorf("no --project/--local given and stdin is not interactive")
+	}
+	switch resp {
+	case "p", "project":
+		return false, nil
+	case "l", "local":
+		return true, nil
+	default:
+		return false, fmt.Errorf("unrecognized choice %q (want p or l)", resp)
+	}
 }

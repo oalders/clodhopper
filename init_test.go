@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -200,5 +204,80 @@ func TestResolveSourceApp_FromRepo(t *testing.T) {
 func TestResolveSourceApp_Error(t *testing.T) {
 	if _, err := resolveSourceApp("", "/nonexistent/path/xyzzy"); err == nil {
 		t.Error("want error when no flag and not a repo, got nil")
+	}
+}
+
+func TestDoInit_WritesProjectSettings(t *testing.T) {
+	dir := t.TempDir()
+	var out bytes.Buffer
+	opts := initOptions{dir: dir, project: true, sourceApp: "mmir", guard: "command"}
+	if err := doInit(opts, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := readSettings(settingsPath(dir, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks := settings["hooks"].(map[string]any)
+	if len(hooks) != 12 {
+		t.Fatalf("want 12 events, got %d", len(hooks))
+	}
+	g := hooks["PreToolUse"].([]any)[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
+	if !strings.Contains(g["command"].(string), "command -v clodhopper") {
+		t.Errorf("guard not applied: %v", g["command"])
+	}
+	if !strings.Contains(g["command"].(string), "--source-app mmir") {
+		t.Errorf("source-app not applied: %v", g["command"])
+	}
+	if !strings.Contains(out.String(), "wired 12 event(s)") {
+		t.Errorf("summary: %q", out.String())
+	}
+}
+
+func TestDoInit_DryRunWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	var out bytes.Buffer
+	opts := initOptions{dir: dir, project: true, sourceApp: "x", guard: "command", dryRun: true}
+	if err := doInit(opts, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(settingsPath(dir, false)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("dry-run wrote a file: %v", err)
+	}
+	if !strings.Contains(out.String(), "[dry-run]") {
+		t.Errorf("missing dry-run notice: %q", out.String())
+	}
+}
+
+func TestDoInit_BothFlagsError(t *testing.T) {
+	opts := initOptions{dir: t.TempDir(), project: true, local: true, sourceApp: "x", guard: "command"}
+	if err := doInit(opts, strings.NewReader(""), io.Discard); err == nil {
+		t.Error("want error for both --project and --local")
+	}
+}
+
+func TestDoInit_PromptLocal(t *testing.T) {
+	dir := t.TempDir()
+	var out bytes.Buffer
+	opts := initOptions{dir: dir, sourceApp: "x", guard: "command"}
+	if err := doInit(opts, strings.NewReader("l\n"), &out); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(settingsPath(dir, true)); err != nil {
+		t.Errorf("local settings not written: %v", err)
+	}
+}
+
+func TestDoInit_NonInteractiveNoFlagError(t *testing.T) {
+	opts := initOptions{dir: t.TempDir(), sourceApp: "x", guard: "command"}
+	if err := doInit(opts, strings.NewReader(""), io.Discard); err == nil {
+		t.Error("want error when no flag and empty stdin")
+	}
+}
+
+func TestDoInit_InvalidGuardError(t *testing.T) {
+	opts := initOptions{dir: t.TempDir(), project: true, sourceApp: "x", guard: "nope"}
+	if err := doInit(opts, strings.NewReader(""), io.Discard); err == nil {
+		t.Error("want error for invalid guard")
 	}
 }
