@@ -34,12 +34,14 @@ diagnostics to stderr and returns a non-zero exit code on error.
 | neither `--project` nor `--local` | Interactively prompt the user to choose project or local. |
 | both `--project` and `--local` | Error (mutually exclusive). |
 | `--source-app NAME` | Label passed to `clodhopper ingest --source-app`. Optional; derived when omitted (see "source-app derivation"). |
-| `--guard is` (default) | Guard prefix `is there clodhopper`. |
-| `--guard command` | Guard prefix `command -v clodhopper >/dev/null 2>&1`. |
+| `--guard command` (default) | Guard prefix `command -v clodhopper >/dev/null 2>&1`. |
+| `--guard is` | Guard prefix `is there clodhopper`. |
 | `--dry-run` | Compute and print the result (summary + resulting `hooks` block) but write nothing. |
 
-`--guard` accepts only `is` or `command`; any other value is an error. It defaults
-to `is`.
+`--guard` accepts only `command` or `is`; any other value is an error. It defaults
+to `command` — the portable POSIX form, safe for committed (`--project`) files and
+for teammates without the personal `is there` helper. Pass `--guard is` to use the
+`is there clodhopper` helper.
 
 ### Interactive prompt
 
@@ -77,19 +79,19 @@ SubagentStart, SubagentStop, PreCompact
 
 Where `<GUARD>` is:
 
-- `--guard is` (default): `is there clodhopper`
-- `--guard command`: `command -v clodhopper >/dev/null 2>&1`
+- `--guard command` (default): `command -v clodhopper >/dev/null 2>&1`
+- `--guard is`: `is there clodhopper`
 
 So the default command string is:
 
 ```
-is there clodhopper && clodhopper ingest --source-app NAME 2>/dev/null || true
-```
-
-and the `command` variant is:
-
-```
 command -v clodhopper >/dev/null 2>&1 && clodhopper ingest --source-app NAME 2>/dev/null || true
+```
+
+and the `is` variant is:
+
+```
+is there clodhopper && clodhopper ingest --source-app NAME 2>/dev/null || true
 ```
 
 `timeout: 5` and the matcher-less group shape match the user's reference diff. A
@@ -98,11 +100,12 @@ matcher-less group (no `"matcher"` key) is a match-all group; for tool events
 blanket observability. This is consistent across all 12 events, so the same group
 shape is used for each.
 
-> Note on guards: `is there clodhopper` depends on the user's personal `is there`
-> helper. That is fine for `--local`, but a `--project` file is committed and
-> teammates without that helper would see hook errors. `--guard command` exists
-> so the committed case can opt into the portable POSIX form. The default stays
-> `is` per the user's preference.
+> Note on guards: `command -v clodhopper >/dev/null 2>&1` is the portable POSIX
+> default and is safe in a committed (`--project`) file. `--guard is` switches to
+> `is there clodhopper`, which depends on the user's personal `is there` helper —
+> fine for `--local`, but a `--project` file is committed and teammates without
+> that helper would see hook errors. The default stays `command` so the common
+> committed case is correct without thought.
 
 ## source-app derivation
 
@@ -199,7 +202,7 @@ merge function so tests need none of them.
   file read/write, and the pure `mergeClodhopperHooks`.
 - `init_test.go` (new) — tests above.
 - `README.md` — make `clodhopper init` the **primary** path under "Wiring a
-  project"; demote the existing manual JSON block to "or, by hand". Note the
-  two differ slightly (the manual block uses the `command -v` guard with no
-  `timeout`; `init` defaults to the `is there` guard with `timeout: 5`) and that
-  `init`'s first run on a committed file reorders keys (preview with `--dry-run`).
+  project"; demote the existing manual JSON block to "or, by hand". Both now use
+  the same `command -v` guard; the manual block omits `timeout` whereas `init`
+  writes `timeout: 5`. Also note that `init`'s first run on a committed file
+  reorders keys (preview with `--dry-run`).
