@@ -258,11 +258,14 @@ func deriveStatus(lastEvent string) (label string, rank int, active bool) {
 	}
 }
 
-// agentRoster folds the events from the last window into one row per session,
-// reflecting each agent's current state. now is passed in (not read from the
-// clock) so the result is deterministic under test.
-func agentRoster(db *sql.DB, window time.Duration, now time.Time) ([]Agent, error) {
-	since := now.Add(-window).UTC().Format(time.RFC3339)
+// agentRoster folds recent events into one row per session, reflecting each
+// agent's current state. It applies two windows: a "working" session is live
+// only within liveWindow (a silent worker is stale and drops off), while a
+// session waiting on you (waiting / needs-you / needs-approval) is retained out
+// to waitingCap — so it survives a lunch or overnight gap and only leaves on a
+// SessionEnd. now is injected so the result is deterministic under test.
+func agentRoster(db *sql.DB, liveWindow, waitingCap time.Duration, now time.Time) ([]Agent, error) {
+	since := now.Add(-waitingCap).UTC().Format(time.RFC3339)
 	rows, err := db.Query(
 		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(cwd,''), COALESCE(session_id,''),
 		        event_type, COALESCE(tool_name,''), COALESCE(summary,'')
@@ -312,17 +315,25 @@ func agentRoster(db *sql.DB, window time.Duration, now time.Time) ([]Agent, erro
 		if !active {
 			continue
 		}
+		idleSecs := idleSeconds(s.lastTS, now)
+		// A "working" agent is live only within the short window; once it goes
+		// quiet it is stale and drops off. Needs-me statuses persist out to
+		// waitingCap (already bounded by the query window above), so an agent
+		// genuinely waiting on you is not lost when you step away.
+		if label == statusWorking && time.Duration(idleSecs)*time.Second > liveWindow {
+			continue
+		}
 		a := s.a
 		a.Status, a.StatusRank = label, rank
 		if a.Doing == "" {
 			a.Doing = s.lastTool // fall back to the latest tool when no skill seen
 		}
-		a.IdleSecs = idleSeconds(s.lastTS, now)
-		a.Idle = humanizeSeconds(a.IdleSecs)
+		a.IdleSecs = idleSecs
+		a.Idle = humanizeSeconds(idleSecs)
 		// Absolute last-event time (derived from now − idle so it stays consistent
 		// with IdleSecs); the dashboard's JS reads it from data-since to advance the
 		// idle column locally, without a server round-trip.
-		a.IdleSince = now.Unix() - int64(a.IdleSecs)
+		a.IdleSince = now.Unix() - int64(idleSecs)
 		out = append(out, a)
 	}
 	// Most urgent first (waiting/needs-you), then longest-idle within a rank.

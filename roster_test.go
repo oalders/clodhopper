@@ -69,7 +69,7 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	// ended: should be excluded.
 	ins(at(3), "s-done", "fix-1111", "SessionEnd", "", "SessionEnd")
 
-	agents, err := agentRoster(db, 30*time.Minute, now)
+	agents, err := agentRoster(db, 30*time.Minute, 16*time.Hour, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,5 +179,37 @@ func TestShortID(t *testing.T) {
 	}
 	if got := shortID("short"); got != "short" {
 		t.Errorf("shortID passthrough = %q, want short", got)
+	}
+}
+
+func TestAgentRoster_StatusAwareRetention(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, sess, branch, etype, tool, summary string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: branch, SessionID: sess, EventType: etype, ToolName: tool, Summary: summary, PayloadJSON: "{}"})
+	}
+
+	// Waiting 90m ago: past the 30m live window but within the 2h cap -> stays.
+	ins(at(90), "s-wait", "b1", "Stop", "", "Stop")
+	// Working 45m ago: a silent worker is stale -> drops at the live window.
+	ins(at(45), "s-work", "b2", "PreToolUse", "Bash", "Bash: go test")
+	// Waiting 200m ago: beyond the 2h cap -> not even fetched -> drops.
+	ins(at(200), "s-old", "b3", "Stop", "", "Stop")
+
+	agents, err := agentRoster(db, 30*time.Minute, 2*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("want only the in-cap waiting agent, got %d: %+v", len(agents), agents)
+	}
+	if agents[0].SessionID != "s-wait" || agents[0].Status != statusWaiting {
+		t.Errorf("expected s-wait/waiting to survive, got %+v", agents[0])
 	}
 }
