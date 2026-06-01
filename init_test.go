@@ -27,3 +27,68 @@ func TestIngestCommand(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+func TestMergeClodhopperHooks_Empty(t *testing.T) {
+	settings := map[string]any{}
+	added, skipped, err := mergeClodhopperHooks(settings, testCmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added != 12 || skipped != 0 {
+		t.Fatalf("added=%d skipped=%d, want 12/0", added, skipped)
+	}
+	hooks := settings["hooks"].(map[string]any)
+	for _, ev := range clodhopperEvents {
+		groups, ok := hooks[ev].([]any)
+		if !ok || len(groups) != 1 {
+			t.Fatalf("%s: not wired (%v)", ev, hooks[ev])
+		}
+	}
+}
+
+func TestMergeClodhopperHooks_PreservesForeign(t *testing.T) {
+	foreign := map[string]any{"hooks": []any{map[string]any{"type": "command", "command": "echo hi"}}}
+	settings := map[string]any{"hooks": map[string]any{"PreToolUse": []any{foreign}}}
+	added, _, err := mergeClodhopperHooks(settings, testCmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups := settings["hooks"].(map[string]any)["PreToolUse"].([]any)
+	if len(groups) != 2 {
+		t.Fatalf("PreToolUse groups = %d, want 2 (foreign + clodhopper)", len(groups))
+	}
+	if added != 12 {
+		t.Fatalf("added=%d, want 12 (foreign hook is not clodhopper)", added)
+	}
+}
+
+func TestMergeClodhopperHooks_Idempotent(t *testing.T) {
+	settings := map[string]any{}
+	if _, _, err := mergeClodhopperHooks(settings, testCmd); err != nil {
+		t.Fatal(err)
+	}
+	added, skipped, err := mergeClodhopperHooks(settings, testCmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added != 0 || skipped != 12 {
+		t.Fatalf("second pass added=%d skipped=%d, want 0/12", added, skipped)
+	}
+}
+
+func TestMergeClodhopperHooks_WrongEventType(t *testing.T) {
+	settings := map[string]any{"hooks": map[string]any{"PreToolUse": "garbage"}}
+	if _, _, err := mergeClodhopperHooks(settings, testCmd); err == nil {
+		t.Error("want error for wrong-typed event value, got nil")
+	}
+	if settings["hooks"].(map[string]any)["PreToolUse"] != "garbage" {
+		t.Error("settings mutated despite error")
+	}
+}
+
+func TestMergeClodhopperHooks_WrongHooksType(t *testing.T) {
+	settings := map[string]any{"hooks": "garbage"}
+	if _, _, err := mergeClodhopperHooks(settings, testCmd); err == nil {
+		t.Error("want error for non-object hooks, got nil")
+	}
+}
