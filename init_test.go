@@ -294,3 +294,13 @@ func TestRun_InitInvalidGuardExitsNonZero(t *testing.T) {
 		t.Error("want non-zero exit for invalid --guard")
 	}
 }
+
+func TestRun_InitDispatchesToRunInit(t *testing.T) {
+	// A success (exit 0) path is unreachable via run()'s unknown-command default
+	// (which returns 2), so this proves "init" actually dispatches to runInit.
+	// --dry-run writes nothing; --project + --source-app need no prompt or git.
+	t.Chdir(t.TempDir())
+	if code := run([]string{"init", "--project", "--source-app", "demo", "--dry-run"}); code != 0 {
+		t.Errorf("run init --dry-run = %d, want 0", code)
+	}
+}
