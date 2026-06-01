@@ -281,3 +281,16 @@ func TestDoInit_InvalidGuardError(t *testing.T) {
 		t.Error("want error for invalid guard")
 	}
 }
+
+func TestRun_InitBothFlagsExitsNonZero(t *testing.T) {
+	// Both flags fail in doInit before any I/O, so this is safe regardless of cwd.
+	if code := run([]string{"init", "--project", "--local", "--source-app", "x"}); code == 0 {
+		t.Error("want non-zero exit for --project --local")
+	}
+}
+
+func TestRun_InitInvalidGuardExitsNonZero(t *testing.T) {
+	if code := run([]string{"init", "--project", "--source-app", "x", "--guard", "nope"}); code == 0 {
+		t.Error("want non-zero exit for invalid --guard")
+	}
+}

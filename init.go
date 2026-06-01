@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -283,4 +284,37 @@ func chooseLocal(opts initOptions, in io.Reader, out io.Writer) (bool, error) {
 	default:
 		return false, fmt.Errorf("unrecognized choice %q (want p or l)", resp)
 	}
+}
+
+// runInit parses init's flags, resolves the working directory, and runs doInit
+// against the real stdin/stdout. Unlike ingest, init reports errors and returns
+// a non-zero exit code.
+func runInit(args []string) int {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	project := fs.Bool("project", false, "write .claude/settings.json (committed/shared)")
+	local := fs.Bool("local", false, "write .claude/settings.local.json (gitignored)")
+	sourceApp := fs.String("source-app", "", "source label (default: git repo name)")
+	guard := fs.String("guard", "command", `binary guard: "command" (portable, default) or "is" (is there helper)`)
+	dryRun := fs.Bool("dry-run", false, "print the result without writing")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	dir, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "clodhopper init:", err)
+		return 1
+	}
+	opts := initOptions{
+		dir:       dir,
+		project:   *project,
+		local:     *local,
+		sourceApp: *sourceApp,
+		guard:     *guard,
+		dryRun:    *dryRun,
+	}
+	if err := doInit(opts, os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintln(os.Stderr, "clodhopper init:", err)
+		return 1
+	}
+	return 0
 }
