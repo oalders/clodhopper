@@ -16,6 +16,10 @@
        layout does not reflow (and visibly "flash") when a section is swapped in
        with different-length content. */
     table { border-collapse: collapse; width: 100%; table-layout: fixed; margin-bottom: .5rem; }
+    /* The activity counts table holds only short values; let it size to its
+       columns. Otherwise width:100% + fixed layout hands all leftover width to
+       the one unconstrained column, stretching it blank across the screen. */
+    table.counts { width: auto; }
     th, td { text-align: left; padding: .2rem .5rem; border-bottom: 1px solid #ddd; vertical-align: top; overflow: hidden; text-overflow: ellipsis; }
     th { position: sticky; top: 0; background: Canvas; }
     td.time, td.branch, td.tool, td.idle, td.sess { white-space: nowrap; }
@@ -147,9 +151,9 @@
 
   {{ if .Activity }}
   <h2>Activity (last 30 min)</h2>
-  <table>
+  <table class="counts">
     <colgroup>
-      <col style="width: 16ch"><col style="width: 9ch"><col>
+      <col style="width: 24ch"><col style="width: 12ch"><col style="width: 9ch">
     </colgroup>
     <thead>
       <tr><th>branch</th><th>app</th><th>events</th></tr>
