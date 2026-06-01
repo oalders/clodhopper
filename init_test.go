@@ -182,6 +182,28 @@ func TestWriteReadSettings_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestWriteSettings_NoHTMLEscaping(t *testing.T) {
+	p := filepath.Join(t.TempDir(), ".claude", "settings.json")
+	settings := map[string]any{}
+	if _, _, err := mergeClodhopperHooks(settings, testCmd); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeSettings(p, settings); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	if strings.Contains(s, `\u003e`) || strings.Contains(s, `\u0026`) {
+		t.Errorf("settings.json contains HTML-escaped metacharacters:\n%s", s)
+	}
+	if !strings.Contains(s, ">/dev/null") || !strings.Contains(s, "&& clodhopper ingest") {
+		t.Errorf("settings.json does not contain clean shell command:\n%s", s)
+	}
+}
+
 func TestResolveSourceApp_Explicit(t *testing.T) {
 	got, err := resolveSourceApp("mmir", "/nonexistent")
 	if err != nil || got != "mmir" {

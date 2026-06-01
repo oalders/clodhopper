@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -178,17 +179,30 @@ func readSettings(path string) (map[string]any, error) {
 	return settings, nil
 }
 
+// marshalIndentNoEscape renders v as 2-space-indented JSON without HTML-escaping,
+// so shell metacharacters (>, &) in hook commands stay human-readable in the
+// settings file. encoding/json escapes them by default; we don't want that here.
+func marshalIndentNoEscape(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
 // writeSettings writes settings to path as 2-space-indented JSON, creating the
 // parent .claude/ directory if needed.
 func writeSettings(path string, settings map[string]any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	out, err := json.MarshalIndent(settings, "", "  ")
+	out, err := marshalIndentNoEscape(settings)
 	if err != nil {
 		return err
 	}
-	out = append(out, '\n')
 	return os.WriteFile(path, out, 0o644)
 }
 
@@ -247,9 +261,9 @@ func doInit(opts initOptions, in io.Reader, out io.Writer) error {
 	}
 
 	if opts.dryRun {
-		blob, _ := json.MarshalIndent(settings["hooks"], "", "  ")
+		blob, _ := marshalIndentNoEscape(settings["hooks"])
 		fmt.Fprintf(out, "[dry-run] would wire %d event(s), %d already present -> %s\n", added, skipped, path)
-		fmt.Fprintf(out, "%s\n", blob)
+		fmt.Fprintf(out, "%s", blob)
 		return nil
 	}
 	if err := writeSettings(path, settings); err != nil {
