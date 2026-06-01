@@ -94,6 +94,27 @@
   <div class="empty">No live agents in the last 30 min. (Detecting "waiting for you" needs the <code>Stop</code> and <code>Notification</code> hooks wired in <code>.claude/settings.json</code>.)</div>
   {{ end }}
 
+  {{ if .Activity }}
+  <h2>Activity (last 30 min)</h2>
+  <table>
+    <colgroup>
+      <col style="width: 16ch"><col style="width: 9ch"><col>
+    </colgroup>
+    <thead>
+      <tr><th>branch</th><th>app</th><th>events</th></tr>
+    </thead>
+    <tbody>
+      {{ range .Activity }}
+      <tr>
+        <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
+        <td>{{ .SourceApp }}</td>
+        <td>{{ .Count }}</td>
+      </tr>
+      {{ end }}
+    </tbody>
+  </table>
+  {{ end }}
+
   <h2>Recent events</h2>
   {{ if .Events }}
   <table>

@@ -10,7 +10,9 @@ import (
 	"html/template"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strconv"
 	"sync"
@@ -49,6 +51,7 @@ func shortTS(ts string) string {
 // dashboardData is the view model rendered by the dashboard template.
 type dashboardData struct {
 	Agents         []Agent
+	Activity       []SourceCount
 	Events         []Event
 	SourceApps     []string
 	Branches       []string
@@ -81,7 +84,7 @@ var refreshPresets = []int{0, 2, 5, 10, 30, 60}
 // even if it is not one of the presets (e.g. set via CLODHOPPER_REFRESH_SECS).
 func refreshOptions(current int) []refreshOption {
 	secs := append([]int(nil), refreshPresets...)
-	if !containsInt(secs, current) {
+	if !slices.Contains(secs, current) {
 		secs = append(secs, current)
 		sort.Ints(secs)
 	}
@@ -94,15 +97,6 @@ func refreshOptions(current int) []refreshOption {
 		out = append(out, refreshOption{Secs: s, Label: label, Selected: s == current})
 	}
 	return out
-}
-
-func containsInt(xs []int, v int) bool {
-	for _, x := range xs {
-		if x == v {
-			return true
-		}
-	}
-	return false
 }
 
 // runServe starts the read-only dashboard HTTP server. It binds 127.0.0.1 by
@@ -119,7 +113,7 @@ func runServe(args []string) int {
 
 	db, err := openDB(defaultDBPath())
 	if err != nil {
-		fmt.Println("clodhopper serve: open db:", err)
+		fmt.Fprintln(os.Stderr, "clodhopper serve: open db:", err)
 		return 1
 	}
 	defer db.Close()
@@ -139,8 +133,20 @@ func runServe(args []string) int {
 		fmt.Printf("clodhopper: WARNING binding %s — dashboard is reachable beyond loopback\n", addr)
 	}
 	fmt.Printf("clodhopper dashboard: http://%s  (db: %s)\n", addr, defaultDBPath())
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		fmt.Println("clodhopper serve:", err)
+	// A configured server (not http.ListenAndServe's zero-timeout default) bounds
+	// header/idle time so a slow or stalled client cannot tie up the dashboard —
+	// it matters because --host 0.0.0.0 deliberately exposes this beyond loopback.
+	// WriteTimeout is left unset: a cold render can fan out several multi-second
+	// `gh` CI lookups, and cutting that off mid-response would corrupt the page.
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	if err := srv.ListenAndServe(); err != nil {
+		fmt.Fprintln(os.Stderr, "clodhopper serve:", err)
 		return 1
 	}
 	return 0
@@ -252,6 +258,12 @@ func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciC
 	}
 	enrichCI(agents, ci, now)
 
+	activity, err := activeCounts(db, agentWindow, now)
+	if err != nil {
+		http.Error(w, "activity error", http.StatusInternalServerError)
+		return
+	}
+
 	events, err := queryEvents(db, EventFilter{SourceApp: source, Branch: branch, EventType: etype, Limit: 300})
 	if err != nil {
 		http.Error(w, "query error", http.StatusInternalServerError)
@@ -262,6 +274,7 @@ func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciC
 
 	data := dashboardData{
 		Agents:         agents,
+		Activity:       activity,
 		Events:         events,
 		SourceApps:     apps,
 		Branches:       branches,
