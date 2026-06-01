@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -61,6 +62,66 @@ func TestHandleDashboard_RendersActivity(t *testing.T) {
 	body := getBody(t, db, "/")
 	if !strings.Contains(body, "Activity (last 30 min)") {
 		t.Errorf("activity section missing:\n%s", body)
+	}
+}
+
+func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "PreToolUse", ToolName: "Bash", Summary: "Bash: git status", PayloadJSON: "{}"})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	rec := httptest.NewRecorder()
+	handleState(rec, req, db, newCICache())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	var resp struct {
+		Signature string `json:"signature"`
+		HTML      string `json:"html"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v\nbody: %s", err, rec.Body.String())
+	}
+	if resp.Signature == "" {
+		t.Error("empty signature")
+	}
+	if !strings.Contains(resp.HTML, "Bash: git status") {
+		t.Errorf("fragment missing event:\n%s", resp.HTML)
+	}
+	// The fragment is the dynamic region only — no surrounding page chrome.
+	if strings.Contains(resp.HTML, "<form") || strings.Contains(resp.HTML, "<script") {
+		t.Errorf("fragment leaked page chrome:\n%s", resp.HTML)
+	}
+}
+
+func TestViewSignature_IgnoresIdleButTracksEvents(t *testing.T) {
+	base := dashboardData{
+		Events:   []Event{{ID: 2}, {ID: 1}},
+		Agents:   []Agent{{SessionID: "s1", Status: statusWorking, IdleSecs: 10, IdleSince: 100}},
+		Activity: []SourceCount{{SourceApp: "myapp", Count: 2}},
+	}
+
+	// Only idle advanced (more seconds, earlier IdleSince) — signature must hold.
+	idled := base
+	idled.Agents = []Agent{{SessionID: "s1", Status: statusWorking, IdleSecs: 999, IdleSince: 1}}
+	if viewSignature(base) != viewSignature(idled) {
+		t.Error("signature changed on idle-only difference")
+	}
+
+	// A genuinely new event must move the signature.
+	newEvent := base
+	newEvent.Events = []Event{{ID: 3}, {ID: 2}, {ID: 1}}
+	if viewSignature(base) == viewSignature(newEvent) {
+		t.Error("signature unchanged after a new event")
+	}
+
+	// A status flip (e.g. agent went to "waiting for you") must move it too.
+	flipped := base
+	flipped.Agents = []Agent{{SessionID: "s1", Status: statusWaiting, IdleSecs: 10, IdleSince: 100}}
+	if viewSignature(base) == viewSignature(flipped) {
+		t.Error("signature unchanged after a status change")
 	}
 }
 

@@ -3,7 +3,6 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  {{ if .RefreshSecs }}<meta http-equiv="refresh" content="{{ .RefreshSecs }}">{{ end }}
   <title>clodhopper dashboard</title>
   <style>
     :root { color-scheme: light dark; }
@@ -14,7 +13,7 @@
     form { margin-bottom: 1rem; }
     .controls label { margin-left: .6rem; }
     /* table-layout: fixed + an explicit colgroup pin every column width so the
-       layout does not reflow (and visibly "flash") when the page meta-refreshes
+       layout does not reflow (and visibly "flash") when a section is swapped in
        with different-length content. */
     table { border-collapse: collapse; width: 100%; table-layout: fixed; margin-bottom: .5rem; }
     th, td { text-align: left; padding: .2rem .5rem; border-bottom: 1px solid #ddd; vertical-align: top; overflow: hidden; text-overflow: ellipsis; }
@@ -33,12 +32,8 @@
     .ci.none { color: #aaa; }
   </style>
 </head>
-<body>
+<body data-refresh="{{ .RefreshSecs }}" data-signature="{{ .Signature }}">
   <h1>clodhopper dashboard</h1>
-  <div class="meta">
-    rendered {{ .Generated }} ·
-    {{ if .RefreshSecs }}auto-refresh every {{ .RefreshSecs }}s{{ else }}auto-refresh off{{ end }}
-  </div>
 
   <form method="get" class="controls">
     <label for="source_app">source_app</label>
@@ -66,6 +61,62 @@
     </select>
   </form>
 
+  <div id="content">{{ template "content" . }}</div>
+
+  <script>
+  // The dashboard no longer hard-reloads. It polls /api/state on the auto-refresh
+  // interval and swaps #content ONLY when the server's view signature changes, so
+  // a quiet board never repaints (and never tugs at your eye). The signature
+  // deliberately ignores idle timers, which we instead tick locally in place.
+  (function () {
+    var sig = document.body.dataset.signature;
+    var refresh = parseInt(document.body.dataset.refresh, 10) || 0;
+
+    function fmtIdle(s) {
+      if (s < 60) return s + 's';
+      if (s < 3600) return Math.floor(s / 60) + 'm';
+      return Math.floor(s / 3600) + 'h';
+    }
+
+    // Recompute each idle cell from its absolute last-event time. This only
+    // rewrites a single fixed-width cell's text — no reflow, no flash.
+    function tickIdle() {
+      var now = Date.now() / 1000;
+      var cells = document.querySelectorAll('#content [data-since]');
+      for (var i = 0; i < cells.length; i++) {
+        var since = parseFloat(cells[i].getAttribute('data-since'));
+        if (!isNaN(since)) cells[i].textContent = fmtIdle(Math.max(0, Math.floor(now - since)));
+      }
+    }
+
+    if (refresh > 0) {
+      // Idle is shown in minutes once past 60s, so a 30s cadence keeps the
+      // displayed value within ~30s of true without per-second churn.
+      setInterval(tickIdle, 30000);
+      setInterval(function () {
+        fetch('/api/state' + location.search, { headers: { 'Accept': 'application/json' } })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d.signature !== sig) {
+              sig = d.signature;
+              document.getElementById('content').innerHTML = d.html;
+              tickIdle();
+            }
+          })
+          .catch(function () {}); // best-effort, like everything else here
+      }, refresh * 1000);
+    }
+  })();
+  </script>
+</body>
+</html>
+
+{{ define "content" }}
+  <div class="meta">
+    last change {{ .Generated }}
+    {{ if .RefreshSecs }}· live (checks every {{ .RefreshSecs }}s){{ else }}· auto-refresh off{{ end }}
+  </div>
+
   <h2>Agents (live, last 30 min)</h2>
   {{ if .Agents }}
   <table>
@@ -84,7 +135,7 @@
         <td class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs you" }}needs{{ end }}">{{ .Status }}</td>
         <td class="summary">{{ if .Doing }}{{ .Doing }}{{ else }}—{{ end }}</td>
         <td class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if .CI }}{{ .CI }}{{ else }}—{{ end }}</td>
-        <td class="idle">{{ .Idle }}</td>
+        <td class="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
         <td class="sess">{{ short .SessionID }}</td>
       </tr>
       {{ end }}
@@ -119,7 +170,7 @@
   {{ if .Events }}
   <table>
     <colgroup>
-      <col style="width: 16ch"><col style="width: 9ch"><col style="width: 16ch">
+      <col style="width: 15ch"><col style="width: 14ch"><col style="width: 16ch">
       <col style="width: 15ch"><col style="width: 8ch"><col>
     </colgroup>
     <thead>
@@ -128,7 +179,7 @@
     <tbody>
       {{ range .Events }}
       <tr>
-        <td class="time">{{ shortTS .TS }}</td>
+        <td class="time">{{ shortTS .TS $.Now }}</td>
         <td>{{ .SourceApp }}</td>
         <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
         <td class="type">{{ .EventType }}</td>
@@ -141,5 +192,4 @@
   {{ else }}
   <div class="empty">No events match. Is <code>clodhopper</code> on PATH, are the hooks wired in <code>.claude/settings.json</code>, and is a session active? (Capture is off when <code>CLODHOPPER_DISABLED=1</code>.)</div>
   {{ end }}
-</body>
-</html>
+{{ end }}

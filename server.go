@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	_ "embed"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"hash/fnv"
 	"html/template"
 	"net"
 	"net/http"
@@ -37,15 +39,21 @@ func shortID(s string) string {
 	return s[:8]
 }
 
-// shortTS drops the year (and the RFC3339 T/Z) from a stored timestamp so the
-// rows are scannable — events are nearly always same-day, making the "2026-"
-// prefix pure noise. Falls back to the raw value if it does not parse.
-func shortTS(ts string) string {
+// shortTS renders a stored timestamp for the events table. It drops the year and
+// the RFC3339 T/Z, and omits the month-day for same-day events (the common case),
+// which only need a wall-clock time; older rows keep "MM-DD" so they are not
+// mistaken for today. now is injected (not read from the clock) so the output
+// stays deterministic under test. Falls back to the raw value if it does not parse.
+func shortTS(ts string, now time.Time) string {
 	t, err := time.Parse(time.RFC3339, ts)
 	if err != nil {
 		return ts
 	}
-	return t.Format("01-02 15:04:05")
+	tu, nu := t.UTC(), now.UTC()
+	if tu.Year() == nu.Year() && tu.YearDay() == nu.YearDay() {
+		return tu.Format("15:04:05")
+	}
+	return tu.Format("01-02 15:04:05")
 }
 
 // dashboardData is the view model rendered by the dashboard template.
@@ -61,6 +69,8 @@ type dashboardData struct {
 	RefreshSecs    int // 0 = auto-refresh disabled
 	RefreshOptions []refreshOption
 	Generated      string
+	Now            time.Time // render time, passed to shortTS so it can hide same-day dates
+	Signature      string    // fingerprint of the report-worthy view; see viewSignature
 }
 
 // refreshOption is one entry in the auto-refresh interval dropdown.
@@ -126,6 +136,11 @@ func runServe(args []string) int {
 			return
 		}
 		handleDashboard(w, r, db, ci)
+	})
+	// JSON polling endpoint: the dashboard's JS hits this on the refresh interval
+	// and re-renders only when the returned signature changes.
+	mux.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
+		handleState(w, r, db, ci)
 	})
 
 	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
@@ -238,6 +253,42 @@ func summarizeChecks(buckets []string) string {
 }
 
 func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache) {
+	data, err := buildDashboardData(r, db, ci)
+	if err != nil {
+		http.Error(w, "dashboard error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := dashboardTmpl.Execute(w, data); err != nil {
+		http.Error(w, "render error", http.StatusInternalServerError)
+	}
+}
+
+// handleState serves the dashboard's dynamic region as JSON for the JS poller:
+// {"signature": ..., "html": ...}. The client compares the signature to what it
+// last rendered and only swaps the DOM when it differs, so a quiet board never
+// repaints.
+func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache) {
+	data, err := buildDashboardData(r, db, ci)
+	if err != nil {
+		http.Error(w, "dashboard error", http.StatusInternalServerError)
+		return
+	}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", data); err != nil {
+		http.Error(w, "render error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"signature": data.Signature,
+		"html":      buf.String(),
+	})
+}
+
+// buildDashboardData assembles the view model shared by the full page and the
+// JSON poll endpoint, including its signature.
+func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache) (dashboardData, error) {
 	q := r.URL.Query()
 	source := q.Get("source_app")
 	branch := q.Get("branch")
@@ -253,21 +304,18 @@ func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciC
 	now := time.Now()
 	agents, err := agentRoster(db, agentWindow, now)
 	if err != nil {
-		http.Error(w, "roster error", http.StatusInternalServerError)
-		return
+		return dashboardData{}, fmt.Errorf("roster: %w", err)
 	}
 	enrichCI(agents, ci, now)
 
 	activity, err := activeCounts(db, agentWindow, now)
 	if err != nil {
-		http.Error(w, "activity error", http.StatusInternalServerError)
-		return
+		return dashboardData{}, fmt.Errorf("activity: %w", err)
 	}
 
 	events, err := queryEvents(db, EventFilter{SourceApp: source, Branch: branch, EventType: etype, Limit: 300})
 	if err != nil {
-		http.Error(w, "query error", http.StatusInternalServerError)
-		return
+		return dashboardData{}, fmt.Errorf("events: %w", err)
 	}
 	apps, _ := distinctSourceApps(db)
 	branches, _ := distinctBranches(db)
@@ -284,11 +332,46 @@ func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciC
 		RefreshSecs:    refresh,
 		RefreshOptions: refreshOptions(refresh),
 		Generated:      now.Format("15:04:05"),
+		Now:            now,
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := dashboardTmpl.Execute(w, data); err != nil {
-		http.Error(w, "render error", http.StatusInternalServerError)
+	data.Signature = viewSignature(data)
+	return data, nil
+}
+
+// viewSignature fingerprints only the *report-worthy* parts of the view: the
+// event list, each agent's status/doing/CI, and the activity tallies. It
+// deliberately omits cosmetic, purely time-derived values — the "updated" clock,
+// idle counters, and the idle-based row ordering — so the dashboard's poller
+// redraws when something actually happened, not merely because time passed.
+// Components are folded in a stable, idle-independent order for the same reason.
+func viewSignature(d dashboardData) string {
+	h := fnv.New64a()
+
+	// Events are append-only and immutable, so count plus the id bounds detect any
+	// insert or prune without hashing every row.
+	fmt.Fprintf(h, "e:%d", len(d.Events))
+	if len(d.Events) > 0 {
+		fmt.Fprintf(h, ":%d:%d", d.Events[0].ID, d.Events[len(d.Events)-1].ID)
 	}
+
+	agents := append([]Agent(nil), d.Agents...)
+	sort.Slice(agents, func(i, j int) bool { return agents[i].SessionID < agents[j].SessionID })
+	for _, a := range agents {
+		fmt.Fprintf(h, "|a:%s:%s:%s:%s:%s:%s", a.SessionID, a.SourceApp, a.Branch, a.Status, a.Doing, a.CI)
+	}
+
+	activity := append([]SourceCount(nil), d.Activity...)
+	sort.Slice(activity, func(i, j int) bool {
+		if activity[i].SourceApp != activity[j].SourceApp {
+			return activity[i].SourceApp < activity[j].SourceApp
+		}
+		return activity[i].Branch < activity[j].Branch
+	})
+	for _, c := range activity {
+		fmt.Fprintf(h, "|c:%s:%s:%d", c.SourceApp, c.Branch, c.Count)
+	}
+
+	return strconv.FormatUint(h.Sum64(), 16)
 }
 
 // enrichCI fills each agent's CI field, fetching distinct cwds concurrently so a
