@@ -34,8 +34,8 @@ func TestMergeClodhopperHooks_Empty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if added != 12 || skipped != 0 {
-		t.Fatalf("added=%d skipped=%d, want 12/0", added, skipped)
+	if added != len(clodhopperEvents) || skipped != 0 {
+		t.Fatalf("added=%d skipped=%d, want %d/0", added, skipped, len(clodhopperEvents))
 	}
 	hooks := settings["hooks"].(map[string]any)
 	for _, ev := range clodhopperEvents {
@@ -57,8 +57,8 @@ func TestMergeClodhopperHooks_PreservesForeign(t *testing.T) {
 	if len(groups) != 2 {
 		t.Fatalf("PreToolUse groups = %d, want 2 (foreign + clodhopper)", len(groups))
 	}
-	if added != 12 {
-		t.Fatalf("added=%d, want 12 (foreign hook is not clodhopper)", added)
+	if added != len(clodhopperEvents) {
+		t.Fatalf("added=%d, want %d (foreign hook is not clodhopper)", added, len(clodhopperEvents))
 	}
 }
 
@@ -71,8 +71,8 @@ func TestMergeClodhopperHooks_Idempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if added != 0 || skipped != 12 {
-		t.Fatalf("second pass added=%d skipped=%d, want 0/12", added, skipped)
+	if added != 0 || skipped != len(clodhopperEvents) {
+		t.Fatalf("second pass added=%d skipped=%d, want 0/%d", added, skipped, len(clodhopperEvents))
 	}
 }
 
@@ -84,11 +84,17 @@ func TestMergeClodhopperHooks_WrongEventType(t *testing.T) {
 	if settings["hooks"].(map[string]any)["PreToolUse"] != "garbage" {
 		t.Error("settings mutated despite error")
 	}
+	if settings["hooks"].(map[string]any)["SessionStart"] != nil {
+		t.Error("preceding event was mutated despite error")
+	}
 }
 
 func TestMergeClodhopperHooks_WrongHooksType(t *testing.T) {
 	settings := map[string]any{"hooks": "garbage"}
 	if _, _, err := mergeClodhopperHooks(settings, testCmd); err == nil {
 		t.Error("want error for non-object hooks, got nil")
+	}
+	if settings["hooks"] != "garbage" {
+		t.Error("settings mutated despite error")
 	}
 }
