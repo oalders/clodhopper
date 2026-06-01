@@ -75,7 +75,8 @@ var sessPalette = []string{
 // sessColor maps a session id to a stable palette color via FNV-1a, so the same
 // session renders the same color in both the roster and the Recent events table
 // without any server-side coordination, and the color survives auto-refresh.
-// Collisions on ~8 colors are possible but the short id text disambiguates.
+// With only ~8 colors two concurrent sessions can easily share one, so the
+// short id shown beside the chip — not the color — is the real identifier.
 // An empty id yields "" so callers can skip the chip/tint entirely.
 func sessColor(s string) string {
 	if s == "" {
