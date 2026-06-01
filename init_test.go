@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -117,5 +118,48 @@ func TestGitRepoName_EmptyAndNonRepo(t *testing.T) {
 	}
 	if got := gitRepoName("/nonexistent/path/xyzzy"); got != "" {
 		t.Errorf("nonexistent: want \"\", got %q", got)
+	}
+}
+
+func TestSettingsPath(t *testing.T) {
+	if got := settingsPath("/x", false); got != "/x/.claude/settings.json" {
+		t.Errorf("project: %q", got)
+	}
+	if got := settingsPath("/x", true); got != "/x/.claude/settings.local.json" {
+		t.Errorf("local: %q", got)
+	}
+}
+
+func TestReadSettings_Missing(t *testing.T) {
+	got, err := readSettings(filepath.Join(t.TempDir(), "nope.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Errorf("want empty, got %v", got)
+	}
+}
+
+func TestReadSettings_Invalid(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "s.json")
+	if err := os.WriteFile(p, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readSettings(p); err == nil {
+		t.Error("want error for invalid JSON, got nil")
+	}
+}
+
+func TestWriteReadSettings_RoundTrip(t *testing.T) {
+	p := filepath.Join(t.TempDir(), ".claude", "settings.json")
+	if err := writeSettings(p, map[string]any{"model": "opus"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readSettings(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["model"] != "opus" {
+		t.Errorf("round-trip lost data: %v", got)
 	}
 }

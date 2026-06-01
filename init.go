@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -140,4 +143,48 @@ func hasClodhopperHook(groups []any) bool {
 		}
 	}
 	return false
+}
+
+// settingsPath returns the project or local settings file under dir's .claude/.
+func settingsPath(dir string, local bool) string {
+	name := "settings.json"
+	if local {
+		name = "settings.local.json"
+	}
+	return filepath.Join(dir, ".claude", name)
+}
+
+// readSettings loads and parses the settings file at path. A missing or empty
+// file yields an empty settings object (not an error). A present but malformed
+// file is an error — we must never clobber it.
+func readSettings(path string) (map[string]any, error) {
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]any{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if len(strings.TrimSpace(string(raw))) == 0 {
+		return map[string]any{}, nil
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return nil, fmt.Errorf("%s is not valid JSON: %w", path, err)
+	}
+	return settings, nil
+}
+
+// writeSettings writes settings to path as 2-space-indented JSON, creating the
+// parent .claude/ directory if needed.
+func writeSettings(path string, settings map[string]any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	out, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	out = append(out, '\n')
+	return os.WriteFile(path, out, 0o644)
 }
