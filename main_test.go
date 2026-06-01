@@ -32,3 +32,24 @@ func TestRun_VersionFlagExitsZero(t *testing.T) {
 		}
 	}
 }
+
+func TestRun_EndRequiresSelector(t *testing.T) {
+	// No selector must fail fast (exit 2) before touching the database.
+	if code := run([]string{"end"}); code != 2 {
+		t.Errorf("run(end) with no selector = %d, want 2", code)
+	}
+}
+
+func TestWaitingRetainHours_DefaultAndOverride(t *testing.T) {
+	if got := waitingRetainHours(); got != 16 {
+		t.Errorf("default waitingRetainHours() = %d, want 16", got)
+	}
+	t.Setenv("CLODHOPPER_WAITING_RETAIN_HOURS", "24")
+	if got := waitingRetainHours(); got != 24 {
+		t.Errorf("override waitingRetainHours() = %d, want 24", got)
+	}
+	t.Setenv("CLODHOPPER_WAITING_RETAIN_HOURS", "0") // non-positive is ignored
+	if got := waitingRetainHours(); got != 16 {
+		t.Errorf("zero override should fall back to 16, got %d", got)
+	}
+}

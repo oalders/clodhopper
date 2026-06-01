@@ -121,7 +121,7 @@
     {{ if .RefreshSecs }}· live (checks every {{ .RefreshSecs }}s){{ else }}· auto-refresh off{{ end }}
   </div>
 
-  <h2>Agents (live, last 30 min)</h2>
+  <h2>Agents (live + waiting on you)</h2>
   {{ if .Agents }}
   <table>
     <colgroup>
@@ -146,7 +146,7 @@
     </tbody>
   </table>
   {{ else }}
-  <div class="empty">No live agents in the last 30 min. (Detecting "waiting for you" needs the <code>Stop</code> and <code>Notification</code> hooks wired in <code>.claude/settings.json</code>.)</div>
+  <div class="empty">No agents working or waiting on you. (Detecting "waiting for you" needs the <code>Stop</code> and <code>Notification</code> hooks wired in <code>.claude/settings.json</code>; a waiting agent clears when its session ends — on <code>SessionEnd</code>, or via <code>clodhopper end</code> for hard-killed sessions.)</div>
   {{ end }}
 
   {{ if .Activity }}

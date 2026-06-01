@@ -69,7 +69,7 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	// ended: should be excluded.
 	ins(at(3), "s-done", "fix-1111", "SessionEnd", "", "SessionEnd")
 
-	agents, err := agentRoster(db, 30*time.Minute, now)
+	agents, err := agentRoster(db, 30*time.Minute, 16*time.Hour, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,5 +179,56 @@ func TestShortID(t *testing.T) {
 	}
 	if got := shortID("short"); got != "short" {
 		t.Errorf("shortID passthrough = %q, want short", got)
+	}
+}
+
+func TestAgentRoster_StatusAwareRetention(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, sess, branch, etype, tool, summary string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: branch, SessionID: sess, EventType: etype, ToolName: tool, Summary: summary, PayloadJSON: "{}"})
+	}
+
+	// liveWindow is driven independently of the production agentWindow const so
+	// the cutoff itself is under test: a 40m window keeps the 30m worker but
+	// drops the 45m one.
+	const liveWindow = 40 * time.Minute
+	// Waiting 90m ago: past the live window but within the 2h cap -> stays.
+	ins(at(90), "s-wait", "b1", "Stop", "", "Stop")
+	// Working 30m ago: still within the 40m live window -> stays.
+	ins(at(30), "s-work-live", "b2", "PreToolUse", "Bash", "Bash: go test")
+	// Working 45m ago: past the live window, a silent worker is stale -> drops.
+	ins(at(45), "s-work-stale", "b3", "PreToolUse", "Bash", "Bash: go test")
+	// Waiting 200m ago: beyond the 2h cap -> not even fetched -> drops.
+	ins(at(200), "s-old", "b4", "Stop", "", "Stop")
+
+	agents, err := agentRoster(db, liveWindow, 2*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 2 {
+		t.Fatalf("want the in-cap waiter and the in-window worker, got %d: %+v", len(agents), agents)
+	}
+	survived := map[string]string{}
+	for _, a := range agents {
+		survived[a.SessionID] = a.Status
+	}
+	if survived["s-wait"] != statusWaiting {
+		t.Errorf("expected s-wait/waiting to survive, got %+v", agents)
+	}
+	if survived["s-work-live"] != statusWorking {
+		t.Errorf("expected s-work-live within the live window to survive, got %+v", agents)
+	}
+	if _, ok := survived["s-work-stale"]; ok {
+		t.Errorf("expected s-work-stale past the live window to drop, got %+v", agents)
+	}
+	if _, ok := survived["s-old"]; ok {
+		t.Errorf("expected s-old beyond the cap to drop, got %+v", agents)
 	}
 }

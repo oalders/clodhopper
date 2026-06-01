@@ -117,6 +117,76 @@ func insertEvent(db *sql.DB, ev Event) error {
 	return err
 }
 
+// EndSelector identifies which live sessions clodhopper end should mark ended.
+// Each non-empty field narrows the match; the caller must set at least one.
+type EndSelector struct {
+	SessionID string
+	Branch    string
+	Cwd       string
+}
+
+// endSessions writes a synthetic SessionEnd row for every currently-live session
+// (one whose latest event is not already SessionEnd) matching sel, so an agent
+// that was hard-killed — and therefore never emitted its own SessionEnd — drops
+// off the roster at once instead of lingering until the waiting cap. It returns
+// the number of sessions ended. now is injected for deterministic tests.
+func endSessions(db *sql.DB, sel EndSelector, now time.Time) (int, error) {
+	// Resolve the selector against the latest row of each session, so branch/cwd
+	// match the session's current values.
+	q := `SELECT session_id, source_app, COALESCE(branch,''), COALESCE(cwd,''), event_type
+	      FROM events e
+	      WHERE session_id IS NOT NULL AND session_id <> ''
+	        AND id = (SELECT MAX(id) FROM events WHERE session_id = e.session_id)`
+	var args []any
+	if sel.SessionID != "" {
+		q += " AND session_id = ?"
+		args = append(args, sel.SessionID)
+	}
+	if sel.Branch != "" {
+		q += " AND branch = ?"
+		args = append(args, sel.Branch)
+	}
+	if sel.Cwd != "" {
+		q += " AND cwd = ?"
+		args = append(args, sel.Cwd)
+	}
+	rows, err := db.Query(q, args...)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	type live struct{ sess, app, branch, cwd string }
+	var targets []live
+	for rows.Next() {
+		var l live
+		var etype string
+		if err := rows.Scan(&l.sess, &l.app, &l.branch, &l.cwd, &etype); err != nil {
+			return 0, err
+		}
+		if etype == "SessionEnd" {
+			continue // already ended
+		}
+		targets = append(targets, l)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	ts := now.UTC().Format(time.RFC3339)
+	for _, l := range targets {
+		ev := Event{
+			TS: ts, SourceApp: l.app, Branch: l.branch, Cwd: l.cwd,
+			SessionID: l.sess, EventType: "SessionEnd", Summary: "ended via clodhopper end",
+			PayloadJSON: "{}",
+		}
+		if err := insertEvent(db, ev); err != nil {
+			return 0, err
+		}
+	}
+	return len(targets), nil
+}
+
 // pruneOld deletes events older than the given number of days and returns the
 // number of rows removed.
 func pruneOld(db *sql.DB, days int) (int64, error) {
@@ -258,11 +328,14 @@ func deriveStatus(lastEvent string) (label string, rank int, active bool) {
 	}
 }
 
-// agentRoster folds the events from the last window into one row per session,
-// reflecting each agent's current state. now is passed in (not read from the
-// clock) so the result is deterministic under test.
-func agentRoster(db *sql.DB, window time.Duration, now time.Time) ([]Agent, error) {
-	since := now.Add(-window).UTC().Format(time.RFC3339)
+// agentRoster folds recent events into one row per session, reflecting each
+// agent's current state. It applies two windows: a "working" session is live
+// only within liveWindow (a silent worker is stale and drops off), while a
+// session waiting on you (waiting / needs-you / needs-approval) is retained out
+// to waitingCap — so it survives a lunch or overnight gap and only leaves on a
+// SessionEnd. now is injected so the result is deterministic under test.
+func agentRoster(db *sql.DB, liveWindow, waitingCap time.Duration, now time.Time) ([]Agent, error) {
+	since := now.Add(-waitingCap).UTC().Format(time.RFC3339)
 	rows, err := db.Query(
 		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(cwd,''), COALESCE(session_id,''),
 		        event_type, COALESCE(tool_name,''), COALESCE(summary,'')
@@ -312,17 +385,25 @@ func agentRoster(db *sql.DB, window time.Duration, now time.Time) ([]Agent, erro
 		if !active {
 			continue
 		}
+		idleSecs := idleSeconds(s.lastTS, now)
+		// A "working" agent is live only within the short window; once it goes
+		// quiet it is stale and drops off. Needs-me statuses persist out to
+		// waitingCap (already bounded by the query window above), so an agent
+		// genuinely waiting on you is not lost when you step away.
+		if label == statusWorking && time.Duration(idleSecs)*time.Second > liveWindow {
+			continue
+		}
 		a := s.a
 		a.Status, a.StatusRank = label, rank
 		if a.Doing == "" {
 			a.Doing = s.lastTool // fall back to the latest tool when no skill seen
 		}
-		a.IdleSecs = idleSeconds(s.lastTS, now)
-		a.Idle = humanizeSeconds(a.IdleSecs)
+		a.IdleSecs = idleSecs
+		a.Idle = humanizeSeconds(idleSecs)
 		// Absolute last-event time (derived from now − idle so it stays consistent
 		// with IdleSecs); the dashboard's JS reads it from data-since to advance the
 		// idle column locally, without a server round-trip.
-		a.IdleSince = now.Unix() - int64(a.IdleSecs)
+		a.IdleSince = now.Unix() - int64(idleSecs)
 		out = append(out, a)
 	}
 	// Most urgent first (waiting/needs-you), then longest-idle within a rank.

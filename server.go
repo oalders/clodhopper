@@ -302,7 +302,8 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache) (dashboardData
 	}
 
 	now := time.Now()
-	agents, err := agentRoster(db, agentWindow, now)
+	waitingCap := time.Duration(waitingRetainHours()) * time.Hour
+	agents, err := agentRoster(db, agentWindow, waitingCap, now)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("roster: %w", err)
 	}

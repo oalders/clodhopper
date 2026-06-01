@@ -39,6 +39,7 @@ Requires CGO (a C compiler) because it uses `github.com/mattn/go-sqlite3`.
 clodhopper ingest --source-app myapp       # reads one hook event as JSON on stdin
 clodhopper serve [--port 4555] [--host H] # read-only dashboard (default 127.0.0.1)
 clodhopper prune [--days 14]              # delete events older than N days
+clodhopper end --branch B                  # mark matching live sessions ended (teardown)
 ```
 
 By default the dashboard binds `127.0.0.1` (loopback only). If your browser runs
@@ -63,6 +64,31 @@ MagicDNS name. `tailscale ip -4` prints the host's IPv4 tailnet address; drop
 error (bad JSON, unwritable DB, …) results in exit 0, and diagnostics are
 written to stderr only when `CLODHOPPER_DEBUG` is set.
 
+### Tearing down agents from scripts
+
+The roster treats a session as gone when it sees a `SessionEnd` event. A hard
+kill — `tmux kill-session`, `kill -9`, a crash, or laptop sleep — gives Claude
+Code no chance to emit `SessionEnd`, so the agent would otherwise linger as a
+"waiting for you" zombie until the retention cap expires. If a script tears down
+sessions that way, have it tell clodhopper first:
+
+```bash
+clodhopper end --branch "$branch"
+```
+
+This writes a synthetic `SessionEnd` for every live session on that branch. The
+script never needs Claude's `session_id` — clodhopper resolves the branch (or
+`--cwd`, or an exact `--session`) to the live sessions itself. Guard the call so
+it no-ops where the binary is absent:
+
+```bash
+command -v clodhopper >/dev/null && clodhopper end --branch "$branch"
+```
+
+Switching the kill to a gentler signal is not a reliable alternative — Claude
+Code only sometimes fires `SessionEnd` on `SIGTERM`/`SIGINT`, and a closing
+pane's `SIGHUP` usually kills it before cleanup runs.
+
 ## Configuration (environment)
 
 | Var | Default | Meaning |
@@ -72,6 +98,7 @@ written to stderr only when `CLODHOPPER_DEBUG` is set.
 | `CLODHOPPER_DISABLED` | unset | `1` makes `ingest` a no-op. |
 | `CLODHOPPER_PORT` | `4555` | Dashboard port. |
 | `CLODHOPPER_HOST` | `127.0.0.1` | Dashboard bind address. Set `0.0.0.0` for container/LAN access. |
+| `CLODHOPPER_WAITING_RETAIN_HOURS` | `16` | How long an agent that is waiting on you stays on the roster when no `SessionEnd` arrives. Working agents still age out after ~30 min. |
 | `CLODHOPPER_DEBUG` | unset | If set, `ingest` writes errors to stderr. |
 
 ## What gets captured (and what does not)
