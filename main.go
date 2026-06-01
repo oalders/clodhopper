@@ -45,6 +45,8 @@ func run(args []string) int {
 		return runServe(rest)
 	case "prune":
 		return runPrune(rest)
+	case "init":
+		return runInit(rest)
 	case "-h", "--help", "help":
 		usage()
 		return 0
@@ -86,6 +88,7 @@ USAGE
   clodhopper ingest --source-app NAME   read one hook event (JSON on stdin), store it
   clodhopper serve [--port N] [--host H] serve the dashboard (default 127.0.0.1; --host 0.0.0.0 for container/LAN)
   clodhopper prune [--days N]           delete events older than N days
+  clodhopper init [--project|--local]   wire clodhopper hooks into .claude/settings(.local).json
   clodhopper --version                  print version and build metadata
 
 ENV
