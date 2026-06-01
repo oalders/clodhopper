@@ -1,9 +1,14 @@
 # GoReleaser configuration for clodhopper.
 #
 # clodhopper requires CGO (github.com/mattn/go-sqlite3), so cross-compilation
-# is not free: every non-host target needs a matching C cross-compiler. We use
-# `zig cc` as a universal cross-compiler so a single Linux runner can build for
-# linux, darwin, and windows on amd64 and arm64. See .github/workflows/release.yml.
+# is not free: every non-host target needs a matching C cross-compiler.
+#
+# The release runs on a macOS runner (see .github/workflows/release.yml):
+#   - darwin (amd64+arm64): native clang against the runner's macOS SDK. zig
+#     cannot link macOS CGO binaries — Apple's SDK isn't redistributable, so
+#     zig lacks libresolv / system frameworks that Go's net + go-sqlite3 need.
+#   - linux + windows (amd64+arm64): `zig cc`, which ships libc stubs for every
+#     target and cross-compiles cleanly from the macOS host.
 version: 2
 
 project_name: clodhopper
@@ -33,8 +38,10 @@ builds:
     goarch:
       - amd64
       - arm64
-    # Per-target C cross-compiler. zig ships libc stubs for every target, which
-    # is what makes CGO cross-compilation work from one runner.
+    # Per-target C compiler. linux/windows use zig (libc stubs for every target);
+    # darwin uses clang with -isysroot pointing at SDK_PATH (the macOS runner's
+    # SDK, resolved via `xcrun --show-sdk-path` in the workflow) and -arch to
+    # select the slice, so both macOS arches build natively against a real SDK.
     overrides:
       - goos: linux
         goarch: amd64
@@ -49,13 +56,13 @@ builds:
       - goos: darwin
         goarch: amd64
         env:
-          - CC=zig cc -target x86_64-macos-none
-          - CXX=zig c++ -target x86_64-macos-none
+          - CC=clang -arch x86_64 -isysroot {{ .Env.SDK_PATH }}
+          - CXX=clang++ -arch x86_64 -isysroot {{ .Env.SDK_PATH }}
       - goos: darwin
         goarch: arm64
         env:
-          - CC=zig cc -target aarch64-macos-none
-          - CXX=zig c++ -target aarch64-macos-none
+          - CC=clang -arch arm64 -isysroot {{ .Env.SDK_PATH }}
+          - CXX=clang++ -arch arm64 -isysroot {{ .Env.SDK_PATH }}
       - goos: windows
         goarch: amd64
         env:

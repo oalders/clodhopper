@@ -16,7 +16,11 @@ permissions:
 
 jobs:
   goreleaser:
-    runs-on: ubuntu-latest
+    # macOS runner so darwin CGO binaries link against the real Apple SDK via
+    # clang. zig cannot link macOS CGO targets (no redistributable SDK -> missing
+    # libresolv / system frameworks); it is still used to cross-compile the
+    # linux and windows targets from this same runner. See .goreleaser.yaml.
+    runs-on: macos-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,11 +32,18 @@ jobs:
         with:
           go-version: stable
 
-      # zig is our CGO cross-compiler (see .goreleaser.yaml).
+      # zig cross-compiles the linux and windows CGO targets (see .goreleaser.yaml).
+      # NOTE: keep zig >= 0.14.0 — 0.13.0 has a CGO cross-compile regression
+      # (ziglang/zig#20689), fixed in 0.14.0.
       - name: Set up Zig
-        uses: mlugg/setup-zig@v1
+        uses: mlugg/setup-zig@v2
         with:
-          version: 0.13.0
+          version: 0.14.1
+
+      # darwin targets build with clang against this runner's macOS SDK.
+      - name: Resolve macOS SDK path
+        id: sdk
+        run: echo "path=$(xcrun --show-sdk-path)" >> "$GITHUB_OUTPUT"
 
       - name: Determine GoReleaser args
         id: args
@@ -53,6 +64,7 @@ jobs:
           args: ${{ steps.args.outputs.args }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SDK_PATH: ${{ steps.sdk.outputs.path }}
 
       # When dispatched manually (snapshot), there is no GitHub release to attach
       # to, so surface the built binaries as workflow artifacts instead.
