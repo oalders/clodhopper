@@ -188,3 +188,16 @@ func writeSettings(path string, settings map[string]any) error {
 	out = append(out, '\n')
 	return os.WriteFile(path, out, 0o644)
 }
+
+// resolveSourceApp returns the source-app label: the explicit flag value if
+// given, otherwise the git repo name of dir. It errors when neither is
+// available, so init never silently mislabels events.
+func resolveSourceApp(explicit, dir string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	if name := gitRepoName(dir); name != "" {
+		return name, nil
+	}
+	return "", fmt.Errorf("could not determine source-app: not in a git repo; pass --source-app NAME")
+}

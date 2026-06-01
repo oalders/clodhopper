@@ -177,3 +177,28 @@ func TestWriteReadSettings_RoundTrip(t *testing.T) {
 		t.Errorf("round-trip lost data: %v", got)
 	}
 }
+
+func TestResolveSourceApp_Explicit(t *testing.T) {
+	got, err := resolveSourceApp("mmir", "/nonexistent")
+	if err != nil || got != "mmir" {
+		t.Fatalf("got %q err %v", got, err)
+	}
+}
+
+func TestResolveSourceApp_FromRepo(t *testing.T) {
+	dir := t.TempDir()
+	gitInitOnBranch(t, dir, "main")
+	got, err := resolveSourceApp("", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != filepath.Base(dir) {
+		t.Errorf("got %q, want %q", got, filepath.Base(dir))
+	}
+}
+
+func TestResolveSourceApp_Error(t *testing.T) {
+	if _, err := resolveSourceApp("", "/nonexistent/path/xyzzy"); err == nil {
+		t.Error("want error when no flag and not a repo, got nil")
+	}
+}
