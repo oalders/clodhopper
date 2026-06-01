@@ -46,6 +46,19 @@ on a different machine or namespace than the server (e.g. inside a container or
 VM), bind all interfaces with `clodhopper serve --host 0.0.0.0` (or `CLODHOPPER_HOST=0.0.0.0`)
 and reach it via that host's IP — note this exposes the dashboard to your LAN.
 
+To reach the dashboard from your other devices without exposing it to the LAN,
+bind it to your [Tailscale](https://tailscale.com) IP instead of `0.0.0.0`:
+
+```bash
+clodhopper serve --host "$(tailscale ip -4)"
+```
+
+This listens only on the tailnet interface, so the dashboard is reachable from
+any device on your tailnet (subject to your ACLs) but not from the local
+network. Reach it at `http://<this-host's-tailscale-ip>:4555`, or by the host's
+MagicDNS name. `tailscale ip -4` prints the host's IPv4 tailnet address; drop
+`-4` for IPv6.
+
 `ingest` is what hooks call. It is designed to **never** break a tool call: any
 error (bad JSON, unwritable DB, …) results in exit 0, and diagnostics are
 written to stderr only when `CLODHOPPER_DEBUG` is set.
