@@ -30,19 +30,23 @@ func TestSummarizeChecks(t *testing.T) {
 func TestDeriveStatus(t *testing.T) {
 	cases := []struct {
 		event      string
+		idleSecs   int
 		wantLabel  string
 		wantActive bool
 	}{
-		{"Stop", statusWaiting, true},
-		{"Notification", statusNeedsYou, true},
-		{"PermissionRequest", statusApproval, true},
-		{"PreToolUse", statusWorking, true},
-		{"SessionEnd", statusEnded, false},
+		{"Stop", 0, statusWaiting, true},
+		{"Stop", 6 * 60, statusWaiting, true}, // a finished agent stays "waiting", not idle
+		{"Notification", 0, statusNeedsYou, true},
+		{"PermissionRequest", 0, statusApproval, true},
+		{"PreToolUse", 0, statusWorking, true},
+		{"PreToolUse", staleWorkingSecs - 1, statusWorking, true}, // just under threshold
+		{"PreToolUse", staleWorkingSecs, statusIdle, true},        // silent past threshold → idle
+		{"SessionEnd", 0, statusEnded, false},
 	}
 	for _, c := range cases {
-		label, _, active := deriveStatus(c.event)
+		label, _, active := deriveStatus(c.event, c.idleSecs)
 		if label != c.wantLabel || active != c.wantActive {
-			t.Errorf("deriveStatus(%q) = (%q,%v), want (%q,%v)", c.event, label, active, c.wantLabel, c.wantActive)
+			t.Errorf("deriveStatus(%q, %d) = (%q,%v), want (%q,%v)", c.event, c.idleSecs, label, active, c.wantLabel, c.wantActive)
 		}
 	}
 }
@@ -66,17 +70,19 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	// waiting: last event is Stop, idle a while.
 	ins(at(9), "s-wait", "fix-2499", "PreToolUse", "Skill", "Skill: address-gh-review")
 	ins(at(4), "s-wait", "fix-2499", "Stop", "", "Stop")
+	// idle: mid-flight but silent past the staleness threshold (no Stop arrived).
+	ins(at(8), "s-idle", "fix-3000", "PreToolUse", "Bash", "Bash: go build")
 	// ended: should be excluded.
 	ins(at(3), "s-done", "fix-1111", "SessionEnd", "", "SessionEnd")
 
-	agents, err := agentRoster(db, 30*time.Minute, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(agents) != 2 {
-		t.Fatalf("want 2 live agents (ended excluded), got %d: %+v", len(agents), agents)
+	if len(agents) != 3 {
+		t.Fatalf("want 3 live agents (ended excluded), got %d: %+v", len(agents), agents)
 	}
-	// Waiting agent must sort first (most urgent).
+	// Order locks the ranks: waiting (0) < working (5) < idle (6).
 	if agents[0].SessionID != "s-wait" || agents[0].Status != statusWaiting {
 		t.Errorf("expected s-wait/waiting first, got %+v", agents[0])
 	}
@@ -89,8 +95,45 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	if agents[1].Doing != "monitor-ci" {
 		t.Errorf("busy agent phase should persist from skill: want monitor-ci, got %q", agents[1].Doing)
 	}
+	if agents[2].SessionID != "s-idle" || agents[2].Status != statusIdle {
+		t.Errorf("expected s-idle/idle last (stale working sinks below active), got %+v", agents[2])
+	}
 	if agents[0].Idle == "" {
 		t.Errorf("idle label not set")
+	}
+}
+
+func TestAgentRoster_StaleWorkingBecomesIdle(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, sess, etype, tool string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-1", SessionID: sess, EventType: etype, ToolName: tool, PayloadJSON: "{}"})
+	}
+
+	// Mid-flight (no Stop) but silent for 6 min: working has gone stale → idle.
+	ins(at(6), "s-stale", "PreToolUse", "Bash")
+	// Mid-flight and recent: genuinely working.
+	ins(at(1), "s-busy", "PreToolUse", "Bash")
+
+	agents, err := agentRoster(db, 30*time.Minute, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Agent{}
+	for _, a := range agents {
+		byID[a.SessionID] = a
+	}
+	if got := byID["s-stale"].Status; got != statusIdle {
+		t.Errorf("silent working session should read %q, got %q", statusIdle, got)
+	}
+	if got := byID["s-busy"].Status; got != statusWorking {
+		t.Errorf("recently-active session should read %q, got %q", statusWorking, got)
 	}
 }
 
@@ -182,7 +225,7 @@ func TestShortID(t *testing.T) {
 	}
 }
 
-func TestAgentRoster_StatusAwareRetention(t *testing.T) {
+func TestAgentRoster_RetainsUntilCapAndRelabelsStale(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -195,25 +238,24 @@ func TestAgentRoster_StatusAwareRetention(t *testing.T) {
 		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: branch, SessionID: sess, EventType: etype, ToolName: tool, Summary: summary, PayloadJSON: "{}"})
 	}
 
-	// liveWindow is driven independently of the production agentWindow const so
-	// the cutoff itself is under test: a 40m window keeps the 30m worker but
-	// drops the 45m one.
-	const liveWindow = 40 * time.Minute
-	// Waiting 90m ago: past the live window but within the 2h cap -> stays.
+	// Every live session within waitingCap is kept: a worker that goes quiet is
+	// relabeled idle rather than dropped, so only the cap (via the query window)
+	// removes a session.
+	// Waiting 90m ago: within the 2h cap -> stays, still waiting for you.
 	ins(at(90), "s-wait", "b1", "Stop", "", "Stop")
-	// Working 30m ago: still within the 40m live window -> stays.
-	ins(at(30), "s-work-live", "b2", "PreToolUse", "Bash", "Bash: go test")
-	// Working 45m ago: past the live window, a silent worker is stale -> drops.
+	// Working 2m ago: recent -> still working.
+	ins(at(2), "s-work-live", "b2", "PreToolUse", "Bash", "Bash: go test")
+	// Working 45m ago: silent past staleWorkingSecs -> idle, but kept on the board.
 	ins(at(45), "s-work-stale", "b3", "PreToolUse", "Bash", "Bash: go test")
 	// Waiting 200m ago: beyond the 2h cap -> not even fetched -> drops.
 	ins(at(200), "s-old", "b4", "Stop", "", "Stop")
 
-	agents, err := agentRoster(db, liveWindow, 2*time.Hour, now)
+	agents, err := agentRoster(db, 2*time.Hour, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(agents) != 2 {
-		t.Fatalf("want the in-cap waiter and the in-window worker, got %d: %+v", len(agents), agents)
+	if len(agents) != 3 {
+		t.Fatalf("want the in-cap waiter plus both workers (stale relabeled, not dropped), got %d: %+v", len(agents), agents)
 	}
 	survived := map[string]string{}
 	for _, a := range agents {
@@ -223,10 +265,10 @@ func TestAgentRoster_StatusAwareRetention(t *testing.T) {
 		t.Errorf("expected s-wait/waiting to survive, got %+v", agents)
 	}
 	if survived["s-work-live"] != statusWorking {
-		t.Errorf("expected s-work-live within the live window to survive, got %+v", agents)
+		t.Errorf("expected recent worker to stay working, got %+v", agents)
 	}
-	if _, ok := survived["s-work-stale"]; ok {
-		t.Errorf("expected s-work-stale past the live window to drop, got %+v", agents)
+	if survived["s-work-stale"] != statusIdle {
+		t.Errorf("expected stale worker to be relabeled idle and kept, got %+v", agents)
 	}
 	if _, ok := survived["s-old"]; ok {
 		t.Errorf("expected s-old beyond the cap to drop, got %+v", agents)
