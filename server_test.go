@@ -289,6 +289,26 @@ func TestViewSignature_TracksTmuxSession(t *testing.T) {
 	}
 }
 
+func TestHandleDashboard_RendersTmuxSession(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "fix-1710", TmuxSession: "roster-colors",
+		SessionID: "sess-a", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	for _, want := range []string{
+		"roster-colors",         // the disambiguating name appears
+		"fix-1710",              // branch still shown (dimmed sub-label)
+		"<th>session name</th>", // activity table's new first column
+		"<th>id</th>",           // the renamed session-id chip column
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in dashboard:\n%s", want, body)
+		}
+	}
+}
+
 func getBody(t *testing.T, db *sql.DB, target string) string {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, target, nil)
