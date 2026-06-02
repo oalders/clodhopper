@@ -190,6 +190,16 @@ func TestAssignSessColors(t *testing.T) {
 		t.Error("empty session id should not be assigned a color")
 	}
 
+	// A session that appears only in the events log (not on the roster) still gets
+	// a color, deconflicted against the roster agents.
+	mixed := assignSessColors(mkAgents("alpha", "bravo"), []Event{{SessionID: "log-only"}, {SessionID: "alpha"}})
+	if mixed["log-only"] == "" {
+		t.Error("events-only session got no color")
+	}
+	if mixed["log-only"] == mixed["alpha"] || mixed["log-only"] == mixed["bravo"] {
+		t.Errorf("events-only session %s collided with a roster agent", mixed["log-only"])
+	}
+
 	// More sessions than colors: everyone still gets a palette color (collisions
 	// resume past the palette, but nothing panics or goes blank).
 	many := make([]string, len(sessPalette)+3)
@@ -229,6 +239,8 @@ func TestHandleDashboard_SessionColors(t *testing.T) {
 		Summary: "SessionStart", PayloadJSON: "{}"})
 
 	body := getBody(t, db, "/")
+	// Only one session is visible, so assignSessColors hits no collision and hands
+	// it its hash-preferred color — i.e. exactly sessColor("sess-abc").
 	want := sessColor("sess-abc")
 
 	// A colored chip is rendered for the session.

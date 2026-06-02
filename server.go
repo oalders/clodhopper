@@ -60,43 +60,48 @@ func shortTS(ts string, now time.Time) string {
 // escaper-safe #rrggbb hex literals: html/template passes a bare hex color
 // through a style attribute unchanged, but a non-color token would be rewritten
 // to "ZgotmplZ". TestSessPaletteIsHex enforces the format.
-// Entries are spread around the hue wheel so adjacent-by-chance sessions stay
-// easy to tell apart. The dashboard is dual light/dark (color-scheme: light
-// dark), so every entry must be a mid-tone that shows on BOTH a white and a
-// dark background — no near-white or near-black. That mid-tone band only holds
-// ~12-14 truly distinct colors; beyond that, family cousins (blue/navy,
-// green/olive, gold/amber) appear and lean on lightness/hue offset to stay
-// apart. Order is cosmetic here (sessColor hashes uniformly across the whole
-// slice), so the cousins are as likely as any other entry — that is the cost of
-// going wide rather than staying at ~10 well-separated colors.
+// The dashboard is dual light/dark (color-scheme: light dark), so every entry
+// must be a mid-tone that shows on BOTH a white and a dark background — no
+// near-white or near-black. That band holds only ~12-14 truly distinct colors;
+// beyond that, family cousins (blue/navy, green/olive, gold/amber, purple/
+// violet) appear and lean on lightness/hue offset to stay apart.
+//
+// ORDER MATTERS: assignSessColors resolves a collision by probing to the *next*
+// slot, so two agents visible at once can be handed adjacent entries — keep
+// adjacent (and wrap-around) entries perceptually far apart, with the cousins
+// scattered across the slice rather than neighbouring. This only bounds the
+// probe case: two ids whose hashes land directly on cousin slots (both free)
+// can still look similar, so the short id beside the chip stays the real
+// identifier. TestSessPaletteIsHex enforces the #rrggbb format (a non-color
+// token would be rewritten to "ZgotmplZ" by html/template's style escaper).
 var sessPalette = []string{
 	"#2563eb", // blue
-	"#0891b2", // cyan
-	"#0d9488", // teal
-	"#16a34a", // green
-	"#4d7c0f", // olive
-	"#ca8a04", // gold
-	"#d97706", // amber
 	"#ea580c", // orange
-	"#dc2626", // red
+	"#16a34a", // green
 	"#be123c", // crimson
-	"#db2777", // pink
-	"#c026d3", // fuchsia
+	"#ca8a04", // gold
 	"#9333ea", // purple
-	"#6d28d9", // violet
-	"#4f46e5", // indigo
+	"#0d9488", // teal
+	"#dc2626", // red
+	"#0891b2", // cyan
+	"#d97706", // amber
+	"#c026d3", // fuchsia
+	"#4d7c0f", // olive
 	"#1e40af", // navy
-	"#92400e", // brown
+	"#db2777", // pink
 	"#a16207", // bronze
+	"#6d28d9", // violet
 	"#475569", // slate
+	"#92400e", // brown
+	"#4f46e5", // indigo
 	"#78716c", // stone
 }
 
-// sessColor maps a session id to its hash-preferred palette color via FNV-1a.
-// This is the *uncoordinated* color: the dashboard renders chips/tints from
-// assignSessColors (which deconflicts the visible set), but sessColor remains
-// the stable fallback and the primitive the assignment builds on. An empty id
-// yields "" so callers can skip the chip/tint entirely.
+// sessColor maps a session id to its hash-preferred palette color (the
+// *uncoordinated* color, before any deconfliction). The dashboard renders
+// chips/tints from assignSessColors instead; sessColor is the plain hash view
+// of that mapping, used to document and test the id->palette contract. An empty
+// id yields "" so callers can skip the chip/tint entirely.
 func sessColor(s string) string {
 	if s == "" {
 		return ""
@@ -114,16 +119,18 @@ func sessIndex(s string) int {
 
 // assignSessColors hands every session shown on the dashboard a palette color,
 // deconflicting the visible set so concurrent agents stay easy to tell apart.
-// Sessions are processed oldest-first — live roster agents in arrival order
-// (firstSeq), then any session that only appears in the events log. Each takes
-// its hash-preferred color (sessIndex); if that slot is already taken, it probes
-// forward to the next free one. Because newer sessions are processed last, a
-// newly arrived agent can only claim a free/bumped slot — it never recolors an
-// agent already on the board ("incumbents keep their color"). A session leaving
-// can still shift a *newer* agent that had bumped off a now-freed color; that is
-// the accepted cost of staying stateless. Once every color is in use, remaining
-// sessions fall back to their hash color and collisions resume — there is simply
-// nothing free left to hand out.
+// Live roster agents go first, in arrival order (firstSeq); sessions that only
+// appear in the events log are appended after, in events-table order (newest
+// first) — they are typically ended/aged-out agents nobody is tracking, so their
+// relative order is not load-bearing. Each session takes its hash-preferred
+// color (sessIndex); if that slot is already taken, it probes forward to the
+// next free one. Because roster newcomers carry the largest firstSeq they are
+// processed last, so a newly arrived agent can only claim a free/bumped slot — it
+// never recolors an agent already on the board ("incumbents keep their color").
+// A session leaving can still shift a *newer* agent that had bumped off a
+// now-freed color; that is the accepted cost of staying stateless. Once every
+// color is in use, remaining sessions fall back to their hash color and
+// collisions resume — there is simply nothing free left to hand out.
 func assignSessColors(agents []Agent, events []Event) map[string]string {
 	ordered := make([]string, 0, len(agents)+len(events))
 	seen := make(map[string]bool, len(agents)+len(events))
