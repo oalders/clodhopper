@@ -8,17 +8,27 @@ import (
 	"time"
 )
 
-// cleanSessionName strips unrenderable Nerd Font / devicon glyphs (Unicode
-// Private Use Area) and control characters, and collapses alignment padding —
-// so a real tmux name like the one below shows cleanly in a browser. The leading
-// emoji (a real, renderable codepoint) is kept.
+// cleanSessionName keeps only the text after the LAST unrenderable Nerd Font /
+// devicon glyph (Unicode Private Use Area) — these glyphs are decorative
+// prefixes/separators, so the meaningful name follows the final one — then drops
+// control characters and collapses alignment padding. A name with no PUA glyph
+// is left intact (a real emoji is not PUA, so it survives).
 func TestCleanSessionName(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{
-			"strips PUA glyph and padding, keeps emoji and text",
+			"drops everything up to and including the PUA glyph (even a leading emoji)",
 			"👟  fix-2482             Blog post funniest / cleverest / most [in progress]",
-			"👟 fix-2482 Blog post funniest / cleverest / most [in progress]",
+			"Blog post funniest / cleverest / most [in progress]",
 		},
+		{
+			// The user's real session: an icon, the name, more padding, a second
+			// icon, the name again. Keeping the tail after the LAST glyph yields the
+			// single clean name (not the doubled "name name" the old strip produced).
+			"repeated icon-prefixed name keeps only the tail after the last glyph",
+			"  tmux-session-name    tmux-session-name",
+			"tmux-session-name",
+		},
+		{"emoji is not PUA, so it and the text after it are kept", "👟 fix-2482", "👟 fix-2482"},
 		{"plain name unchanged", "my-session", "my-session"},
 		{"collapses whitespace and drops control chars", "  hi\tthere\n", "hi there"},
 		{"all-glyph name becomes empty", "", ""},

@@ -16,14 +16,27 @@
        layout does not reflow (and visibly "flash") when a section is swapped in
        with different-length content. */
     table { border-collapse: collapse; width: 100%; table-layout: fixed; margin-bottom: .5rem; }
-    /* The activity table spans the full width and hands the leftover to its one
-       unconstrained column — the session name, which can be long — so it has room
-       to breathe instead of truncating while the rest of the row stays compact. */
-    table.counts { width: 100%; }
+    /* These tables keep a definite width so that table-layout: fixed truly engages
+       and PINS the columns. Pinned widths are why a status cell going from "idle"
+       to "waiting for you" no longer reflows the table on a #content swap. (A bare
+       width: auto can drop a fixed-layout table back to content-driven sizing,
+       which reflows.)
+
+       Both tables fill the screen (width: 100%, no cap); each one's last column
+       (session) is left unconstrained, so it soaks up all the leftover width and
+       shows the full name, truncating only when the window is genuinely narrow. A
+       leftover-absorbing column is safe under fixed layout: its width comes from
+       the table width, not the cell content, so it never reflows on a swap. */
+    table.roster, table.counts { width: 100%; }
     th, td { text-align: left; padding: .2rem .5rem; border-bottom: 1px solid #ddd; vertical-align: top; overflow: hidden; text-overflow: ellipsis; }
     th { position: sticky; top: 0; background: Canvas; }
-    td.time, td.branch, td.tool, td.idle, td.sess, td.namecell { white-space: nowrap; }
+    td.time, td.tool, td.idle, td.sess, td.namecell { white-space: nowrap; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
+    /* Branch is the one column we never truncate: it has a fixed, bounded width
+       but wraps instead of ellipsing (a clipped branch name is ambiguous in a way
+       a clipped session name is not), so a long branch grows taller rather than
+       getting cut off — or hogging the row. */
+    td.branch { white-space: normal; word-break: break-word; }
     .type { font-weight: bold; }
     .empty { color: #888; padding: 1rem 0; }
     /* Agent roster */
@@ -128,18 +141,17 @@
 
   <h2>Agents (live + waiting on you)</h2>
   {{ if .Agents }}
-  <table>
+  <table class="roster">
     <colgroup>
-      <col><col style="width: 16ch"><col style="width: 8ch"><col style="width: 17ch">
-      <col style="width: 20ch"><col style="width: 9ch"><col style="width: 6ch"><col style="width: 10ch">
+      <col style="width: 24ch"><col style="width: 14ch"><col style="width: 18ch"><col style="width: 36ch">
+      <col style="width: 9ch"><col style="width: 6ch"><col style="width: 10ch"><col>
     </colgroup>
     <thead>
-      <tr><th>session</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>CI</th><th>idle</th><th>id</th></tr>
+      <tr><th>branch</th><th>app</th><th>status</th><th>doing</th><th>CI</th><th>idle</th><th>id</th><th>session</th></tr>
     </thead>
     <tbody>
       {{ range .Agents }}
       <tr {{ if le .StatusRank 1 }}class="alert"{{ end }}>
-        <td class="namecell">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
         <td>{{ .SourceApp }}</td>
         <td class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
@@ -147,6 +159,7 @@
         <td class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if .CI }}{{ .CI }}{{ else }}—{{ end }}</td>
         <td class="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
         <td class="sess">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
+        <td class="namecell">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
       </tr>
       {{ end }}
     </tbody>
@@ -159,18 +172,18 @@
   <h2>Activity (last 30 min)</h2>
   <table class="counts">
     <colgroup>
-      <col><col style="width: 16ch"><col style="width: 12ch"><col style="width: 9ch">
+      <col style="width: 24ch"><col style="width: 14ch"><col style="width: 9ch"><col>
     </colgroup>
     <thead>
-      <tr><th>session name</th><th>branch</th><th>app</th><th>events</th></tr>
+      <tr><th>branch</th><th>app</th><th>events</th><th>session</th></tr>
     </thead>
     <tbody>
       {{ range .Activity }}
       <tr>
-        <td class="namecell">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
         <td>{{ .SourceApp }}</td>
         <td>{{ .Count }}</td>
+        <td class="namecell">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
       </tr>
       {{ end }}
     </tbody>

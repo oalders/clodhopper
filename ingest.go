@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 // runIngest reads a single Claude Code hook event as JSON on stdin, scrubs it,
@@ -163,10 +164,16 @@ func tmuxSession() string {
 // cleanSessionName makes a raw tmux session name safe and tidy for the web
 // dashboard. tmux names routinely carry Nerd Font / devicon glyphs (Unicode
 // Private Use Area) that a browser without that font draws as a tofu box, plus
-// control characters and alignment padding. We drop the PUA glyphs and control
-// characters and collapse whitespace runs to single spaces (trimming the ends).
-// Ordinary text and real emoji are kept. A blank or all-glyph name becomes "".
+// control characters and alignment padding. These glyphs show up as decorative
+// prefixes and separators (e.g. "<icon>  branch  <icon> name"), so when any are
+// present the meaningful name is whatever follows the LAST one — we keep only
+// that tail. Remaining control characters are dropped and whitespace runs are
+// collapsed to single spaces (trimming the ends). Ordinary text and real emoji
+// are kept. A blank or all-glyph name becomes "".
 func cleanSessionName(s string) string {
+	if i := afterLastPUA(s); i >= 0 {
+		s = s[i:]
+	}
 	cleaned := strings.Map(func(r rune) rune {
 		switch {
 		case isPUA(r):
@@ -178,6 +185,19 @@ func cleanSessionName(s string) string {
 		}
 	}, s)
 	return strings.Join(strings.Fields(cleaned), " ")
+}
+
+// afterLastPUA returns the byte index just past the last Private Use Area glyph
+// in s, or -1 if s contains none. Slicing s at this index yields the text that
+// follows the final decorative icon/separator.
+func afterLastPUA(s string) int {
+	idx := -1
+	for i, r := range s {
+		if isPUA(r) {
+			idx = i + utf8.RuneLen(r)
+		}
+	}
+	return idx
 }
 
 // isPUA reports whether r lies in a Unicode Private Use Area, where Nerd Fonts
