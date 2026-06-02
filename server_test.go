@@ -255,7 +255,7 @@ func TestHandleDashboard_SessionColors(t *testing.T) {
 	if !strings.Contains(body, "color-mix") {
 		t.Errorf("expected a color-mix row tint:\n%s", body)
 	}
-	// The roster's first column is now headed "session" (the tmux session name).
+	// The roster carries a column headed "session" (the tmux session name).
 	if !strings.Contains(body, "<th>session</th>") {
 		t.Errorf("expected a session column header:\n%s", body)
 	}
@@ -298,12 +298,12 @@ func TestHandleDashboard_RendersTmuxSession(t *testing.T) {
 
 	body := getBody(t, db, "/")
 	for _, want := range []string{
-		"roster-colors",         // the disambiguating name appears
-		"fix-1710",              // branch shown in its own column
-		"<th>session</th>",      // roster's session-name column
-		"<th>branch</th>",       // roster keeps a distinct branch column
-		"<th>session name</th>", // activity table's first column
-		"<th>id</th>",           // the renamed session-id chip column
+		"roster-colors",    // the disambiguating name appears
+		"fix-1710",         // branch shown in its own column
+		"<th>session</th>", // roster's session-name column (now last)
+		"<th>branch</th>",  // roster keeps a distinct branch column
+		"<th>events</th>",  // activity table renders
+		"<th>id</th>",      // the renamed session-id chip column
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in dashboard:\n%s", want, body)
