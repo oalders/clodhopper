@@ -299,13 +299,19 @@ func TestHandleDashboard_RendersTmuxSession(t *testing.T) {
 	body := getBody(t, db, "/")
 	for _, want := range []string{
 		"roster-colors",         // the disambiguating name appears
-		"fix-1710",              // branch still shown (dimmed sub-label)
-		"<th>session name</th>", // activity table's new first column
+		"fix-1710",              // branch shown in its own column
+		"<th>session</th>",      // roster's session-name column
+		"<th>branch</th>",       // roster keeps a distinct branch column
+		"<th>session name</th>", // activity table's first column
 		"<th>id</th>",           // the renamed session-id chip column
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("missing %q in dashboard:\n%s", want, body)
 		}
+	}
+	// The branch is its own column, not a dimmed sub-label stacked under the name.
+	if strings.Contains(body, `<span class="sub">`) {
+		t.Errorf("stacked branch sub-label should be gone:\n%s", body)
 	}
 }
 
