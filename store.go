@@ -423,12 +423,10 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		a.IdleSince = now.Unix() - int64(idleSecs)
 		out = append(out, a)
 	}
-	// Most urgent first (waiting/needs-you), then longest-idle within a rank.
+	// Sort by idle time alone: most recently active at the top, idle the
+	// longest at the bottom. StatusRank still drives styling, not ordering.
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].StatusRank != out[j].StatusRank {
-			return out[i].StatusRank < out[j].StatusRank
-		}
-		return out[i].IdleSecs > out[j].IdleSecs
+		return out[i].IdleSecs < out[j].IdleSecs
 	})
 	return out, nil
 }
