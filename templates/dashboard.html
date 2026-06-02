@@ -156,7 +156,7 @@
         <td>{{ .SourceApp }}</td>
         <td class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
         <td class="summary">{{ if .Doing }}{{ .Doing }}{{ else }}—{{ end }}</td>
-        <td class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if .CI }}{{ .CI }}{{ else }}—{{ end }}</td>
+        <td class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}" title="{{ if .CI }}{{ .CI }}{{ else }}no CI{{ end }}">{{ if eq .CI "green" }}🟢{{ else if eq .CI "pending" }}🟡{{ else if eq .CI "failing" }}🔴{{ else }}—{{ end }}</td>
         <td class="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
         <td class="sess">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
         <td class="namecell">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
