@@ -26,6 +26,25 @@ func gitInitOnBranch(t *testing.T, dir, branch string) {
 	run("symbolic-ref", "HEAD", "refs/heads/"+branch)
 }
 
+// gitAddWorktree creates a linked worktree of the repo at dir, checked out at a
+// new branch, rooted at wtDir. It needs a commit to branch from, so it makes an
+// empty one with inline identity config. Skips if git is unavailable.
+func gitAddWorktree(t *testing.T, dir, wtDir, branch string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v (%s)", args, err, out)
+		}
+	}
+	run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "--allow-empty", "-m", "init")
+	run("worktree", "add", "-b", branch, wtDir)
+}
+
 func TestGitBranch(t *testing.T) {
 	dir := t.TempDir()
 	gitInitOnBranch(t, dir, "fix-2499")

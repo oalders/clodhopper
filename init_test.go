@@ -116,6 +116,33 @@ func TestGitRepoName(t *testing.T) {
 	}
 }
 
+// In a linked worktree, the worktree folder is often named after its branch.
+// gitRepoName must still return the main repo's name so the source-app label
+// stays distinct from the branch.
+func TestGitRepoName_Worktree(t *testing.T) {
+	base := t.TempDir()
+	repo := filepath.Join(base, "myrepo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitInitOnBranch(t, repo, "main")
+	// Name the worktree dir after its branch to reproduce the confusing case.
+	wt := filepath.Join(base, "feature-x")
+	gitAddWorktree(t, repo, wt, "feature-x")
+	if got := gitRepoName(wt); got != "myrepo" {
+		t.Errorf("gitRepoName(worktree) = %q, want %q", got, "myrepo")
+	}
+	// --git-common-dir is location-independent, so a subdir of the worktree
+	// resolves to the same main repo name.
+	sub := filepath.Join(wt, "pkg", "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := gitRepoName(sub); got != "myrepo" {
+		t.Errorf("gitRepoName(worktree subdir) = %q, want %q", got, "myrepo")
+	}
+}
+
 func TestGitRepoName_EmptyAndNonRepo(t *testing.T) {
 	if got := gitRepoName(""); got != "" {
 		t.Errorf("empty: want \"\", got %q", got)
