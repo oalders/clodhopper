@@ -82,21 +82,22 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	if len(agents) != 3 {
 		t.Fatalf("want 3 live agents (ended excluded), got %d: %+v", len(agents), agents)
 	}
-	// Order locks the ranks: waiting (0) < working (5) < idle (6).
-	if agents[0].SessionID != "s-wait" || agents[0].Status != statusWaiting {
-		t.Errorf("expected s-wait/waiting first, got %+v", agents[0])
+	// Order is purely by idle time: most recently active first, longest-idle
+	// last. s-busy (2m) < s-wait (4m) < s-idle (8m), regardless of status.
+	if agents[0].SessionID != "s-busy" || agents[0].Status != statusWorking {
+		t.Errorf("expected s-busy/working first (least idle), got %+v", agents[0])
 	}
-	if agents[0].Doing != "address-gh-review" {
-		t.Errorf("waiting agent phase: want address-gh-review, got %q", agents[0].Doing)
+	if agents[0].Doing != "monitor-ci" {
+		t.Errorf("busy agent phase should persist from skill: want monitor-ci, got %q", agents[0].Doing)
 	}
-	if agents[1].SessionID != "s-busy" || agents[1].Status != statusWorking {
-		t.Errorf("expected s-busy/working second, got %+v", agents[1])
+	if agents[1].SessionID != "s-wait" || agents[1].Status != statusWaiting {
+		t.Errorf("expected s-wait/waiting second, got %+v", agents[1])
 	}
-	if agents[1].Doing != "monitor-ci" {
-		t.Errorf("busy agent phase should persist from skill: want monitor-ci, got %q", agents[1].Doing)
+	if agents[1].Doing != "address-gh-review" {
+		t.Errorf("waiting agent phase: want address-gh-review, got %q", agents[1].Doing)
 	}
 	if agents[2].SessionID != "s-idle" || agents[2].Status != statusIdle {
-		t.Errorf("expected s-idle/idle last (stale working sinks below active), got %+v", agents[2])
+		t.Errorf("expected s-idle/idle last (longest idle), got %+v", agents[2])
 	}
 	if agents[0].Idle == "" {
 		t.Errorf("idle label not set")
