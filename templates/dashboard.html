@@ -16,13 +16,13 @@
        layout does not reflow (and visibly "flash") when a section is swapped in
        with different-length content. */
     table { border-collapse: collapse; width: 100%; table-layout: fixed; margin-bottom: .5rem; }
-    /* The activity counts table holds only short values; let it size to its
-       columns. Otherwise width:100% + fixed layout hands all leftover width to
-       the one unconstrained column, stretching it blank across the screen. */
-    table.counts { width: auto; }
+    /* The activity table spans the full width and hands the leftover to its one
+       unconstrained column — the session name, which can be long — so it has room
+       to breathe instead of truncating while the rest of the row stays compact. */
+    table.counts { width: 100%; }
     th, td { text-align: left; padding: .2rem .5rem; border-bottom: 1px solid #ddd; vertical-align: top; overflow: hidden; text-overflow: ellipsis; }
     th { position: sticky; top: 0; background: Canvas; }
-    td.time, td.branch, td.tool, td.idle, td.sess { white-space: nowrap; }
+    td.time, td.branch, td.tool, td.idle, td.sess, td.namecell { white-space: nowrap; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
     .type { font-weight: bold; }
     .empty { color: #888; padding: 1rem 0; }
@@ -130,15 +130,16 @@
   {{ if .Agents }}
   <table>
     <colgroup>
-      <col style="width: 16ch"><col style="width: 8ch"><col style="width: 17ch">
+      <col><col style="width: 16ch"><col style="width: 8ch"><col style="width: 17ch">
       <col style="width: 20ch"><col style="width: 9ch"><col style="width: 6ch"><col style="width: 10ch">
     </colgroup>
     <thead>
-      <tr><th>branch</th><th>app</th><th>status</th><th>doing</th><th>CI</th><th>idle</th><th>session</th></tr>
+      <tr><th>session</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>CI</th><th>idle</th><th>id</th></tr>
     </thead>
     <tbody>
       {{ range .Agents }}
       <tr {{ if le .StatusRank 1 }}class="alert"{{ end }}>
+        <td class="namecell">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
         <td>{{ .SourceApp }}</td>
         <td class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
@@ -158,14 +159,15 @@
   <h2>Activity (last 30 min)</h2>
   <table class="counts">
     <colgroup>
-      <col style="width: 24ch"><col style="width: 12ch"><col style="width: 9ch">
+      <col><col style="width: 16ch"><col style="width: 12ch"><col style="width: 9ch">
     </colgroup>
     <thead>
-      <tr><th>branch</th><th>app</th><th>events</th></tr>
+      <tr><th>session name</th><th>branch</th><th>app</th><th>events</th></tr>
     </thead>
     <tbody>
       {{ range .Activity }}
       <tr>
+        <td class="namecell">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
         <td>{{ .SourceApp }}</td>
         <td>{{ .Count }}</td>
@@ -183,7 +185,7 @@
       <col style="width: 10ch"><col style="width: 15ch"><col style="width: 8ch"><col>
     </colgroup>
     <thead>
-      <tr><th>time</th><th>source_app</th><th>branch</th><th>session</th><th>event</th><th>tool</th><th>summary</th></tr>
+      <tr><th>time</th><th>source_app</th><th>branch</th><th>id</th><th>event</th><th>tool</th><th>summary</th></tr>
     </thead>
     <tbody>
       {{ range .Events }}

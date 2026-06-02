@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // runIngest reads a single Claude Code hook event as JSON on stdin, scrubs it,
@@ -66,6 +67,7 @@ func buildEvent(raw []byte, sourceApp string) Event {
 		SourceApp:   sourceApp,
 		Branch:      gitBranch(cwd),
 		Cwd:         cwd,
+		TmuxSession: tmuxSession(),
 		SessionID:   str(p, "session_id"),
 		EventType:   str(p, "hook_event_name"),
 		ToolName:    str(p, "tool_name"),
@@ -135,6 +137,55 @@ func gitBranch(dir string) string {
 		return "" // not a repo, detached HEAD, timeout, or git missing
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// tmuxSession returns the name of the tmux session the current process is in, or
+// "" when not inside tmux, on any error, or if it times out. Like gitBranch it is
+// deliberately best-effort: capture must never block or fail a tool call. The
+// $TMUX guard avoids spawning tmux (and its stderr noise) outside a session;
+// `display-message -p '#S'` resolves the current pane's session via $TMUX, so no
+// `-t` target is needed. The name is user-chosen free text, so it is cleaned
+// (unrenderable glyphs and padding stripped), scrubbed, and truncated to honour
+// the scrub layer's fail-closed bias.
+func tmuxSession() string {
+	if os.Getenv("TMUX") == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "tmux", "display-message", "-p", "#S").Output()
+	if err != nil {
+		return ""
+	}
+	return truncate(scrubString(cleanSessionName(string(out))), maxFieldLen)
+}
+
+// cleanSessionName makes a raw tmux session name safe and tidy for the web
+// dashboard. tmux names routinely carry Nerd Font / devicon glyphs (Unicode
+// Private Use Area) that a browser without that font draws as a tofu box, plus
+// control characters and alignment padding. We drop the PUA glyphs and control
+// characters and collapse whitespace runs to single spaces (trimming the ends).
+// Ordinary text and real emoji are kept. A blank or all-glyph name becomes "".
+func cleanSessionName(s string) string {
+	cleaned := strings.Map(func(r rune) rune {
+		switch {
+		case isPUA(r):
+			return -1 // Nerd Font / devicon glyph — unrenderable tofu in a browser
+		case unicode.IsControl(r) && !unicode.IsSpace(r):
+			return -1 // other control chars; whitespace is left for Fields to collapse
+		default:
+			return r
+		}
+	}, s)
+	return strings.Join(strings.Fields(cleaned), " ")
+}
+
+// isPUA reports whether r lies in a Unicode Private Use Area, where Nerd Fonts
+// and devicon icon sets place their glyphs.
+func isPUA(r rune) bool {
+	return (r >= 0xE000 && r <= 0xF8FF) || // BMP PUA
+		(r >= 0xF0000 && r <= 0xFFFFD) || // Plane 15 PUA-A
+		(r >= 0x100000 && r <= 0x10FFFD) // Plane 16 PUA-B
 }
 
 // str safely reads a string field from a decoded JSON map.

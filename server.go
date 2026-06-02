@@ -474,7 +474,7 @@ func viewSignature(d dashboardData) string {
 	agents := append([]Agent(nil), d.Agents...)
 	sort.Slice(agents, func(i, j int) bool { return agents[i].SessionID < agents[j].SessionID })
 	for _, a := range agents {
-		fmt.Fprintf(h, "|a:%s:%s:%s:%s:%s:%s", a.SessionID, a.SourceApp, a.Branch, a.Status, a.Doing, a.CI)
+		fmt.Fprintf(h, "|a:%s:%s:%s:%s:%s:%s:%s", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Status, a.Doing, a.CI)
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)
@@ -482,10 +482,13 @@ func viewSignature(d dashboardData) string {
 		if activity[i].SourceApp != activity[j].SourceApp {
 			return activity[i].SourceApp < activity[j].SourceApp
 		}
-		return activity[i].Branch < activity[j].Branch
+		if activity[i].Branch != activity[j].Branch {
+			return activity[i].Branch < activity[j].Branch
+		}
+		return activity[i].TmuxSession < activity[j].TmuxSession
 	})
 	for _, c := range activity {
-		fmt.Fprintf(h, "|c:%s:%s:%d", c.SourceApp, c.Branch, c.Count)
+		fmt.Fprintf(h, "|c:%s:%s:%s:%d", c.TmuxSession, c.SourceApp, c.Branch, c.Count)
 	}
 
 	return strconv.FormatUint(h.Sum64(), 16)

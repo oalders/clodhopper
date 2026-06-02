@@ -255,7 +255,7 @@ func TestHandleDashboard_SessionColors(t *testing.T) {
 	if !strings.Contains(body, "color-mix") {
 		t.Errorf("expected a color-mix row tint:\n%s", body)
 	}
-	// The new "session" column header exists.
+	// The roster's first column is now headed "session" (the tmux session name).
 	if !strings.Contains(body, "<th>session</th>") {
 		t.Errorf("expected a session column header:\n%s", body)
 	}
@@ -265,6 +265,53 @@ func TestHandleDashboard_SessionColors(t *testing.T) {
 	// neither matches. This proves the empty-session row is left untinted.
 	if n := strings.Count(body, `style="background: color-mix`); n != 1 {
 		t.Errorf("expected exactly 1 tinted row, got %d:\n%s", n, body)
+	}
+}
+
+func TestViewSignature_TracksTmuxSession(t *testing.T) {
+	base := dashboardData{
+		Agents:   []Agent{{SessionID: "s1", TmuxSession: "alpha", Status: statusWorking}},
+		Activity: []SourceCount{{SourceApp: "myapp", TmuxSession: "alpha", Count: 2}},
+	}
+
+	// Roster row differs only by tmux session name.
+	rosterDiff := base
+	rosterDiff.Agents = []Agent{{SessionID: "s1", TmuxSession: "beta", Status: statusWorking}}
+	if viewSignature(base) == viewSignature(rosterDiff) {
+		t.Error("signature unchanged after a roster tmux-session change")
+	}
+
+	// Activity row differs only by tmux session name.
+	activityDiff := base
+	activityDiff.Activity = []SourceCount{{SourceApp: "myapp", TmuxSession: "beta", Count: 2}}
+	if viewSignature(base) == viewSignature(activityDiff) {
+		t.Error("signature unchanged after an activity tmux-session change")
+	}
+}
+
+func TestHandleDashboard_RendersTmuxSession(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "fix-1710", TmuxSession: "roster-colors",
+		SessionID: "sess-a", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	for _, want := range []string{
+		"roster-colors",         // the disambiguating name appears
+		"fix-1710",              // branch shown in its own column
+		"<th>session</th>",      // roster's session-name column
+		"<th>branch</th>",       // roster keeps a distinct branch column
+		"<th>session name</th>", // activity table's first column
+		"<th>id</th>",           // the renamed session-id chip column
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("missing %q in dashboard:\n%s", want, body)
+		}
+	}
+	// The branch is its own column, not a dimmed sub-label stacked under the name.
+	if strings.Contains(body, `<span class="sub">`) {
+		t.Errorf("stacked branch sub-label should be gone:\n%s", body)
 	}
 }
 

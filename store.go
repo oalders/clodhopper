@@ -20,6 +20,7 @@ type Event struct {
 	SourceApp   string
 	Branch      string // git branch of Cwd at capture time, "" if unknown
 	Cwd         string
+	TmuxSession string // tmux session name at capture time, "" if not in tmux
 	SessionID   string
 	EventType   string
 	ToolName    string
@@ -34,6 +35,7 @@ CREATE TABLE IF NOT EXISTS events (
   source_app   TEXT NOT NULL,
   branch       TEXT,
   cwd          TEXT,
+  tmux_session TEXT,
   session_id   TEXT,
   event_type   TEXT NOT NULL,
   tool_name    TEXT,
@@ -49,6 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 // earlier run, so we ignore errors rather than fail capture.
 var migrations = []string{
 	`ALTER TABLE events ADD COLUMN branch TEXT`,
+	`ALTER TABLE events ADD COLUMN tmux_session TEXT`,
 }
 
 // defaultDBPath returns CLODHOPPER_DB if set, else ~/.claude/clodhopper/var/events.db.
@@ -110,9 +113,9 @@ func retryOnLock(fn func() error) error {
 
 func insertEvent(db *sql.DB, ev Event) error {
 	_, err := db.Exec(
-		`INSERT INTO events (ts, source_app, branch, cwd, session_id, event_type, tool_name, summary, payload_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ev.TS, ev.SourceApp, ev.Branch, ev.Cwd, ev.SessionID, ev.EventType, ev.ToolName, ev.Summary, ev.PayloadJSON,
+		`INSERT INTO events (ts, source_app, branch, cwd, tmux_session, session_id, event_type, tool_name, summary, payload_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ev.TS, ev.SourceApp, ev.Branch, ev.Cwd, ev.TmuxSession, ev.SessionID, ev.EventType, ev.ToolName, ev.Summary, ev.PayloadJSON,
 	)
 	return err
 }
@@ -287,19 +290,20 @@ func distinctBranches(db *sql.DB) ([]string, error) { return distinctColumn(db, 
 // most recent events. It powers the roster at the top of the dashboard — the
 // "which of my agents is waiting on me" view.
 type Agent struct {
-	SessionID  string
-	SourceApp  string
-	Branch     string
-	Cwd        string
-	Status     string // human label (see status* constants)
-	StatusRank int    // sort key; lower = more urgent
-	Doing      string // active skill/command, else latest tool/event
-	LastEvent  string
-	Idle       string // humanised time since last event ("4m", "1h")
-	IdleSecs   int
-	IdleSince  int64  // unix seconds of the last event, so the client can tick idle in place
-	CI         string // merge-readiness; filled by the server layer via gh
-	firstSeq   int    // arrival order (0-based) within the roster window; drives stable color assignment, not displayed
+	SessionID   string
+	SourceApp   string
+	Branch      string
+	Cwd         string
+	TmuxSession string // tmux session name, the disambiguating label
+	Status      string // human label (see status* constants)
+	StatusRank  int    // sort key; lower = more urgent
+	Doing       string // active skill/command, else latest tool/event
+	LastEvent   string
+	Idle        string // humanised time since last event ("4m", "1h")
+	IdleSecs    int
+	IdleSince   int64  // unix seconds of the last event, so the client can tick idle in place
+	CI          string // merge-readiness; filled by the server layer via gh
+	firstSeq    int    // arrival order (0-based) within the roster window; drives stable color assignment, not displayed
 }
 
 // Status labels. Kept as constants so tests and the sort agree on the wording.
@@ -362,7 +366,7 @@ func deriveStatus(lastEvent string, idleSecs int) (label string, rank int, activ
 func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, error) {
 	since := now.Add(-waitingCap).UTC().Format(time.RFC3339)
 	rows, err := db.Query(
-		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(cwd,''), COALESCE(session_id,''),
+		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(cwd,''), COALESCE(tmux_session,''), COALESCE(session_id,''),
 		        event_type, COALESCE(tool_name,''), COALESCE(summary,'')
 		 FROM events WHERE ts >= ? AND session_id IS NOT NULL AND session_id <> ''
 		 ORDER BY id ASC`, since)
@@ -379,8 +383,8 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	byID := map[string]*state{}
 	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
 	for rows.Next() {
-		var ts, app, branch, cwd, sess, etype, tool, summary string
-		if err := rows.Scan(&ts, &app, &branch, &cwd, &sess, &etype, &tool, &summary); err != nil {
+		var ts, app, branch, cwd, tmuxSess, sess, etype, tool, summary string
+		if err := rows.Scan(&ts, &app, &branch, &cwd, &tmuxSess, &sess, &etype, &tool, &summary); err != nil {
 			return nil, err
 		}
 		s := byID[sess]
@@ -390,7 +394,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 			nextSeq++
 		}
 		// Ascending scan: the last write wins, so these hold the latest values.
-		s.a.SourceApp, s.a.Branch, s.a.Cwd = app, branch, cwd
+		s.a.SourceApp, s.a.Branch, s.a.Cwd, s.a.TmuxSession = app, branch, cwd, tmuxSess
 		s.a.LastEvent = etype
 		s.lastTS = ts
 		if tool != "" {
@@ -460,23 +464,26 @@ func humanizeSeconds(s int) string {
 	}
 }
 
-// SourceCount is a per-(source_app, branch) activity tally for a recent window.
+// SourceCount is a per-(tmux_session, source_app, branch) activity tally for a
+// recent window.
 type SourceCount struct {
-	SourceApp string
-	Branch    string
-	Count     int
+	TmuxSession string
+	SourceApp   string
+	Branch      string
+	Count       int
 }
 
-// activeCounts returns per-(source_app, branch) event counts within the last
-// window. Grouping by branch as well as app means each concurrent worktree shows
-// up as its own row, which is the signal that tells you which session is busy.
+// activeCounts returns per-(tmux_session, source_app, branch) event counts within
+// the last window. Grouping by tmux session and branch as well as app means each
+// concurrent tmux session / worktree shows up as its own row — the signal that
+// tells you which session is busy, and which disambiguates look-alike branches.
 // now is passed in (not read from the clock) so the result is deterministic
 // under test, matching agentRoster.
 func activeCounts(db *sql.DB, window time.Duration, now time.Time) ([]SourceCount, error) {
 	since := now.UTC().Add(-window).Format(time.RFC3339)
 	rows, err := db.Query(
-		`SELECT source_app, COALESCE(branch, ''), COUNT(*) FROM events WHERE ts >= ?
-		 GROUP BY source_app, branch ORDER BY COUNT(*) DESC`,
+		`SELECT COALESCE(tmux_session,''), source_app, COALESCE(branch, ''), COUNT(*) FROM events WHERE ts >= ?
+		 GROUP BY tmux_session, source_app, branch ORDER BY COUNT(*) DESC`,
 		since,
 	)
 	if err != nil {
@@ -486,7 +493,7 @@ func activeCounts(db *sql.DB, window time.Duration, now time.Time) ([]SourceCoun
 	var out []SourceCount
 	for rows.Next() {
 		var sc SourceCount
-		if err := rows.Scan(&sc.SourceApp, &sc.Branch, &sc.Count); err != nil {
+		if err := rows.Scan(&sc.TmuxSession, &sc.SourceApp, &sc.Branch, &sc.Count); err != nil {
 			return nil, err
 		}
 		out = append(out, sc)
