@@ -481,6 +481,95 @@ func formatDuration(ms int64) string {
 	return fmt.Sprintf("%dm%02ds", m, s)
 }
 
+// EventRow is one rendered line in the Recent-events table after folding: the
+// anchor Event (the Pre when a tool call has one) plus the derived outcome glyph
+// and a preformatted duration. Non-tool events pass through with empty Outcome
+// and Duration. Event is embedded so the template reaches its fields directly.
+type EventRow struct {
+	Event
+	Outcome  string // "✓" resolved, "✗" failed, "⋯" in-flight, "" for non-tool rows
+	Duration string // formatDuration of the resolving event, or "" if none yet
+}
+
+// Outcome glyphs for a folded tool-call row.
+const (
+	outcomeOK      = "✓"
+	outcomeFail    = "✗"
+	outcomeRunning = "⋯"
+)
+
+// foldToolEvents collapses each PreToolUse/PostToolUse(/Failure) pair — matched
+// exactly by tool_use_id — into a single Recent-events row, so one tool call is
+// one line with an outcome glyph and a duration. Events without a tool_use_id
+// (prompts, Stop, Session*, …) pass through unchanged. The input is the
+// id-descending slice queryEvents returns; output preserves that order, anchored
+// at each call's Pre (start) event so a completing call does not jump to the top
+// of the feed. Pure: no clock, no DB.
+func foldToolEvents(events []Event) []EventRow {
+	type pair struct {
+		pre      *Event
+		resolved *Event // PostToolUse or PostToolUseFailure
+	}
+	byID := map[string]*pair{}
+	for i := range events {
+		e := &events[i]
+		if e.ToolUseID == "" {
+			continue
+		}
+		p := byID[e.ToolUseID]
+		if p == nil {
+			p = &pair{}
+			byID[e.ToolUseID] = p
+		}
+		switch e.EventType {
+		case "PreToolUse":
+			if p.pre == nil { // first-wins on a duplicate Pre (retry)
+				p.pre = e
+			}
+		case "PostToolUse", "PostToolUseFailure":
+			if p.resolved == nil {
+				p.resolved = e
+			}
+		}
+	}
+
+	out := make([]EventRow, 0, len(events))
+	emitted := map[string]bool{}
+	for i := range events {
+		e := events[i]
+		if e.ToolUseID == "" {
+			out = append(out, EventRow{Event: e}) // non-tool: pass through
+			continue
+		}
+		if emitted[e.ToolUseID] {
+			continue
+		}
+		p := byID[e.ToolUseID]
+		// Anchor at the Pre when present (else the lone event we have). Emit only
+		// at the anchor's walk position so the row lands at the start (Pre), not
+		// the higher-id Post — otherwise a completing call would jump to the top.
+		anchorIsPre := p.pre != nil
+		if anchorIsPre && e.EventType != "PreToolUse" {
+			continue // this is the resolving Post; its row is emitted at the Pre
+		}
+		emitted[e.ToolUseID] = true
+		row := EventRow{Event: e}
+		switch {
+		case p.resolved != nil && p.resolved.EventType == "PostToolUseFailure":
+			row.Outcome = outcomeFail
+		case p.resolved != nil:
+			row.Outcome = outcomeOK
+		default:
+			row.Outcome = outcomeRunning
+		}
+		if p.resolved != nil && p.resolved.DurationMs.Valid {
+			row.Duration = formatDuration(p.resolved.DurationMs.Int64)
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
 // humanizeSeconds renders a compact age like "12s", "4m", or "1h".
 func humanizeSeconds(s int) string {
 	switch {

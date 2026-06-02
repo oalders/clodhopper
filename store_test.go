@@ -248,3 +248,107 @@ func TestFormatDuration(t *testing.T) {
 		}
 	}
 }
+
+func TestFoldToolEvents_Cases(t *testing.T) {
+	dur := func(ms int64) sql.NullInt64 { return sql.NullInt64{Int64: ms, Valid: true} }
+
+	t.Run("matched pair folds to one ok row with duration", func(t *testing.T) {
+		rows := foldToolEvents([]Event{
+			{ID: 2, EventType: "PostToolUse", ToolName: "Bash", ToolUseID: "t1", DurationMs: dur(246)},
+			{ID: 1, EventType: "PreToolUse", ToolName: "Bash", ToolUseID: "t1"},
+		})
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row, got %d: %+v", len(rows), rows)
+		}
+		if rows[0].Outcome != "✓" || rows[0].Duration != "246ms" || rows[0].EventType != "PreToolUse" {
+			t.Errorf("row = %+v, want ✓ 246ms anchored at Pre", rows[0])
+		}
+	})
+
+	t.Run("failure folds to a fail row", func(t *testing.T) {
+		rows := foldToolEvents([]Event{
+			{ID: 2, EventType: "PostToolUseFailure", ToolName: "Bash", ToolUseID: "t1", DurationMs: dur(74)},
+			{ID: 1, EventType: "PreToolUse", ToolName: "Bash", ToolUseID: "t1"},
+		})
+		if len(rows) != 1 || rows[0].Outcome != "✗" || rows[0].Duration != "74ms" {
+			t.Fatalf("want one ✗ 74ms row, got %+v", rows)
+		}
+	})
+
+	t.Run("in-flight Pre shows running glyph and no duration", func(t *testing.T) {
+		rows := foldToolEvents([]Event{
+			{ID: 1, EventType: "PreToolUse", ToolName: "Edit", ToolUseID: "t1"},
+		})
+		if len(rows) != 1 || rows[0].Outcome != "⋯" || rows[0].Duration != "" {
+			t.Fatalf("want one ⋯ row with no duration, got %+v", rows)
+		}
+	})
+
+	t.Run("orphan Post (Pre aged out) still renders resolved", func(t *testing.T) {
+		rows := foldToolEvents([]Event{
+			{ID: 9, EventType: "PostToolUse", ToolName: "Read", ToolUseID: "t1", DurationMs: dur(2)},
+		})
+		if len(rows) != 1 || rows[0].Outcome != "✓" || rows[0].Duration != "2ms" {
+			t.Fatalf("want one ✓ 2ms row, got %+v", rows)
+		}
+	})
+
+	t.Run("parallel same-tool calls pair by id, not adjacency", func(t *testing.T) {
+		rows := foldToolEvents([]Event{
+			{ID: 4, EventType: "PostToolUse", ToolName: "Read", ToolUseID: "tB", DurationMs: dur(8)},
+			{ID: 3, EventType: "PostToolUse", ToolName: "Read", ToolUseID: "tA", DurationMs: dur(5)},
+			{ID: 2, EventType: "PreToolUse", ToolName: "Read", ToolUseID: "tB"},
+			{ID: 1, EventType: "PreToolUse", ToolName: "Read", ToolUseID: "tA"},
+		})
+		if len(rows) != 2 {
+			t.Fatalf("want 2 folded rows, got %d: %+v", len(rows), rows)
+		}
+		got := map[string]string{}
+		for _, r := range rows {
+			got[r.ToolUseID] = r.Duration
+		}
+		if got["tA"] != "5ms" || got["tB"] != "8ms" {
+			t.Errorf("durations mispaired: %+v", got)
+		}
+	})
+
+	t.Run("duplicate Pre for one id emits a single row", func(t *testing.T) {
+		rows := foldToolEvents([]Event{
+			{ID: 2, EventType: "PreToolUse", ToolName: "Bash", ToolUseID: "t1"},
+			{ID: 1, EventType: "PreToolUse", ToolName: "Bash", ToolUseID: "t1"},
+		})
+		if len(rows) != 1 {
+			t.Fatalf("want 1 row for a duplicated Pre, got %d: %+v", len(rows), rows)
+		}
+	})
+
+	t.Run("non-tool events pass through untouched", func(t *testing.T) {
+		rows := foldToolEvents([]Event{
+			{ID: 1, EventType: "Stop", Summary: "Stop"},
+		})
+		if len(rows) != 1 || rows[0].Outcome != "" || rows[0].EventType != "Stop" {
+			t.Fatalf("non-tool event should pass through, got %+v", rows)
+		}
+	})
+}
+
+func TestFoldToolEvents_AnchorsAtStartNotCompletion(t *testing.T) {
+	// id-descending input (as queryEvents returns). A long call: Pre at id 1,
+	// Post at id 5, with unrelated events (ids 4, 3) in between.
+	rows := foldToolEvents([]Event{
+		{ID: 5, EventType: "PostToolUse", ToolName: "Bash", ToolUseID: "t1", DurationMs: sql.NullInt64{Int64: 3100, Valid: true}},
+		{ID: 4, EventType: "Stop"},
+		{ID: 3, EventType: "UserPromptSubmit"},
+		{ID: 1, EventType: "PreToolUse", ToolName: "Bash", ToolUseID: "t1"},
+	})
+	if len(rows) != 3 {
+		t.Fatalf("want 3 rows, got %d: %+v", len(rows), rows)
+	}
+	if rows[0].EventType != "Stop" {
+		t.Errorf("Stop should stay at the top, got %+v", rows[0])
+	}
+	last := rows[len(rows)-1]
+	if last.ToolName != "Bash" || last.Outcome != "✓" || last.Duration != "3.1s" {
+		t.Errorf("folded call should sit last (at its Pre position) as ✓ 3.1s, got %+v", last)
+	}
+}
