@@ -175,6 +175,7 @@ type dashboardData struct {
 	Agents         []Agent
 	Activity       []SourceCount
 	Events         []Event
+	EventRows      []EventRow // Events folded for display; see foldToolEvents
 	SourceApps     []string
 	Branches       []string
 	FilterSource   string
@@ -440,6 +441,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache) (dashboardData
 		Agents:         agents,
 		Activity:       activity,
 		Events:         events,
+		EventRows:      foldToolEvents(events),
 		SourceApps:     apps,
 		Branches:       branches,
 		FilterSource:   source,

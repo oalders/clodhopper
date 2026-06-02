@@ -25,6 +25,8 @@ type Event struct {
 	EventType   string
 	ToolName    string
 	Summary     string
+	ToolUseID   string        // hook tool_use_id; pairs a Pre with its Post/Failure
+	DurationMs  sql.NullInt64 // tool-call duration (Post* only); NULL otherwise
 	PayloadJSON string
 }
 
@@ -40,6 +42,8 @@ CREATE TABLE IF NOT EXISTS events (
   event_type   TEXT NOT NULL,
   tool_name    TEXT,
   summary      TEXT,
+  tool_use_id  TEXT,
+  duration_ms  INTEGER,
   payload_json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_source_ts ON events(source_app, ts);
@@ -52,6 +56,8 @@ CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 var migrations = []string{
 	`ALTER TABLE events ADD COLUMN branch TEXT`,
 	`ALTER TABLE events ADD COLUMN tmux_session TEXT`,
+	`ALTER TABLE events ADD COLUMN tool_use_id TEXT`,
+	`ALTER TABLE events ADD COLUMN duration_ms INTEGER`,
 }
 
 // defaultDBPath returns CLODHOPPER_DB if set, else ~/.claude/clodhopper/var/events.db.
@@ -113,9 +119,9 @@ func retryOnLock(fn func() error) error {
 
 func insertEvent(db *sql.DB, ev Event) error {
 	_, err := db.Exec(
-		`INSERT INTO events (ts, source_app, branch, cwd, tmux_session, session_id, event_type, tool_name, summary, payload_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ev.TS, ev.SourceApp, ev.Branch, ev.Cwd, ev.TmuxSession, ev.SessionID, ev.EventType, ev.ToolName, ev.Summary, ev.PayloadJSON,
+		`INSERT INTO events (ts, source_app, branch, cwd, tmux_session, session_id, event_type, tool_name, summary, tool_use_id, duration_ms, payload_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ev.TS, ev.SourceApp, ev.Branch, ev.Cwd, ev.TmuxSession, ev.SessionID, ev.EventType, ev.ToolName, ev.Summary, ev.ToolUseID, ev.DurationMs, ev.PayloadJSON,
 	)
 	return err
 }
@@ -221,7 +227,7 @@ type EventFilter struct {
 }
 
 func queryEvents(db *sql.DB, f EventFilter) ([]Event, error) {
-	q := `SELECT id, ts, source_app, branch, cwd, session_id, event_type, tool_name, summary, payload_json
+	q := `SELECT id, ts, source_app, branch, cwd, session_id, event_type, tool_name, summary, COALESCE(tool_use_id,''), duration_ms, payload_json
 	      FROM events WHERE 1=1`
 	var args []any
 	if f.SourceApp != "" {
@@ -251,7 +257,7 @@ func queryEvents(db *sql.DB, f EventFilter) ([]Event, error) {
 	for rows.Next() {
 		var e Event
 		var branch, cwd, sess, tool, summary sql.NullString
-		if err := rows.Scan(&e.ID, &e.TS, &e.SourceApp, &branch, &cwd, &sess, &e.EventType, &tool, &summary, &e.PayloadJSON); err != nil {
+		if err := rows.Scan(&e.ID, &e.TS, &e.SourceApp, &branch, &cwd, &sess, &e.EventType, &tool, &summary, &e.ToolUseID, &e.DurationMs, &e.PayloadJSON); err != nil {
 			return nil, err
 		}
 		e.Branch, e.Cwd, e.SessionID, e.ToolName, e.Summary = branch.String, cwd.String, sess.String, tool.String, summary.String
@@ -455,6 +461,113 @@ func idleSeconds(ts string, now time.Time) int {
 		return 0
 	}
 	return int(d.Seconds())
+}
+
+// formatDuration renders a tool-call duration (milliseconds) as one compact
+// token for the Recent-events time suffix: "2ms"/"246ms" under a second,
+// "3.1s" under a minute, "2m"/"2m05s" beyond.
+func formatDuration(ms int64) string {
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	if ms < 60000 {
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
+	}
+	totalSec := ms / 1000
+	m, s := totalSec/60, totalSec%60
+	if s == 0 {
+		return fmt.Sprintf("%dm", m)
+	}
+	return fmt.Sprintf("%dm%02ds", m, s)
+}
+
+// EventRow is one rendered line in the Recent-events table after folding: the
+// anchor Event (the Pre when a tool call has one) plus the derived outcome glyph
+// and a preformatted duration. Non-tool events pass through with empty Outcome
+// and Duration. Event is embedded so the template reaches its fields directly.
+type EventRow struct {
+	Event
+	Outcome  string // "✓" resolved, "✗" failed, "⋯" in-flight, "" for non-tool rows
+	Duration string // formatDuration of the resolving event, or "" if none yet
+}
+
+// Outcome glyphs for a folded tool-call row.
+const (
+	outcomeOK      = "✓"
+	outcomeFail    = "✗"
+	outcomeRunning = "⋯"
+)
+
+// foldToolEvents collapses each PreToolUse/PostToolUse(/Failure) pair — matched
+// exactly by tool_use_id — into a single Recent-events row, so one tool call is
+// one line with an outcome glyph and a duration. Events without a tool_use_id
+// (prompts, Stop, Session*, …) pass through unchanged. The input is the
+// id-descending slice queryEvents returns; output preserves that order, anchored
+// at each call's Pre (start) event so a completing call does not jump to the top
+// of the feed. Pure: no clock, no DB.
+func foldToolEvents(events []Event) []EventRow {
+	type pair struct {
+		pre      *Event
+		resolved *Event // PostToolUse or PostToolUseFailure
+	}
+	byID := map[string]*pair{}
+	for i := range events {
+		e := &events[i]
+		if e.ToolUseID == "" {
+			continue
+		}
+		p := byID[e.ToolUseID]
+		if p == nil {
+			p = &pair{}
+			byID[e.ToolUseID] = p
+		}
+		switch e.EventType {
+		case "PreToolUse":
+			if p.pre == nil { // first-wins on a duplicate Pre (retry)
+				p.pre = e
+			}
+		case "PostToolUse", "PostToolUseFailure":
+			if p.resolved == nil {
+				p.resolved = e
+			}
+		}
+	}
+
+	out := make([]EventRow, 0, len(events))
+	emitted := map[string]bool{}
+	for i := range events {
+		e := events[i]
+		if e.ToolUseID == "" {
+			out = append(out, EventRow{Event: e}) // non-tool: pass through
+			continue
+		}
+		if emitted[e.ToolUseID] {
+			continue
+		}
+		p := byID[e.ToolUseID]
+		// Anchor at the Pre when present (else the lone event we have). Emit only
+		// at the anchor's walk position so the row lands at the start (Pre), not
+		// the higher-id Post — otherwise a completing call would jump to the top.
+		anchorIsPre := p.pre != nil
+		if anchorIsPre && e.EventType != "PreToolUse" {
+			continue // this is the resolving Post; its row is emitted at the Pre
+		}
+		emitted[e.ToolUseID] = true
+		row := EventRow{Event: e}
+		switch {
+		case p.resolved != nil && p.resolved.EventType == "PostToolUseFailure":
+			row.Outcome = outcomeFail
+		case p.resolved != nil:
+			row.Outcome = outcomeOK
+		default:
+			row.Outcome = outcomeRunning
+		}
+		if p.resolved != nil && p.resolved.DurationMs.Valid {
+			row.Duration = formatDuration(p.resolved.DurationMs.Int64)
+		}
+		out = append(out, row)
+	}
+	return out
 }
 
 // humanizeSeconds renders a compact age like "12s", "4m", or "1h".
