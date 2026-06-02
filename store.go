@@ -20,6 +20,7 @@ type Event struct {
 	SourceApp   string
 	Branch      string // git branch of Cwd at capture time, "" if unknown
 	Cwd         string
+	TmuxSession string // tmux session name at capture time, "" if not in tmux
 	SessionID   string
 	EventType   string
 	ToolName    string
@@ -34,6 +35,7 @@ CREATE TABLE IF NOT EXISTS events (
   source_app   TEXT NOT NULL,
   branch       TEXT,
   cwd          TEXT,
+  tmux_session TEXT,
   session_id   TEXT,
   event_type   TEXT NOT NULL,
   tool_name    TEXT,
@@ -49,6 +51,7 @@ CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 // earlier run, so we ignore errors rather than fail capture.
 var migrations = []string{
 	`ALTER TABLE events ADD COLUMN branch TEXT`,
+	`ALTER TABLE events ADD COLUMN tmux_session TEXT`,
 }
 
 // defaultDBPath returns CLODHOPPER_DB if set, else ~/.claude/clodhopper/var/events.db.
@@ -110,9 +113,9 @@ func retryOnLock(fn func() error) error {
 
 func insertEvent(db *sql.DB, ev Event) error {
 	_, err := db.Exec(
-		`INSERT INTO events (ts, source_app, branch, cwd, session_id, event_type, tool_name, summary, payload_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ev.TS, ev.SourceApp, ev.Branch, ev.Cwd, ev.SessionID, ev.EventType, ev.ToolName, ev.Summary, ev.PayloadJSON,
+		`INSERT INTO events (ts, source_app, branch, cwd, tmux_session, session_id, event_type, tool_name, summary, payload_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ev.TS, ev.SourceApp, ev.Branch, ev.Cwd, ev.TmuxSession, ev.SessionID, ev.EventType, ev.ToolName, ev.Summary, ev.PayloadJSON,
 	)
 	return err
 }
