@@ -232,3 +232,19 @@ func TestToolCallColumnsRoundTrip(t *testing.T) {
 		t.Errorf("pre duration should be NULL, got %+v", pre.DurationMs)
 	}
 }
+
+func TestFormatDuration(t *testing.T) {
+	cases := []struct {
+		ms   int64
+		want string
+	}{
+		{0, "0ms"}, {2, "2ms"}, {246, "246ms"}, {999, "999ms"},
+		{1000, "1.0s"}, {1050, "1.1s"}, {3100, "3.1s"}, {59000, "59.0s"},
+		{60000, "1m"}, {64000, "1m04s"}, {120000, "2m"}, {125000, "2m05s"},
+	}
+	for _, c := range cases {
+		if got := formatDuration(c.ms); got != c.want {
+			t.Errorf("formatDuration(%d) = %q, want %q", c.ms, got, c.want)
+		}
+	}
+}

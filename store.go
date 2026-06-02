@@ -463,6 +463,24 @@ func idleSeconds(ts string, now time.Time) int {
 	return int(d.Seconds())
 }
 
+// formatDuration renders a tool-call duration (milliseconds) as one compact
+// token for the Recent-events time suffix: "2ms"/"246ms" under a second,
+// "3.1s" under a minute, "2m"/"2m05s" beyond.
+func formatDuration(ms int64) string {
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	if ms < 60000 {
+		return fmt.Sprintf("%.1fs", float64(ms)/1000)
+	}
+	totalSec := ms / 1000
+	m, s := totalSec/60, totalSec%60
+	if s == 0 {
+		return fmt.Sprintf("%dm", m)
+	}
+	return fmt.Sprintf("%dm%02ds", m, s)
+}
+
 // humanizeSeconds renders a compact age like "12s", "4m", or "1h".
 func humanizeSeconds(s int) string {
 	switch {
