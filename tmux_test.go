@@ -32,7 +32,7 @@ func TestTmuxSession_InTmux(t *testing.T) {
 	if err != nil {
 		t.Skipf("tmux display-message failed: %v", err)
 	}
-	want := strings.TrimSpace(string(out))
+	want := truncate(scrubString(strings.TrimSpace(string(out))), maxFieldLen)
 	if got := tmuxSession(); got != want {
 		t.Errorf("tmuxSession() = %q, want %q", got, want)
 	}
