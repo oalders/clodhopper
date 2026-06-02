@@ -4,10 +4,31 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
+
+// cleanSessionName strips unrenderable Nerd Font / devicon glyphs (Unicode
+// Private Use Area) and control characters, and collapses alignment padding —
+// so a real tmux name like the one below shows cleanly in a browser. The leading
+// emoji (a real, renderable codepoint) is kept.
+func TestCleanSessionName(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{
+			"strips PUA glyph and padding, keeps emoji and text",
+			"👟  fix-2482             Blog post funniest / cleverest / most [in progress]",
+			"👟 fix-2482 Blog post funniest / cleverest / most [in progress]",
+		},
+		{"plain name unchanged", "my-session", "my-session"},
+		{"collapses whitespace and drops control chars", "  hi\tthere\n", "hi there"},
+		{"all-glyph name becomes empty", "", ""},
+	}
+	for _, c := range cases {
+		if got := cleanSessionName(c.in); got != c.want {
+			t.Errorf("%s: cleanSessionName(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
 
 // Outside tmux ($TMUX unset), capture is empty and never errors.
 func TestTmuxSession_NotInTmux(t *testing.T) {
@@ -32,7 +53,7 @@ func TestTmuxSession_InTmux(t *testing.T) {
 	if err != nil {
 		t.Skipf("tmux display-message failed: %v", err)
 	}
-	want := truncate(scrubString(strings.TrimSpace(string(out))), maxFieldLen)
+	want := truncate(scrubString(cleanSessionName(string(out))), maxFieldLen)
 	if got := tmuxSession(); got != want {
 		t.Errorf("tmuxSession() = %q, want %q", got, want)
 	}
