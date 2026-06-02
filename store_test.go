@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -193,5 +194,41 @@ func TestConcurrentWritersWAL(t *testing.T) {
 	got, _ := queryEvents(db, EventFilter{})
 	if len(got) != writers*perWriter {
 		t.Errorf("want %d events from concurrent writers, got %d", writers*perWriter, len(got))
+	}
+}
+
+func TestToolCallColumnsRoundTrip(t *testing.T) {
+	db, _ := openDB(testDB(t))
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: now, SourceApp: "a", SessionID: "s", EventType: "PostToolUse",
+		ToolName: "Bash", ToolUseID: "toolu_abc", DurationMs: sql.NullInt64{Int64: 246, Valid: true}, PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: now, SourceApp: "a", SessionID: "s", EventType: "PreToolUse",
+		ToolName: "Bash", ToolUseID: "toolu_abc", PayloadJSON: "{}"})
+
+	got, err := queryEvents(db, EventFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("queryEvents: %v", err)
+	}
+	var post, pre *Event
+	for i := range got {
+		switch got[i].EventType {
+		case "PostToolUse":
+			post = &got[i]
+		case "PreToolUse":
+			pre = &got[i]
+		}
+	}
+	if post == nil || pre == nil {
+		t.Fatalf("expected both rows, got %+v", got)
+	}
+	if post.ToolUseID != "toolu_abc" {
+		t.Errorf("post tool_use_id = %q, want toolu_abc", post.ToolUseID)
+	}
+	if !post.DurationMs.Valid || post.DurationMs.Int64 != 246 {
+		t.Errorf("post duration = %+v, want {246 true}", post.DurationMs)
+	}
+	if pre.DurationMs.Valid {
+		t.Errorf("pre duration should be NULL, got %+v", pre.DurationMs)
 	}
 }
