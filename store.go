@@ -464,11 +464,13 @@ func humanizeSeconds(s int) string {
 	}
 }
 
-// SourceCount is a per-(source_app, branch) activity tally for a recent window.
+// SourceCount is a per-(tmux_session, source_app, branch) activity tally for a
+// recent window.
 type SourceCount struct {
-	SourceApp string
-	Branch    string
-	Count     int
+	TmuxSession string
+	SourceApp   string
+	Branch      string
+	Count       int
 }
 
 // activeCounts returns per-(source_app, branch) event counts within the last
@@ -479,8 +481,8 @@ type SourceCount struct {
 func activeCounts(db *sql.DB, window time.Duration, now time.Time) ([]SourceCount, error) {
 	since := now.UTC().Add(-window).Format(time.RFC3339)
 	rows, err := db.Query(
-		`SELECT source_app, COALESCE(branch, ''), COUNT(*) FROM events WHERE ts >= ?
-		 GROUP BY source_app, branch ORDER BY COUNT(*) DESC`,
+		`SELECT COALESCE(tmux_session,''), source_app, COALESCE(branch, ''), COUNT(*) FROM events WHERE ts >= ?
+		 GROUP BY tmux_session, source_app, branch ORDER BY COUNT(*) DESC`,
 		since,
 	)
 	if err != nil {
@@ -490,7 +492,7 @@ func activeCounts(db *sql.DB, window time.Duration, now time.Time) ([]SourceCoun
 	var out []SourceCount
 	for rows.Next() {
 		var sc SourceCount
-		if err := rows.Scan(&sc.SourceApp, &sc.Branch, &sc.Count); err != nil {
+		if err := rows.Scan(&sc.TmuxSession, &sc.SourceApp, &sc.Branch, &sc.Count); err != nil {
 			return nil, err
 		}
 		out = append(out, sc)

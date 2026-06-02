@@ -94,3 +94,31 @@ func TestAgentRoster_CarriesTmuxSession(t *testing.T) {
 		t.Errorf("TmuxSession = %q, want roster-colors (last write wins)", agents[0].TmuxSession)
 	}
 }
+
+// activeCounts groups by tmux session, so two sessions on the same branch are
+// two rows, each carrying its own name.
+func TestActiveCounts_GroupsByTmuxSession(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "fix-1710", TmuxSession: "alpha", EventType: "PreToolUse", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "fix-1710", TmuxSession: "beta", EventType: "PreToolUse", PayloadJSON: "{}"})
+
+	counts, err := activeCounts(db, time.Hour, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(counts) != 2 {
+		t.Fatalf("want 2 groups (one per tmux session), got %d: %+v", len(counts), counts)
+	}
+	names := map[string]bool{}
+	for _, c := range counts {
+		names[c.TmuxSession] = true
+	}
+	if !names["alpha"] || !names["beta"] {
+		t.Errorf("missing a tmux-session group: %+v", counts)
+	}
+}
