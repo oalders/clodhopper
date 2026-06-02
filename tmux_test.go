@@ -1,10 +1,53 @@
 package main
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
+
+// Outside tmux ($TMUX unset), capture is empty and never errors.
+func TestTmuxSession_NotInTmux(t *testing.T) {
+	t.Setenv("TMUX", "")
+	if got := tmuxSession(); got != "" {
+		t.Errorf("tmuxSession() outside tmux = %q, want \"\"", got)
+	}
+}
+
+// Inside a real tmux session, capture matches `tmux display-message -p '#S'`.
+// Skipped unless the suite itself runs inside tmux with the binary present —
+// tmuxSession() reads ambient $TMUX, so we cannot fake it hermetically (unlike
+// gitBranch, which takes a dir argument).
+func TestTmuxSession_InTmux(t *testing.T) {
+	if os.Getenv("TMUX") == "" {
+		t.Skip("not running inside tmux")
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not available")
+	}
+	out, err := exec.Command("tmux", "display-message", "-p", "#S").Output()
+	if err != nil {
+		t.Skipf("tmux display-message failed: %v", err)
+	}
+	want := strings.TrimSpace(string(out))
+	if got := tmuxSession(); got != want {
+		t.Errorf("tmuxSession() = %q, want %q", got, want)
+	}
+}
+
+// buildEvent wires the captured name onto the Event. With $TMUX forced empty the
+// value is deterministically "".
+func TestBuildEvent_PopulatesTmuxSession(t *testing.T) {
+	t.Setenv("TMUX", "")
+	raw := []byte(`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"echo hi"}}`)
+	ev := buildEvent(raw, "myapp")
+	if ev.TmuxSession != "" {
+		t.Errorf("tmux session with TMUX unset = %q, want \"\"", ev.TmuxSession)
+	}
+}
 
 // A captured tmux session name survives a write/read round-trip.
 func TestTmuxSessionPersists(t *testing.T) {
