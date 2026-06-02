@@ -297,7 +297,8 @@ type Agent struct {
 	TmuxSession string // tmux session name, the disambiguating label
 	Status      string // human label (see status* constants)
 	StatusRank  int    // sort key; lower = more urgent
-	Doing       string // active skill/command, else latest tool/event
+	Doing       string // most recent skill/command, else latest tool/event
+	DoingActive bool   // true while the agent is still working the phase; false once it has stopped/gone idle, when Doing is the last *completed* thing
 	LastEvent   string
 	Idle        string // humanised time since last event ("4m", "1h")
 	IdleSecs    int
@@ -422,6 +423,10 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		if a.Doing == "" {
 			a.Doing = s.lastTool // fall back to the latest tool when no skill seen
 		}
+		// Only a working agent is actively in its phase; once it has stopped or
+		// gone idle, Doing is the last *completed* thing — the dashboard shows
+		// that in italics rather than as something in progress.
+		a.DoingActive = label == statusWorking
 		a.IdleSecs = idleSecs
 		a.Idle = humanizeSeconds(idleSecs)
 		// Absolute last-event time (derived from now − idle so it stays consistent

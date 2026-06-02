@@ -32,6 +32,7 @@
     th { position: sticky; top: 0; background: Canvas; }
     td.time, td.tool, td.idle, td.sess, td.namecell { white-space: nowrap; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
+    td.summary em { font-style: italic; color: #888; } /* a completed phase, not one in progress */
     /* Branch is the one column we never truncate: it has a fixed, bounded width
        but wraps instead of ellipsing (a clipped branch name is ambiguous in a way
        a clipped session name is not), so a long branch grows taller rather than
@@ -155,7 +156,7 @@
         <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
         <td>{{ .SourceApp }}</td>
         <td class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
-        <td class="summary">{{ if .Doing }}{{ .Doing }}{{ else }}—{{ end }}</td>
+        <td class="summary">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}</td>
         <td class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}" title="{{ if .CI }}{{ .CI }}{{ else }}no CI{{ end }}">{{ if eq .CI "green" }}🟢{{ else if eq .CI "pending" }}🟡{{ else if eq .CI "failing" }}🔴{{ else }}—{{ end }}</td>
         <td class="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
         <td class="sess">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
