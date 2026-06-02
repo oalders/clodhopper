@@ -40,7 +40,7 @@
        session to the roster. */
     .chip { display: inline-block; width: .7em; height: .7em; border-radius: 50%; margin-right: .4em; vertical-align: baseline; }
     /* Roster first column: tmux session name on top, branch dimmed beneath it. */
-    td.namecell .name, td.namecell .sub { display: block; }
+    td.namecell .name, td.namecell .sub { display: block; overflow: hidden; text-overflow: ellipsis; }
     td.namecell .sub { color: #888; font-size: .85em; }
   </style>
 </head>
@@ -169,7 +169,7 @@
     <tbody>
       {{ range .Activity }}
       <tr>
-        <td class="branch">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
+        <td class="namecell">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
         <td>{{ .SourceApp }}</td>
         <td>{{ .Count }}</td>

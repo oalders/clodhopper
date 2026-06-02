@@ -255,7 +255,7 @@ func TestHandleDashboard_SessionColors(t *testing.T) {
 	if !strings.Contains(body, "color-mix") {
 		t.Errorf("expected a color-mix row tint:\n%s", body)
 	}
-	// The new "session" column header exists.
+	// The roster's first column is now headed "session" (the tmux session name).
 	if !strings.Contains(body, "<th>session</th>") {
 		t.Errorf("expected a session column header:\n%s", body)
 	}
