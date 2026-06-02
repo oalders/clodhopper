@@ -63,22 +63,32 @@ func tmuxSession() string {
 ### 2. Storage — `store.go`
 
 - Add `TmuxSession string` to the `Event` struct.
-- Add a `tmux_session TEXT` column via a new entry appended to the `migrations`
-  slice (a best-effort `ALTER TABLE events ADD COLUMN tmux_session TEXT`; an
-  already-applied `ALTER` errors harmlessly and is ignored).
-- `insertEvent` writes the new column (extend the column list, the placeholder
-  list, and the argument list).
+- Add `tmux_session TEXT` in **both** places, matching exactly how `branch` is
+  handled today (`branch TEXT` is in the base `schema` const *and* re-added via
+  the migrations slice — belt and suspenders):
+  - the base `CREATE TABLE` in the `schema` const, so a fresh DB has the column;
+  - a new entry appended to the `migrations` slice
+    (`ALTER TABLE events ADD COLUMN tmux_session TEXT`), best-effort — an
+    already-applied `ALTER` errors harmlessly and is ignored — so existing DBs
+    gain it.
+- `insertEvent` writes the new column. **Keep the three lists in lock-step** or
+  the insert silently mismatches: the column list, the `?` placeholder list, and
+  the `ev.*` argument list.
 
 ### 3. Roster — `store.go` / `agentRoster`
 
 - Add `TmuxSession` to the `Agent` struct.
-- `SELECT COALESCE(tmux_session,'')` in the roster query and assign it
-  last-write-wins in the ascending scan, exactly like `branch`/`cwd`.
+- Extend the roster query and its scan together (count must match):
+  - add `COALESCE(tmux_session,'')` to the `SELECT` column list;
+  - add a matching scan variable to the `var ts, app, branch, … string`
+    declaration and the `rows.Scan(...)` call;
+  - assign it last-write-wins in the ascending scan, exactly like `branch`/`cwd`.
 
 ### 4. Activity — `store.go` / `activeCounts` + `SourceCount`
 
 - Add `TmuxSession` to `SourceCount`.
-- Group by the new dimension as well:
+- Group by the new dimension as well, and extend the `rows.Scan(...)` to read the
+  extra leading column:
 
   ```sql
   SELECT COALESCE(tmux_session,''), source_app, COALESCE(branch,''), COUNT(*)
@@ -98,20 +108,43 @@ func tmuxSession() string {
   headed **"session"** — the Claude `session_id` colour-chip. To avoid two
   "session" columns, **rename that chip column's header to "id"** and head the
   new first column **"session"**.
+- **Layout:** the table uses a fixed `table-layout` with a `<colgroup>` pinning
+  per-column widths (and `white-space: nowrap` on cells like `td.branch`) — both
+  precisely to stop the dashboard reflowing/flashing on each poll. A stacked
+  primary/dimmed cell therefore needs its own CSS class plus a colgroup width
+  bump, not just markup; budget for that styling rather than reusing `.branch`.
 
-### 6. Server — `server.go`
+### 6. Server — `server.go` / `viewSignature`
 
-- Add `TmuxSession` to the roster etag hash (server.go:392, the `fmt.Fprintf(h, …)`
-  line) so a session-name change busts the dashboard cache.
+`viewSignature` (server.go:379) is an FNV-1a fingerprint of the rendered state —
+**not** an HTTP ETag; the JS poller compares it client-side and only redraws on a
+change. It hashes the roster and the activity table in **two separate loops**, so
+both must learn about `tmux_session` or a change that only affects the new column
+won't redraw:
+
+- **Roster loop (server.go:392):** add `TmuxSession` to the agent
+  `fmt.Fprintf(h, "|a:…")` line.
+- **Activity loop (server.go:403):** add `c.TmuxSession` to the
+  `fmt.Fprintf(h, "|c:…")` line.
+- **Activity sort (server.go:396-401):** the sort keys only on `SourceApp` then
+  `Branch`; two activity rows differing *only* by `tmux_session` would order
+  unstably and make the hash nondeterministic. Add `TmuxSession` as a tie-break
+  key so the fingerprint is stable.
 
 ### 7. Tests
 
 - `store_test` / `roster_test`: insert events carrying `TmuxSession`; assert the
   roster propagates it (last-write-wins) and `activeCounts` groups by and returns
   it.
-- `ingest`: assert `tmuxSession()` returns `""` when `$TMUX` is unset. Add a
-  tmux-backed happy-path test that `t.Skip`s when the `tmux` binary is absent
-  (mirroring how `branch_test.go` exercises `gitBranch` against a real git repo).
+- `ingest`: the reliable, hermetic test is the **`$TMUX`-unset → `""`** case
+  (`t.Setenv("TMUX", "")`). Note the analogy to `gitBranch` is imperfect:
+  `gitBranch(dir)` takes a directory the test controls via `t.TempDir()`, whereas
+  `tmuxSession()` reads ambient `$TMUX`/the real tmux server. A happy-path test
+  must therefore stand up its own server — spawn a detached `tmux new-session -d
+  -s <name>`, run the binary inside it, assert the captured name, then
+  `tmux kill-session` — and `t.Skip` when the `tmux` binary is absent. Keep the
+  happy path skippable so it never flakes CI; the unset-case test is the one that
+  always runs.
 
 ## Invariants preserved
 
