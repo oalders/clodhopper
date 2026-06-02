@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -142,6 +143,63 @@ func TestSessColor(t *testing.T) {
 	for _, id := range []string{"a", "session-1", "7f3c9a01", "xyz", "deadbeef"} {
 		if c := sessColor(id); !slices.Contains(sessPalette, c) {
 			t.Errorf("sessColor(%q) = %q, not in palette", id, c)
+		}
+	}
+}
+
+func TestAssignSessColors(t *testing.T) {
+	mkAgents := func(ids ...string) []Agent {
+		out := make([]Agent, len(ids))
+		for i, id := range ids {
+			out[i] = Agent{SessionID: id, firstSeq: i} // firstSeq = arrival order
+		}
+		return out
+	}
+
+	// Distinctness: a roster no larger than the palette gets unique colors,
+	// regardless of hash collisions — the greedy probe deconflicts them.
+	ids := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf"}
+	got := assignSessColors(mkAgents(ids...), nil)
+	owner := map[string]string{}
+	for _, id := range ids {
+		c := got[id]
+		if c == "" {
+			t.Fatalf("no color for %q", id)
+		}
+		if prev, ok := owner[c]; ok {
+			t.Errorf("color %s shared by %q and %q; want distinct", c, prev, id)
+		}
+		owner[c] = id
+	}
+
+	// Incumbents keep their color when a newer agent arrives.
+	before := assignSessColors(mkAgents("alpha", "bravo", "charlie"), nil)
+	after := assignSessColors(mkAgents("alpha", "bravo", "charlie", "delta"), nil)
+	for _, id := range []string{"alpha", "bravo", "charlie"} {
+		if before[id] != after[id] {
+			t.Errorf("incumbent %q recolored on add: %s -> %s", id, before[id], after[id])
+		}
+	}
+	if after["delta"] == "" {
+		t.Error("newcomer delta got no color")
+	}
+
+	// Empty session ids are skipped (no chip/tint to render).
+	withEmpty := assignSessColors(mkAgents("alpha"), []Event{{SessionID: ""}})
+	if _, ok := withEmpty[""]; ok {
+		t.Error("empty session id should not be assigned a color")
+	}
+
+	// More sessions than colors: everyone still gets a palette color (collisions
+	// resume past the palette, but nothing panics or goes blank).
+	many := make([]string, len(sessPalette)+3)
+	for i := range many {
+		many[i] = fmt.Sprintf("sess-%d", i)
+	}
+	all := assignSessColors(mkAgents(many...), nil)
+	for _, id := range many {
+		if !slices.Contains(sessPalette, all[id]) {
+			t.Errorf("overflow session %q got %q, not in palette", id, all[id])
 		}
 	}
 }

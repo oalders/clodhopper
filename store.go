@@ -299,6 +299,7 @@ type Agent struct {
 	IdleSecs   int
 	IdleSince  int64  // unix seconds of the last event, so the client can tick idle in place
 	CI         string // merge-readiness; filled by the server layer via gh
+	firstSeq   int    // arrival order (0-based) within the roster window; drives stable color assignment, not displayed
 }
 
 // Status labels. Kept as constants so tests and the sort agree on the wording.
@@ -376,6 +377,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		lastTool string
 	}
 	byID := map[string]*state{}
+	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
 	for rows.Next() {
 		var ts, app, branch, cwd, sess, etype, tool, summary string
 		if err := rows.Scan(&ts, &app, &branch, &cwd, &sess, &etype, &tool, &summary); err != nil {
@@ -383,8 +385,9 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		}
 		s := byID[sess]
 		if s == nil {
-			s = &state{a: Agent{SessionID: sess}}
+			s = &state{a: Agent{SessionID: sess, firstSeq: nextSeq}}
 			byID[sess] = s
+			nextSeq++
 		}
 		// Ascending scan: the last write wins, so these hold the latest values.
 		s.a.SourceApp, s.a.Branch, s.a.Cwd = app, branch, cwd

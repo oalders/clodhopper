@@ -26,9 +26,8 @@ var dashboardHTML string
 
 var dashboardTmpl = template.Must(
 	template.New("dashboard").Funcs(template.FuncMap{
-		"short":     shortID,
-		"shortTS":   shortTS,
-		"sessColor": sessColor,
+		"short":   shortID,
+		"shortTS": shortTS,
 	}).Parse(dashboardHTML),
 )
 
@@ -61,30 +60,107 @@ func shortTS(ts string, now time.Time) string {
 // escaper-safe #rrggbb hex literals: html/template passes a bare hex color
 // through a style attribute unchanged, but a non-color token would be rewritten
 // to "ZgotmplZ". TestSessPaletteIsHex enforces the format.
+// Entries are spread around the hue wheel so adjacent-by-chance sessions stay
+// easy to tell apart. The dashboard is dual light/dark (color-scheme: light
+// dark), so every entry must be a mid-tone that shows on BOTH a white and a
+// dark background — no near-white or near-black. That mid-tone band only holds
+// ~12-14 truly distinct colors; beyond that, family cousins (blue/navy,
+// green/olive, gold/amber) appear and lean on lightness/hue offset to stay
+// apart. Order is cosmetic here (sessColor hashes uniformly across the whole
+// slice), so the cousins are as likely as any other entry — that is the cost of
+// going wide rather than staying at ~10 well-separated colors.
 var sessPalette = []string{
-	"#3b82f6", // blue
-	"#16a34a", // green
-	"#d97706", // amber
-	"#9333ea", // purple
-	"#dc2626", // red
+	"#2563eb", // blue
 	"#0891b2", // cyan
+	"#0d9488", // teal
+	"#16a34a", // green
+	"#4d7c0f", // olive
+	"#ca8a04", // gold
+	"#d97706", // amber
+	"#ea580c", // orange
+	"#dc2626", // red
+	"#be123c", // crimson
 	"#db2777", // pink
-	"#65a30d", // lime
+	"#c026d3", // fuchsia
+	"#9333ea", // purple
+	"#6d28d9", // violet
+	"#4f46e5", // indigo
+	"#1e40af", // navy
+	"#92400e", // brown
+	"#a16207", // bronze
+	"#475569", // slate
+	"#78716c", // stone
 }
 
-// sessColor maps a session id to a stable palette color via FNV-1a, so the same
-// session renders the same color in both the roster and the Recent events table
-// without any server-side coordination, and the color survives auto-refresh.
-// With only ~8 colors two concurrent sessions can easily share one, so the
-// short id shown beside the chip — not the color — is the real identifier.
-// An empty id yields "" so callers can skip the chip/tint entirely.
+// sessColor maps a session id to its hash-preferred palette color via FNV-1a.
+// This is the *uncoordinated* color: the dashboard renders chips/tints from
+// assignSessColors (which deconflicts the visible set), but sessColor remains
+// the stable fallback and the primitive the assignment builds on. An empty id
+// yields "" so callers can skip the chip/tint entirely.
 func sessColor(s string) string {
 	if s == "" {
 		return ""
 	}
+	return sessPalette[sessIndex(s)]
+}
+
+// sessIndex is the palette slot a session prefers before any collision handling.
+// assignSessColors uses it as the start of its linear probe.
+func sessIndex(s string) int {
 	h := fnv.New32a()
 	h.Write([]byte(s))
-	return sessPalette[h.Sum32()%uint32(len(sessPalette))]
+	return int(h.Sum32() % uint32(len(sessPalette)))
+}
+
+// assignSessColors hands every session shown on the dashboard a palette color,
+// deconflicting the visible set so concurrent agents stay easy to tell apart.
+// Sessions are processed oldest-first — live roster agents in arrival order
+// (firstSeq), then any session that only appears in the events log. Each takes
+// its hash-preferred color (sessIndex); if that slot is already taken, it probes
+// forward to the next free one. Because newer sessions are processed last, a
+// newly arrived agent can only claim a free/bumped slot — it never recolors an
+// agent already on the board ("incumbents keep their color"). A session leaving
+// can still shift a *newer* agent that had bumped off a now-freed color; that is
+// the accepted cost of staying stateless. Once every color is in use, remaining
+// sessions fall back to their hash color and collisions resume — there is simply
+// nothing free left to hand out.
+func assignSessColors(agents []Agent, events []Event) map[string]string {
+	ordered := make([]string, 0, len(agents)+len(events))
+	seen := make(map[string]bool, len(agents)+len(events))
+	add := func(id string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		ordered = append(ordered, id)
+	}
+
+	roster := append([]Agent(nil), agents...)
+	sort.SliceStable(roster, func(i, j int) bool { return roster[i].firstSeq < roster[j].firstSeq })
+	for _, a := range roster {
+		add(a.SessionID)
+	}
+	for _, e := range events {
+		add(e.SessionID)
+	}
+
+	out := make(map[string]string, len(ordered))
+	used := make(map[string]bool, len(sessPalette))
+	for _, id := range ordered {
+		start := sessIndex(id)
+		color := sessPalette[start] // fallback once the palette is exhausted
+		if len(used) < len(sessPalette) {
+			for i := range len(sessPalette) {
+				if c := sessPalette[(start+i)%len(sessPalette)]; !used[c] {
+					color = c
+					break
+				}
+			}
+			used[color] = true
+		}
+		out[id] = color
+	}
+	return out
 }
 
 // dashboardData is the view model rendered by the dashboard template.
@@ -100,8 +176,9 @@ type dashboardData struct {
 	RefreshSecs    int // 0 = auto-refresh disabled
 	RefreshOptions []refreshOption
 	Generated      string
-	Now            time.Time // render time, passed to shortTS so it can hide same-day dates
-	Signature      string    // fingerprint of the report-worthy view; see viewSignature
+	Now            time.Time         // render time, passed to shortTS so it can hide same-day dates
+	SessColors     map[string]string // session id -> chip/tint color; see assignSessColors
+	Signature      string            // fingerprint of the report-worthy view; see viewSignature
 }
 
 // refreshOption is one entry in the auto-refresh interval dropdown.
@@ -365,6 +442,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache) (dashboardData
 		RefreshOptions: refreshOptions(refresh),
 		Generated:      now.Format("15:04:05"),
 		Now:            now,
+		SessColors:     assignSessColors(agents, events),
 	}
 	data.Signature = viewSignature(data)
 	return data, nil
