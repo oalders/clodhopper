@@ -473,9 +473,10 @@ type SourceCount struct {
 	Count       int
 }
 
-// activeCounts returns per-(source_app, branch) event counts within the last
-// window. Grouping by branch as well as app means each concurrent worktree shows
-// up as its own row, which is the signal that tells you which session is busy.
+// activeCounts returns per-(tmux_session, source_app, branch) event counts within
+// the last window. Grouping by tmux session and branch as well as app means each
+// concurrent tmux session / worktree shows up as its own row — the signal that
+// tells you which session is busy, and which disambiguates look-alike branches.
 // now is passed in (not read from the clock) so the result is deterministic
 // under test, matching agentRoster.
 func activeCounts(db *sql.DB, window time.Duration, now time.Time) ([]SourceCount, error) {
