@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -73,6 +74,10 @@ func buildEvent(raw []byte, sourceApp string) Event {
 		EventType:   str(p, "hook_event_name"),
 		ToolName:    str(p, "tool_name"),
 		PayloadJSON: scrubPayload(raw),
+	}
+	ev.ToolUseID = str(p, "tool_use_id")
+	if ms, ok := numField(p, "duration_ms"); ok {
+		ev.DurationMs = sql.NullInt64{Int64: ms, Valid: true}
 	}
 	if ev.EventType == "" {
 		ev.EventType = "Unknown"
@@ -217,6 +222,19 @@ func str(m map[string]any, key string) string {
 		return v
 	}
 	return ""
+}
+
+// numField reads a JSON number field (decoded as float64 by encoding/json) from
+// a map as an int64, reporting whether it was present and numeric. Used for
+// duration_ms, which str() cannot read.
+func numField(m map[string]any, key string) (int64, bool) {
+	if m == nil {
+		return 0, false
+	}
+	if v, ok := m[key].(float64); ok {
+		return int64(v), true
+	}
+	return 0, false
 }
 
 func debugf(format string, a ...any) {

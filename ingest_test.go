@@ -7,6 +7,28 @@ import (
 	"testing"
 )
 
+func TestBuildEvent_ExtractsToolUseIDAndDuration(t *testing.T) {
+	raw := []byte(`{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"toolu_xyz","duration_ms":246,"session_id":"s"}`)
+	ev := buildEvent(raw, "app")
+	if ev.ToolUseID != "toolu_xyz" {
+		t.Errorf("tool_use_id = %q, want toolu_xyz", ev.ToolUseID)
+	}
+	if !ev.DurationMs.Valid || ev.DurationMs.Int64 != 246 {
+		t.Errorf("duration = %+v, want {246 true}", ev.DurationMs)
+	}
+}
+
+func TestBuildEvent_NoDurationWhenAbsent(t *testing.T) {
+	raw := []byte(`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"toolu_xyz"}`)
+	ev := buildEvent(raw, "app")
+	if ev.ToolUseID != "toolu_xyz" {
+		t.Errorf("tool_use_id = %q, want toolu_xyz", ev.ToolUseID)
+	}
+	if ev.DurationMs.Valid {
+		t.Errorf("duration should be NULL when absent, got %+v", ev.DurationMs)
+	}
+}
+
 // withStdin replaces os.Stdin with a file containing data for the duration of fn.
 func withStdin(t *testing.T, data string, fn func()) {
 	t.Helper()
