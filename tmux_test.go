@@ -67,3 +67,30 @@ func TestTmuxSessionPersists(t *testing.T) {
 		t.Errorf("tmux_session = %q, want roster-colors", got)
 	}
 }
+
+// The roster folds in the latest tmux session name per session (last write wins),
+// just like branch/cwd.
+func TestAgentRoster_CarriesTmuxSession(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+
+	// Same session, two events; the later one renamed the tmux session.
+	insertEvent(db, Event{TS: at(5), SourceApp: "myapp", Branch: "fix-1710", TmuxSession: "old-name", SessionID: "s1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-1710", TmuxSession: "roster-colors", SessionID: "s1", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
+
+	agents, err := agentRoster(db, 30*time.Minute, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("want 1 agent, got %d", len(agents))
+	}
+	if agents[0].TmuxSession != "roster-colors" {
+		t.Errorf("TmuxSession = %q, want roster-colors (last write wins)", agents[0].TmuxSession)
+	}
+}

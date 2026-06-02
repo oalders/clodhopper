@@ -290,19 +290,20 @@ func distinctBranches(db *sql.DB) ([]string, error) { return distinctColumn(db, 
 // most recent events. It powers the roster at the top of the dashboard — the
 // "which of my agents is waiting on me" view.
 type Agent struct {
-	SessionID  string
-	SourceApp  string
-	Branch     string
-	Cwd        string
-	Status     string // human label (see status* constants)
-	StatusRank int    // sort key; lower = more urgent
-	Doing      string // active skill/command, else latest tool/event
-	LastEvent  string
-	Idle       string // humanised time since last event ("4m", "1h")
-	IdleSecs   int
-	IdleSince  int64  // unix seconds of the last event, so the client can tick idle in place
-	CI         string // merge-readiness; filled by the server layer via gh
-	firstSeq   int    // arrival order (0-based) within the roster window; drives stable color assignment, not displayed
+	SessionID   string
+	SourceApp   string
+	Branch      string
+	Cwd         string
+	TmuxSession string // tmux session name, the disambiguating label
+	Status      string // human label (see status* constants)
+	StatusRank  int    // sort key; lower = more urgent
+	Doing       string // active skill/command, else latest tool/event
+	LastEvent   string
+	Idle        string // humanised time since last event ("4m", "1h")
+	IdleSecs    int
+	IdleSince   int64  // unix seconds of the last event, so the client can tick idle in place
+	CI          string // merge-readiness; filled by the server layer via gh
+	firstSeq    int    // arrival order (0-based) within the roster window; drives stable color assignment, not displayed
 }
 
 // Status labels. Kept as constants so tests and the sort agree on the wording.
@@ -365,7 +366,7 @@ func deriveStatus(lastEvent string, idleSecs int) (label string, rank int, activ
 func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, error) {
 	since := now.Add(-waitingCap).UTC().Format(time.RFC3339)
 	rows, err := db.Query(
-		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(cwd,''), COALESCE(session_id,''),
+		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(cwd,''), COALESCE(tmux_session,''), COALESCE(session_id,''),
 		        event_type, COALESCE(tool_name,''), COALESCE(summary,'')
 		 FROM events WHERE ts >= ? AND session_id IS NOT NULL AND session_id <> ''
 		 ORDER BY id ASC`, since)
@@ -382,8 +383,8 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	byID := map[string]*state{}
 	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
 	for rows.Next() {
-		var ts, app, branch, cwd, sess, etype, tool, summary string
-		if err := rows.Scan(&ts, &app, &branch, &cwd, &sess, &etype, &tool, &summary); err != nil {
+		var ts, app, branch, cwd, tmuxSess, sess, etype, tool, summary string
+		if err := rows.Scan(&ts, &app, &branch, &cwd, &tmuxSess, &sess, &etype, &tool, &summary); err != nil {
 			return nil, err
 		}
 		s := byID[sess]
@@ -393,7 +394,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 			nextSeq++
 		}
 		// Ascending scan: the last write wins, so these hold the latest values.
-		s.a.SourceApp, s.a.Branch, s.a.Cwd = app, branch, cwd
+		s.a.SourceApp, s.a.Branch, s.a.Cwd, s.a.TmuxSession = app, branch, cwd, tmuxSess
 		s.a.LastEvent = etype
 		s.lastTS = ts
 		if tool != "" {
