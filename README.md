@@ -136,9 +136,11 @@ clodhopper init --project --dry-run       # preview without writing
 ```
 
 With neither `--project` nor `--local` it prompts you to choose. `--source-app`
-defaults to the git repo name; pass `--source-app NAME` to override (required
-outside a git repo). The generated command is guarded so environments without the
-binary simply no-op; `--guard command` (default) uses the portable
+defaults to the git repo name (the *main* repo's name even from a linked
+worktree, so it stays distinct from the branch); pass `--source-app NAME` to
+override (required outside a git repo). The generated command is guarded so
+environments without the binary simply no-op; `--guard command` (default) uses
+the portable
 `command -v clodhopper` check, `--guard is` uses the `is there clodhopper` helper.
 
 `init` writes 2-space-indented JSON; the first run on an existing committed

@@ -102,25 +102,35 @@ func mergeClodhopperHooks(settings map[string]any, command string) (added, skipp
 	return added, skipped, nil
 }
 
-// gitRepoName returns the basename of the git work-tree root containing dir, or
-// "" if dir is empty, not a repo, or git is unavailable. Like gitBranch it is
+// gitRepoName returns the basename of the main repository containing dir, or ""
+// if dir is empty, not a repo, or git is unavailable. Like gitBranch it is
 // deliberately best-effort with a tight timeout.
+//
+// It deliberately resolves the *common* git dir rather than --show-toplevel: in
+// a linked worktree, --show-toplevel yields the worktree's own folder, which is
+// commonly named after its branch (e.g. ".worktree/fix-123") and so makes the
+// source-app label indistinguishable from the branch. --git-common-dir always
+// points at the main repo's .git, whose parent is the shared repo root, so every
+// worktree of a repo shares one stable source-app name.
+//
+// --path-format requires git >= 2.31; on older git the flag is rejected and we
+// degrade gracefully to "" (init then asks for an explicit --source-app).
 func gitRepoName(dir string) string {
 	if dir == "" {
 		return ""
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--show-toplevel")
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
 	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
-	top := strings.TrimSpace(string(out))
-	if top == "" {
+	common := strings.TrimSpace(string(out))
+	if common == "" {
 		return ""
 	}
-	return filepath.Base(top)
+	return filepath.Base(filepath.Dir(common))
 }
 
 // hasClodhopperHook reports whether any hook command in groups already invokes
