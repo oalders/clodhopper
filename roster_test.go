@@ -309,3 +309,26 @@ func TestHandleDashboard_FoldsToolEvents(t *testing.T) {
 		t.Errorf("tool call should fold to ONE row, summary appeared %d times:\n%s", n, body)
 	}
 }
+
+func TestHandleDashboard_FailedToolCallIsTinted(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: now, SourceApp: "app", SessionID: "s", EventType: "PreToolUse",
+		ToolName: "Bash", Summary: "Bash: false", ToolUseID: "tf", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: now, SourceApp: "app", SessionID: "s", EventType: "PostToolUseFailure",
+		ToolName: "Bash", Summary: "Bash: false", ToolUseID: "tf",
+		DurationMs: sql.NullInt64{Int64: 74, Valid: true}, PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	// A failed call folds to a ✗ row carrying the fail tint and its duration.
+	if !strings.Contains(body, "✗") {
+		t.Errorf("expected failure glyph in:\n%s", body)
+	}
+	if !strings.Contains(body, `class="fail"`) {
+		t.Errorf("a failed tool call should render with class=\"fail\" in:\n%s", body)
+	}
+	if !strings.Contains(body, "+74ms") {
+		t.Errorf("expected duration suffix +74ms in:\n%s", body)
+	}
+}
