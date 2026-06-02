@@ -42,6 +42,7 @@
     .empty { color: #888; padding: 1rem 0; }
     /* Agent roster */
     tr.alert td { background: color-mix(in srgb, orange 22%, Canvas); }
+    tr.fail td { background: color-mix(in srgb, #c00 16%, Canvas); }
     .status { font-weight: bold; }
     .status.waiting, .status.approval, .status.needs { color: #b35900; }
     .status.idle { color: #888; font-weight: normal; }
@@ -192,23 +193,23 @@
   {{ end }}
 
   <h2>Recent events</h2>
-  {{ if .Events }}
+  {{ if .EventRows }}
   <table>
     <colgroup>
-      <col style="width: 15ch"><col style="width: 14ch"><col style="width: 16ch">
+      <col style="width: 22ch"><col style="width: 14ch"><col style="width: 16ch">
       <col style="width: 10ch"><col style="width: 15ch"><col style="width: 8ch"><col>
     </colgroup>
     <thead>
       <tr><th>time</th><th>source_app</th><th>branch</th><th>id</th><th>event</th><th>tool</th><th>summary</th></tr>
     </thead>
     <tbody>
-      {{ range .Events }}
-      <tr {{ if .SessionID }}style="background: color-mix(in srgb, {{ index $.SessColors .SessionID }} 14%, Canvas)"{{ end }}>
-        <td class="time">{{ shortTS .TS $.Now }}</td>
+      {{ range .EventRows }}
+      <tr {{ if eq .Outcome "✗" }}class="fail"{{ else if .SessionID }}style="background: color-mix(in srgb, {{ index $.SessColors .SessionID }} 14%, Canvas)"{{ end }}>
+        <td class="time">{{ shortTS .TS $.Now }}{{ if .Duration }} +{{ .Duration }}{{ end }}</td>
         <td>{{ .SourceApp }}</td>
         <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
         <td class="sess">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
-        <td class="type">{{ .EventType }}</td>
+        <td class="type">{{ if .Outcome }}<span title="{{ .EventType }}">{{ .Outcome }}</span>{{ else }}{{ .EventType }}{{ end }}</td>
         <td class="tool">{{ .ToolName }}</td>
         <td class="summary">{{ .Summary }}</td>
       </tr>
