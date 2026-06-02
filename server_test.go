@@ -268,6 +268,27 @@ func TestHandleDashboard_SessionColors(t *testing.T) {
 	}
 }
 
+func TestViewSignature_TracksTmuxSession(t *testing.T) {
+	base := dashboardData{
+		Agents:   []Agent{{SessionID: "s1", TmuxSession: "alpha", Status: statusWorking}},
+		Activity: []SourceCount{{SourceApp: "myapp", TmuxSession: "alpha", Count: 2}},
+	}
+
+	// Roster row differs only by tmux session name.
+	rosterDiff := base
+	rosterDiff.Agents = []Agent{{SessionID: "s1", TmuxSession: "beta", Status: statusWorking}}
+	if viewSignature(base) == viewSignature(rosterDiff) {
+		t.Error("signature unchanged after a roster tmux-session change")
+	}
+
+	// Activity row differs only by tmux session name.
+	activityDiff := base
+	activityDiff.Activity = []SourceCount{{SourceApp: "myapp", TmuxSession: "beta", Count: 2}}
+	if viewSignature(base) == viewSignature(activityDiff) {
+		t.Error("signature unchanged after an activity tmux-session change")
+	}
+}
+
 func getBody(t *testing.T, db *sql.DB, target string) string {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, target, nil)
