@@ -90,11 +90,17 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	if agents[0].Doing != "monitor-ci" {
 		t.Errorf("busy agent phase should persist from skill: want monitor-ci, got %q", agents[0].Doing)
 	}
+	if !agents[0].DoingActive {
+		t.Errorf("working agent's phase should be active (in progress), got DoingActive=false")
+	}
 	if agents[1].SessionID != "s-wait" || agents[1].Status != statusWaiting {
 		t.Errorf("expected s-wait/waiting second, got %+v", agents[1])
 	}
 	if agents[1].Doing != "address-gh-review" {
 		t.Errorf("waiting agent phase: want address-gh-review, got %q", agents[1].Doing)
+	}
+	if agents[1].DoingActive {
+		t.Errorf("waiting agent's phase is the last completed thing, not active; want DoingActive=false")
 	}
 	if agents[2].SessionID != "s-idle" || agents[2].Status != statusIdle {
 		t.Errorf("expected s-idle/idle last (longest idle), got %+v", agents[2])
@@ -151,6 +157,11 @@ func TestHandleDashboard_RendersAgentBoard(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("board missing %q in:\n%s", want, body)
 		}
+	}
+	// The session has stopped, so its phase is the last *completed* thing and
+	// renders italicised rather than as work in progress.
+	if !strings.Contains(body, `<em title="last completed">address-gh-review</em>`) {
+		t.Errorf("a stopped agent's phase should render italicised in:\n%s", body)
 	}
 }
 
