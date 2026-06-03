@@ -15,11 +15,13 @@
        instead of overflowing in one stiff row; the gap replaces the old
        per-label left margin. */
     form.controls { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .6rem; }
-    .controls label { color: #555; }
     /* On wide screens this wrapper is an inert block (table flows normally and
        its sticky header keeps working); a media query below turns on
-       horizontal scroll only when the viewport is too narrow for the table. */
+       horizontal scroll only when the viewport is too narrow for the table. The
+       wrapper owns the bottom spacing; the table's own margin is zeroed so the
+       two don't stack into a double gap. */
     .table-wrap { margin-bottom: .5rem; }
+    .table-wrap table { margin-bottom: 0; }
     /* table-layout: fixed + an explicit colgroup pin every column width so the
        layout does not reflow (and visibly "flash") when a section is swapped in
        with different-length content. */
@@ -71,7 +73,10 @@
        it scroll horizontally inside its wrapper. The min-widths (roughly each
        table's colgroup sum) keep the columns at readable widths and force the
        overflow into the wrapper, instead of width:100% squeezing the leftover
-       column down to a char-per-line shred. */
+       column down to a char-per-line shred. Note: setting overflow-x makes the
+       wrapper a scroll container on both axes, so the desktop sticky <th> no
+       longer pins while you scroll the page at this tier — an acceptable
+       trade-off for not dragging the whole page sideways. */
     @media (max-width: 960px) and (min-width: 641px) {
       .table-wrap { overflow-x: auto; }
       table { min-width: 118ch; }        /* recent events */
@@ -87,15 +92,18 @@
     @media (max-width: 640px) {
       body { margin: .6rem; }
       h2 { margin: 1.25rem 0 .4rem; }
-      table { table-layout: auto; width: 100%; }
       thead { display: none; } /* labels move into each cell instead */
+      /* Under display:block these are no longer table boxes, so table-layout
+         and the colgroup widths stop applying on their own. */
       table, tbody { display: block; width: auto; }
       tr {
         display: flex;
         flex-wrap: wrap;
         align-items: baseline;
-        gap: .15rem .85rem;        /* tight rows, airy between inline chips */
-        border: 1px solid #ddd;
+        gap: .25rem .85rem;        /* between wrapped chip lines / inline chips */
+        /* CanvasText (not a fixed grey) so the card outline stays subtle in
+           both light and dark mode, like the rest of the system-color tints. */
+        border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
         border-radius: 6px;
         padding: .4rem .55rem;
         margin: 0 0 .5rem;
@@ -107,7 +115,6 @@
         border: none;
         padding: 0;
         overflow: visible;
-        text-overflow: clip;
         white-space: normal;
       }
       td::before {
@@ -282,7 +289,7 @@
       {{ range .EventRows }}
       <tr {{ if eq .Outcome "✗" }}class="fail"{{ else if .SessionID }}style="background: color-mix(in srgb, {{ index $.SessColors .SessionID }} 14%, Canvas)"{{ end }}>
         <td class="time" data-label="time">{{ shortTS .TS $.Now }}{{ if .Duration }} +{{ .Duration }}{{ end }}</td>
-        <td data-label="app">{{ .SourceApp }}</td>
+        <td data-label="source_app">{{ .SourceApp }}</td>
         <td class="branch" data-label="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
         <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
         <td class="type" data-label="event">{{ if .Outcome }}<span title="{{ .EventType }}">{{ .Outcome }}</span>{{ else }}{{ .EventType }}{{ end }}</td>
