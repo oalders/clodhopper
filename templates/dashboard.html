@@ -11,7 +11,17 @@
     h2 { font-size: .95rem; margin: 1.5rem 0 .4rem; }
     .meta { color: #888; margin-bottom: 1rem; }
     form { margin-bottom: 1rem; }
-    .controls label { margin-left: .6rem; }
+    /* Flex + wrap so the filter controls stack gracefully on a narrow screen
+       instead of overflowing in one stiff row; the gap replaces the old
+       per-label left margin. */
+    form.controls { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .6rem; }
+    /* On wide screens this wrapper is an inert block (table flows normally and
+       its sticky header keeps working); a media query below turns on
+       horizontal scroll only when the viewport is too narrow for the table. The
+       wrapper owns the bottom spacing; the table's own margin is zeroed so the
+       two don't stack into a double gap. */
+    .table-wrap { margin-bottom: .5rem; }
+    .table-wrap table { margin-bottom: 0; }
     /* table-layout: fixed + an explicit colgroup pin every column width so the
        layout does not reflow (and visibly "flash") when a section is swapped in
        with different-length content. */
@@ -54,6 +64,74 @@
        (see assignSessColors). Pairs with the row tint on Recent events to link a
        session to the roster. */
     .chip { display: inline-block; width: .7em; height: .7em; border-radius: 50%; margin-right: .4em; vertical-align: baseline; }
+
+    /* --- Responsive --------------------------------------------------------
+       The tables are sized for a desktop: their pinned ch-based columns add up
+       to ~900px, so on anything narrower they have to give. Two tiers:
+
+       641–960px (small tablet / narrow window): keep the table shape but let
+       it scroll horizontally inside its wrapper. The min-widths (roughly each
+       table's colgroup sum) keep the columns at readable widths and force the
+       overflow into the wrapper, instead of width:100% squeezing the leftover
+       column down to a char-per-line shred. Note: setting overflow-x makes the
+       wrapper a scroll container on both axes, so the desktop sticky <th> no
+       longer pins while you scroll the page at this tier — an acceptable
+       trade-off for not dragging the whole page sideways. */
+    @media (max-width: 960px) and (min-width: 641px) {
+      .table-wrap { overflow-x: auto; }
+      table { min-width: 118ch; }        /* recent events */
+      table.roster { min-width: 132ch; }
+      table.counts { min-width: 48ch; }  /* narrow enough to never overflow here */
+    }
+
+    /* ≤640px (phones): the table shape can't fit, so each row becomes a card.
+       Short fields FLOW INLINE and wrap (like a wrapping line of "label value"
+       chips) so a card stays a few lines tall instead of one-field-per-line;
+       only the long free-text fields (branch, summary/doing) claim a full line.
+       Each cell still prints its column name from data-label. */
+    @media (max-width: 640px) {
+      body { margin: .6rem; }
+      h2 { margin: 1.25rem 0 .4rem; }
+      thead { display: none; } /* labels move into each cell instead */
+      /* Under display:block these are no longer table boxes, so table-layout
+         and the colgroup widths stop applying on their own. */
+      table, tbody { display: block; width: auto; }
+      tr {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: .25rem .85rem;        /* between wrapped chip lines / inline chips */
+        /* CanvasText (not a fixed grey) so the card outline stays subtle in
+           both light and dark mode, like the rest of the system-color tints. */
+        border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+        border-radius: 6px;
+        padding: .4rem .55rem;
+        margin: 0 0 .5rem;
+      }
+      td {
+        display: flex;
+        gap: .3rem;                /* between a field's label and its value */
+        min-width: 0;              /* let a value shrink/wrap instead of overflow */
+        border: none;
+        padding: 0;
+        overflow: visible;
+        white-space: normal;
+      }
+      td::before {
+        content: attr(data-label);
+        color: #888;
+        font-weight: bold;
+        white-space: nowrap;
+      }
+      /* Long free-text fields break to their own full-width line. */
+      td.branch, td.summary { flex-basis: 100%; }
+      /* These are nowrap on desktop (specificity 0,1,1); re-allow wrapping. */
+      td.time, td.tool, td.idle, td.sess, td.namecell { white-space: normal; }
+      /* Tint the whole card rather than each cell. */
+      tr.alert td, tr.fail td { background: transparent; }
+      tr.alert { background: color-mix(in srgb, orange 22%, Canvas); }
+      tr.fail { background: color-mix(in srgb, #c00 16%, Canvas); }
+    }
   </style>
 </head>
 <body data-refresh="{{ .RefreshSecs }}" data-signature="{{ .Signature }}">
@@ -143,6 +221,7 @@
 
   <h2>Agents (live + waiting on you)</h2>
   {{ if .Agents }}
+  <div class="table-wrap">
   <table class="roster">
     <colgroup>
       <col style="width: 24ch"><col style="width: 18ch"><col style="width: 18ch"><col style="width: 36ch">
@@ -154,24 +233,26 @@
     <tbody>
       {{ range .Agents }}
       <tr {{ if le .StatusRank 1 }}class="alert"{{ end }}>
-        <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
-        <td>{{ .SourceApp }}</td>
-        <td class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
-        <td class="summary">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}</td>
-        <td class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}" title="{{ if .CI }}{{ .CI }}{{ else }}no CI{{ end }}">{{ if eq .CI "green" }}🟢{{ else if eq .CI "pending" }}🟡{{ else if eq .CI "failing" }}🔴{{ else }}—{{ end }}</td>
-        <td class="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
-        <td class="sess">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
-        <td class="namecell">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
+        <td class="branch" data-label="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
+        <td data-label="app">{{ .SourceApp }}</td>
+        <td data-label="status" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
+        <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}</td>
+        <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}" title="{{ if .CI }}{{ .CI }}{{ else }}no CI{{ end }}">{{ if eq .CI "green" }}🟢{{ else if eq .CI "pending" }}🟡{{ else if eq .CI "failing" }}🔴{{ else }}—{{ end }}</td>
+        <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
+        <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
+        <td class="namecell" data-label="session">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
       </tr>
       {{ end }}
     </tbody>
   </table>
+  </div>
   {{ else }}
   <div class="empty">No agents working or waiting on you. (Detecting "waiting for you" needs the <code>Stop</code> and <code>Notification</code> hooks wired in <code>.claude/settings.json</code>; a waiting agent clears when its session ends — on <code>SessionEnd</code>, or via <code>clodhopper end</code> for hard-killed sessions.)</div>
   {{ end }}
 
   {{ if .Activity }}
   <h2>Activity (last 30 min)</h2>
+  <div class="table-wrap">
   <table class="counts">
     <colgroup>
       <col style="width: 24ch"><col style="width: 18ch"><col style="width: 9ch"><col>
@@ -182,18 +263,20 @@
     <tbody>
       {{ range .Activity }}
       <tr>
-        <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
-        <td>{{ .SourceApp }}</td>
-        <td>{{ .Count }}</td>
-        <td class="namecell">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
+        <td class="branch" data-label="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
+        <td data-label="app">{{ .SourceApp }}</td>
+        <td data-label="events">{{ .Count }}</td>
+        <td class="namecell" data-label="session">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
       </tr>
       {{ end }}
     </tbody>
   </table>
+  </div>
   {{ end }}
 
   <h2>Recent events</h2>
   {{ if .EventRows }}
+  <div class="table-wrap">
   <table>
     <colgroup>
       <col style="width: 22ch"><col style="width: 14ch"><col style="width: 16ch">
@@ -205,17 +288,18 @@
     <tbody>
       {{ range .EventRows }}
       <tr {{ if eq .Outcome "✗" }}class="fail"{{ else if .SessionID }}style="background: color-mix(in srgb, {{ index $.SessColors .SessionID }} 14%, Canvas)"{{ end }}>
-        <td class="time">{{ shortTS .TS $.Now }}{{ if .Duration }} +{{ .Duration }}{{ end }}</td>
-        <td>{{ .SourceApp }}</td>
-        <td class="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
-        <td class="sess">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
-        <td class="type">{{ if .Outcome }}<span title="{{ .EventType }}">{{ .Outcome }}</span>{{ else }}{{ .EventType }}{{ end }}</td>
-        <td class="tool">{{ .ToolName }}</td>
-        <td class="summary">{{ .Summary }}</td>
+        <td class="time" data-label="time">{{ shortTS .TS $.Now }}{{ if .Duration }} +{{ .Duration }}{{ end }}</td>
+        <td data-label="source_app">{{ .SourceApp }}</td>
+        <td class="branch" data-label="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
+        <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
+        <td class="type" data-label="event">{{ if .Outcome }}<span title="{{ .EventType }}">{{ .Outcome }}</span>{{ else }}{{ .EventType }}{{ end }}</td>
+        <td class="tool" data-label="tool">{{ .ToolName }}</td>
+        <td class="summary" data-label="summary">{{ .Summary }}</td>
       </tr>
       {{ end }}
     </tbody>
   </table>
+  </div>
   {{ else }}
   <div class="empty">No events match. Is <code>clodhopper</code> on PATH, are the hooks wired in <code>.claude/settings.json</code>, and is a session active? (Capture is off when <code>CLODHOPPER_DISABLED=1</code>.)</div>
   {{ end }}
