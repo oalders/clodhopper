@@ -424,6 +424,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache) (dashboardData
 		return dashboardData{}, fmt.Errorf("roster: %w", err)
 	}
 	enrichCI(agents, ci, now)
+	demotePendingCI(agents)
 
 	activity, err := activeCounts(db, agentWindow, now)
 	if err != nil {
@@ -494,6 +495,31 @@ func viewSignature(d dashboardData) string {
 	}
 
 	return strconv.FormatUint(h.Sum64(), 16)
+}
+
+// demotePendingCI relaxes a "needs you"/"waiting for you" row to the non-urgent
+// statusBackground when its CI is still running. A pending check means the agent
+// most likely pushed and is waiting on that run, not blocked on the user — so the
+// alert styling would be misleading (issue #31). This runs in the server layer,
+// not in deriveStatus, because CI is fetched here via gh and is deliberately kept
+// out of the deterministic roster.
+//
+// Tradeoff (intentional, matching the roster's other heuristics): an agent that
+// genuinely finished and is awaiting you, but whose earlier push still has CI in
+// flight, is also relaxed for as long as that run stays pending. We accept that
+// over the louder false positive of flagging a busy-waiting agent as needing
+// you. A real "needs approval" (a permission prompt) is left alone — that blocks
+// on you regardless of CI.
+func demotePendingCI(agents []Agent) {
+	for i := range agents {
+		if agents[i].CI != "pending" {
+			continue
+		}
+		if agents[i].Status == statusNeedsYou || agents[i].Status == statusWaiting {
+			agents[i].Status = statusBackground
+			agents[i].StatusRank = rankBackground
+		}
+	}
 }
 
 // enrichCI fills each agent's CI field, fetching distinct cwds concurrently so a

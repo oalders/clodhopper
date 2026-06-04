@@ -315,13 +315,21 @@ type Agent struct {
 
 // Status labels. Kept as constants so tests and the sort agree on the wording.
 const (
-	statusWaiting  = "waiting for you"
-	statusNeedsYou = "needs you"
-	statusApproval = "needs approval"
-	statusWorking  = "working"
-	statusIdle     = "idle"
-	statusEnded    = "ended"
+	statusWaiting    = "waiting for you"
+	statusNeedsYou   = "needs you"
+	statusApproval   = "needs approval"
+	statusBackground = "waiting" // parked on background work, not blocked on the user
+	statusWorking    = "working"
+	statusIdle       = "idle"
+	statusEnded      = "ended"
 )
+
+// rankBackground is the sort/style rank for statusBackground. It sits above the
+// alert threshold (StatusRank <= 1 styles a row as needing attention) so a
+// parked agent reads as non-urgent, but below "working"/"idle" so it stays
+// visually grouped with the live-but-quiet sessions. Shared by deriveStatus and
+// the server-layer CI demotion so the two never drift.
+const rankBackground = 4
 
 // staleWorkingSecs is how long a "working" session may go silent before the
 // roster stops calling it working. An active agent emits a hook on every tool
@@ -346,12 +354,34 @@ const staleWorkingSecs = 5 * 60
 // matters for the working case: a mid-flight session quiet past
 // staleWorkingSecs is reported as idle rather than working, since a genuinely
 // busy agent keeps emitting hooks.
-func deriveStatus(lastEvent string, idleSecs int) (label string, rank int, active bool) {
+//
+// notifType and lastTool disambiguate Notification, which Claude Code overloads:
+// "permission_prompt" is a genuine "Claude needs your input" prompt, but
+// "idle_prompt" is just the ~60s idle reminder fired after a turn ends. An idle
+// reminder must NOT read as the urgent "needs you" — and when the agent parked
+// itself on background work (its last tool was ScheduleWakeup), it will resume
+// itself, so it is waiting on that, not on the user.
+func deriveStatus(lastEvent, notifType, lastTool string, idleSecs int) (label string, rank int, active bool) {
 	switch lastEvent {
 	case "Stop":
 		return statusWaiting, 0, true
 	case "Notification":
-		return statusNeedsYou, 1, true
+		switch notifType {
+		case "permission_prompt":
+			return statusApproval, 1, true
+		case "idle_prompt":
+			if lastTool == "ScheduleWakeup" {
+				return statusBackground, rankBackground, true
+			}
+			// A plain idle reminder: the turn ended and Claude is nudging. That is
+			// the same honest state as a Stop — waiting for you, not "needs you".
+			return statusWaiting, 0, true
+		default:
+			// Missing/unknown type (older Claude Code, or a shape we don't model):
+			// keep the conservative "needs you" rather than risk hiding a real
+			// input prompt. The scrub layer's fail-closed bias, applied to status.
+			return statusNeedsYou, 1, true
+		}
 	case "PermissionRequest":
 		return statusApproval, 1, true
 	case "SessionEnd":
@@ -374,7 +404,8 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	since := now.Add(-waitingCap).UTC().Format(time.RFC3339)
 	rows, err := db.Query(
 		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(cwd,''), COALESCE(tmux_session,''), COALESCE(session_id,''),
-		        event_type, COALESCE(tool_name,''), COALESCE(summary,'')
+		        event_type, COALESCE(tool_name,''), COALESCE(summary,''),
+		        COALESCE(CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.notification_type') END,'')
 		 FROM events WHERE ts >= ? AND session_id IS NOT NULL AND session_id <> ''
 		 ORDER BY id ASC`, since)
 	if err != nil {
@@ -383,15 +414,16 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	defer rows.Close()
 
 	type state struct {
-		a        Agent
-		lastTS   string
-		lastTool string
+		a         Agent
+		lastTS    string
+		lastTool  string
+		lastNotif string
 	}
 	byID := map[string]*state{}
 	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
 	for rows.Next() {
-		var ts, app, branch, cwd, tmuxSess, sess, etype, tool, summary string
-		if err := rows.Scan(&ts, &app, &branch, &cwd, &tmuxSess, &sess, &etype, &tool, &summary); err != nil {
+		var ts, app, branch, cwd, tmuxSess, sess, etype, tool, summary, notifType string
+		if err := rows.Scan(&ts, &app, &branch, &cwd, &tmuxSess, &sess, &etype, &tool, &summary, &notifType); err != nil {
 			return nil, err
 		}
 		s := byID[sess]
@@ -404,6 +436,9 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		s.a.SourceApp, s.a.Branch, s.a.Cwd, s.a.TmuxSession = app, branch, cwd, tmuxSess
 		s.a.LastEvent = etype
 		s.lastTS = ts
+		// notifType mirrors LastEvent (last-write-wins); deriveStatus only reads it
+		// when the latest event is a Notification, where this holds that event's type.
+		s.lastNotif = notifType
 		if tool != "" {
 			s.lastTool = tool
 		}
@@ -420,7 +455,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	out := make([]Agent, 0, len(byID))
 	for _, s := range byID {
 		idleSecs := idleSeconds(s.lastTS, now)
-		label, rank, active := deriveStatus(s.a.LastEvent, idleSecs)
+		label, rank, active := deriveStatus(s.a.LastEvent, s.lastNotif, s.lastTool, idleSecs)
 		if !active {
 			continue
 		}

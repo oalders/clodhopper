@@ -30,24 +30,36 @@ func TestSummarizeChecks(t *testing.T) {
 
 func TestDeriveStatus(t *testing.T) {
 	cases := []struct {
+		name       string
 		event      string
+		notifType  string
+		lastTool   string
 		idleSecs   int
 		wantLabel  string
 		wantActive bool
 	}{
-		{"Stop", 0, statusWaiting, true},
-		{"Stop", 6 * 60, statusWaiting, true}, // a finished agent stays "waiting", not idle
-		{"Notification", 0, statusNeedsYou, true},
-		{"PermissionRequest", 0, statusApproval, true},
-		{"PreToolUse", 0, statusWorking, true},
-		{"PreToolUse", staleWorkingSecs - 1, statusWorking, true}, // just under threshold
-		{"PreToolUse", staleWorkingSecs, statusIdle, true},        // silent past threshold → idle
-		{"SessionEnd", 0, statusEnded, false},
+		{"stop waits", "Stop", "", "", 0, statusWaiting, true},
+		{"stop stays waiting not idle", "Stop", "", "", 6 * 60, statusWaiting, true},
+		// Notification is overloaded; notification_type disambiguates it.
+		{"permission prompt needs approval", "Notification", "permission_prompt", "", 0, statusApproval, true},
+		{"idle reminder is not urgent", "Notification", "idle_prompt", "Read", 0, statusWaiting, true},
+		{"idle reminder while parked on a wakeup", "Notification", "idle_prompt", "ScheduleWakeup", 0, statusBackground, true},
+		{"unknown notification stays conservative", "Notification", "", "Bash", 0, statusNeedsYou, true},
+		{"permission request needs approval", "PermissionRequest", "", "", 0, statusApproval, true},
+		{"working", "PreToolUse", "", "", 0, statusWorking, true},
+		{"working just under threshold", "PreToolUse", "", "", staleWorkingSecs - 1, statusWorking, true},
+		{"silent past threshold goes idle", "PreToolUse", "", "", staleWorkingSecs, statusIdle, true},
+		{"session end drops off", "SessionEnd", "", "", 0, statusEnded, false},
 	}
 	for _, c := range cases {
-		label, _, active := deriveStatus(c.event, c.idleSecs)
+		label, rank, active := deriveStatus(c.event, c.notifType, c.lastTool, c.idleSecs)
 		if label != c.wantLabel || active != c.wantActive {
-			t.Errorf("deriveStatus(%q, %d) = (%q,%v), want (%q,%v)", c.event, c.idleSecs, label, active, c.wantLabel, c.wantActive)
+			t.Errorf("%s: deriveStatus(%q,%q,%q,%d) = (%q,%v), want (%q,%v)", c.name, c.event, c.notifType, c.lastTool, c.idleSecs, label, active, c.wantLabel, c.wantActive)
+		}
+		// The parked-on-background status must never trip the alert styling
+		// (StatusRank <= 1); that is the whole point of issue #31.
+		if label == statusBackground && rank <= 1 {
+			t.Errorf("%s: statusBackground must rank above the alert threshold, got rank %d", c.name, rank)
 		}
 	}
 }
@@ -108,6 +120,55 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	}
 	if agents[0].Idle == "" {
 		t.Errorf("idle label not set")
+	}
+}
+
+func TestAgentRoster_NotificationTypeDisambiguates(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, sess, etype, tool, payload string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-31", SessionID: sess, EventType: etype, ToolName: tool, PayloadJSON: payload})
+	}
+	const idle = `{"notification_type":"idle_prompt"}`
+	const perm = `{"notification_type":"permission_prompt"}`
+
+	// Parked on background work: scheduled a wakeup, then got the idle reminder.
+	// It will resume itself — must read as the non-urgent "waiting", not "needs you".
+	ins(at(4), "s-parked", "PostToolUse", "ScheduleWakeup", "{}")
+	ins(at(3), "s-parked", "Notification", "", idle)
+	// Idle reminder with no parking signal: the turn genuinely ended → waiting for you.
+	ins(at(6), "s-done", "PostToolUse", "Read", "{}")
+	ins(at(5), "s-done", "Notification", "", idle)
+	// A real permission prompt → needs approval.
+	ins(at(2), "s-perm", "Notification", "", perm)
+	// A Notification with no type (older Claude Code) → stays conservatively "needs you".
+	ins(at(1), "s-bare", "Notification", "", "{}")
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Agent{}
+	for _, a := range agents {
+		got[a.SessionID] = a
+	}
+	if s := got["s-parked"]; s.Status != statusBackground || s.StatusRank <= 1 {
+		t.Errorf("parked agent should be non-urgent %q (rank>1), got %q rank %d", statusBackground, s.Status, s.StatusRank)
+	}
+	if s := got["s-done"].Status; s != statusWaiting {
+		t.Errorf("plain idle reminder should be %q, got %q", statusWaiting, s)
+	}
+	if s := got["s-perm"].Status; s != statusApproval {
+		t.Errorf("permission prompt should be %q, got %q", statusApproval, s)
+	}
+	if s := got["s-bare"].Status; s != statusNeedsYou {
+		t.Errorf("untyped notification should stay %q, got %q", statusNeedsYou, s)
 	}
 }
 
