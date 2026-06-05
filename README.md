@@ -173,3 +173,36 @@ go vet ./...
 ```
 
 Runtime data lives under `var/` (gitignored).
+
+### Linting and formatting
+
+Linting is orchestrated by [precious](https://github.com/houseabsolute/precious),
+which drives `gofmt`, `go vet`, and `golangci-lint` from one config
+(`precious.toml`). The same checks run in the pre-commit hook and in CI, so a
+formatting or lint slip fails the commit instead of the build.
+
+Install the tools (prebuilt binaries, no compile step):
+
+```bash
+# precious itself and golangci-lint, via https://github.com/houseabsolute/ubi
+ubi --project houseabsolute/precious --in ~/.local/bin
+ubi --project golangci/golangci-lint --tag v2.12.2 --in ~/.local/bin
+```
+
+Then:
+
+```bash
+precious lint --all    # check everything (what CI runs)
+precious tidy --all    # auto-fix formatting in place
+precious lint -s       # check only staged files (what the hook runs)
+```
+
+Enable the pre-commit hook once per clone:
+
+```bash
+scripts/pre-commit --init
+```
+
+The hook runs `precious lint -s` on staged files and blocks direct commits to
+`main`. If `precious` isn't on `PATH` it no-ops rather than blocking, so a clone
+without it still works.
