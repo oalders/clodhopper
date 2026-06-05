@@ -39,6 +39,12 @@ lint-failure-exit-codes = [1]
 # go vet and golangci-lint operate on whole packages, not individual files, so
 # they run once over ./... regardless of which files matched. Both exit
 # non-zero on findings, which is all precious needs.
+#
+# On a cold module cache the go toolchain prints "go: downloading ..." to
+# stderr while still exiting 0. precious otherwise treats any stderr as a
+# failure, so ignore-stderr whitelists that download chatter (only). Real
+# findings still fail via the exit code (lint-failure-exit-codes), so this
+# can't mask a genuine vet/lint problem.
 [commands.go-vet]
 type                    = "lint"
 include                 = "**/*.go"
@@ -47,6 +53,7 @@ path-args               = "none"
 cmd                     = ["go", "vet", "./..."]
 ok-exit-codes           = [0]
 lint-failure-exit-codes = [1]
+ignore-stderr           = ["^go: downloading "]
 
 [commands.golangci-lint]
 type                    = "lint"
@@ -56,3 +63,4 @@ path-args               = "none"
 cmd                     = ["golangci-lint", "run"]
 ok-exit-codes           = [0]
 lint-failure-exit-codes = [1]
+ignore-stderr           = ["^go: downloading "]
