@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -64,10 +65,12 @@ func buildEvent(raw []byte, sourceApp string) Event {
 	_ = json.Unmarshal(raw, &p) // p stays nil on error; getters handle that
 
 	cwd := str(p, "cwd")
+	branch, rebasing := gitBranch(cwd)
 	ev := Event{
 		TS:          time.Now().UTC().Format(time.RFC3339),
 		SourceApp:   sourceApp,
-		Branch:      gitBranch(cwd),
+		Branch:      branch,
+		Rebasing:    rebasing,
 		Cwd:         cwd,
 		TmuxSession: tmuxSession(),
 		SessionID:   str(p, "session_id"),
@@ -126,23 +129,71 @@ func buildSummary(eventType, tool string, p map[string]any) string {
 	return eventType
 }
 
-// gitBranch returns the current branch of the git work tree containing dir, or
-// "" if dir is empty, not a repo, detached, or git is unavailable. It is
-// deliberately best-effort with a tight timeout: capture must never block or
-// fail on it. Works for linked worktrees, which is the whole point — each
-// concurrent worktree resolves to its own branch.
-func gitBranch(dir string) string {
+// gitBranch returns the current branch of the git work tree containing dir and
+// whether that work tree is mid-rebase. It returns ("", false) if dir is empty,
+// not a repo, or git is unavailable. During a rebase HEAD is detached, so the
+// normal symbolic-ref lookup fails; we then recover the branch being rebased
+// from git's rebase state and report rebasing=true. It is deliberately
+// best-effort with a tight timeout: capture must never block or fail on it.
+// Works for linked worktrees, which is the whole point — each concurrent
+// worktree resolves to its own branch (and its own rebase state).
+func gitBranch(dir string) (branch string, rebasing bool) {
 	if dir == "" {
-		return ""
+		return "", false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "symbolic-ref", "--quiet", "--short", "HEAD")
 	out, err := cmd.Output()
-	if err != nil {
-		return "" // not a repo, detached HEAD, timeout, or git missing
+	if err == nil {
+		return strings.TrimSpace(string(out)), false
 	}
-	return strings.TrimSpace(string(out))
+	// symbolic-ref fails on a detached HEAD, which is exactly the state during a
+	// rebase. Recover the underlying branch if a rebase is in progress.
+	if b := rebaseBranch(dir); b != "" {
+		return b, true
+	}
+	return "", false // not a repo, plain detached HEAD, timeout, or git missing
+}
+
+// rebaseBranch recovers the name of the branch being rebased in the work tree at
+// dir, or "" if no rebase is in progress (or on any error). git records the
+// original branch ref in rebase-merge/head-name (interactive / merge-based
+// rebase) or rebase-apply/head-name (am-based rebase); each file holds a single
+// ref like "refs/heads/my-branch". rev-parse --git-path resolves those paths per
+// work tree, so a linked worktree's own rebase state is found correctly. The
+// file's absence is how we detect "no rebase" — rev-parse always prints a path,
+// existing or not — so the ReadFile failure is the real signal, not an error.
+// Best-effort with a single tight timeout shared across both lookups, like the
+// rest of the capture path. Only a local-branch ref (refs/heads/…) is recovered;
+// a rebase begun from an already-detached HEAD stores the literal "detached
+// HEAD" in head-name, which we fail closed on (return "") rather than record as
+// a bogus branch.
+func rebaseBranch(dir string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for _, sub := range []string{"rebase-merge/head-name", "rebase-apply/head-name"} {
+		out, err := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "--git-path", sub).Output()
+		if err != nil {
+			continue
+		}
+		path := strings.TrimSpace(string(out))
+		if path == "" {
+			continue
+		}
+		// --git-path prints relative to the command's cwd (dir, via -C).
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(dir, path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue // no rebase of this kind in progress, or unreadable
+		}
+		if name, ok := strings.CutPrefix(strings.TrimSpace(string(data)), "refs/heads/"); ok && name != "" {
+			return name
+		}
+	}
+	return ""
 }
 
 // tmuxSession returns the name of the tmux session the current process is in, or
