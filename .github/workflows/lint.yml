@@ -17,23 +17,24 @@ jobs:
   precious:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
 
       # precious (the lint orchestrator) and a version-pinned golangci-lint,
       # both installed as prebuilt binaries via ubi — no compile step. gofmt
-      # and go vet ship with the Go toolchain set up above. Pinning
-      # golangci-lint keeps CI reproducible: a floating version can enable new
-      # linters that fail a previously-clean tree.
-      - uses: oalders/install-ubi-action@v0.0.6
+      # and go vet ship with the Go toolchain set up above. Pinning both tools
+      # keeps CI reproducible: a floating version can enable new linters (or
+      # change command invocation / exit-code handling) that fail a
+      # previously-clean tree.
+      - uses: oalders/install-ubi-action@27bdce90e4b0e0a6c26023610ab03e375c6ed3e3 # v0.0.6
         with:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           projects: |
-            houseabsolute/precious
+            houseabsolute/precious --tag v0.11.0
             golangci/golangci-lint --tag v2.12.2
 
       - name: precious lint

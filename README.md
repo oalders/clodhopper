@@ -202,6 +202,7 @@ Then:
 precious lint --all    # check everything (what CI runs)
 precious tidy --all    # auto-fix formatting in place
 precious lint -s       # check only staged files (what the hook runs)
+precious tidy -s       # auto-fix only staged files (hook failure suggests this)
 ```
 
 Enable the pre-commit hook once per clone:
