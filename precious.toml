@@ -1,0 +1,66 @@
+# precious orchestrates clodhopper's Go tooling so the same checks run
+# identically in the pre-commit hook (`precious lint -s`), locally
+# (`precious lint --all` / `precious tidy --all`), and in CI (`precious lint
+# --all`). See README.md "Linting and formatting".
+
+# gofmt reports "needs formatting" only on stdout and exits 0 even then, which
+# precious (which keys off exit codes / stderr) can't detect on its own. Wrap
+# it: the mode — "lint" or "tidy" — arrives as the first arg via
+# lint-flags/tidy-flags, then precious appends the file paths. lint mode fails
+# (exit 1) when gofmt lists unformatted files OR exits non-zero itself (e.g. a
+# file it can't parse — captured via 2>&1 so it isn't silently passed); the
+# details go to stdout, which precious shows under a clean failure line. tidy
+# mode rewrites in place.
+[commands.gofmt]
+type    = "both"
+include = "**/*.go"
+cmd     = [
+    "sh",
+    "-c",
+    '''
+mode=$1
+shift
+if [ "$mode" = tidy ]; then
+    exec gofmt -w "$@"
+fi
+out=$(gofmt -l "$@" 2>&1)
+status=$?
+[ "$status" -eq 0 ] && [ -z "$out" ] && exit 0
+printf '%s\n' "$out"
+exit 1
+''',
+    "gofmt-precious",
+]
+lint-flags              = ["lint"]
+tidy-flags              = ["tidy"]
+ok-exit-codes           = [0]
+lint-failure-exit-codes = [1]
+
+# go vet and golangci-lint operate on whole packages, not individual files, so
+# they run once over ./... regardless of which files matched. Both exit
+# non-zero on findings, which is all precious needs.
+#
+# On a cold module cache the go toolchain prints "go: downloading ..." to
+# stderr while still exiting 0. precious otherwise treats any stderr as a
+# failure, so ignore-stderr whitelists that download chatter (only). Real
+# findings still fail via the exit code (lint-failure-exit-codes), so this
+# can't mask a genuine vet/lint problem.
+[commands.go-vet]
+type                    = "lint"
+include                 = "**/*.go"
+invoke                  = "once"
+path-args               = "none"
+cmd                     = ["go", "vet", "./..."]
+ok-exit-codes           = [0]
+lint-failure-exit-codes = [1]
+ignore-stderr           = ["^go: downloading "]
+
+[commands.golangci-lint]
+type                    = "lint"
+include                 = "**/*.go"
+invoke                  = "once"
+path-args               = "none"
+cmd                     = ["golangci-lint", "run"]
+ok-exit-codes           = [0]
+lint-failure-exit-codes = [1]
+ignore-stderr           = ["^go: downloading "]

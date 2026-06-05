@@ -17,10 +17,16 @@ go test ./...         # run all tests (requires CGO — uses github.com/mattn/go
 go test -run TestName ./...   # run a single test
 go vet ./...
 go install ./...      # install `clodhopper` to GOBIN / $GOPATH/bin
+precious lint --all   # gofmt + go vet + golangci-lint (what CI runs)
+precious tidy --all   # auto-fix formatting
 ```
 
 CGO must be enabled (a C compiler must be present) because of the SQLite driver.
-There is no separate lint step beyond `go vet`; keep code `gofmt`-clean.
+Linting is orchestrated by [precious](https://github.com/houseabsolute/precious)
+(`precious.toml`): `gofmt`, `go vet`, and `golangci-lint`. The same checks run
+in the pre-commit hook (`scripts/pre-commit --init` to enable) and in CI
+(`.github/workflows/lint.yml`), so keep code `precious lint --all`-clean. See
+README.md "Linting and formatting".
 
 ## Architecture
 

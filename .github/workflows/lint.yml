@@ -14,22 +14,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  golangci-lint:
+  precious:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version-file: go.mod
           cache: true
 
-      - name: golangci-lint
-        # CGO is on by default and gcc is preinstalled on ubuntu-latest, so
-        # the go-sqlite3 package type-checks cleanly during the lint run.
-        uses: golangci/golangci-lint-action@v9
+      # precious (the lint orchestrator) and a version-pinned golangci-lint,
+      # both installed as prebuilt binaries via ubi — no compile step. gofmt
+      # and go vet ship with the Go toolchain set up above. Pinning both tools
+      # keeps CI reproducible: a floating version can enable new linters (or
+      # change command invocation / exit-code handling) that fail a
+      # previously-clean tree.
+      - uses: oalders/install-ubi-action@27bdce90e4b0e0a6c26023610ab03e375c6ed3e3 # v0.0.6
         with:
-          version: v2.12.2
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          projects: |
+            houseabsolute/precious --tag v0.11.0
+            golangci/golangci-lint --tag v2.12.2
+
+      - name: precious lint
+        # Runs gofmt, go vet and golangci-lint — the exact checks the
+        # pre-commit hook runs (see precious.toml), so local and CI agree.
+        # CGO is on by default and gcc is preinstalled on ubuntu-latest, so the
+        # go-sqlite3 package type-checks cleanly during go vet / golangci-lint.
+        run: precious lint --all
 
       - name: go mod tidy is clean
         run: |
