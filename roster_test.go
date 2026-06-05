@@ -42,6 +42,8 @@ func TestDeriveStatus(t *testing.T) {
 		{"stop stays waiting not idle", "Stop", "", "", 6 * 60, statusWaiting, true},
 		// Notification is overloaded; notification_type disambiguates it.
 		{"permission prompt needs approval", "Notification", "permission_prompt", "", 0, statusApproval, true},
+		{"AskUserQuestion prompt needs input not approval", "Notification", "permission_prompt", "AskUserQuestion", 0, statusInput, true},
+		{"AskUserQuestion request needs input not approval", "PermissionRequest", "", "AskUserQuestion", 0, statusInput, true},
 		{"idle reminder is not urgent", "Notification", "idle_prompt", "Read", 0, statusWaiting, true},
 		{"idle reminder while parked on a wakeup", "Notification", "idle_prompt", "ScheduleWakeup", 0, statusBackground, true},
 		{"unknown notification stays conservative", "Notification", "", "Bash", 0, statusNeedsYou, true},
