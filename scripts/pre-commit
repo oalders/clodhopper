@@ -1,6 +1,6 @@
 #!/bin/sh
-# Pre-commit hook: enforce Go formatting + golangci-lint on staged files
-# and block direct commits to the default branch.
+# Pre-commit hook: run `precious lint` on staged files and block direct
+# commits to the default branch. No-ops if precious isn't installed.
 #
 # Install (run once per clone):
 #   scripts/pre-commit --init
@@ -42,29 +42,20 @@ if [ "$branch" = "$default_branch" ]; then
     exit 1
 fi
 
-# Nothing to check unless Go source is staged.
-staged_go=$(git diff --cached --name-only --diff-filter=ACM -- '*.go')
-if [ -z "$staged_go" ]; then
+# precious orchestrates gofmt + go vet + golangci-lint (see precious.toml) so
+# the hook runs the exact checks CI does. If precious isn't installed, no-op
+# rather than block — mirroring the project's convention of guarding on a
+# binary existing so environments without it don't break (see CLAUDE.md).
+if ! command -v precious >/dev/null 2>&1; then
+    echo "pre-commit: precious not found on PATH; skipping lint." >&2
+    echo "Install it to lint at commit time: https://github.com/houseabsolute/precious" >&2
     exit 0
 fi
 
-# gofmt: fast, catches formatting before the heavier linter runs.
-unformatted=$(gofmt -l $staged_go)
-if [ -n "$unformatted" ]; then
-    echo "pre-commit: gofmt found unformatted files:" >&2
-    echo "$unformatted" >&2
-    echo "Run 'gofmt -w' (or 'go fmt ./...') and re-stage." >&2
-    exit 1
-fi
-
-# golangci-lint: matches what CI runs (.github/workflows/lint.yml).
-if ! command -v golangci-lint >/dev/null 2>&1; then
-    echo "pre-commit: golangci-lint not found on PATH." >&2
-    echo "Install it: https://golangci-lint.run/welcome/install/" >&2
-    exit 1
-fi
-if ! golangci-lint run; then
-    echo "pre-commit: golangci-lint found issues with staged changes" >&2
-    echo "Fix them (try 'golangci-lint run --fix') and re-stage." >&2
+# Lint only what's staged. precious skips commands whose files aren't among the
+# staged set, so a commit touching no Go files is a no-op.
+if ! precious lint -s; then
+    echo "pre-commit: precious lint found issues with staged files." >&2
+    echo "Run 'precious tidy -s' to autofix formatting, fix the rest, and re-stage." >&2
     exit 1
 fi
