@@ -319,7 +319,7 @@ const (
 	statusNeedsYou   = "needs you"
 	statusApproval   = "needs approval"
 	statusInput      = "needs input" // AskUserQuestion: a question to answer, not an action to approve
-	statusBackground = "waiting" // parked on background work, not blocked on the user
+	statusBackground = "waiting"     // parked on background work, not blocked on the user
 	statusWorking    = "working"
 	statusIdle       = "idle"
 	statusEnded      = "ended"
