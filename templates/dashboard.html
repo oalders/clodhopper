@@ -54,7 +54,7 @@
     tr.alert td { background: color-mix(in srgb, orange 22%, Canvas); }
     tr.fail td { background: color-mix(in srgb, #c00 16%, Canvas); }
     .status { font-weight: bold; }
-    .status.waiting, .status.approval, .status.needs { color: #b35900; }
+    .status.waiting, .status.approval, .status.needs, .status.input { color: #b35900; }
     .status.idle { color: #888; font-weight: normal; }
     .status.background { color: #3a6ea5; font-weight: normal; }
     .ci.green { color: #1a7f37; }
@@ -236,7 +236,7 @@
       <tr {{ if le .StatusRank 1 }}class="alert"{{ end }}>
         <td class="branch" data-label="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
         <td data-label="app">{{ .SourceApp }}</td>
-        <td data-label="status" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "waiting" }}background{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
+        <td data-label="status" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "waiting" }}background{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
         <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}</td>
         <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}" title="{{ if .CI }}{{ .CI }}{{ else }}no CI{{ end }}">{{ if eq .CI "green" }}🟢{{ else if eq .CI "pending" }}🟡{{ else if eq .CI "failing" }}🔴{{ else }}—{{ end }}</td>
         <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>

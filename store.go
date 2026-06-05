@@ -318,6 +318,7 @@ const (
 	statusWaiting    = "waiting for you"
 	statusNeedsYou   = "needs you"
 	statusApproval   = "needs approval"
+	statusInput      = "needs input" // AskUserQuestion: a question to answer, not an action to approve
 	statusBackground = "waiting" // parked on background work, not blocked on the user
 	statusWorking    = "working"
 	statusIdle       = "idle"
@@ -361,14 +362,27 @@ const staleWorkingSecs = 5 * 60
 // reminder must NOT read as the urgent "needs you" — and when the agent parked
 // itself on background work (its last tool was ScheduleWakeup), it will resume
 // itself, so it is waiting on that, not on the user.
+//
+// lastTool also splits the permission-prompt cases: AskUserQuestion blocks on the
+// user the same way, but it is a question to answer, not an action to approve —
+// "needs input" reads truer than "needs approval". Both the PermissionRequest and
+// the trailing permission_prompt Notification it emits carry that distinction
+// (the Notification's empty tool_name leaves lastTool holding "AskUserQuestion").
 func deriveStatus(lastEvent, notifType, lastTool string, idleSecs int) (label string, rank int, active bool) {
+	// promptLabel picks "needs input" vs "needs approval" for a blocking prompt.
+	promptLabel := func() string {
+		if lastTool == "AskUserQuestion" {
+			return statusInput
+		}
+		return statusApproval
+	}
 	switch lastEvent {
 	case "Stop":
 		return statusWaiting, 0, true
 	case "Notification":
 		switch notifType {
 		case "permission_prompt":
-			return statusApproval, 1, true
+			return promptLabel(), 1, true
 		case "idle_prompt":
 			if lastTool == "ScheduleWakeup" {
 				return statusBackground, rankBackground, true
@@ -383,7 +397,7 @@ func deriveStatus(lastEvent, notifType, lastTool string, idleSecs int) (label st
 			return statusNeedsYou, 1, true
 		}
 	case "PermissionRequest":
-		return statusApproval, 1, true
+		return promptLabel(), 1, true
 	case "SessionEnd":
 		return statusEnded, 9, false
 	default:
