@@ -19,6 +19,7 @@ type Event struct {
 	TS          string // RFC3339 UTC, ingest time
 	SourceApp   string
 	Branch      string // git branch of Cwd at capture time, "" if unknown
+	Rebasing    bool   // true if Cwd was mid-rebase, so Branch was recovered from rebase state
 	Cwd         string
 	TmuxSession string // tmux session name at capture time, "" if not in tmux
 	SessionID   string
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS events (
   ts           TEXT NOT NULL,
   source_app   TEXT NOT NULL,
   branch       TEXT,
+  rebasing     INTEGER,
   cwd          TEXT,
   tmux_session TEXT,
   session_id   TEXT,
@@ -58,6 +60,7 @@ var migrations = []string{
 	`ALTER TABLE events ADD COLUMN tmux_session TEXT`,
 	`ALTER TABLE events ADD COLUMN tool_use_id TEXT`,
 	`ALTER TABLE events ADD COLUMN duration_ms INTEGER`,
+	`ALTER TABLE events ADD COLUMN rebasing INTEGER`,
 }
 
 // defaultDBPath returns CLODHOPPER_DB if set, else ~/.claude/clodhopper/var/events.db.
@@ -119,9 +122,9 @@ func retryOnLock(fn func() error) error {
 
 func insertEvent(db *sql.DB, ev Event) error {
 	_, err := db.Exec(
-		`INSERT INTO events (ts, source_app, branch, cwd, tmux_session, session_id, event_type, tool_name, summary, tool_use_id, duration_ms, payload_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ev.TS, ev.SourceApp, ev.Branch, ev.Cwd, ev.TmuxSession, ev.SessionID, ev.EventType, ev.ToolName, ev.Summary, ev.ToolUseID, ev.DurationMs, ev.PayloadJSON,
+		`INSERT INTO events (ts, source_app, branch, rebasing, cwd, tmux_session, session_id, event_type, tool_name, summary, tool_use_id, duration_ms, payload_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ev.TS, ev.SourceApp, ev.Branch, ev.Rebasing, ev.Cwd, ev.TmuxSession, ev.SessionID, ev.EventType, ev.ToolName, ev.Summary, ev.ToolUseID, ev.DurationMs, ev.PayloadJSON,
 	)
 	return err
 }
@@ -227,7 +230,7 @@ type EventFilter struct {
 }
 
 func queryEvents(db *sql.DB, f EventFilter) ([]Event, error) {
-	q := `SELECT id, ts, source_app, branch, cwd, session_id, event_type, tool_name, summary, COALESCE(tool_use_id,''), duration_ms, payload_json
+	q := `SELECT id, ts, source_app, branch, COALESCE(rebasing,0), cwd, session_id, event_type, tool_name, summary, COALESCE(tool_use_id,''), duration_ms, payload_json
 	      FROM events WHERE 1=1`
 	var args []any
 	if f.SourceApp != "" {
@@ -257,7 +260,7 @@ func queryEvents(db *sql.DB, f EventFilter) ([]Event, error) {
 	for rows.Next() {
 		var e Event
 		var branch, cwd, sess, tool, summary sql.NullString
-		if err := rows.Scan(&e.ID, &e.TS, &e.SourceApp, &branch, &cwd, &sess, &e.EventType, &tool, &summary, &e.ToolUseID, &e.DurationMs, &e.PayloadJSON); err != nil {
+		if err := rows.Scan(&e.ID, &e.TS, &e.SourceApp, &branch, &e.Rebasing, &cwd, &sess, &e.EventType, &tool, &summary, &e.ToolUseID, &e.DurationMs, &e.PayloadJSON); err != nil {
 			return nil, err
 		}
 		e.Branch, e.Cwd, e.SessionID, e.ToolName, e.Summary = branch.String, cwd.String, sess.String, tool.String, summary.String
