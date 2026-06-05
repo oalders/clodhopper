@@ -1,0 +1,54 @@
+# precious orchestrates clodhopper's Go tooling so the same checks run
+# identically in the pre-commit hook (`precious lint -s`), locally
+# (`precious lint --all` / `precious tidy --all`), and in CI (`precious lint
+# --all`). See README.md "Linting and formatting".
+
+# gofmt reports "needs formatting" only on stdout and always exits 0, which
+# precious (which keys off exit codes / stderr) can't detect on its own. Wrap
+# it: the mode — "lint" or "tidy" — arrives as the first arg via
+# lint-flags/tidy-flags, then precious appends the file paths. lint mode turns
+# any gofmt -l output into a non-zero exit; tidy mode rewrites in place.
+[commands.gofmt]
+type    = "both"
+include = "**/*.go"
+cmd     = [
+    "sh",
+    "-c",
+    '''
+mode=$1
+shift
+if [ "$mode" = tidy ]; then
+    exec gofmt -w "$@"
+fi
+out=$(gofmt -l "$@")
+[ -z "$out" ] && exit 0
+echo "$out"
+exit 1
+''',
+    "gofmt-precious",
+]
+lint-flags              = ["lint"]
+tidy-flags              = ["tidy"]
+ok-exit-codes           = [0]
+lint-failure-exit-codes = [1]
+
+# go vet and golangci-lint operate on whole packages, not individual files, so
+# they run once over ./... regardless of which files matched. Both exit
+# non-zero on findings, which is all precious needs.
+[commands.go-vet]
+type                    = "lint"
+include                 = "**/*.go"
+invoke                  = "once"
+path-args               = "none"
+cmd                     = ["go", "vet", "./..."]
+ok-exit-codes           = [0]
+lint-failure-exit-codes = [1]
+
+[commands.golangci-lint]
+type                    = "lint"
+include                 = "**/*.go"
+invoke                  = "once"
+path-args               = "none"
+cmd                     = ["golangci-lint", "run"]
+ok-exit-codes           = [0]
+lint-failure-exit-codes = [1]
