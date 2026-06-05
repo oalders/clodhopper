@@ -181,10 +181,17 @@ which drives `gofmt`, `go vet`, and `golangci-lint` from one config
 (`precious.toml`). The same checks run in the pre-commit hook and in CI, so a
 formatting or lint slip fails the commit instead of the build.
 
-Install the tools (prebuilt binaries, no compile step):
+Install the tools (any method works — they're plain release binaries). CI uses
+[`ubi`](https://github.com/houseabsolute/ubi), which fetches prebuilt binaries
+with no compile step:
 
 ```bash
-# precious itself and golangci-lint, via https://github.com/houseabsolute/ubi
+# Bootstrap ubi itself (one time), if you don't already have it:
+curl --silent --location \
+  https://raw.githubusercontent.com/houseabsolute/ubi/master/bootstrap/bootstrap-ubi.sh \
+  | TARGET=~/.local/bin sh
+
+# Then the lint tools:
 ubi --project houseabsolute/precious --in ~/.local/bin
 ubi --project golangci/golangci-lint --tag v2.12.2 --in ~/.local/bin
 ```

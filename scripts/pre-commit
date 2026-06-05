@@ -52,8 +52,10 @@ if ! command -v precious >/dev/null 2>&1; then
     exit 0
 fi
 
-# Lint only what's staged. precious skips commands whose files aren't among the
-# staged set, so a commit touching no Go files is a no-op.
+# Lint what's staged. precious skips commands whose files aren't among the
+# staged set, so a commit touching no Go files is a no-op. gofmt runs on the
+# staged files; go vet and golangci-lint are package-level tools and run over
+# the whole module (matching CI) whenever any Go file is staged.
 if ! precious lint -s; then
     echo "pre-commit: precious lint found issues with staged files." >&2
     echo "Run 'precious tidy -s' to autofix formatting, fix the rest, and re-stage." >&2

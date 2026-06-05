@@ -3,11 +3,14 @@
 # (`precious lint --all` / `precious tidy --all`), and in CI (`precious lint
 # --all`). See README.md "Linting and formatting".
 
-# gofmt reports "needs formatting" only on stdout and always exits 0, which
+# gofmt reports "needs formatting" only on stdout and exits 0 even then, which
 # precious (which keys off exit codes / stderr) can't detect on its own. Wrap
 # it: the mode — "lint" or "tidy" — arrives as the first arg via
-# lint-flags/tidy-flags, then precious appends the file paths. lint mode turns
-# any gofmt -l output into a non-zero exit; tidy mode rewrites in place.
+# lint-flags/tidy-flags, then precious appends the file paths. lint mode fails
+# (exit 1) when gofmt lists unformatted files OR exits non-zero itself (e.g. a
+# file it can't parse — captured via 2>&1 so it isn't silently passed); the
+# details go to stdout, which precious shows under a clean failure line. tidy
+# mode rewrites in place.
 [commands.gofmt]
 type    = "both"
 include = "**/*.go"
@@ -20,9 +23,10 @@ shift
 if [ "$mode" = tidy ]; then
     exec gofmt -w "$@"
 fi
-out=$(gofmt -l "$@")
-[ -z "$out" ] && exit 0
-echo "$out"
+out=$(gofmt -l "$@" 2>&1)
+status=$?
+[ "$status" -eq 0 ] && [ -z "$out" ] && exit 0
+printf '%s\n' "$out"
 exit 1
 ''',
     "gofmt-precious",
