@@ -221,6 +221,8 @@ func TestAgentRoster_SurfacesRebasing(t *testing.T) {
 		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: branch, Rebasing: rebasing, SessionID: sess, EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 	}
 
+	// agentRoster folds events by id ASC (insertion order), so for each session
+	// the last ins() call wins — these timestamps are only for idle/sorting.
 	// Mid-rebase: the latest event carries the recovered branch + rebasing signal.
 	ins(at(3), "s-rebasing", "fix-7", true)
 	// Was rebasing, but the latest event is back to a normal checkout — last write

@@ -19,7 +19,7 @@ type Event struct {
 	TS          string // RFC3339 UTC, ingest time
 	SourceApp   string
 	Branch      string // git branch of Cwd at capture time, "" if unknown
-	Rebasing    bool   // true if Cwd was mid-rebase, so Branch was recovered from rebase state
+	Rebasing    bool   // true if the work tree at Cwd was mid-rebase at capture, so Branch was recovered from rebase state
 	Cwd         string
 	TmuxSession string // tmux session name at capture time, "" if not in tmux
 	SessionID   string
