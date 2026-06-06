@@ -172,6 +172,44 @@ func TestRebasingRoundTrip(t *testing.T) {
 	}
 }
 
+// TestActiveCountsSurfacesRebasing confirms the activity tally marks a
+// (tmux_session, source_app, branch) group as rebasing when any event in the
+// window was captured mid-rebase, so the Activity table can flag a worktree that
+// was rebasing during the window. The flag aggregates with MAX: one mid-rebase
+// event in the group is enough to mark it.
+func TestActiveCountsSurfacesRebasing(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	// Anchor both the event timestamps and activeCounts' window to one instant so
+	// the test is deterministic, matching the now-injection convention activeCounts
+	// takes a now parameter for.
+	now := time.Now().UTC()
+	ts := now.Format(time.RFC3339)
+	// fix-7's session has one mid-rebase event and one plain one; the group should
+	// still surface as rebasing (MAX). fix-8 is never rebasing.
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-7", Rebasing: true, TmuxSession: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-7", Rebasing: false, TmuxSession: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-8", TmuxSession: "s2", EventType: "PreToolUse", PayloadJSON: "{}"})
+
+	counts, err := activeCounts(db, time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, c := range counts {
+		got[c.Branch] = c.Rebasing
+	}
+	if !got["fix-7"] {
+		t.Errorf("fix-7 had a mid-rebase event in window; activeCounts should mark Rebasing=true, got %+v", counts)
+	}
+	if got["fix-8"] {
+		t.Errorf("fix-8 never rebasing; want Rebasing=false, got %+v", counts)
+	}
+}
+
 func TestBranchRoundTripAndFilter(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {

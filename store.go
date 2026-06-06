@@ -642,6 +642,7 @@ type SourceCount struct {
 	TmuxSession string
 	SourceApp   string
 	Branch      string
+	Rebasing    bool // true if any event in the group was captured mid-rebase, so Branch was recovered from rebase state
 	Count       int
 }
 
@@ -649,12 +650,13 @@ type SourceCount struct {
 // the last window. Grouping by tmux session and branch as well as app means each
 // concurrent tmux session / worktree shows up as its own row — the signal that
 // tells you which session is busy, and which disambiguates look-alike branches.
-// now is passed in (not read from the clock) so the result is deterministic
-// under test, matching agentRoster.
+// Rebasing is MAX-aggregated per group, so a row is flagged when any of its
+// events was captured mid-rebase. now is passed in (not read from the clock) so
+// the result is deterministic under test, matching agentRoster.
 func activeCounts(db *sql.DB, window time.Duration, now time.Time) ([]SourceCount, error) {
 	since := now.UTC().Add(-window).Format(time.RFC3339)
 	rows, err := db.Query(
-		`SELECT COALESCE(tmux_session,''), source_app, COALESCE(branch, ''), COUNT(*) FROM events WHERE ts >= ?
+		`SELECT COALESCE(tmux_session,''), source_app, COALESCE(branch, ''), COALESCE(MAX(rebasing), 0), COUNT(*) FROM events WHERE ts >= ?
 		 GROUP BY tmux_session, source_app, branch ORDER BY COUNT(*) DESC`,
 		since,
 	)
@@ -665,7 +667,7 @@ func activeCounts(db *sql.DB, window time.Duration, now time.Time) ([]SourceCoun
 	var out []SourceCount
 	for rows.Next() {
 		var sc SourceCount
-		if err := rows.Scan(&sc.TmuxSession, &sc.SourceApp, &sc.Branch, &sc.Count); err != nil {
+		if err := rows.Scan(&sc.TmuxSession, &sc.SourceApp, &sc.Branch, &sc.Rebasing, &sc.Count); err != nil {
 			return nil, err
 		}
 		out = append(out, sc)
