@@ -302,6 +302,7 @@ type Agent struct {
 	SessionID   string
 	SourceApp   string
 	Branch      string
+	Rebasing    bool // true if the session's latest event was captured mid-rebase, so Branch was recovered from rebase state
 	Cwd         string
 	TmuxSession string // tmux session name, the disambiguating label
 	Status      string // human label (see status* constants)
@@ -420,7 +421,7 @@ func deriveStatus(lastEvent, notifType, lastTool string, idleSecs int) (label st
 func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, error) {
 	since := now.Add(-waitingCap).UTC().Format(time.RFC3339)
 	rows, err := db.Query(
-		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(cwd,''), COALESCE(tmux_session,''), COALESCE(session_id,''),
+		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(rebasing,0), COALESCE(cwd,''), COALESCE(tmux_session,''), COALESCE(session_id,''),
 		        event_type, COALESCE(tool_name,''), COALESCE(summary,''),
 		        COALESCE(CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.notification_type') END,'')
 		 FROM events WHERE ts >= ? AND session_id IS NOT NULL AND session_id <> ''
@@ -440,7 +441,8 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
 	for rows.Next() {
 		var ts, app, branch, cwd, tmuxSess, sess, etype, tool, summary, notifType string
-		if err := rows.Scan(&ts, &app, &branch, &cwd, &tmuxSess, &sess, &etype, &tool, &summary, &notifType); err != nil {
+		var rebasing bool
+		if err := rows.Scan(&ts, &app, &branch, &rebasing, &cwd, &tmuxSess, &sess, &etype, &tool, &summary, &notifType); err != nil {
 			return nil, err
 		}
 		s := byID[sess]
@@ -450,7 +452,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 			nextSeq++
 		}
 		// Ascending scan: the last write wins, so these hold the latest values.
-		s.a.SourceApp, s.a.Branch, s.a.Cwd, s.a.TmuxSession = app, branch, cwd, tmuxSess
+		s.a.SourceApp, s.a.Branch, s.a.Rebasing, s.a.Cwd, s.a.TmuxSession = app, branch, rebasing, cwd, tmuxSess
 		s.a.LastEvent = etype
 		s.lastTS = ts
 		// notifType mirrors LastEvent (last-write-wins); deriveStatus only reads it
