@@ -285,13 +285,36 @@ func TestHandleDashboard_FlagsRebasingSession(t *testing.T) {
 	body := getBody(t, db, "/")
 	// Rebasing branch renders italicised with a 🚧 marker so it is scannable as
 	// "mid-rebase, not steady state". The 🚧 carries an aria-label so screen
-	// readers announce "mid-rebase", not "construction sign".
-	if !strings.Contains(body, `<span role="img" aria-label="mid-rebase" title="mid-rebase">🚧</span> <em>fix-7</em>`) {
+	// readers announce "mid-rebase", not "construction sign"; the italics are a
+	// visual-only .rebase-branch class, not <em>, so they add no announcement noise.
+	if !strings.Contains(body, `<span role="img" aria-label="mid-rebase" title="mid-rebase">🚧</span> <span class="rebase-branch">fix-7</span>`) {
 		t.Errorf("rebasing session should render branch italic + accessible 🚧 in:\n%s", body)
 	}
-	// A non-rebasing branch stays plain (no italics, no 🚧 on its name).
-	if strings.Contains(body, `<em>fix-8</em>`) || strings.Contains(body, `aria-label="mid-rebase">🚧</span> <em>fix-8`) {
+	// A non-rebasing branch stays plain (no .rebase-branch styling, no 🚧 on its name).
+	if strings.Contains(body, `<span class="rebase-branch">fix-8</span>`) || strings.Contains(body, `aria-label="mid-rebase">🚧</span> <span class="rebase-branch">fix-8`) {
 		t.Errorf("non-rebasing branch should render plain, not italic/🚧 in:\n%s", body)
+	}
+}
+
+// TestHandleDashboard_FlagsRebasingEverywhere verifies the rebase marker reaches
+// all three branch-rendering tables — the roster, the Activity tally, and the
+// Recent events feed — not just the roster. A single mid-rebase session produces
+// exactly one marker in each, so the whole dashboard reads consistently.
+func TestHandleDashboard_FlagsRebasingEverywhere(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC()
+	recent := now.Add(-2 * time.Minute).Format(time.RFC3339)
+	// One mid-rebase session and one plain one, each its own tmux session so they
+	// form distinct roster rows and activity groups.
+	insertEvent(db, Event{TS: recent, SourceApp: "myapp", Branch: "fix-7", Rebasing: true, SessionID: "sess-rebasing-1", TmuxSession: "tmux-r", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: recent, SourceApp: "myapp", Branch: "fix-8", SessionID: "sess-normal-1", TmuxSession: "tmux-n", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	// Roster row + Activity tally + Recent events row = three markers for the one
+	// rebasing branch; fix-8 contributes none.
+	if n := strings.Count(body, `aria-label="mid-rebase"`); n != 3 {
+		t.Errorf("want the rebase marker in all 3 tables (roster + activity + events), got %d markers in:\n%s", n, body)
 	}
 }
 

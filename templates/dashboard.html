@@ -48,6 +48,7 @@
        a clipped session name is not), so a long branch grows taller rather than
        getting cut off — or hogging the row. */
     td.branch { white-space: normal; word-break: break-word; }
+    td.branch .rebase-branch { font-style: italic; } /* a branch recovered mid-rebase, not a steady-state checkout */
     .type { font-weight: bold; }
     .empty { color: #888; padding: 1rem 0; }
     /* Agent roster */
@@ -214,6 +215,17 @@
 </body>
 </html>
 
+{{/* branchcell renders the branch <td> shared by the roster, activity, and
+     recent-events tables. A mid-rebase row (Rebasing set) is marked with a 🚧 —
+     carrying an aria-label so screen readers announce "mid-rebase", not
+     "construction sign" — and visually italicised via .rebase-branch, so a
+     recovered branch reads as "mid-rebase, not steady state" wherever a branch is
+     shown. The italics are a CSS class, not <em>: the 🚧 aria-label already
+     conveys the state to assistive tech, so the styling stays purely visual and
+     does not add "emphasis" announcement noise. The dot must expose .Branch and
+     .Rebasing (Agent, SourceCount, EventRow all do). */}}
+{{ define "branchcell" }}<td class="branch" data-label="branch">{{ if .Branch }}{{ if .Rebasing }}<span role="img" aria-label="mid-rebase" title="mid-rebase">🚧</span> <span class="rebase-branch">{{ .Branch }}</span>{{ else }}{{ .Branch }}{{ end }}{{ else }}—{{ end }}</td>{{ end }}
+
 {{ define "content" }}
   <div class="meta">
     last change {{ .Generated }}
@@ -234,7 +246,7 @@
     <tbody>
       {{ range .Agents }}
       <tr {{ if le .StatusRank 1 }}class="alert"{{ end }}>
-        <td class="branch" data-label="branch">{{ if .Branch }}{{ if .Rebasing }}<span role="img" aria-label="mid-rebase" title="mid-rebase">🚧</span> <em>{{ .Branch }}</em>{{ else }}{{ .Branch }}{{ end }}{{ else }}—{{ end }}</td>
+        {{ template "branchcell" . }}
         <td data-label="app">{{ .SourceApp }}</td>
         <td data-label="status" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "waiting" }}background{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
         <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}</td>
@@ -264,7 +276,7 @@
     <tbody>
       {{ range .Activity }}
       <tr>
-        <td class="branch" data-label="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
+        {{ template "branchcell" . }}
         <td data-label="app">{{ .SourceApp }}</td>
         <td data-label="events">{{ .Count }}</td>
         <td class="namecell" data-label="session">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
@@ -291,7 +303,7 @@
       <tr {{ if eq .Outcome "✗" }}class="fail"{{ else if .SessionID }}style="background: color-mix(in srgb, {{ index $.SessColors .SessionID }} 14%, Canvas)"{{ end }}>
         <td class="time" data-label="time">{{ shortTS .TS $.Now }}{{ if .Duration }} +{{ .Duration }}{{ end }}</td>
         <td data-label="source_app">{{ .SourceApp }}</td>
-        <td class="branch" data-label="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
+        {{ template "branchcell" . }}
         <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
         <td class="type" data-label="event">{{ if .Outcome }}<span title="{{ .EventType }}">{{ .Outcome }}</span>{{ else }}{{ .EventType }}{{ end }}</td>
         <td class="tool" data-label="tool">{{ .ToolName }}</td>
