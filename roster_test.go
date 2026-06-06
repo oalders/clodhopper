@@ -208,6 +208,49 @@ func TestAgentRoster_StaleWorkingBecomesIdle(t *testing.T) {
 	}
 }
 
+func TestAgentRoster_SurfacesRebasing(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, sess, branch string, rebasing bool) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: branch, Rebasing: rebasing, SessionID: sess, EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+	}
+
+	// agentRoster folds events by id ASC (insertion order), so for each session
+	// the last ins() call wins — these timestamps are only for idle/sorting.
+	// Mid-rebase: the latest event carries the recovered branch + rebasing signal.
+	ins(at(3), "s-rebasing", "fix-7", true)
+	// Was rebasing, but the latest event is back to a normal checkout — last write
+	// wins, so this session is NOT flagged.
+	ins(at(4), "s-finished", "fix-8", true)
+	ins(at(2), "s-finished", "fix-8", false)
+	// Never rebasing.
+	ins(at(1), "s-normal", "fix-9", false)
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Agent{}
+	for _, a := range agents {
+		byID[a.SessionID] = a
+	}
+	if a := byID["s-rebasing"]; !a.Rebasing {
+		t.Errorf("mid-rebase session should surface Rebasing=true, got %+v", a)
+	}
+	if a := byID["s-finished"]; a.Rebasing {
+		t.Errorf("session whose latest event is not rebasing should be Rebasing=false (last write wins), got %+v", a)
+	}
+	if a := byID["s-normal"]; a.Rebasing {
+		t.Errorf("never-rebasing session should be Rebasing=false, got %+v", a)
+	}
+}
+
 func TestHandleDashboard_RendersAgentBoard(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
@@ -226,6 +269,29 @@ func TestHandleDashboard_RendersAgentBoard(t *testing.T) {
 	// renders italicised rather than as work in progress.
 	if !strings.Contains(body, `<em title="last completed">address-gh-review</em>`) {
 		t.Errorf("a stopped agent's phase should render italicised in:\n%s", body)
+	}
+}
+
+func TestHandleDashboard_FlagsRebasingSession(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC()
+	recent := now.Add(-2 * time.Minute).Format(time.RFC3339)
+	// A mid-rebase session: branch recovered, rebasing flag set.
+	insertEvent(db, Event{TS: recent, SourceApp: "myapp", Branch: "fix-7", Rebasing: true, SessionID: "sess-rebasing-1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+	// A normal session on a plain branch, for contrast.
+	insertEvent(db, Event{TS: recent, SourceApp: "myapp", Branch: "fix-8", SessionID: "sess-normal-1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	// Rebasing branch renders italicised with a 🚧 marker so it is scannable as
+	// "mid-rebase, not steady state". The 🚧 carries an aria-label so screen
+	// readers announce "mid-rebase", not "construction sign".
+	if !strings.Contains(body, `<span role="img" aria-label="mid-rebase" title="mid-rebase">🚧</span> <em>fix-7</em>`) {
+		t.Errorf("rebasing session should render branch italic + accessible 🚧 in:\n%s", body)
+	}
+	// A non-rebasing branch stays plain (no italics, no 🚧 on its name).
+	if strings.Contains(body, `<em>fix-8</em>`) || strings.Contains(body, `aria-label="mid-rebase">🚧</span> <em>fix-8`) {
+		t.Errorf("non-rebasing branch should render plain, not italic/🚧 in:\n%s", body)
 	}
 }
 

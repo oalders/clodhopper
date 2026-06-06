@@ -234,7 +234,7 @@
     <tbody>
       {{ range .Agents }}
       <tr {{ if le .StatusRank 1 }}class="alert"{{ end }}>
-        <td class="branch" data-label="branch">{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}</td>
+        <td class="branch" data-label="branch">{{ if .Branch }}{{ if .Rebasing }}<span role="img" aria-label="mid-rebase" title="mid-rebase">🚧</span> <em>{{ .Branch }}</em>{{ else }}{{ .Branch }}{{ end }}{{ else }}—{{ end }}</td>
         <td data-label="app">{{ .SourceApp }}</td>
         <td data-label="status" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "waiting" }}background{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
         <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}</td>
