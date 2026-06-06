@@ -282,12 +282,13 @@ func TestHandleDashboard_FlagsRebasingSession(t *testing.T) {
 
 	body := getBody(t, db, "/")
 	// Rebasing branch renders italicised with a 🚧 marker so it is scannable as
-	// "mid-rebase, not steady state".
-	if !strings.Contains(body, `🚧 <em title="mid-rebase">fix-7</em>`) {
-		t.Errorf("rebasing session should render branch italic + 🚧 in:\n%s", body)
+	// "mid-rebase, not steady state". The 🚧 carries an aria-label so screen
+	// readers announce "mid-rebase", not "construction sign".
+	if !strings.Contains(body, `<span role="img" aria-label="mid-rebase" title="mid-rebase">🚧</span> <em>fix-7</em>`) {
+		t.Errorf("rebasing session should render branch italic + accessible 🚧 in:\n%s", body)
 	}
 	// A non-rebasing branch stays plain (no italics, no 🚧 on its name).
-	if strings.Contains(body, `<em title="mid-rebase">fix-8</em>`) {
+	if strings.Contains(body, `<em>fix-8</em>`) || strings.Contains(body, `aria-label="mid-rebase">🚧</span> <em>fix-8`) {
 		t.Errorf("non-rebasing branch should render plain, not italic/🚧 in:\n%s", body)
 	}
 }
