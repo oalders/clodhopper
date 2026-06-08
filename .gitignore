@@ -12,3 +12,7 @@
 
 # Design specs / scratch docs (local only, not committed)
 /docs/
+
+.serena-home/
+
+.tmp/

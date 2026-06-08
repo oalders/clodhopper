@@ -86,6 +86,44 @@ func TestBuildSummary_UserPromptPreviewScrubbedAndBounded(t *testing.T) {
 	}
 }
 
+func TestSlashCommand(t *testing.T) {
+	tests := []struct {
+		name      string
+		eventType string
+		prompt    string
+		want      string
+	}{
+		{"leading slash", "UserPromptSubmit", "/code-review", "/code-review"},
+		{"args dropped", "UserPromptSubmit", "/git-rebase main onto x", "/git-rebase"},
+		{"prose mention", "UserPromptSubmit", "you can do it via /quick-pr", ""},
+		{"leading whitespace", "UserPromptSubmit", "  /foo", "/foo"},
+		{"bare slash", "UserPromptSubmit", "/", ""},
+		{"empty prompt", "UserPromptSubmit", "", ""},
+		{"non-prompt event", "PreToolUse", "/code-review", ""},
+		{"multi-line", "UserPromptSubmit", "/foo\nmore text", "/foo"},
+		{"token scrubbed", "UserPromptSubmit", "/deploy?API_KEY=hunter2", "/deploy?API_KEY=«redacted»"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := slashCommand(tt.eventType, tt.prompt); got != tt.want {
+				t.Errorf("slashCommand(%q, %q) = %q, want %q", tt.eventType, tt.prompt, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildEvent_SlashCommand(t *testing.T) {
+	raw := []byte(`{"hook_event_name":"UserPromptSubmit","prompt":"/code-review --foo bar"}`)
+	if ev := buildEvent(raw, "app"); ev.SlashCommand != "/code-review" {
+		t.Errorf("SlashCommand = %q, want /code-review", ev.SlashCommand)
+	}
+
+	raw = []byte(`{"hook_event_name":"UserPromptSubmit","prompt":"please review my code"}`)
+	if ev := buildEvent(raw, "app"); ev.SlashCommand != "" {
+		t.Errorf("SlashCommand = %q, want empty for prose prompt", ev.SlashCommand)
+	}
+}
+
 func TestRunIngest_WritesRow(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "events.db")
 	t.Setenv("CLODHOPPER_DB", dbPath)

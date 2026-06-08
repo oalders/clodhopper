@@ -125,6 +125,44 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	}
 }
 
+func TestAgentRoster_LastCommandLatestPerSession(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, sess, etype, slash string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-45", SessionID: sess, EventType: etype, SlashCommand: slash, PayloadJSON: "{}"})
+	}
+
+	// s-cmd: ran /foo early, then a non-command event, then /bar — latest wins,
+	// and the empty event in between must not clobber LastCommand.
+	ins(at(10), "s-cmd", "UserPromptSubmit", "/foo")
+	ins(at(8), "s-cmd", "PreToolUse", "")
+	ins(at(6), "s-cmd", "UserPromptSubmit", "/bar")
+	ins(at(2), "s-cmd", "PreToolUse", "")
+	// s-none: never ran a slash command.
+	ins(at(5), "s-none", "PreToolUse", "")
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Agent{}
+	for _, a := range agents {
+		byID[a.SessionID] = a
+	}
+	if got := byID["s-cmd"].LastCommand; got != "/bar" {
+		t.Errorf("s-cmd LastCommand = %q, want /bar (last non-empty wins)", got)
+	}
+	if got := byID["s-none"].LastCommand; got != "" {
+		t.Errorf("s-none LastCommand = %q, want empty", got)
+	}
+}
+
 func TestAgentRoster_NotificationTypeDisambiguates(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {
