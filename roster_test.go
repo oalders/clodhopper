@@ -97,8 +97,10 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	if len(agents) != 3 {
 		t.Fatalf("want 3 live agents (ended excluded), got %d: %+v", len(agents), agents)
 	}
-	// Order is purely by idle time: most recently active first, longest-idle
-	// last. s-busy (2m) < s-wait (4m) < s-idle (8m), regardless of status.
+	// Each session is on a distinct branch, so each is its own singleton group;
+	// group freshness therefore equals idle time and the roster orders exactly as
+	// a raw idle sort would: most recently active first, longest-idle last.
+	// s-busy (2m) < s-wait (4m) < s-idle (8m), regardless of status.
 	if agents[0].SessionID != "s-busy" || agents[0].Status != statusWorking {
 		t.Errorf("expected s-busy/working first (least idle), got %+v", agents[0])
 	}
@@ -415,6 +417,27 @@ func TestHandleDashboard_RendersAgentBoard(t *testing.T) {
 	// renders italicised rather than as work in progress.
 	if !strings.Contains(body, `<em title="last completed">address-gh-review</em>`) {
 		t.Errorf("a stopped agent's phase should render italicised in:\n%s", body)
+	}
+}
+
+// TestHandleDashboard_GroupStartDivider verifies the GroupStart flag actually
+// reaches the rendered HTML as the group-start divider class. The grouping logic
+// itself is unit-tested in TestAgentRoster_GroupsSameBranch; this closes the gap
+// between that flag and the template that consumes it.
+func TestHandleDashboard_GroupStartDivider(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	// Two sessions on branch fix-A (one group) and one on fix-B (a second group).
+	// The second group's first row must carry the group-start divider.
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-A", SessionID: "g-a1", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(2), SourceApp: "myapp", Branch: "fix-A", SessionID: "g-a2", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(3), SourceApp: "myapp", Branch: "fix-B", SessionID: "g-b1", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, "group-start") {
+		t.Errorf("expected a group-start divider row when sessions span two branch groups, in:\n%s", body)
 	}
 }
 

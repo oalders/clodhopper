@@ -55,8 +55,9 @@
     /* Agent roster */
     tr.alert td { background: color-mix(in srgb, orange 22%, Canvas); }
     tr.fail td { background: color-mix(in srgb, #c00 16%, Canvas); }
-    /* A subtle divider between (source_app, branch) groups so same-branch sessions read as one cluster. */
-    tr.group-start td { border-top: 2px solid color-mix(in srgb, CanvasText 25%, Canvas); }
+    /* A subtle divider between (source_app, branch) groups so same-branch sessions read as one cluster.
+       Fixed-colour fallback first for browsers without color-mix() (pre-Chrome 111 / Firefox 113 / Safari 16.2). */
+    tr.group-start td { border-top: 2px solid #bbb; border-top: 2px solid color-mix(in srgb, CanvasText 25%, Canvas); }
     .status { font-weight: bold; }
     .status.waiting, .status.approval, .status.needs, .status.input { color: #b35900; }
     .status.idle { color: #888; font-weight: normal; }
@@ -138,7 +139,7 @@
       tr.fail { background: color-mix(in srgb, #c00 16%, Canvas); }
       /* In the card layout td borders are stripped (border:none above), so put the
          group divider on the card itself, matching how alert/fail tint the tr here. */
-      tr.group-start { border-top: 2px solid color-mix(in srgb, CanvasText 25%, Canvas); }
+      tr.group-start { border-top: 2px solid #bbb; border-top: 2px solid color-mix(in srgb, CanvasText 25%, Canvas); }
     }
   </style>
 </head>
@@ -251,7 +252,10 @@
     </thead>
     <tbody>
       {{ range .Agents }}
-      <tr{{ if or (le .StatusRank 1) .GroupStart }} class="{{ if le .StatusRank 1 }}alert{{ end }}{{ if .GroupStart }}{{ if le .StatusRank 1 }} {{ end }}group-start{{ end }}"{{ end }}>
+      {{- $cls := "" }}
+      {{- if le .StatusRank 1 }}{{ $cls = "alert" }}{{ end }}
+      {{- if .GroupStart }}{{ if $cls }}{{ $cls = printf "%s group-start" $cls }}{{ else }}{{ $cls = "group-start" }}{{ end }}{{ end }}
+      <tr{{ if $cls }} class="{{ $cls }}"{{ end }}>
         {{ template "branchcell" . }}
         <td data-label="app">{{ .SourceApp }}</td>
         <td data-label="status" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "waiting" }}background{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
