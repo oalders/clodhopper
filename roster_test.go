@@ -199,7 +199,7 @@ func TestAgentRoster_GroupsSameBranch(t *testing.T) {
 	}
 
 	// Branchless sessions are NOT clumped: each is its own group ordered by idle.
-	// n1 (3m) is fresher than n2 (6m), so n1 precedes n2; and they are not forced
+	// n1 (2m) is fresher than n2 (5m), so n1 precedes n2; and they are not forced
 	// adjacent as a single pseudo-group — other groups may interleave around them
 	// by group freshness. Assert the idle ordering holds.
 	if pos["n1"] > pos["n2"] {
