@@ -255,6 +255,43 @@ func TestAgentRoster_GroupsSameBranch(t *testing.T) {
 	}
 }
 
+// Two sessions on the SAME branch but DIFFERENT source apps must NOT group:
+// worktrees are per-project, so groupKey folds SourceApp into the branched key.
+// Guards that invariant against a future refactor of the key structure.
+func TestAgentRoster_SameBranchDifferentAppNotGrouped(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, app, sess string) {
+		insertEvent(db, Event{TS: ts, SourceApp: app, Branch: "main", SessionID: sess, EventType: "Stop", PayloadJSON: "{}"})
+	}
+
+	// Same branch ("main"), two different apps, one session each.
+	ins(at(1), "app-a", "sa")
+	ins(at(2), "app-b", "sb")
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byID := map[string]Agent{}
+	for _, a := range agents {
+		byID[a.SessionID] = a
+	}
+	// Each is a singleton in its own (app, branch) group: no binding bar.
+	for _, s := range []string{"sa", "sb"} {
+		if byID[s].Grouped {
+			t.Errorf("%s shares a branch but not an app; it must not be Grouped", s)
+		}
+	}
+}
+
 func TestAgentRoster_LastCommandLatestPerSession(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {

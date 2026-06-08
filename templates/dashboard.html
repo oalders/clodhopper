@@ -56,7 +56,10 @@
     tr.alert td { background: color-mix(in srgb, orange 22%, Canvas); }
     tr.fail td { background: color-mix(in srgb, #c00 16%, Canvas); }
     /* A subtle divider between (source_app, branch) groups so adjacent clusters stay separated.
-       Fixed-colour fallback first for browsers without color-mix() (pre-Chrome 111 / Firefox 113 / Safari 16.2). */
+       Fixed-colour fallback first for browsers without color-mix() (pre-Chrome 111 / Firefox 113 / Safari 16.2).
+       Under border-collapse this 2px top border competes with the base td's 1px
+       border-bottom; the wider border wins, so keep this >= 2px and wider than any
+       base bottom-border or the divider silently disappears. */
     tr.group-start td { border-top: 2px solid #bbb; border-top: 2px solid color-mix(in srgb, CanvasText 25%, Canvas); }
     /* The left accent bar that BINDS a multi-session branch cluster (a worktree with
        several agents): a continuous vertical bar down the left edge of every row in
@@ -146,7 +149,11 @@
       tr.fail { background: color-mix(in srgb, #c00 16%, Canvas); }
       /* In the card layout td borders are stripped (border:none above), so put the
          group divider and the cluster's left accent bar on the card itself, matching
-         how alert/fail tint the tr here. */
+         how alert/fail tint the tr here. These are intentional longhands (border-top
+         / border-left) that override only one side of the card's base `border`
+         shorthand and compose with each other when a row is both group-start and
+         grouped; do NOT collapse them into a single `border` shorthand or you reset
+         the other sides. */
       tr.group-start { border-top: 2px solid #bbb; border-top: 2px solid color-mix(in srgb, CanvasText 25%, Canvas); }
       tr.grouped { border-left: 3px solid #888; border-left: 3px solid color-mix(in srgb, CanvasText 45%, Canvas); }
     }

@@ -24,6 +24,10 @@ func TestRowClass(t *testing.T) {
 		want              string
 	}{
 		{"plain", 5, false, false, ""},
+		// Zero-value Agent: StatusRank 0 is the most severe rank (<= 1), so a
+		// default-initialised row reads as alert. Pins the rank-0 boundary in case a
+		// future by-value Agent{} ever reaches rowClass.
+		{"zero value (rank 0)", 0, false, false, "alert"},
 		{"alert only", 1, false, false, "alert"},
 		{"group-start only", 5, true, false, "group-start"},
 		{"grouped only", 5, false, true, "grouped"},
