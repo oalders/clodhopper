@@ -101,6 +101,7 @@ func TestSlashCommand(t *testing.T) {
 		{"empty prompt", "UserPromptSubmit", "", ""},
 		{"non-prompt event", "PreToolUse", "/code-review", ""},
 		{"multi-line", "UserPromptSubmit", "/foo\nmore text", "/foo"},
+		{"token scrubbed", "UserPromptSubmit", "/deploy?API_KEY=hunter2", "/deploy?API_KEY=«redacted»"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

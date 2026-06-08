@@ -144,6 +144,8 @@ func slashCommand(eventType, prompt string) string {
 	if !strings.HasPrefix(prompt, "/") {
 		return ""
 	}
+	// [0] is safe: after TrimSpace the HasPrefix("/") guard guarantees a
+	// non-empty, non-whitespace-leading string, so Fields returns ≥1 element.
 	token := strings.Fields(prompt)[0]
 	if token == "/" {
 		return ""
