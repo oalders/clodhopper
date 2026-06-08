@@ -125,6 +125,93 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	}
 }
 
+func TestAgentRoster_GroupsSameBranch(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, sess, branch, etype, tool string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: branch, SessionID: sess, EventType: etype, ToolName: tool, PayloadJSON: "{}"})
+	}
+
+	// Two branches, two sessions each, with INTERLEAVED idle times so a pure-idle
+	// sort would scatter them: a1(1), b1(2), b2(4), a2(8).
+	// Grouped, branch fix-A wins (freshest member a1=1m < b1=2m); within each group
+	// the least-idle session comes first -> a1, a2, b1, b2.
+	ins(at(1), "a1", "fix-A", "Stop", "")
+	ins(at(8), "a2", "fix-A", "Stop", "")
+	ins(at(2), "b1", "fix-B", "Stop", "")
+	ins(at(4), "b2", "fix-B", "Stop", "")
+	// Two branchless sessions: must each be their own group, ordered purely by
+	// idle, NOT clumped together.
+	ins(at(3), "n1", "", "Stop", "")
+	ins(at(6), "n2", "", "Stop", "")
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pos := map[string]int{}
+	for i, a := range agents {
+		pos[a.SessionID] = i
+	}
+
+	// The four branch sessions keep grouped order a1, a2, b1, b2.
+	branchOrder := []string{"a1", "a2", "b1", "b2"}
+	for i := 1; i < len(branchOrder); i++ {
+		if pos[branchOrder[i-1]] > pos[branchOrder[i]] {
+			t.Errorf("branch group order wrong: %s should precede %s; got positions %v", branchOrder[i-1], branchOrder[i], pos)
+		}
+	}
+	// a2 (same branch as a1, idle 8m) must sit right after a1, not after b1/b2,
+	// proving the grouping rather than a coincidental idle order.
+	if pos["a2"] != pos["a1"]+1 {
+		t.Errorf("a2 should immediately follow a1 (same-branch group), got pos a1=%d a2=%d", pos["a1"], pos["a2"])
+	}
+
+	byID := map[string]Agent{}
+	for _, a := range agents {
+		byID[a.SessionID] = a
+	}
+	// GroupStart: first row of each branch group except the very first row overall.
+	if byID["a1"].GroupStart {
+		t.Errorf("a1 is the first row of its group; but GroupStart should reflect overall ordering (false if first row overall)")
+	}
+	if byID["a2"].GroupStart {
+		t.Errorf("a2 is in the same group as a1, GroupStart should be false")
+	}
+	if !byID["b1"].GroupStart {
+		t.Errorf("b1 starts a new branch group, GroupStart should be true")
+	}
+	if byID["b2"].GroupStart {
+		t.Errorf("b2 is in the same group as b1, GroupStart should be false")
+	}
+	// The very first row overall must never carry GroupStart.
+	if agents[0].GroupStart {
+		t.Errorf("first roster row must have GroupStart=false, got %+v", agents[0])
+	}
+
+	// Branchless sessions are NOT clumped: each is its own group ordered by idle.
+	// n1 (3m) is fresher than n2 (6m), so n1 precedes n2; and they are not forced
+	// adjacent as a single pseudo-group — other groups may interleave around them
+	// by group freshness. Assert the idle ordering holds.
+	if pos["n1"] > pos["n2"] {
+		t.Errorf("branchless sessions should order by idle (n1 fresher than n2), got pos n1=%d n2=%d", pos["n1"], pos["n2"])
+	}
+	// Each branchless session forms its own group boundary: whatever precedes it is
+	// a different group, so its GroupStart is true unless it is row 0.
+	for _, s := range []string{"n1", "n2"} {
+		if pos[s] > 0 && !byID[s].GroupStart {
+			t.Errorf("branchless session %s is its own group; GroupStart should be true when not row 0 (pos=%d)", s, pos[s])
+		}
+	}
+}
+
 func TestAgentRoster_LastCommandLatestPerSession(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {
