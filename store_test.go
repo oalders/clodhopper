@@ -233,6 +233,22 @@ func TestToolCallColumnsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSlashCommandRoundTrip(t *testing.T) {
+	db, _ := openDB(testDB(t))
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: now, SourceApp: "a", SessionID: "s", EventType: "UserPromptSubmit",
+		SlashCommand: "/code-review", PayloadJSON: "{}"})
+
+	var got string
+	if err := db.QueryRow(`SELECT COALESCE(slash_command,'') FROM events WHERE session_id = 's'`).Scan(&got); err != nil {
+		t.Fatalf("select slash_command: %v", err)
+	}
+	if got != "/code-review" {
+		t.Errorf("slash_command = %q, want /code-review", got)
+	}
+}
+
 func TestFormatDuration(t *testing.T) {
 	cases := []struct {
 		ms   int64

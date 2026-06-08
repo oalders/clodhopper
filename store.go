@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS events (
   event_type   TEXT NOT NULL,
   tool_name    TEXT,
   summary      TEXT,
+  slash_command TEXT,
   tool_use_id  TEXT,
   duration_ms  INTEGER,
   payload_json TEXT NOT NULL
@@ -62,6 +63,7 @@ var migrations = []string{
 	`ALTER TABLE events ADD COLUMN tool_use_id TEXT`,
 	`ALTER TABLE events ADD COLUMN duration_ms INTEGER`,
 	`ALTER TABLE events ADD COLUMN rebasing INTEGER`,
+	`ALTER TABLE events ADD COLUMN slash_command TEXT`,
 }
 
 // defaultDBPath returns CLODHOPPER_DB if set, else ~/.claude/clodhopper/var/events.db.
@@ -123,9 +125,9 @@ func retryOnLock(fn func() error) error {
 
 func insertEvent(db *sql.DB, ev Event) error {
 	_, err := db.Exec(
-		`INSERT INTO events (ts, source_app, branch, rebasing, cwd, tmux_session, session_id, event_type, tool_name, summary, tool_use_id, duration_ms, payload_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ev.TS, ev.SourceApp, ev.Branch, ev.Rebasing, ev.Cwd, ev.TmuxSession, ev.SessionID, ev.EventType, ev.ToolName, ev.Summary, ev.ToolUseID, ev.DurationMs, ev.PayloadJSON,
+		`INSERT INTO events (ts, source_app, branch, rebasing, cwd, tmux_session, session_id, event_type, tool_name, summary, slash_command, tool_use_id, duration_ms, payload_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ev.TS, ev.SourceApp, ev.Branch, ev.Rebasing, ev.Cwd, ev.TmuxSession, ev.SessionID, ev.EventType, ev.ToolName, ev.Summary, ev.SlashCommand, ev.ToolUseID, ev.DurationMs, ev.PayloadJSON,
 	)
 	return err
 }
@@ -309,6 +311,7 @@ type Agent struct {
 	Status      string // human label (see status* constants)
 	StatusRank  int    // sort key; lower = more urgent
 	Doing       string // most recent skill/command, else latest tool/event
+	LastCommand string // last slash command the session ran (e.g. "/code-review"), "" if none
 	DoingActive bool   // true while the agent is still working the phase; false once it has stopped/gone idle, when Doing is the last *completed* thing
 	LastEvent   string
 	Idle        string // humanised time since last event ("4m", "1h")
@@ -423,7 +426,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	since := now.Add(-waitingCap).UTC().Format(time.RFC3339)
 	rows, err := db.Query(
 		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(rebasing,0), COALESCE(cwd,''), COALESCE(tmux_session,''), COALESCE(session_id,''),
-		        event_type, COALESCE(tool_name,''), COALESCE(summary,''),
+		        event_type, COALESCE(tool_name,''), COALESCE(summary,''), COALESCE(slash_command,''),
 		        COALESCE(CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.notification_type') END,'')
 		 FROM events WHERE ts >= ? AND session_id IS NOT NULL AND session_id <> ''
 		 ORDER BY id ASC`, since)
@@ -441,9 +444,9 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	byID := map[string]*state{}
 	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
 	for rows.Next() {
-		var ts, app, branch, cwd, tmuxSess, sess, etype, tool, summary, notifType string
+		var ts, app, branch, cwd, tmuxSess, sess, etype, tool, summary, slashCmd, notifType string
 		var rebasing bool
-		if err := rows.Scan(&ts, &app, &branch, &rebasing, &cwd, &tmuxSess, &sess, &etype, &tool, &summary, &notifType); err != nil {
+		if err := rows.Scan(&ts, &app, &branch, &rebasing, &cwd, &tmuxSess, &sess, &etype, &tool, &summary, &slashCmd, &notifType); err != nil {
 			return nil, err
 		}
 		s := byID[sess]
@@ -461,6 +464,11 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		s.lastNotif = notifType
 		if tool != "" {
 			s.lastTool = tool
+		}
+		// LastCommand tracks the most recent slash command (last-write-wins);
+		// empty values (non-command events) must not clobber it.
+		if slashCmd != "" {
+			s.a.LastCommand = slashCmd
 		}
 		// "Doing" tracks the most recent skill/command — the phase the agent is in
 		// (fix-gh-issue, code-review, …). Only Skill events update it.
