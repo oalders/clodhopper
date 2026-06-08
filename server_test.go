@@ -289,6 +289,61 @@ func TestViewSignature_TracksTmuxSession(t *testing.T) {
 	}
 }
 
+func TestHandleDashboard_ShowsLastCommand(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC()
+	recent := now.Add(-2 * time.Minute).Format(time.RFC3339)
+	// The session typed /git-rebase, then stopped. Its Doing is unrelated/empty, so
+	// the slash command surfaces as a muted second line.
+	insertEvent(db, Event{TS: now.Add(-5 * time.Minute).Format(time.RFC3339), SourceApp: "myapp", Branch: "fix-45",
+		SessionID: "sess-cmd", EventType: "UserPromptSubmit", SlashCommand: "/git-rebase", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: recent, SourceApp: "myapp", Branch: "fix-45", SessionID: "sess-cmd",
+		EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, `<div class="lastcmd">↳ /git-rebase</div>`) {
+		t.Errorf("expected the slash command as a muted second line in:\n%s", body)
+	}
+}
+
+func TestHandleDashboard_NoLastCommandLine(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC()
+	recent := now.Add(-2 * time.Minute).Format(time.RFC3339)
+	// A session that never ran a slash command renders no ↳ second line.
+	insertEvent(db, Event{TS: recent, SourceApp: "myapp", Branch: "fix-45", SessionID: "sess-plain",
+		EventType: "PreToolUse", ToolName: "Bash", Summary: "Bash: go build", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if strings.Contains(body, `class="lastcmd"`) {
+		t.Errorf("a session with no slash command must not render a lastcmd line in:\n%s", body)
+	}
+}
+
+func TestHandleDashboard_DedupesLastCommandAgainstSkill(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC()
+	recent := now.Add(-2 * time.Minute).Format(time.RFC3339)
+	// A skill-backed slash command: Doing is the skill name "code-review" (no slash)
+	// and LastCommand is "/code-review". The ↳ line would merely duplicate line 1,
+	// so it must be suppressed — while the skill still shows on line 1.
+	insertEvent(db, Event{TS: now.Add(-4 * time.Minute).Format(time.RFC3339), SourceApp: "myapp", Branch: "fix-45",
+		SessionID: "sess-skill", EventType: "UserPromptSubmit", SlashCommand: "/code-review", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: recent, SourceApp: "myapp", Branch: "fix-45", SessionID: "sess-skill",
+		EventType: "PreToolUse", ToolName: "Skill", Summary: "Skill: code-review", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, "code-review") {
+		t.Errorf("the skill should still show on line 1 in:\n%s", body)
+	}
+	if strings.Contains(body, "↳ /code-review") {
+		t.Errorf("a skill-backed command must not duplicate as a ↳ line in:\n%s", body)
+	}
+}
+
 func TestHandleDashboard_RendersTmuxSession(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
