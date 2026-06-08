@@ -85,6 +85,7 @@ func buildEvent(raw []byte, sourceApp string) Event {
 	if ev.EventType == "" {
 		ev.EventType = "Unknown"
 	}
+	ev.SlashCommand = slashCommand(ev.EventType, str(p, "prompt"))
 	ev.Summary = buildSummary(ev.EventType, ev.ToolName, p)
 	return ev
 }
@@ -127,6 +128,27 @@ func buildSummary(eventType, tool string, p map[string]any) string {
 		return summary
 	}
 	return eventType
+}
+
+// slashCommand extracts the slash command a user invoked from a UserPromptSubmit
+// prompt, or "" for any other event type or a prompt that is not a command. Only
+// the first whitespace-delimited token is kept — arguments are never retained, in
+// keeping with "never persist chat content". A bare "/" is not a command. The
+// token is scrubbed and truncated to honour the scrub layer's fail-closed bias,
+// consistent with tmuxSession and the prompt summary.
+func slashCommand(eventType, prompt string) string {
+	if eventType != "UserPromptSubmit" {
+		return ""
+	}
+	prompt = strings.TrimSpace(prompt)
+	if !strings.HasPrefix(prompt, "/") {
+		return ""
+	}
+	token := strings.Fields(prompt)[0]
+	if token == "/" {
+		return ""
+	}
+	return truncate(scrubString(token), maxFieldLen)
 }
 
 // gitBranch returns the current branch of the git work tree containing dir and

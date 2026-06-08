@@ -15,20 +15,21 @@ import (
 
 // Event is one captured Claude Code lifecycle event, after scrubbing.
 type Event struct {
-	ID          int64
-	TS          string // RFC3339 UTC, ingest time
-	SourceApp   string
-	Branch      string // git branch of Cwd at capture time, "" if unknown
-	Rebasing    bool   // true if the work tree at Cwd was mid-rebase at capture, so Branch was recovered from rebase state
-	Cwd         string
-	TmuxSession string // tmux session name at capture time, "" if not in tmux
-	SessionID   string
-	EventType   string
-	ToolName    string
-	Summary     string
-	ToolUseID   string        // hook tool_use_id; pairs a Pre with its Post/Failure
-	DurationMs  sql.NullInt64 // tool-call duration (Post* only); NULL otherwise
-	PayloadJSON string
+	ID           int64
+	TS           string // RFC3339 UTC, ingest time
+	SourceApp    string
+	Branch       string // git branch of Cwd at capture time, "" if unknown
+	Rebasing     bool   // true if the work tree at Cwd was mid-rebase at capture, so Branch was recovered from rebase state
+	Cwd          string
+	TmuxSession  string // tmux session name at capture time, "" if not in tmux
+	SlashCommand string // first slash-command token from a UserPromptSubmit prompt, "" otherwise (no arguments retained)
+	SessionID    string
+	EventType    string
+	ToolName     string
+	Summary      string
+	ToolUseID    string        // hook tool_use_id; pairs a Pre with its Post/Failure
+	DurationMs   sql.NullInt64 // tool-call duration (Post* only); NULL otherwise
+	PayloadJSON  string
 }
 
 const schema = `
