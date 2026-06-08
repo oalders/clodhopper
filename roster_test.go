@@ -475,8 +475,21 @@ func TestHandleDashboard_GroupClusterClasses(t *testing.T) {
 	if n := strings.Count(body, `grouped"`); n != 2 {
 		t.Errorf("expected exactly 2 grouped rows (the cluster), got %d, in:\n%s", n, body)
 	}
+	// The visual binding bar has a screen-reader equivalent: grouped rows' branch
+	// cell carries an aria-label "<branch> (cluster)" so assistive tech announces
+	// the cluster the bar conveys visually. Both cluster members get it; the
+	// singleton (no bar) gets none.
+	if n := strings.Count(body, `aria-label="shared (cluster)"`); n != 2 {
+		t.Errorf("expected exactly 2 cluster aria-labels, got %d, in:\n%s", n, body)
+	}
+	if strings.Contains(body, `aria-label="solo (cluster)"`) {
+		t.Errorf("singleton branch must not carry a cluster aria-label, in:\n%s", body)
+	}
 	// The singleton starts a new group, so it draws the inter-cluster divider.
-	if !strings.Contains(body, "group-start") {
+	// Match the class-attribute terminator `group-start"` rather than the bare
+	// word, so the `tr.group-start` rules in the <style> block don't make this
+	// pass vacuously (same idiom as the `grouped"` count above).
+	if !strings.Contains(body, `group-start"`) {
 		t.Errorf("expected a group-start divider for the singleton branch, in:\n%s", body)
 	}
 	// Adjacency: both "shared" branch cells sit together above the "solo" one —
@@ -490,8 +503,12 @@ func TestHandleDashboard_GroupClusterClasses(t *testing.T) {
 			roster = roster[i : i+j]
 		}
 	}
-	soloCell := strings.Index(roster, `data-label="branch">solo`)
-	lastSharedCell := strings.LastIndex(roster, `data-label="branch">shared`)
+	// Match on branch-cell content (`>name</td>`) rather than the attribute prefix:
+	// grouped cells now carry an aria-label between data-label and `>`, so a
+	// `data-label="branch">shared` match would miss them. Within the roster table the
+	// branch name appears only as its cell's text, so this stays unambiguous.
+	soloCell := strings.Index(roster, `>solo</td>`)
+	lastSharedCell := strings.LastIndex(roster, `>shared</td>`)
 	if soloCell < 0 || lastSharedCell < 0 || soloCell < lastSharedCell {
 		t.Errorf("the two shared-branch rows should be adjacent, above the singleton; order wrong in:\n%s", body)
 	}

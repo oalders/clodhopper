@@ -231,16 +231,28 @@
 </body>
 </html>
 
-{{/* branchcell renders the branch <td> shared by the roster, activity, and
-     recent-events tables. A mid-rebase row (Rebasing set) is marked with a 🚧 —
-     carrying an aria-label so screen readers announce "mid-rebase", not
-     "construction sign" — and visually italicised via .rebase-branch, so a
-     recovered branch reads as "mid-rebase, not steady state" wherever a branch is
-     shown. The italics are a CSS class, not <em>: the 🚧 aria-label already
-     conveys the state to assistive tech, so the styling stays purely visual and
-     does not add "emphasis" announcement noise. The dot must expose .Branch and
-     .Rebasing (Agent, SourceCount, EventRow all do). */}}
-{{ define "branchcell" }}<td class="branch" data-label="branch">{{ if .Branch }}{{ if .Rebasing }}<span role="img" aria-label="mid-rebase" title="mid-rebase">🚧</span> <span class="rebase-branch">{{ .Branch }}</span>{{ else }}{{ .Branch }}{{ end }}{{ else }}—{{ end }}</td>{{ end }}
+{{/* branchinner renders the branch name itself (shared by every branch cell). A
+     mid-rebase row (Rebasing set) is marked with a 🚧 — carrying an aria-label so
+     screen readers announce "mid-rebase", not "construction sign" — and visually
+     italicised via .rebase-branch, so a recovered branch reads as "mid-rebase, not
+     steady state" wherever a branch is shown. The italics are a CSS class, not
+     <em>: the 🚧 aria-label already conveys the state to assistive tech, so the
+     styling stays purely visual and does not add "emphasis" announcement noise.
+     The dot must expose .Branch and .Rebasing (Agent, SourceCount, EventRow all
+     do). */}}
+{{ define "branchinner" }}{{ if .Branch }}{{ if .Rebasing }}<span role="img" aria-label="mid-rebase" title="mid-rebase">🚧</span> <span class="rebase-branch">{{ .Branch }}</span>{{ else }}{{ .Branch }}{{ end }}{{ else }}—{{ end }}{{ end }}
+
+{{/* branchcell is the plain branch <td> used by the activity and recent-events
+     tables. */}}
+{{ define "branchcell" }}<td class="branch" data-label="branch">{{ template "branchinner" . }}</td>{{ end }}
+
+{{/* branchcellroster is the roster's branch <td>. It adds a screen-reader-only
+     "(cluster)" suffix on grouped rows so the multi-session binding conveyed
+     visually by the left accent bar (the .grouped CSS) is also announced to
+     assistive tech, which cannot perceive the bar. Singleton branches (.Grouped
+     false) carry no aria-label and read exactly as before. Roster-only because
+     only Agent exposes .Grouped. */}}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch"{{ if .Grouped }} aria-label="{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }} (cluster)"{{ end }}>{{ template "branchinner" . }}</td>{{ end }}
 
 {{ define "content" }}
   <div class="meta">
@@ -262,7 +274,7 @@
     <tbody>
       {{ range .Agents }}
       <tr{{ with rowClass . }} class="{{ . }}"{{ end }}>
-        {{ template "branchcell" . }}
+        {{ template "branchcellroster" . }}
         <td data-label="app">{{ .SourceApp }}</td>
         <td data-label="status" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "waiting" }}background{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
         <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
