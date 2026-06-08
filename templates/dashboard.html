@@ -43,7 +43,7 @@
     td.time, td.tool, td.idle, td.sess, td.namecell { white-space: nowrap; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
     td.summary em { font-style: italic; color: #888; } /* a completed phase, not one in progress */
-    td.summary .lastcmd { color: #888; font-size: .85em; } /* the slash command that kicked off this turn, as a muted second line */
+    td.summary .lastcmd { color: #888; font-size: .85em; } /* the session's most recent slash command, as a muted second line */
     /* Branch is the one column we never truncate: it has a fixed, bounded width
        but wraps instead of ellipsing (a clipped branch name is ambiguous in a way
        a clipped session name is not), so a long branch grows taller rather than
@@ -250,7 +250,7 @@
         {{ template "branchcell" . }}
         <td data-label="app">{{ .SourceApp }}</td>
         <td data-label="status" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "waiting" }}background{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
-        <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd">↳ {{ .LastCommand }}</div>{{ end }}</td>
+        <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
         <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}" title="{{ if .CI }}{{ .CI }}{{ else }}no CI{{ end }}">{{ if eq .CI "green" }}🟢{{ else if eq .CI "pending" }}🟡{{ else if eq .CI "failing" }}🔴{{ else }}—{{ end }}</td>
         <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
         <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>

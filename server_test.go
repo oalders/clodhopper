@@ -302,7 +302,7 @@ func TestHandleDashboard_ShowsLastCommand(t *testing.T) {
 		EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
 
 	body := getBody(t, db, "/")
-	if !strings.Contains(body, `<div class="lastcmd">↳ /git-rebase</div>`) {
+	if !strings.Contains(body, `<div class="lastcmd" title="last slash command">↳ /git-rebase</div>`) {
 		t.Errorf("expected the slash command as a muted second line in:\n%s", body)
 	}
 }
@@ -341,6 +341,31 @@ func TestHandleDashboard_DedupesLastCommandAgainstSkill(t *testing.T) {
 	}
 	if strings.Contains(body, "↳ /code-review") {
 		t.Errorf("a skill-backed command must not duplicate as a ↳ line in:\n%s", body)
+	}
+}
+
+func TestHandleDashboard_ItalicDoingWithLastCommand(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	// One session that ran the address-gh-review skill, typed /git-rebase, then
+	// stopped. Stopped → status "waiting for you" → DoingActive false, so line 1
+	// is the italic "last completed" variant; /git-rebase is distinct from
+	// "/"+Doing, so the muted second line survives dedupe. The two must coexist.
+	insertEvent(db, Event{TS: at(6), SourceApp: "myapp", Branch: "fix-45", SessionID: "sess-italic",
+		EventType: "PreToolUse", ToolName: "Skill", Summary: "Skill: address-gh-review", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(4), SourceApp: "myapp", Branch: "fix-45", SessionID: "sess-italic",
+		EventType: "UserPromptSubmit", SlashCommand: "/git-rebase", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(2), SourceApp: "myapp", Branch: "fix-45", SessionID: "sess-italic",
+		EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, `<em title="last completed">address-gh-review</em>`) {
+		t.Errorf("expected italic last-completed line 1 in:\n%s", body)
+	}
+	if !strings.Contains(body, `<div class="lastcmd" title="last slash command">↳ /git-rebase</div>`) {
+		t.Errorf("expected the muted slash-command second line alongside the italic line 1 in:\n%s", body)
 	}
 }
 
