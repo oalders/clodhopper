@@ -139,17 +139,19 @@ func TestAgentRoster_GroupsSameBranch(t *testing.T) {
 	}
 
 	// Two branches, two sessions each, with INTERLEAVED idle times so a pure-idle
-	// sort would scatter them: a1(1), b1(2), b2(4), a2(8).
-	// Grouped, branch fix-A wins (freshest member a1=1m < b1=2m); within each group
+	// sort would scatter them: a1(1), n1(2), b1(3), b2(4), n2(5), a2(8).
+	// Grouped, branch fix-A wins (freshest member a1=1m < b1=3m); within each group
 	// the least-idle session comes first -> a1, a2, b1, b2.
 	ins(at(1), "a1", "fix-A", "Stop", "")
 	ins(at(8), "a2", "fix-A", "Stop", "")
-	ins(at(2), "b1", "fix-B", "Stop", "")
+	ins(at(3), "b1", "fix-B", "Stop", "")
 	ins(at(4), "b2", "fix-B", "Stop", "")
 	// Two branchless sessions: must each be their own group, ordered purely by
-	// idle, NOT clumped together.
-	ins(at(3), "n1", "", "Stop", "")
-	ins(at(6), "n2", "", "Stop", "")
+	// idle, NOT clumped together. n1(2m) sorts between branch A and branch B, and
+	// n2(5m) sorts after branch B — so branch group fix-B lands BETWEEN them,
+	// proving branchless sessions are not forced into one contiguous pseudo-group.
+	ins(at(2), "n1", "", "Stop", "")
+	ins(at(5), "n2", "", "Stop", "")
 
 	agents, err := agentRoster(db, 16*time.Hour, now)
 	if err != nil {
@@ -202,6 +204,25 @@ func TestAgentRoster_GroupsSameBranch(t *testing.T) {
 	// by group freshness. Assert the idle ordering holds.
 	if pos["n1"] > pos["n2"] {
 		t.Errorf("branchless sessions should order by idle (n1 fresher than n2), got pos n1=%d n2=%d", pos["n1"], pos["n2"])
+	}
+	// They must NOT be forced into one contiguous pseudo-group: a real branch group
+	// sits between them, so they are non-adjacent in the output.
+	if d := pos["n1"] - pos["n2"]; d == 1 || d == -1 {
+		t.Errorf("branchless sessions must not be adjacent (each is its own group); got pos n1=%d n2=%d", pos["n1"], pos["n2"])
+	}
+	// Concretely, at least one branch-group row sits between n1 and n2.
+	lo, hi := pos["n1"], pos["n2"]
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	between := false
+	for _, s := range []string{"a1", "a2", "b1", "b2"} {
+		if pos[s] > lo && pos[s] < hi {
+			between = true
+		}
+	}
+	if !between {
+		t.Errorf("a branch-group row should sit between the two branchless sessions; got pos %v", pos)
 	}
 	// Each branchless session forms its own group boundary: whatever precedes it is
 	// a different group, so its GroupStart is true unless it is row 0.

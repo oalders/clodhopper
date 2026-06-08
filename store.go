@@ -517,10 +517,13 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	// NOT clumped into one pseudo-group; each behaves as its own group ordered by
 	// its own idle, preserving the old per-session placement for them.
 	groupKey := func(a Agent) string {
+		// Two disjoint key-spaces with a leading discriminator byte so a branchless
+		// session can never collide with a real (app, branch) group: "u" = unbranched
+		// (one group per session, so they aren't clumped), "b" = branched.
 		if a.Branch == "" {
-			return "\x00branchless\x00" + a.SessionID
+			return "u\x00" + a.SessionID
 		}
-		return a.SourceApp + "\x00" + a.Branch
+		return "b\x00" + a.SourceApp + "\x00" + a.Branch
 	}
 	// groupMin holds each group's freshest member (its smallest IdleSecs), the
 	// value the group sorts by.

@@ -136,6 +136,9 @@
       tr.alert td, tr.fail td { background: transparent; }
       tr.alert { background: color-mix(in srgb, orange 22%, Canvas); }
       tr.fail { background: color-mix(in srgb, #c00 16%, Canvas); }
+      /* In the card layout td borders are stripped (border:none above), so put the
+         group divider on the card itself, matching how alert/fail tint the tr here. */
+      tr.group-start { border-top: 2px solid color-mix(in srgb, CanvasText 25%, Canvas); }
     }
   </style>
 </head>
