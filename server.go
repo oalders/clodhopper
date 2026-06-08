@@ -17,6 +17,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -26,10 +27,31 @@ var dashboardHTML string
 
 var dashboardTmpl = template.Must(
 	template.New("dashboard").Funcs(template.FuncMap{
-		"short":   shortID,
-		"shortTS": shortTS,
+		"short":    shortID,
+		"shortTS":  shortTS,
+		"rowClass": rowClass,
 	}).Parse(dashboardHTML),
 )
+
+// rowClass builds the space-separated CSS class list for a roster <tr> from the
+// row's flags: "alert" for an attention state, "group-start" for the divider
+// above a new branch group, and "grouped" for the left accent bar that binds a
+// multi-session branch cluster. Returns "" when none apply, so the template emits
+// no class attribute at all. Keeping the assembly here (not inline in the
+// template) keeps it readable and lets TestRowClass pin every combination.
+func rowClass(a Agent) string {
+	var classes []string
+	if a.StatusRank <= 1 {
+		classes = append(classes, "alert")
+	}
+	if a.GroupStart {
+		classes = append(classes, "group-start")
+	}
+	if a.Grouped {
+		classes = append(classes, "grouped")
+	}
+	return strings.Join(classes, " ")
+}
 
 // shortID trims a session UUID to a glanceable prefix for the roster.
 func shortID(s string) string {

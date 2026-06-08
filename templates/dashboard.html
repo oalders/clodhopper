@@ -55,6 +55,19 @@
     /* Agent roster */
     tr.alert td { background: color-mix(in srgb, orange 22%, Canvas); }
     tr.fail td { background: color-mix(in srgb, #c00 16%, Canvas); }
+    /* A subtle divider between (source_app, branch) groups so adjacent clusters stay separated.
+       Fixed-colour fallback first for browsers without color-mix() (pre-Chrome 111 / Firefox 113 / Safari 16.2).
+       Under border-collapse this 2px top border competes with the base td's 1px
+       border-bottom; the wider border wins, so keep this >= 2px and wider than any
+       base bottom-border or the divider silently disappears. */
+    tr.group-start td { border-top: 2px solid #bbb; border-top: 2px solid color-mix(in srgb, CanvasText 25%, Canvas); }
+    /* The left accent bar that BINDS a multi-session branch cluster (a worktree with
+       several agents): a continuous vertical bar down the left edge of every row in
+       the group, so the rows read as one unit even when one is alert/fail-tinted (it
+       is a border, not a background, so the tint can't override it). Singleton
+       branches get no bar. On desktop it rides the first cell; border-collapse joins
+       consecutive rows' bars into one line. */
+    tr.grouped td:first-child { border-left: 3px solid #888; border-left: 3px solid color-mix(in srgb, CanvasText 45%, Canvas); }
     .status { font-weight: bold; }
     .status.waiting, .status.approval, .status.needs, .status.input { color: #b35900; }
     .status.idle { color: #888; font-weight: normal; }
@@ -134,6 +147,15 @@
       tr.alert td, tr.fail td { background: transparent; }
       tr.alert { background: color-mix(in srgb, orange 22%, Canvas); }
       tr.fail { background: color-mix(in srgb, #c00 16%, Canvas); }
+      /* In the card layout td borders are stripped (border:none above), so put the
+         group divider and the cluster's left accent bar on the card itself, matching
+         how alert/fail tint the tr here. These are intentional longhands (border-top
+         / border-left) that override only one side of the card's base `border`
+         shorthand and compose with each other when a row is both group-start and
+         grouped; do NOT collapse them into a single `border` shorthand or you reset
+         the other sides. */
+      tr.group-start { border-top: 2px solid #bbb; border-top: 2px solid color-mix(in srgb, CanvasText 25%, Canvas); }
+      tr.grouped { border-left: 3px solid #888; border-left: 3px solid color-mix(in srgb, CanvasText 45%, Canvas); }
     }
   </style>
 </head>
@@ -216,16 +238,28 @@
 </body>
 </html>
 
-{{/* branchcell renders the branch <td> shared by the roster, activity, and
-     recent-events tables. A mid-rebase row (Rebasing set) is marked with a 🚧 —
-     carrying an aria-label so screen readers announce "mid-rebase", not
-     "construction sign" — and visually italicised via .rebase-branch, so a
-     recovered branch reads as "mid-rebase, not steady state" wherever a branch is
-     shown. The italics are a CSS class, not <em>: the 🚧 aria-label already
-     conveys the state to assistive tech, so the styling stays purely visual and
-     does not add "emphasis" announcement noise. The dot must expose .Branch and
-     .Rebasing (Agent, SourceCount, EventRow all do). */}}
-{{ define "branchcell" }}<td class="branch" data-label="branch">{{ if .Branch }}{{ if .Rebasing }}<span role="img" aria-label="mid-rebase" title="mid-rebase">🚧</span> <span class="rebase-branch">{{ .Branch }}</span>{{ else }}{{ .Branch }}{{ end }}{{ else }}—{{ end }}</td>{{ end }}
+{{/* branchinner renders the branch name itself (shared by every branch cell). A
+     mid-rebase row (Rebasing set) is marked with a 🚧 — carrying an aria-label so
+     screen readers announce "mid-rebase", not "construction sign" — and visually
+     italicised via .rebase-branch, so a recovered branch reads as "mid-rebase, not
+     steady state" wherever a branch is shown. The italics are a CSS class, not
+     <em>: the 🚧 aria-label already conveys the state to assistive tech, so the
+     styling stays purely visual and does not add "emphasis" announcement noise.
+     The dot must expose .Branch and .Rebasing (Agent, SourceCount, EventRow all
+     do). */}}
+{{ define "branchinner" }}{{ if .Branch }}{{ if .Rebasing }}<span role="img" aria-label="mid-rebase" title="mid-rebase">🚧</span> <span class="rebase-branch">{{ .Branch }}</span>{{ else }}{{ .Branch }}{{ end }}{{ else }}—{{ end }}{{ end }}
+
+{{/* branchcell is the plain branch <td> used by the activity and recent-events
+     tables. */}}
+{{ define "branchcell" }}<td class="branch" data-label="branch">{{ template "branchinner" . }}</td>{{ end }}
+
+{{/* branchcellroster is the roster's branch <td>. It adds a screen-reader-only
+     "(cluster)" suffix on grouped rows so the multi-session binding conveyed
+     visually by the left accent bar (the .grouped CSS) is also announced to
+     assistive tech, which cannot perceive the bar. Singleton branches (.Grouped
+     false) carry no aria-label and read exactly as before. Roster-only because
+     only Agent exposes .Grouped. */}}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch"{{ if .Grouped }} aria-label="{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }} (cluster)"{{ end }}>{{ template "branchinner" . }}</td>{{ end }}
 
 {{ define "content" }}
   <div class="meta">
@@ -246,8 +280,8 @@
     </thead>
     <tbody>
       {{ range .Agents }}
-      <tr {{ if le .StatusRank 1 }}class="alert"{{ end }}>
-        {{ template "branchcell" . }}
+      <tr{{ with rowClass . }} class="{{ . }}"{{ end }}>
+        {{ template "branchcellroster" . }}
         <td data-label="app">{{ .SourceApp }}</td>
         <td data-label="status" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "waiting" }}background{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
         <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>

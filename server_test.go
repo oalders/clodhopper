@@ -14,6 +14,37 @@ import (
 	"time"
 )
 
+func TestRowClass(t *testing.T) {
+	// rowClass assembles the roster <tr> class list from three independent flags;
+	// pin every combination so a template/CSS rename can't silently drift from it.
+	cases := []struct {
+		name              string
+		rank              int
+		groupStart, group bool
+		want              string
+	}{
+		{"plain", 5, false, false, ""},
+		// Zero-value Agent: StatusRank 0 is the most severe rank (<= 1), so a
+		// default-initialised row reads as alert. Pins the rank-0 boundary in case a
+		// future by-value Agent{} ever reaches rowClass.
+		{"zero value (rank 0)", 0, false, false, "alert"},
+		{"alert only", 1, false, false, "alert"},
+		{"group-start only", 5, true, false, "group-start"},
+		{"grouped only", 5, false, true, "grouped"},
+		{"alert+grouped", 0, false, true, "alert grouped"},
+		{"group-start+grouped", 5, true, true, "group-start grouped"},
+		{"all three", 1, true, true, "alert group-start grouped"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := rowClass(Agent{StatusRank: c.rank, GroupStart: c.groupStart, Grouped: c.group})
+			if got != c.want {
+				t.Errorf("rowClass(rank=%d groupStart=%v grouped=%v) = %q, want %q", c.rank, c.groupStart, c.group, got, c.want)
+			}
+		})
+	}
+}
+
 func TestHandleDashboard_RendersAndFilters(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {

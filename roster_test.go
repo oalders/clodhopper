@@ -97,8 +97,10 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	if len(agents) != 3 {
 		t.Fatalf("want 3 live agents (ended excluded), got %d: %+v", len(agents), agents)
 	}
-	// Order is purely by idle time: most recently active first, longest-idle
-	// last. s-busy (2m) < s-wait (4m) < s-idle (8m), regardless of status.
+	// Each session is on a distinct branch, so each is its own singleton group;
+	// group freshness therefore equals idle time and the roster orders exactly as
+	// a raw idle sort would: most recently active first, longest-idle last.
+	// s-busy (2m) < s-wait (4m) < s-idle (8m), regardless of status.
 	if agents[0].SessionID != "s-busy" || agents[0].Status != statusWorking {
 		t.Errorf("expected s-busy/working first (least idle), got %+v", agents[0])
 	}
@@ -122,6 +124,171 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	}
 	if agents[0].Idle == "" {
 		t.Errorf("idle label not set")
+	}
+	// Each session is on its own branch, so none form a 2+ cluster: no left bar.
+	for _, a := range agents {
+		if a.Grouped {
+			t.Errorf("session %s is a lone session on its branch; Grouped should be false", a.SessionID)
+		}
+	}
+}
+
+func TestAgentRoster_GroupsSameBranch(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, sess, branch, etype, tool string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: branch, SessionID: sess, EventType: etype, ToolName: tool, PayloadJSON: "{}"})
+	}
+
+	// Two branches, two sessions each, with INTERLEAVED idle times so a pure-idle
+	// sort would scatter them: a1(1), n1(2), b1(3), b2(4), n2(5), a2(8).
+	// Grouped, branch fix-A wins (freshest member a1=1m < b1=3m); within each group
+	// the least-idle session comes first -> a1, a2, b1, b2.
+	ins(at(1), "a1", "fix-A", "Stop", "")
+	ins(at(8), "a2", "fix-A", "Stop", "")
+	ins(at(3), "b1", "fix-B", "Stop", "")
+	ins(at(4), "b2", "fix-B", "Stop", "")
+	// Two branchless sessions: must each be their own group, ordered purely by
+	// idle, NOT clumped together. n1(2m) sorts between branch A and branch B, and
+	// n2(5m) sorts after branch B — so branch group fix-B lands BETWEEN them,
+	// proving branchless sessions are not forced into one contiguous pseudo-group.
+	ins(at(2), "n1", "", "Stop", "")
+	ins(at(5), "n2", "", "Stop", "")
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pos := map[string]int{}
+	for i, a := range agents {
+		pos[a.SessionID] = i
+	}
+
+	// The four branch sessions keep grouped order a1, a2, b1, b2.
+	branchOrder := []string{"a1", "a2", "b1", "b2"}
+	for i := 1; i < len(branchOrder); i++ {
+		if pos[branchOrder[i-1]] > pos[branchOrder[i]] {
+			t.Errorf("branch group order wrong: %s should precede %s; got positions %v", branchOrder[i-1], branchOrder[i], pos)
+		}
+	}
+	// a2 (same branch as a1, idle 8m) must sit right after a1, not after b1/b2,
+	// proving the grouping rather than a coincidental idle order.
+	if pos["a2"] != pos["a1"]+1 {
+		t.Errorf("a2 should immediately follow a1 (same-branch group), got pos a1=%d a2=%d", pos["a1"], pos["a2"])
+	}
+
+	byID := map[string]Agent{}
+	for _, a := range agents {
+		byID[a.SessionID] = a
+	}
+	// GroupStart: first row of each branch group except the very first row overall.
+	if byID["a1"].GroupStart {
+		t.Errorf("a1 is the first row of its group; but GroupStart should reflect overall ordering (false if first row overall)")
+	}
+	if byID["a2"].GroupStart {
+		t.Errorf("a2 is in the same group as a1, GroupStart should be false")
+	}
+	if !byID["b1"].GroupStart {
+		t.Errorf("b1 starts a new branch group, GroupStart should be true")
+	}
+	if byID["b2"].GroupStart {
+		t.Errorf("b2 is in the same group as b1, GroupStart should be false")
+	}
+	// The very first row overall must never carry GroupStart.
+	if agents[0].GroupStart {
+		t.Errorf("first roster row must have GroupStart=false, got %+v", agents[0])
+	}
+
+	// Branchless sessions are NOT clumped: each is its own group ordered by idle.
+	// n1 (2m) is fresher than n2 (5m), so n1 precedes n2; and they are not forced
+	// adjacent as a single pseudo-group — other groups may interleave around them
+	// by group freshness. Assert the idle ordering holds.
+	if pos["n1"] > pos["n2"] {
+		t.Errorf("branchless sessions should order by idle (n1 fresher than n2), got pos n1=%d n2=%d", pos["n1"], pos["n2"])
+	}
+	// They must NOT be forced into one contiguous pseudo-group: a real branch group
+	// sits between them, so they are non-adjacent in the output.
+	if d := pos["n1"] - pos["n2"]; d == 1 || d == -1 {
+		t.Errorf("branchless sessions must not be adjacent (each is its own group); got pos n1=%d n2=%d", pos["n1"], pos["n2"])
+	}
+	// Concretely, at least one branch-group row sits between n1 and n2.
+	lo, hi := pos["n1"], pos["n2"]
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	between := false
+	for _, s := range []string{"a1", "a2", "b1", "b2"} {
+		if pos[s] > lo && pos[s] < hi {
+			between = true
+		}
+	}
+	if !between {
+		t.Errorf("a branch-group row should sit between the two branchless sessions; got pos %v", pos)
+	}
+	// Each branchless session forms its own group boundary: whatever precedes it is
+	// a different group, so its GroupStart is true unless it is row 0.
+	for _, s := range []string{"n1", "n2"} {
+		if pos[s] > 0 && !byID[s].GroupStart {
+			t.Errorf("branchless session %s is its own group; GroupStart should be true when not row 0 (pos=%d)", s, pos[s])
+		}
+	}
+
+	// Grouped marks every member of a 2+ session group (drives the left accent bar).
+	// Branches fix-A and fix-B each have two sessions, so all four are Grouped; the
+	// branchless singletons are not.
+	for _, s := range []string{"a1", "a2", "b1", "b2"} {
+		if !byID[s].Grouped {
+			t.Errorf("%s is in a 2-session branch group; Grouped should be true", s)
+		}
+	}
+	for _, s := range []string{"n1", "n2"} {
+		if byID[s].Grouped {
+			t.Errorf("branchless singleton %s should not be Grouped", s)
+		}
+	}
+}
+
+// Two sessions on the SAME branch but DIFFERENT source apps must NOT group:
+// worktrees are per-project, so groupKey folds SourceApp into the branched key.
+// Guards that invariant against a future refactor of the key structure.
+func TestAgentRoster_SameBranchDifferentAppNotGrouped(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, app, sess string) {
+		insertEvent(db, Event{TS: ts, SourceApp: app, Branch: "main", SessionID: sess, EventType: "Stop", PayloadJSON: "{}"})
+	}
+
+	// Same branch ("main"), two different apps, one session each.
+	ins(at(1), "app-a", "sa")
+	ins(at(2), "app-b", "sb")
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	byID := map[string]Agent{}
+	for _, a := range agents {
+		byID[a.SessionID] = a
+	}
+	// Each is a singleton in its own (app, branch) group: no binding bar.
+	for _, s := range []string{"sa", "sb"} {
+		if byID[s].Grouped {
+			t.Errorf("%s shares a branch but not an app; it must not be Grouped", s)
+		}
 	}
 }
 
@@ -307,6 +474,80 @@ func TestHandleDashboard_RendersAgentBoard(t *testing.T) {
 	// renders italicised rather than as work in progress.
 	if !strings.Contains(body, `<em title="last completed">address-gh-review</em>`) {
 		t.Errorf("a stopped agent's phase should render italicised in:\n%s", body)
+	}
+}
+
+// TestHandleDashboard_GroupClusterClasses verifies the grouping flags reach the
+// rendered HTML as the right CSS classes — the gap between the logic (unit-tested
+// in TestAgentRoster_GroupsSameBranch) and the template that consumes it. It
+// mirrors the real-world case that motivated the left accent bar: a two-session
+// branch cluster where one member is in an alert state and the other is idle, plus
+// a separate singleton branch.
+func TestHandleDashboard_GroupClusterClasses(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	// Cluster "shared": a freshly-stopped member (waiting for you -> alert) and an
+	// idle member (last tool call 30m ago, past the 5m staleness threshold).
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "shared", SessionID: "g-hot", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(30), SourceApp: "myapp", Branch: "shared", SessionID: "g-cold", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+	// A singleton branch, so it must NOT get the cluster bar.
+	insertEvent(db, Event{TS: at(5), SourceApp: "myapp", Branch: "solo", SessionID: "g-solo", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+
+	// The alert member of the cluster carries BOTH classes: the row tint and the
+	// binding bar coexist (the live case where a thin divider alone read poorly).
+	if !strings.Contains(body, `class="alert grouped"`) {
+		t.Errorf(`expected the alert cluster member to render class="alert grouped", in:\n%s`, body)
+	}
+	// Its idle sibling carries the bar alone.
+	if !strings.Contains(body, `class="grouped"`) {
+		t.Errorf(`expected the idle cluster member to render class="grouped", in:\n%s`, body)
+	}
+	// Exactly the two cluster members are marked grouped; the singleton is not.
+	// Count the class-attribute terminator `grouped"` rather than the bare word, so
+	// the `tr.grouped` rules in the <style> block don't inflate the tally.
+	if n := strings.Count(body, `grouped"`); n != 2 {
+		t.Errorf("expected exactly 2 grouped rows (the cluster), got %d, in:\n%s", n, body)
+	}
+	// The visual binding bar has a screen-reader equivalent: grouped rows' branch
+	// cell carries an aria-label "<branch> (cluster)" so assistive tech announces
+	// the cluster the bar conveys visually. Both cluster members get it; the
+	// singleton (no bar) gets none.
+	if n := strings.Count(body, `aria-label="shared (cluster)"`); n != 2 {
+		t.Errorf("expected exactly 2 cluster aria-labels, got %d, in:\n%s", n, body)
+	}
+	if strings.Contains(body, `aria-label="solo (cluster)"`) {
+		t.Errorf("singleton branch must not carry a cluster aria-label, in:\n%s", body)
+	}
+	// The singleton starts a new group, so it draws the inter-cluster divider.
+	// Match the class-attribute terminator `group-start"` rather than the bare
+	// word, so the `tr.group-start` rules in the <style> block don't make this
+	// pass vacuously (same idiom as the `grouped"` count above).
+	if !strings.Contains(body, `group-start"`) {
+		t.Errorf("expected a group-start divider for the singleton branch, in:\n%s", body)
+	}
+	// Adjacency: both "shared" branch cells sit together above the "solo" one —
+	// nothing splits the cluster. (The cluster floats on its freshest member at
+	// 1m < the singleton's 5m.) Scope to the roster <table> only: the same branch
+	// names also appear in the filter dropdown and the Recent-events table lower on
+	// the page, which would pollute a whole-document search.
+	roster := body
+	if i := strings.Index(roster, `<table class="roster">`); i >= 0 {
+		if j := strings.Index(roster[i:], "</table>"); j >= 0 {
+			roster = roster[i : i+j]
+		}
+	}
+	// Match on branch-cell content (`>name</td>`) rather than the attribute prefix:
+	// grouped cells now carry an aria-label between data-label and `>`, so a
+	// `data-label="branch">shared` match would miss them. Within the roster table the
+	// branch name appears only as its cell's text, so this stays unambiguous.
+	soloCell := strings.Index(roster, `>solo</td>`)
+	lastSharedCell := strings.LastIndex(roster, `>shared</td>`)
+	if soloCell < 0 || lastSharedCell < 0 || soloCell < lastSharedCell {
+		t.Errorf("the two shared-branch rows should be adjacent, above the singleton; order wrong in:\n%s", body)
 	}
 }
 

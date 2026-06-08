@@ -318,6 +318,8 @@ type Agent struct {
 	IdleSecs    int
 	IdleSince   int64  // unix seconds of the last event, so the client can tick idle in place
 	CI          string // merge-readiness; filled by the server layer via gh
+	GroupStart  bool   // true on the first roster row of each (SourceApp, Branch) group except the very first row overall; drives the divider between branch groups in the dashboard
+	Grouped     bool   // true when this row's (SourceApp, Branch) group has 2+ live members; drives the left accent bar that binds a multi-session branch cluster (a worktree with several agents). Singleton branches stay false (no bar)
 	firstSeq    int    // arrival order (0-based) within the roster window; drives stable color assignment, not displayed
 }
 
@@ -504,11 +506,66 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		a.IdleSince = now.Unix() - int64(idleSecs)
 		out = append(out, a)
 	}
-	// Sort by idle time alone: most recently active at the top, idle the
-	// longest at the bottom. StatusRank still drives styling, not ordering.
+	// Order the roster by (SourceApp, Branch) group, not by raw idle time, so the
+	// two sessions sharing a worktree's branch sit next to each other and a branch
+	// can be taken in at a glance instead of being scattered down the table. We
+	// still want freshest-on-top, just at the group level: a group floats by its
+	// most recently active member, so the branch you just touched stays at the top
+	// exactly as plain idle sort did — only its same-branch sibling rides along
+	// instead of getting stranded elsewhere.
+	//
+	// Branchless sessions (Branch == "") get a per-session-unique key so they are
+	// NOT clumped into one pseudo-group; each behaves as its own group ordered by
+	// its own idle, preserving the old per-session placement for them.
+	groupKey := func(a Agent) string {
+		// Two disjoint key-spaces with a leading discriminator byte so a branchless
+		// session can never collide with a real (app, branch) group: "u" = unbranched
+		// (one group per session, so they aren't clumped), "b" = branched.
+		if a.Branch == "" {
+			return "u\x00" + a.SessionID
+		}
+		return "b\x00" + a.SourceApp + "\x00" + a.Branch
+	}
+	// groupMin holds each group's freshest member (its smallest IdleSecs), the
+	// value the group sorts by; groupCount holds its membership so we can mark the
+	// rows of a multi-session cluster (2+ members) for the binding left accent bar.
+	groupMin := map[string]int{}
+	groupCount := map[string]int{}
+	for _, a := range out {
+		k := groupKey(a)
+		if m, ok := groupMin[k]; !ok || a.IdleSecs < m {
+			groupMin[k] = a.IdleSecs
+		}
+		groupCount[k]++
+	}
 	sort.Slice(out, func(i, j int) bool {
-		return out[i].IdleSecs < out[j].IdleSecs
+		gi, gj := groupKey(out[i]), groupKey(out[j])
+		// 1. Group with the freshest member first (preserves freshest-on-top).
+		if groupMin[gi] != groupMin[gj] {
+			return groupMin[gi] < groupMin[gj]
+		}
+		// 2. Tiebreak on the key so two equally-fresh groups stay contiguous
+		//    rather than interleaving.
+		if gi != gj {
+			return gi < gj
+		}
+		// 3. Within a group, least-idle (most recently active) first.
+		if out[i].IdleSecs != out[j].IdleSecs {
+			return out[i].IdleSecs < out[j].IdleSecs
+		}
+		// 4. Final deterministic tiebreak.
+		return out[i].SessionID < out[j].SessionID
 	})
+	// Mark each group's first row so the dashboard can draw a divider between
+	// branch groups (the very first row overall stays false — no leading divider),
+	// and flag every row of a 2+ member group so it gets the left accent bar that
+	// binds the cluster.
+	for k := range out {
+		if k > 0 && groupKey(out[k]) != groupKey(out[k-1]) {
+			out[k].GroupStart = true
+		}
+		out[k].Grouped = groupCount[groupKey(out[k])] >= 2
+	}
 	return out, nil
 }
 
