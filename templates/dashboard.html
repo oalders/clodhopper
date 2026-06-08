@@ -55,9 +55,16 @@
     /* Agent roster */
     tr.alert td { background: color-mix(in srgb, orange 22%, Canvas); }
     tr.fail td { background: color-mix(in srgb, #c00 16%, Canvas); }
-    /* A subtle divider between (source_app, branch) groups so same-branch sessions read as one cluster.
+    /* A subtle divider between (source_app, branch) groups so adjacent clusters stay separated.
        Fixed-colour fallback first for browsers without color-mix() (pre-Chrome 111 / Firefox 113 / Safari 16.2). */
     tr.group-start td { border-top: 2px solid #bbb; border-top: 2px solid color-mix(in srgb, CanvasText 25%, Canvas); }
+    /* The left accent bar that BINDS a multi-session branch cluster (a worktree with
+       several agents): a continuous vertical bar down the left edge of every row in
+       the group, so the rows read as one unit even when one is alert/fail-tinted (it
+       is a border, not a background, so the tint can't override it). Singleton
+       branches get no bar. On desktop it rides the first cell; border-collapse joins
+       consecutive rows' bars into one line. */
+    tr.grouped td:first-child { border-left: 3px solid #888; border-left: 3px solid color-mix(in srgb, CanvasText 45%, Canvas); }
     .status { font-weight: bold; }
     .status.waiting, .status.approval, .status.needs, .status.input { color: #b35900; }
     .status.idle { color: #888; font-weight: normal; }
@@ -138,8 +145,10 @@
       tr.alert { background: color-mix(in srgb, orange 22%, Canvas); }
       tr.fail { background: color-mix(in srgb, #c00 16%, Canvas); }
       /* In the card layout td borders are stripped (border:none above), so put the
-         group divider on the card itself, matching how alert/fail tint the tr here. */
+         group divider and the cluster's left accent bar on the card itself, matching
+         how alert/fail tint the tr here. */
       tr.group-start { border-top: 2px solid #bbb; border-top: 2px solid color-mix(in srgb, CanvasText 25%, Canvas); }
+      tr.grouped { border-left: 3px solid #888; border-left: 3px solid color-mix(in srgb, CanvasText 45%, Canvas); }
     }
   </style>
 </head>
@@ -252,10 +261,7 @@
     </thead>
     <tbody>
       {{ range .Agents }}
-      {{- $cls := "" }}
-      {{- if le .StatusRank 1 }}{{ $cls = "alert" }}{{ end }}
-      {{- if .GroupStart }}{{ if $cls }}{{ $cls = printf "%s group-start" $cls }}{{ else }}{{ $cls = "group-start" }}{{ end }}{{ end }}
-      <tr{{ if $cls }} class="{{ $cls }}"{{ end }}>
+      <tr{{ with rowClass . }} class="{{ . }}"{{ end }}>
         {{ template "branchcell" . }}
         <td data-label="app">{{ .SourceApp }}</td>
         <td data-label="status" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "waiting" }}background{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>

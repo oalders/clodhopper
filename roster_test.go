@@ -125,6 +125,12 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	if agents[0].Idle == "" {
 		t.Errorf("idle label not set")
 	}
+	// Each session is on its own branch, so none form a 2+ cluster: no left bar.
+	for _, a := range agents {
+		if a.Grouped {
+			t.Errorf("session %s is a lone session on its branch; Grouped should be false", a.SessionID)
+		}
+	}
 }
 
 func TestAgentRoster_GroupsSameBranch(t *testing.T) {
@@ -231,6 +237,20 @@ func TestAgentRoster_GroupsSameBranch(t *testing.T) {
 	for _, s := range []string{"n1", "n2"} {
 		if pos[s] > 0 && !byID[s].GroupStart {
 			t.Errorf("branchless session %s is its own group; GroupStart should be true when not row 0 (pos=%d)", s, pos[s])
+		}
+	}
+
+	// Grouped marks every member of a 2+ session group (drives the left accent bar).
+	// Branches fix-A and fix-B each have two sessions, so all four are Grouped; the
+	// branchless singletons are not.
+	for _, s := range []string{"a1", "a2", "b1", "b2"} {
+		if !byID[s].Grouped {
+			t.Errorf("%s is in a 2-session branch group; Grouped should be true", s)
+		}
+	}
+	for _, s := range []string{"n1", "n2"} {
+		if byID[s].Grouped {
+			t.Errorf("branchless singleton %s should not be Grouped", s)
 		}
 	}
 }
@@ -420,24 +440,60 @@ func TestHandleDashboard_RendersAgentBoard(t *testing.T) {
 	}
 }
 
-// TestHandleDashboard_GroupStartDivider verifies the GroupStart flag actually
-// reaches the rendered HTML as the group-start divider class. The grouping logic
-// itself is unit-tested in TestAgentRoster_GroupsSameBranch; this closes the gap
-// between that flag and the template that consumes it.
-func TestHandleDashboard_GroupStartDivider(t *testing.T) {
+// TestHandleDashboard_GroupClusterClasses verifies the grouping flags reach the
+// rendered HTML as the right CSS classes — the gap between the logic (unit-tested
+// in TestAgentRoster_GroupsSameBranch) and the template that consumes it. It
+// mirrors the real-world case that motivated the left accent bar: a two-session
+// branch cluster where one member is in an alert state and the other is idle, plus
+// a separate singleton branch.
+func TestHandleDashboard_GroupClusterClasses(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
 	now := time.Now().UTC()
 	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
-	// Two sessions on branch fix-A (one group) and one on fix-B (a second group).
-	// The second group's first row must carry the group-start divider.
-	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-A", SessionID: "g-a1", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
-	insertEvent(db, Event{TS: at(2), SourceApp: "myapp", Branch: "fix-A", SessionID: "g-a2", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
-	insertEvent(db, Event{TS: at(3), SourceApp: "myapp", Branch: "fix-B", SessionID: "g-b1", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
+	// Cluster "shared": a freshly-stopped member (waiting for you -> alert) and an
+	// idle member (last tool call 30m ago, past the 5m staleness threshold).
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "shared", SessionID: "g-hot", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(30), SourceApp: "myapp", Branch: "shared", SessionID: "g-cold", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+	// A singleton branch, so it must NOT get the cluster bar.
+	insertEvent(db, Event{TS: at(5), SourceApp: "myapp", Branch: "solo", SessionID: "g-solo", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 
 	body := getBody(t, db, "/")
+
+	// The alert member of the cluster carries BOTH classes: the row tint and the
+	// binding bar coexist (the live case where a thin divider alone read poorly).
+	if !strings.Contains(body, `class="alert grouped"`) {
+		t.Errorf(`expected the alert cluster member to render class="alert grouped", in:\n%s`, body)
+	}
+	// Its idle sibling carries the bar alone.
+	if !strings.Contains(body, `class="grouped"`) {
+		t.Errorf(`expected the idle cluster member to render class="grouped", in:\n%s`, body)
+	}
+	// Exactly the two cluster members are marked grouped; the singleton is not.
+	// Count the class-attribute terminator `grouped"` rather than the bare word, so
+	// the `tr.grouped` rules in the <style> block don't inflate the tally.
+	if n := strings.Count(body, `grouped"`); n != 2 {
+		t.Errorf("expected exactly 2 grouped rows (the cluster), got %d, in:\n%s", n, body)
+	}
+	// The singleton starts a new group, so it draws the inter-cluster divider.
 	if !strings.Contains(body, "group-start") {
-		t.Errorf("expected a group-start divider row when sessions span two branch groups, in:\n%s", body)
+		t.Errorf("expected a group-start divider for the singleton branch, in:\n%s", body)
+	}
+	// Adjacency: both "shared" branch cells sit together above the "solo" one —
+	// nothing splits the cluster. (The cluster floats on its freshest member at
+	// 1m < the singleton's 5m.) Scope to the roster <table> only: the same branch
+	// names also appear in the filter dropdown and the Recent-events table lower on
+	// the page, which would pollute a whole-document search.
+	roster := body
+	if i := strings.Index(roster, `<table class="roster">`); i >= 0 {
+		if j := strings.Index(roster[i:], "</table>"); j >= 0 {
+			roster = roster[i : i+j]
+		}
+	}
+	soloCell := strings.Index(roster, `data-label="branch">solo`)
+	lastSharedCell := strings.LastIndex(roster, `data-label="branch">shared`)
+	if soloCell < 0 || lastSharedCell < 0 || soloCell < lastSharedCell {
+		t.Errorf("the two shared-branch rows should be adjacent, above the singleton; order wrong in:\n%s", body)
 	}
 }
 

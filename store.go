@@ -319,6 +319,7 @@ type Agent struct {
 	IdleSince   int64  // unix seconds of the last event, so the client can tick idle in place
 	CI          string // merge-readiness; filled by the server layer via gh
 	GroupStart  bool   // true on the first roster row of each (SourceApp, Branch) group except the very first row overall; drives the divider between branch groups in the dashboard
+	Grouped     bool   // true when this row's (SourceApp, Branch) group has 2+ live members; drives the left accent bar that binds a multi-session branch cluster (a worktree with several agents). Singleton branches stay false (no bar)
 	firstSeq    int    // arrival order (0-based) within the roster window; drives stable color assignment, not displayed
 }
 
@@ -526,13 +527,16 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		return "b\x00" + a.SourceApp + "\x00" + a.Branch
 	}
 	// groupMin holds each group's freshest member (its smallest IdleSecs), the
-	// value the group sorts by.
+	// value the group sorts by; groupCount holds its membership so we can mark the
+	// rows of a multi-session cluster (2+ members) for the binding left accent bar.
 	groupMin := map[string]int{}
+	groupCount := map[string]int{}
 	for _, a := range out {
 		k := groupKey(a)
 		if m, ok := groupMin[k]; !ok || a.IdleSecs < m {
 			groupMin[k] = a.IdleSecs
 		}
+		groupCount[k]++
 	}
 	sort.Slice(out, func(i, j int) bool {
 		gi, gj := groupKey(out[i]), groupKey(out[j])
@@ -553,11 +557,14 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		return out[i].SessionID < out[j].SessionID
 	})
 	// Mark each group's first row so the dashboard can draw a divider between
-	// branch groups. The very first row overall stays false (no leading divider).
-	for k := 1; k < len(out); k++ {
-		if groupKey(out[k]) != groupKey(out[k-1]) {
+	// branch groups (the very first row overall stays false — no leading divider),
+	// and flag every row of a 2+ member group so it gets the left accent bar that
+	// binds the cluster.
+	for k := range out {
+		if k > 0 && groupKey(out[k]) != groupKey(out[k-1]) {
 			out[k].GroupStart = true
 		}
+		out[k].Grouped = groupCount[groupKey(out[k])] >= 2
 	}
 	return out, nil
 }
