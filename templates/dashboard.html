@@ -186,6 +186,12 @@
         <option value="{{ .Secs }}" {{ if .Selected }}selected{{ end }}>{{ .Label }}</option>
       {{ end }}
     </select>
+    <label for="window">roster window</label>
+    <select name="window" id="window" title="narrow the roster to the last N days (all = full window)" onchange="this.form.submit()">
+      {{ range .WindowOptions }}
+        <option value="{{ .Days }}" {{ if .Selected }}selected{{ end }}>{{ .Label }}</option>
+      {{ end }}
+    </select>
   </form>
 
   <div id="content">{{ template "content" . }}</div>

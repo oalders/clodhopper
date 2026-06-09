@@ -11,7 +11,7 @@ import (
 
 const (
 	defaultRetainDays         = 14
-	defaultWaitingRetainHours = 16
+	defaultWaitingRetainHours = 720 // 30 days; "don't auto-drop" (bounded in practice by retainDays) — evict via `clodhopper end`
 	fallbackPort              = 4555
 	fallbackRefresh           = 5
 )
@@ -102,7 +102,7 @@ ENV
   CLODHOPPER_PORT                  dashboard port (default 4555)
   CLODHOPPER_HOST                  dashboard bind address (default 127.0.0.1)
   CLODHOPPER_REFRESH_SECS          dashboard live-update poll cadence, 0 = off (default 5)
-  CLODHOPPER_WAITING_RETAIN_HOURS  hours a waiting agent stays on the roster (default 16)
+  CLODHOPPER_WAITING_RETAIN_HOURS  hours a waiting agent stays on the roster (default 720 = 30 days; evict via 'clodhopper end')
   CLODHOPPER_DEBUG                 write ingest errors to stderr (otherwise silent)
 `)
 }
@@ -120,8 +120,14 @@ func retainDays() int {
 // waitingRetainHours reads CLODHOPPER_WAITING_RETAIN_HOURS or returns the
 // default. It bounds how long an agent that is waiting on you (Stop /
 // Notification / PermissionRequest) stays on the roster when no SessionEnd ever
-// arrives — long enough to survive a lunch or overnight gap, short enough that a
-// hard-killed "zombie" session cannot linger indefinitely.
+// arrives. The default (720h / 30 days) is deliberately generous: a genuinely
+// alive agent left idle for days — overnight, a weekend, a multi-day pause — is
+// exactly the one the roster is most useful for, so it should not silently age
+// out. Hard-killed "zombie" sessions are reaped explicitly via `clodhopper end`
+// (which writes a synthetic SessionEnd), not by this timeout — a short cap could
+// not tell a zombie from a long-idle live agent and evicted both. In practice the
+// roster window is also bounded by retainDays: pruned events drop off regardless,
+// so this cap only matters up to the event-retention horizon.
 func waitingRetainHours() int {
 	if v := os.Getenv("CLODHOPPER_WAITING_RETAIN_HOURS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
