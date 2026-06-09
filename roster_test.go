@@ -719,6 +719,31 @@ func TestHandleDashboard_WindowNarrowsRoster(t *testing.T) {
 	}
 }
 
+// A window that meets or exceeds the configured cap narrows nothing, so it must
+// collapse back to "all" (WindowDays 0) rather than presenting a preset that is
+// a silent no-op. The default cap is 30 days, so ?window=30 is the boundary case.
+func TestHandleDashboard_WindowAtCapTreatedAsAll(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC()
+	at := func(h int) string { return now.Add(time.Duration(-h) * time.Hour).Format(time.RFC3339) }
+	insertEvent(db, Event{TS: at(2), SourceApp: "myapp", Branch: "br", SessionID: "s1", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
+
+	req := httptest.NewRequest(http.MethodGet, "/?window=30", nil)
+	data, err := buildDashboardData(req, db, newCICache())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.WindowDays != 0 {
+		t.Errorf("window=30 at the 30-day default cap should collapse to 0 (all), got %d", data.WindowDays)
+	}
+
+	body := getBody(t, db, "/?window=30")
+	if !strings.Contains(body, `<option value="0" selected>all</option>`) {
+		t.Errorf("window=30 at the cap should select the 'all' option:\n%s", body)
+	}
+}
+
 func TestBuildSummary_Skill(t *testing.T) {
 	p := map[string]any{"tool_input": map[string]any{"skill": "fix-gh-issue"}}
 	if got := buildSummary("PreToolUse", "Skill", p); got != "Skill: fix-gh-issue" {

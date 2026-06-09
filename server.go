@@ -497,6 +497,12 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache) (dashboardData
 	if windowDays > 0 {
 		if narrowed := time.Duration(windowDays) * 24 * time.Hour; narrowed < waitingCap {
 			waitingCap = narrowed
+		} else {
+			// The requested window meets or exceeds the configured cap, so it
+			// narrows nothing (e.g. ?window=30 at the default 30-day cap). Treat
+			// it as "all" so the dropdown and URL reflect that no narrowing
+			// happened, rather than showing a preset that is a silent no-op.
+			windowDays = 0
 		}
 	}
 	agents, err := agentRoster(db, waitingCap, now)
