@@ -235,7 +235,9 @@ const agentWindow = 30 * time.Minute
 // refreshMax caps the auto-refresh interval (and the env default) at a sane hour.
 const refreshMax = 3600
 
-// windowMaxDays caps the roster-window override at a sane year.
+// windowMaxDays bounds a hand-typed ?window=N so an absurd day count in the URL
+// can't produce a silly cap. It is only an upper bound on the query param; the
+// effective roster window is still min(this, the configured waiting cap).
 const windowMaxDays = 365
 
 // refreshPresets are the dropdown choices; 0 means "off".
