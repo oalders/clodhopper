@@ -11,7 +11,7 @@ import (
 
 const (
 	defaultRetainDays         = 14
-	defaultWaitingRetainHours = 720 // 30 days; effectively "don't auto-drop" — evict via `clodhopper end`
+	defaultWaitingRetainHours = 720 // 30 days; "don't auto-drop" (bounded in practice by retainDays) — evict via `clodhopper end`
 	fallbackPort              = 4555
 	fallbackRefresh           = 5
 )
@@ -125,7 +125,9 @@ func retainDays() int {
 // exactly the one the roster is most useful for, so it should not silently age
 // out. Hard-killed "zombie" sessions are reaped explicitly via `clodhopper end`
 // (which writes a synthetic SessionEnd), not by this timeout — a short cap could
-// not tell a zombie from a long-idle live agent and evicted both.
+// not tell a zombie from a long-idle live agent and evicted both. In practice the
+// roster window is also bounded by retainDays: pruned events drop off regardless,
+// so this cap only matters up to the event-retention horizon.
 func waitingRetainHours() int {
 	if v := os.Getenv("CLODHOPPER_WAITING_RETAIN_HOURS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
