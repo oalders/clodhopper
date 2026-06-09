@@ -719,6 +719,34 @@ func TestAgentRoster_RetainsUntilCapAndRelabelsStale(t *testing.T) {
 	}
 }
 
+// Regression for #49: a genuinely alive agent waiting on you but idle longer
+// than the old 16h cap must still appear on the roster under the default cap.
+// Driven through waitingRetainHours() so it pins the default, not a literal.
+func TestAgentRoster_DefaultCapKeepsLongIdleWaiter(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(hrs int) string { return now.Add(time.Duration(-hrs) * time.Hour).Format(time.RFC3339) }
+	// Waiting 20h ago: beyond the old 16h cap, well within the 720h default.
+	insertEvent(db, Event{TS: at(20), SourceApp: "myapp", Branch: "b1", SessionID: "s-longidle", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
+
+	capDur := time.Duration(waitingRetainHours()) * time.Hour
+	agents, err := agentRoster(db, capDur, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].SessionID != "s-longidle" {
+		t.Fatalf("20h-idle live waiter should survive the default cap, got %+v", agents)
+	}
+	if agents[0].Status != statusWaiting {
+		t.Errorf("expected long-idle waiter to stay waiting, got %q", agents[0].Status)
+	}
+}
+
 func TestHandleDashboard_FoldsToolEvents(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
