@@ -2,6 +2,8 @@ package main
 
 import (
 	"database/sql"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -635,6 +637,85 @@ func TestRefreshOptions_IncludesCustomValue(t *testing.T) {
 	}
 	if !has15 || !sel15 {
 		t.Errorf("custom value 15 should be present and selected: %+v", opts)
+	}
+}
+
+func TestWindowOptions_DefaultAndCustom(t *testing.T) {
+	// Default (0) renders as "all" and is selected.
+	def := windowOptions(0)
+	if def[0].Days != 0 || def[0].Label != "all" || !def[0].Selected {
+		t.Errorf("window 0 should be the selected \"all\" option, got %+v", def[0])
+	}
+	// Singular vs plural labels.
+	var got1, gotN string
+	for _, o := range windowOptions(0) {
+		switch o.Days {
+		case 1:
+			got1 = o.Label
+		case 7:
+			gotN = o.Label
+		}
+	}
+	if got1 != "1 day" {
+		t.Errorf("1-day label = %q, want \"1 day\"", got1)
+	}
+	if gotN != "7 days" {
+		t.Errorf("7-day label = %q, want \"7 days\"", gotN)
+	}
+	// A hand-typed value outside the presets stays selectable.
+	opts := windowOptions(3)
+	var has3, sel3 bool
+	for _, o := range opts {
+		if o.Days == 3 {
+			has3, sel3 = true, o.Selected
+		}
+	}
+	if !has3 || !sel3 {
+		t.Errorf("custom value 3 should be present and selected: %+v", opts)
+	}
+}
+
+func TestHandleDashboard_WindowNarrowsRoster(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC()
+	at := func(h int) string { return now.Add(time.Duration(-h) * time.Hour).Format(time.RFC3339) }
+	// A waiter idle 2h and another idle 5 days.
+	insertEvent(db, Event{TS: at(2), SourceApp: "myapp", Branch: "recent-br", SessionID: "s-recent", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(120), SourceApp: "myapp", Branch: "longidle-br", SessionID: "s-old", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
+
+	// rosterIDs returns the set of session ids on the roster for a given URL.
+	rosterIDs := func(target string) map[string]bool {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		data, err := buildDashboardData(req, db, newCICache())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids := map[string]bool{}
+		for _, a := range data.Agents {
+			ids[a.SessionID] = true
+		}
+		return ids
+	}
+
+	// Default view (full cap) keeps both sessions on the roster.
+	if full := rosterIDs("/"); !full["s-recent"] || !full["s-old"] {
+		t.Errorf("default window should show both agents, got %v", full)
+	}
+	// window=1 narrows the roster to the last day: the 5-day-idle session drops,
+	// the recent one stays. (The narrowing is roster-only; the events table and
+	// branch filter intentionally still see every branch.)
+	if narrow := rosterIDs("/?window=1"); !narrow["s-recent"] || narrow["s-old"] {
+		t.Errorf("window=1 should keep only the 2h-idle agent, got %v", narrow)
+	}
+
+	// The selector renders and the chosen window round-trips as the selected option.
+	body := getBody(t, db, "/?window=1")
+	if !strings.Contains(body, `name="window"`) {
+		t.Errorf("roster-window selector missing from controls:\n%s", body)
+	}
+	if !strings.Contains(body, `<option value="1" selected>1 day</option>`) {
+		t.Errorf("window=1 should be the selected option:\n%s", body)
 	}
 }
 

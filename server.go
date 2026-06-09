@@ -205,6 +205,8 @@ type dashboardData struct {
 	FilterType     string
 	RefreshSecs    int // 0 = auto-refresh disabled
 	RefreshOptions []refreshOption
+	WindowDays     int // roster lookback override in days; 0 = full configured cap
+	WindowOptions  []windowOption
 	Generated      string
 	Now            time.Time         // render time, passed to shortTS so it can hide same-day dates
 	SessColors     map[string]string // session id -> chip/tint color; see assignSessColors
@@ -218,6 +220,14 @@ type refreshOption struct {
 	Selected bool
 }
 
+// windowOption is one entry in the roster-window dropdown. Days == 0 means "all"
+// (the full configured waiting-retention cap).
+type windowOption struct {
+	Days     int
+	Label    string
+	Selected bool
+}
+
 // agentWindow bounds how long after its last event a session still counts as a
 // live agent on the roster.
 const agentWindow = 30 * time.Minute
@@ -225,8 +235,17 @@ const agentWindow = 30 * time.Minute
 // refreshMax caps the auto-refresh interval (and the env default) at a sane hour.
 const refreshMax = 3600
 
+// windowMaxDays caps the roster-window override at a sane year.
+const windowMaxDays = 365
+
 // refreshPresets are the dropdown choices; 0 means "off".
 var refreshPresets = []int{0, 2, 5, 10, 30, 60}
+
+// windowPresets are the roster-window dropdown choices, in days; 0 means "all"
+// (the full configured waiting-retention cap). The default cap is generous so
+// every live agent stays visible — this lets you narrow the board to just the
+// recently active sessions for a view, without changing the configured cap.
+var windowPresets = []int{0, 1, 2, 7, 14, 30}
 
 // refreshOptions builds the dropdown, ensuring the current value is selectable
 // even if it is not one of the presets (e.g. set via CLODHOPPER_REFRESH_SECS).
@@ -243,6 +262,28 @@ func refreshOptions(current int) []refreshOption {
 			label = strconv.Itoa(s) + "s"
 		}
 		out = append(out, refreshOption{Secs: s, Label: label, Selected: s == current})
+	}
+	return out
+}
+
+// windowOptions builds the roster-window dropdown, ensuring the current value is
+// selectable even if it is not one of the presets (e.g. a hand-typed ?window=N).
+func windowOptions(current int) []windowOption {
+	days := append([]int(nil), windowPresets...)
+	if !slices.Contains(days, current) {
+		days = append(days, current)
+		sort.Ints(days)
+	}
+	out := make([]windowOption, 0, len(days))
+	for _, d := range days {
+		label := "all"
+		switch {
+		case d == 1:
+			label = "1 day"
+		case d > 1:
+			label = strconv.Itoa(d) + " days"
+		}
+		out = append(out, windowOption{Days: d, Label: label, Selected: d == current})
 	}
 	return out
 }
@@ -439,8 +480,23 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache) (dashboardData
 		}
 	}
 
+	// window narrows the roster to the last N days for this view only; 0 (the
+	// default) uses the full configured cap. It never widens past the cap that
+	// bounds the query, so it can only ever hide rows, not surface stale ones.
+	windowDays := 0
+	if v := q.Get("window"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= windowMaxDays {
+			windowDays = n
+		}
+	}
+
 	now := time.Now()
 	waitingCap := time.Duration(waitingRetainHours()) * time.Hour
+	if windowDays > 0 {
+		if narrowed := time.Duration(windowDays) * 24 * time.Hour; narrowed < waitingCap {
+			waitingCap = narrowed
+		}
+	}
 	agents, err := agentRoster(db, waitingCap, now)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("roster: %w", err)
@@ -472,6 +528,8 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache) (dashboardData
 		FilterType:     etype,
 		RefreshSecs:    refresh,
 		RefreshOptions: refreshOptions(refresh),
+		WindowDays:     windowDays,
+		WindowOptions:  windowOptions(windowDays),
 		Generated:      now.Format("15:04:05"),
 		Now:            now,
 		SessColors:     assignSessColors(agents, events),

@@ -180,6 +180,12 @@
     <label for="event_type">event_type</label>
     <input type="text" name="event_type" id="event_type" value="{{ .FilterType }}" placeholder="e.g. PreToolUse">
     <button type="submit">filter</button>
+    <label for="window">roster window</label>
+    <select name="window" id="window" onchange="this.form.submit()">
+      {{ range .WindowOptions }}
+        <option value="{{ .Days }}" {{ if .Selected }}selected{{ end }}>{{ .Label }}</option>
+      {{ end }}
+    </select>
     <label for="refresh">auto-refresh</label>
     <select name="refresh" id="refresh" onchange="this.form.submit()">
       {{ range .RefreshOptions }}
