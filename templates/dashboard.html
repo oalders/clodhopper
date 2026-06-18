@@ -38,7 +38,7 @@
        leftover-absorbing column is safe under fixed layout: its width comes from
        the table width, not the cell content, so it never reflows on a swap. */
     table.roster, table.counts { width: 100%; }
-    th, td { text-align: left; padding: .2rem .5rem; border-bottom: 1px solid color-mix(in srgb, CanvasText 18%, transparent); vertical-align: top; overflow: hidden; text-overflow: ellipsis; }
+    th, td { text-align: left; padding: .2rem .5rem; border-bottom: 1px solid #ddd; border-bottom: 1px solid color-mix(in srgb, CanvasText 18%, transparent); vertical-align: top; overflow: hidden; text-overflow: ellipsis; }
     th { position: sticky; top: 0; background: Canvas; }
     td.time, td.tool, td.idle, td.sess, td.namecell { white-space: nowrap; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
