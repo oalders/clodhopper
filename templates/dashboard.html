@@ -72,6 +72,9 @@
     .status.waiting, .status.approval, .status.needs, .status.input { color: #b35900; }
     .status.idle { color: #888; font-weight: normal; }
     .status.background { color: #3a6ea5; font-weight: normal; }
+    /* CI is just a fixed-width status dot, so it gets a snug column: tighter
+       horizontal padding than the default cell and centered under its header. */
+    td.ci, th.ci { padding-left: .25rem; padding-right: .25rem; text-align: center; }
     .ci.green { color: #1a7f37; }
     .ci.failing { color: #c00; font-weight: bold; }
     .ci.pending { color: #9a6700; }
@@ -278,20 +281,20 @@
   <div class="table-wrap">
   <table class="roster">
     <colgroup>
-      <col style="width: 24ch"><col style="width: 18ch"><col style="width: 18ch"><col style="width: 36ch">
-      <col style="width: 9ch"><col style="width: 8ch"><col style="width: 10ch"><col>
+      <col style="width: 5ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 18ch">
+      <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch"><col>
     </colgroup>
     <thead>
-      <tr><th>branch</th><th>app</th><th>status</th><th>doing</th><th>CI</th><th>idle</th><th>id</th><th>session</th></tr>
+      <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th><th>id</th><th>session</th></tr>
     </thead>
     <tbody>
       {{ range .Agents }}
       <tr{{ with rowClass . }} class="{{ . }}"{{ end }}>
+        <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}" title="{{ if .CI }}{{ .CI }}{{ else }}no CI{{ end }}">{{ if eq .CI "green" }}🟢{{ else if eq .CI "pending" }}🟡{{ else if eq .CI "failing" }}🔴{{ else }}—{{ end }}</td>
         {{ template "branchcellroster" . }}
         <td data-label="app">{{ .SourceApp }}</td>
         <td data-label="status" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "waiting" }}background{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
         <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
-        <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}" title="{{ if .CI }}{{ .CI }}{{ else }}no CI{{ end }}">{{ if eq .CI "green" }}🟢{{ else if eq .CI "pending" }}🟡{{ else if eq .CI "failing" }}🔴{{ else }}—{{ end }}</td>
         <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
         <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
         <td class="namecell" data-label="session">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
