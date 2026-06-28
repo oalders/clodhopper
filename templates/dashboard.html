@@ -61,14 +61,15 @@
     }
 
     /* --- Base --------------------------------------------------------------
-       The page background lives on <html> so the 1180px centered body never
-       leaves an unpainted gutter on a wide screen. */
+       The page background lives on <html> so the 1480px centered body never
+       leaves an unpainted gutter on a wide screen. The width is generous so the
+       session column has room to show full names without truncating. */
     * { box-sizing: border-box; }
     html { background: var(--bg); color: var(--text-1); -webkit-text-size-adjust: 100%; }
     body {
-      max-width: 1180px;
+      max-width: 1480px;
       margin: 0 auto;
-      padding: 22px 22px 40px;
+      padding: 22px 44px 40px;
       font-family: var(--font-mono);
       font-size: var(--fs-base);
       line-height: 1.35;
@@ -559,7 +560,7 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
-          <td class="namecell" data-label="session">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
+          <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
         {{ end }}
       </tbody>
@@ -590,7 +591,7 @@
           {{ template "branchcell" . }}
           <td data-label="app">{{ .SourceApp }}</td>
           <td class="count" data-label="events">{{ .Count }}</td>
-          <td class="namecell" data-label="session">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
+          <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
         {{ end }}
       </tbody>
