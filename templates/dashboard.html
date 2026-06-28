@@ -1,203 +1,406 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>clodhopper dashboard</title>
+  <!-- Set the saved theme before first paint so there is no light/dark flash.
+       Default is dark (the design system's default); a user choice in
+       localStorage wins. Wrapped in try/catch because storage can throw. -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('ch-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t);
+      } catch (e) {}
+    })();
+  </script>
   <style>
-    :root { color-scheme: light dark; }
-    body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 1rem; font-size: 13px; }
-    h1 { font-size: 1.1rem; margin: 0 0 .25rem; }
-    h2 { font-size: .95rem; margin: 1.5rem 0 .4rem; }
-    .meta { color: #888; margin-bottom: 1rem; }
-    form { margin-bottom: 1rem; }
-    /* Flex + wrap so the filter controls stack gracefully on a narrow screen
-       instead of overflowing in one stiff row; the gap replaces the old
-       per-label left margin. */
-    form.controls { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .6rem; }
-    /* On wide screens this wrapper is an inert block (table flows normally and
-       its sticky header keeps working); a media query below turns on
-       horizontal scroll only when the viewport is too narrow for the table. The
-       wrapper owns the bottom spacing; the table's own margin is zeroed so the
-       two don't stack into a double gap. */
-    .table-wrap { margin-bottom: .5rem; }
-    .table-wrap table { margin-bottom: 0; }
-    /* table-layout: fixed + an explicit colgroup pin every column width so the
-       layout does not reflow (and visibly "flash") when a section is swapped in
-       with different-length content. */
-    table { border-collapse: collapse; width: 100%; table-layout: fixed; margin-bottom: .5rem; }
-    /* These tables keep a definite width so that table-layout: fixed truly engages
-       and PINS the columns. Pinned widths are why a status cell going from "idle"
-       to "waiting for you" no longer reflows the table on a #content swap. (A bare
-       width: auto can drop a fixed-layout table back to content-driven sizing,
-       which reflows.)
+    /* JetBrains Mono is the design system's chosen face. It is loaded from a CDN
+       and degrades silently to the system mono stack when offline (this tool
+       usually serves on 127.0.0.1), so the dashboard never blocks on the font. */
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap');
 
-       Both tables fill the screen (width: 100%, no cap); each one's last column
-       (session) is left unconstrained, so it soaks up all the leftover width and
-       shows the full name, truncating only when the window is genuinely narrow. A
-       leftover-absorbing column is safe under fixed layout: its width comes from
-       the table width, not the cell content, so it never reflows on a swap. */
+    /* --- Design tokens -----------------------------------------------------
+       Colors are themed: :root carries the dark palette (the default), and
+       [data-theme="light"] overrides only the color tokens. Non-color tokens
+       (font, sizes, radii, spacing, motion) live once on :root. Every value is
+       lifted verbatim from the clodhopper Design System tokens. */
+    :root {
+      --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+      --fs-2xs: 10px; --fs-xs: 11px; --fs-sm: 12px; --fs-base: 13px; --fs-md: 14px;
+      --fs-lg: 16px; --fs-xl: 20px; --fs-2xl: 26px;
+      --radius-xs: 3px; --radius-sm: 5px; --radius: 7px; --radius-lg: 10px; --radius-pill: 999px;
+      --cell-pad-y: 6px; --cell-pad-x: 10px;
+      --ease: cubic-bezier(.2, 0, 0, 1); --dur-fast: 90ms; --dur: 160ms;
+
+      /* dark palette (default) */
+      --bg: #0d1117; --surface: #161b22; --surface-2: #1c232c; --surface-3: #232c37;
+      --border: #2a313c; --border-strong: #3a424e; --divider: #30363d;
+      --text-1: #e6edf3; --text-2: #9aa7b4; --text-3: #7d8b9a; --text-invert: #0d1117;
+      --brand: #d2814e; --brand-strong: #e0925f; --brand-soft: rgba(210, 129, 78, .16);
+      --focus-ring: rgba(210, 129, 78, .55);
+      --attention: #e8a13c; --attention-bg: rgba(232, 161, 60, .13);
+      --background: #5b9bd5; --working: #3fb950; --idle: #7d8590;
+      --ok: #3fb950; --fail: #f85149; --fail-bg: rgba(248, 81, 73, .13);
+      --pending: #d29922; --none: #6b7785;
+      --shadow-sm: 0 1px 2px rgba(0, 0, 0, .40), 0 1px 1px rgba(0, 0, 0, .24);
+      --shadow-focus: 0 0 0 3px var(--focus-ring);
+    }
+    [data-theme="light"] {
+      --bg: #f6f8fa; --surface: #ffffff; --surface-2: #f6f8fa; --surface-3: #eef1f4;
+      --border: #d8dee4; --border-strong: #c2cad2; --divider: #c8d1da;
+      --text-1: #1f2328; --text-2: #59636e; --text-3: #6b7480; --text-invert: #ffffff;
+      --brand: #b65a26; --brand-strong: #9d4a1c; --brand-soft: rgba(182, 90, 38, .10);
+      --focus-ring: rgba(182, 90, 38, .45);
+      --attention: #b35900; --attention-bg: rgba(179, 89, 0, .10);
+      --background: #3a6ea5; --working: #1a7f37; --idle: #818b98;
+      --ok: #1a7f37; --fail: #cf222e; --fail-bg: rgba(207, 34, 46, .08);
+      --pending: #9a6700; --none: #818b98;
+      --shadow-sm: 0 1px 2px rgba(140, 149, 159, .20), 0 1px 1px rgba(140, 149, 159, .12);
+    }
+
+    /* --- Base --------------------------------------------------------------
+       The page background lives on <html> so the 1180px centered body never
+       leaves an unpainted gutter on a wide screen. */
+    * { box-sizing: border-box; }
+    html { background: var(--bg); color: var(--text-1); -webkit-text-size-adjust: 100%; }
+    body {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 22px 22px 40px;
+      font-family: var(--font-mono);
+      font-size: var(--fs-base);
+      line-height: 1.35;
+      background: var(--bg);
+      color: var(--text-1);
+      -webkit-font-smoothing: antialiased;
+    }
+    :focus-visible { outline: none; box-shadow: var(--shadow-focus); border-radius: var(--radius-xs); }
+    ::selection { background: var(--brand-soft); }
+    /* In forced-colors / Windows High Contrast the box-shadow ring is stripped,
+       so restore a real outline that the OS palette can render. */
+    @media (forced-colors: active) {
+      :focus-visible { outline: 2px solid ButtonText; box-shadow: none; }
+    }
+
+    @keyframes ch-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
+    @keyframes ck-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+    /* --- Header (wordmark + controls) -------------------------------------- */
+    .ck-header {
+      display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+      gap: 10px 16px; margin-bottom: 16px;
+    }
+    .ck-brand { display: flex; align-items: baseline; gap: 8px; }
+    .ck-prompt { color: var(--brand); font-weight: 700; font-size: var(--fs-2xl); line-height: 1; }
+    .ck-wordmark { margin: 0; font-size: var(--fs-2xl); font-weight: 800; letter-spacing: -0.02em; color: var(--text-1); line-height: 1; }
+    .ck-wordmark .acct { color: var(--brand); }
+    .ck-cursor {
+      display: inline-block; width: 8px; height: 1.05em; background: var(--brand);
+      border-radius: 1px; align-self: center; animation: ck-blink 1.1s steps(1) infinite;
+    }
+    .ck-tagline { font-size: var(--fs-sm); color: var(--text-3); }
+    .ck-headright { display: flex; align-items: center; gap: 14px; }
+
+    /* --- Buttons ----------------------------------------------------------- */
+    .ck-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-family: var(--font-mono); font-weight: 500; font-size: var(--fs-sm); line-height: 1.2;
+      padding: 5px 12px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text-1);
+      cursor: pointer; transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+    }
+    .ck-btn:hover { background: var(--surface-3); }
+    .ck-btn:active { transform: translateY(1px); }
+    .ck-btn-primary { background: var(--brand); border-color: transparent; color: var(--text-invert); }
+    .ck-btn-primary:hover { background: var(--brand-strong); }
+    .ck-fbadge {
+      display: none; min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--radius-pill);
+      background: var(--brand); color: var(--text-invert); font-size: var(--fs-2xs); font-weight: 700;
+      align-items: center; justify-content: center; line-height: 1;
+    }
+    .ck-fbadge.on { display: inline-flex; }
+
+    /* --- Filter strip (collapsible) --------------------------------------- */
+    .ck-filters {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+      padding: 12px 14px; margin-bottom: 18px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
+    }
+    .ck-filters[hidden] { display: none; }
+    .ck-field { display: inline-flex; align-items: center; gap: 6px; }
+    .ck-field > label { font-size: var(--fs-sm); color: var(--text-2); white-space: nowrap; }
+    .ck-selectbox { position: relative; display: inline-flex; }
+    .ck-filters select, .ck-filters input[type="text"] {
+      appearance: none; -webkit-appearance: none;
+      font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-1);
+      background: var(--surface-2); border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm); line-height: 1.3; outline: none;
+    }
+    .ck-filters select { padding: 4px 24px 4px 9px; cursor: pointer; }
+    .ck-filters input[type="text"] { padding: 4px 9px; cursor: text; }
+    .ck-caret {
+      position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
+      font-size: .7em; color: var(--text-3); pointer-events: none;
+    }
+    .ck-spring { flex: 1 1 24px; }
+
+    /* --- Live meta line (inside #content so the poller keeps it current) --- */
+    .ck-meta { font-size: var(--fs-sm); color: var(--text-3); margin: 0 0 16px; text-align: right; }
+    .ck-meta .live { color: var(--working); }
+
+    /* --- Cards ------------------------------------------------------------- */
+    .ck-card {
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
+      overflow: hidden; margin-bottom: 20px;
+    }
+    .ck-card:last-of-type { margin-bottom: 0; }
+    .ck-cardhead {
+      display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+      padding: 8px 16px; background: var(--surface-2); border-bottom: 1px solid var(--border);
+    }
+    .ck-cardhead h2 {
+      margin: 0; font-size: var(--fs-lg); font-weight: 700; letter-spacing: -0.02em; color: var(--text-1);
+    }
+    .ck-cardmeta { font-size: var(--fs-sm); color: var(--text-3); white-space: nowrap; }
+    .empty {
+      color: var(--text-3); padding: 20px 16px; font-size: var(--fs-sm); line-height: 1.55;
+    }
+    .empty code { color: var(--text-2); }
+
+    /* --- Tables -----------------------------------------------------------
+       table-layout: fixed + an explicit colgroup pin every column width so the
+       layout does not reflow (and visibly "flash") when a section is swapped in
+       with different-length content on an /api/state poll. The card owns the
+       chrome; the table sits flush inside it. */
+    .ck-tablewrap table { margin: 0; }
+    table { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: var(--fs-base); }
+    /* Both data tables fill their card; the last column (session) is left
+       unconstrained so it soaks up leftover width and shows the full name,
+       truncating only when the window is genuinely narrow. A leftover-absorbing
+       column is safe under fixed layout: its width comes from the table width,
+       not the cell content, so it never reflows on a swap. */
     table.roster, table.counts { width: 100%; }
-    th, td { text-align: left; padding: .2rem .5rem; border-bottom: 1px solid #ddd; border-bottom: 1px solid color-mix(in srgb, CanvasText 18%, transparent); vertical-align: top; overflow: hidden; text-overflow: ellipsis; }
-    th { position: sticky; top: 0; background: Canvas; }
+    th, td {
+      text-align: left; padding: var(--cell-pad-y) var(--cell-pad-x);
+      border-bottom: 1px solid var(--border); vertical-align: top;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    th {
+      position: sticky; top: 0; background: var(--surface-2); color: var(--text-2);
+      font-weight: 600; font-size: var(--fs-xs); letter-spacing: .04em; text-transform: lowercase;
+      border-bottom: 1px solid var(--border-strong);
+    }
+    /* Roster rows respond to hover; the tint rows re-assert their colour so a
+       hover never erases the "needs you" / fail signal. */
+    table.roster tbody tr:hover td { background: var(--surface-3); transition: background var(--dur-fast) var(--ease); }
+
     td.time, td.tool, td.idle, td.sess, td.namecell { white-space: nowrap; }
+    td.idle { font-variant-numeric: tabular-nums; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
-    td.summary em { font-style: italic; color: #888; } /* a completed phase, not one in progress */
-    td.summary .lastcmd { color: #888; font-size: .85em; } /* the session's most recent slash command, as a muted second line */
+    td.summary em { font-style: italic; color: var(--text-3); } /* a completed phase, not one in progress */
+    td.summary .lastcmd { color: var(--text-3); font-size: .85em; margin-top: 2px; } /* the session's most recent slash command, as a muted second line */
     /* Branch is the one column we never truncate: it has a fixed, bounded width
        but wraps instead of ellipsing (a clipped branch name is ambiguous in a way
        a clipped session name is not), so a long branch grows taller rather than
        getting cut off — or hogging the row. */
     td.branch { white-space: normal; word-break: break-word; }
     td.branch .rebase-branch { font-style: italic; } /* a branch recovered mid-rebase, not a steady-state checkout */
-    .type { font-weight: bold; }
-    .empty { color: #888; padding: 1rem 0; }
-    /* Agent roster */
-    tr.alert td { background: color-mix(in srgb, orange 22%, Canvas); }
-    tr.fail td { background: color-mix(in srgb, #c00 16%, Canvas); }
-    /* A subtle divider between (source_app, branch) groups so adjacent clusters stay separated.
-       Fixed-colour fallback first for browsers without color-mix() (pre-Chrome 111 / Firefox 113 / Safari 16.2).
-       Under border-collapse this 2px top border competes with the base td's 1px
-       border-bottom; the wider border wins, so keep this >= 2px and wider than any
-       base bottom-border or the divider silently disappears. */
-    tr.group-start td { border-top: 2px solid #bbb; border-top: 2px solid color-mix(in srgb, CanvasText 25%, Canvas); }
-    /* The left accent bar that BINDS a multi-session branch cluster (a worktree with
-       several agents): a continuous vertical bar down the left edge of every row in
-       the group, so the rows read as one unit even when one is alert/fail-tinted (it
-       is a border, not a background, so the tint can't override it). Singleton
-       branches get no bar. On desktop it rides the first cell; border-collapse joins
-       consecutive rows' bars into one line. */
-    tr.grouped td:first-child { border-left: 3px solid #888; border-left: 3px solid color-mix(in srgb, CanvasText 45%, Canvas); }
-    .status { font-weight: bold; }
-    .status.waiting, .status.approval, .status.needs, .status.input { color: #b35900; }
-    .status.idle { color: #888; font-weight: normal; }
-    .status.background { color: #3a6ea5; font-weight: normal; }
-    /* CI is just a fixed-width status dot, so it gets a snug column: tighter
-       horizontal padding than the default cell and centered under its header. */
-    td.ci, th.ci { padding-left: .25rem; padding-right: .25rem; text-align: center; }
-    .ci.green { color: #1a7f37; }
-    .ci.failing { color: #c00; font-weight: bold; }
-    .ci.pending { color: #9a6700; }
-    .ci.none { color: #aaa; }
-    /* Per-session color key: a small swatch whose color comes from SessColors
-       (see assignSessColors). Pairs with the row tint on Recent events to link a
+    .type { font-weight: 600; color: var(--text-2); }
+    td.count { font-variant-numeric: tabular-nums; color: var(--text-1); font-weight: 600; }
+
+    /* Roster row state classes (emitted by rowClass() in server.go). */
+    tr.alert td { background: var(--attention-bg); }
+    tr.fail td { background: var(--fail-bg); }
+    /* Scoped to match the generic roster-hover rule above; an unscoped
+       tr.alert:hover loses the cascade to table.roster tbody tr:hover td and
+       the state tint would silently vanish under hover. */
+    table.roster tbody tr.alert:hover td { background: color-mix(in srgb, var(--attention) 20%, var(--surface)); }
+    table.roster tbody tr.fail:hover td { background: color-mix(in srgb, var(--fail) 20%, var(--surface)); }
+    /* A subtle divider between (source_app, branch) groups so adjacent clusters
+       stay separated. Under border-collapse this top border competes with the
+       base td's bottom border; keep it >= 2px and wider than the base border or it
+       silently disappears. */
+    tr.group-start td { border-top: 2px solid var(--divider); }
+    /* The left accent bar that BINDS a multi-session branch cluster (a worktree
+       with several agents): a continuous vertical bar down the left edge of every
+       row in the group, so the rows read as one unit even when one is
+       alert/fail-tinted. An inset box-shadow rides over the cell's tint (a
+       border-left would be painted under it). Singletons get no bar. */
+    tr.grouped td:first-child { box-shadow: inset 3px 0 0 var(--idle); }
+
+    /* StatusBadge: a coloured dot + the status label. The dot inherits the cell's
+       status colour via currentColor; working pulses, the attention states glow. */
+    .ck-badge { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .ck-dot { display: inline-block; width: 7px; height: 7px; border-radius: var(--radius-pill); background: currentColor; flex: none; }
+    .status { font-weight: 600; }
+    .status.waiting, .status.needs, .status.approval, .status.input { color: var(--attention); }
+    .status.background { color: var(--background); font-weight: normal; }
+    .status.working { color: var(--working); }
+    .status.idle { color: var(--idle); font-weight: normal; }
+    .status.ended { color: var(--text-3); font-weight: normal; }
+    .status.working .ck-dot { animation: ch-pulse 1.8s var(--ease) infinite; }
+    .status.waiting .ck-dot, .status.needs .ck-dot, .status.approval .ck-dot, .status.input .ck-dot {
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--attention) 22%, transparent);
+    }
+
+    /* CI is just a fixed-width status dot (emoji), so it gets a snug, centered
+       column. */
+    td.ci, th.ci { padding-left: 4px; padding-right: 4px; text-align: center; }
+    .ci.none { color: var(--none); }
+
+    /* Per-session colour key: a small swatch whose colour comes from SessColors
+       (server-assigned). Pairs with the row tint on Recent events to link a
        session to the roster. */
     .chip { display: inline-block; width: .7em; height: .7em; border-radius: 50%; margin-right: .4em; vertical-align: baseline; }
 
-    /* --- Responsive --------------------------------------------------------
-       The tables are sized for a desktop: their pinned ch-based columns add up
-       to ~900px, so on anything narrower they have to give. Two tiers:
+    /* --- Footer ------------------------------------------------------------ */
+    .ck-footer {
+      margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--border);
+      font-size: var(--fs-sm); color: var(--text-3); text-align: center;
+    }
+    .ck-footer .host { color: var(--brand); }
 
-       641–960px (small tablet / narrow window): keep the table shape but let
-       it scroll horizontally inside its wrapper. The min-widths (roughly each
-       table's colgroup sum) keep the columns at readable widths and force the
-       overflow into the wrapper, instead of width:100% squeezing the leftover
-       column down to a char-per-line shred. Note: setting overflow-x makes the
-       wrapper a scroll container on both axes, so the desktop sticky <th> no
-       longer pins while you scroll the page at this tier — an acceptable
-       trade-off for not dragging the whole page sideways. */
+    /* --- Responsive --------------------------------------------------------
+       641–960px: keep the table shape but let it scroll horizontally inside its
+       wrapper. The min-widths (each table's colgroup sum) keep columns readable
+       and push the overflow into the wrapper instead of squeezing the leftover
+       column to a shred. Note: overflow-x makes the wrapper a scroll container,
+       so the sticky <th> no longer pins at this tier — an accepted trade-off. */
     @media (max-width: 960px) and (min-width: 641px) {
-      .table-wrap { overflow-x: auto; }
-      table { min-width: 118ch; }        /* recent events */
+      .ck-tablewrap { overflow-x: auto; }
+      table.events { min-width: 118ch; }
       table.roster { min-width: 132ch; }
-      table.counts { min-width: 48ch; }  /* narrow enough to never overflow here */
+      table.counts { min-width: 48ch; }
     }
 
     /* ≤640px (phones): the table shape can't fit, so each row becomes a card.
-       Short fields FLOW INLINE and wrap (like a wrapping line of "label value"
-       chips) so a card stays a few lines tall instead of one-field-per-line;
-       only the long free-text fields (branch, summary/doing) claim a full line.
-       Each cell still prints its column name from data-label. */
+       Short fields flow inline and wrap; only the long free-text fields (branch,
+       summary/doing) claim a full line. Each cell prints its column name from
+       data-label. */
     @media (max-width: 640px) {
-      body { margin: .6rem; }
-      h2 { margin: 1.25rem 0 .4rem; }
+      body { padding: 16px 12px 32px; }
+      .ck-header { gap: 8px 12px; }
+      .ck-meta { text-align: left; }
       thead { display: none; } /* labels move into each cell instead */
-      /* Under display:block these are no longer table boxes, so table-layout
-         and the colgroup widths stop applying on their own. */
+      /* Under display:block these are no longer table boxes, so table-layout and
+         the colgroup widths stop applying on their own. */
       table, tbody { display: block; width: auto; }
       tr {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: baseline;
-        gap: .25rem .85rem;        /* between wrapped chip lines / inline chips */
-        /* CanvasText (not a fixed grey) so the card outline stays subtle in
-           both light and dark mode, like the rest of the system-color tints. */
-        border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
-        border-radius: 6px;
-        padding: .4rem .55rem;
-        margin: 0 0 .5rem;
+        display: flex; flex-wrap: wrap; align-items: baseline;
+        gap: 6px 16px;
+        border: 1px solid var(--border); border-radius: var(--radius);
+        padding: 10px 12px; margin: 10px; background: var(--surface);
       }
       td {
-        display: flex;
-        gap: .3rem;                /* between a field's label and its value */
-        min-width: 0;              /* let a value shrink/wrap instead of overflow */
-        border: none;
-        padding: 0;
-        overflow: visible;
-        white-space: normal;
+        display: flex; gap: 7px; min-width: 0;
+        border: none; padding: 0; overflow: visible; white-space: normal;
+        box-shadow: none !important; /* drops the desktop cluster bar; re-added on the card below */
       }
       td::before {
-        content: attr(data-label);
-        color: #888;
-        font-weight: bold;
-        white-space: nowrap;
+        content: attr(data-label); color: var(--text-3); font-weight: 600;
+        font-size: var(--fs-xs); white-space: nowrap;
       }
       /* Long free-text fields break to their own full-width line. */
       td.branch, td.summary { flex-basis: 100%; }
-      /* These are nowrap on desktop (specificity 0,1,1); re-allow wrapping. */
+      /* These are nowrap on desktop; re-allow wrapping in the card. */
       td.time, td.tool, td.idle, td.sess, td.namecell { white-space: normal; }
       /* Tint the whole card rather than each cell. */
       tr.alert td, tr.fail td { background: transparent; }
-      tr.alert { background: color-mix(in srgb, orange 22%, Canvas); }
-      tr.fail { background: color-mix(in srgb, #c00 16%, Canvas); }
-      /* In the card layout td borders are stripped (border:none above), so put the
-         group divider and the cluster's left accent bar on the card itself, matching
-         how alert/fail tint the tr here. These are intentional longhands (border-top
-         / border-left) that override only one side of the card's base `border`
-         shorthand and compose with each other when a row is both group-start and
-         grouped; do NOT collapse them into a single `border` shorthand or you reset
-         the other sides. */
-      tr.group-start { border-top: 2px solid #bbb; border-top: 2px solid color-mix(in srgb, CanvasText 25%, Canvas); }
-      tr.grouped { border-left: 3px solid #888; border-left: 3px solid color-mix(in srgb, CanvasText 45%, Canvas); }
+      tr.alert { background: var(--attention-bg); }
+      tr.fail { background: var(--fail-bg); }
+      /* In the card layout td borders are stripped, so put the group divider and
+         the cluster's left accent bar on the card itself. Intentional longhands
+         that override one side of the card's `border` shorthand and compose when a
+         row is both group-start and grouped. */
+      tr.group-start { border-top: 2px solid var(--divider); }
+      tr.grouped { border-left: 3px solid var(--idle); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .ck-cursor, .status.working .ck-dot { animation: none; }
+      * { transition: none !important; }
     }
   </style>
 </head>
 <body data-refresh="{{ .RefreshSecs }}" data-signature="{{ .Signature }}">
-  <h1>clodhopper dashboard</h1>
+  <header class="ck-header">
+    <div class="ck-brand">
+      <span class="ck-prompt">$</span>
+      <h1 class="ck-wordmark">clod<span class="acct">hopper</span></h1>
+      <span class="ck-cursor" aria-hidden="true"></span>
+      <span class="ck-tagline">dashboard</span>
+    </div>
+    <div class="ck-headright">
+      <button type="button" id="ck-filtersbtn" class="ck-btn" aria-controls="ck-filters">filters <span id="ck-fbadge" class="ck-fbadge"></span></button>
+      <button type="button" id="ck-theme" class="ck-btn">☾ dark</button>
+    </div>
+  </header>
 
-  <form method="get" class="controls">
-    <label for="source_app">source_app</label>
-    <select name="source_app" id="source_app" onchange="this.form.submit()">
-      <option value="">all</option>
-      {{ range .SourceApps }}
-        <option value="{{ . }}" {{ if eq . $.FilterSource }}selected{{ end }}>{{ . }}</option>
-      {{ end }}
-    </select>
-    <label for="branch">branch</label>
-    <select name="branch" id="branch" onchange="this.form.submit()">
-      <option value="">all</option>
-      {{ range .Branches }}
-        <option value="{{ . }}" {{ if eq . $.FilterBranch }}selected{{ end }}>{{ . }}</option>
-      {{ end }}
-    </select>
-    <label for="event_type">event_type</label>
-    <input type="text" name="event_type" id="event_type" value="{{ .FilterType }}" placeholder="e.g. PreToolUse">
-    <button type="submit">filter</button>
-    <label for="refresh">auto-refresh</label>
-    <select name="refresh" id="refresh" onchange="this.form.submit()">
-      {{ range .RefreshOptions }}
-        <option value="{{ .Secs }}" {{ if .Selected }}selected{{ end }}>{{ .Label }}</option>
-      {{ end }}
-    </select>
-    <label for="window">roster window</label>
-    <select name="window" id="window" title="narrow the roster to the last N days (all = full window)" onchange="this.form.submit()">
-      {{ range .WindowOptions }}
-        <option value="{{ .Days }}" {{ if .Selected }}selected{{ end }}>{{ .Label }}</option>
-      {{ end }}
-    </select>
+  <form method="get" id="ck-filters" class="ck-filters">
+    <span class="ck-field">
+      <label for="source_app">source_app</label>
+      <span class="ck-selectbox">
+        <select name="source_app" id="source_app" onchange="this.form.submit()">
+          <option value="">all</option>
+          {{ range .SourceApps }}
+            <option value="{{ . }}" {{ if eq . $.FilterSource }}selected{{ end }}>{{ . }}</option>
+          {{ end }}
+        </select>
+        <span class="ck-caret" aria-hidden="true">▼</span>
+      </span>
+    </span>
+    <span class="ck-field">
+      <label for="branch">branch</label>
+      <span class="ck-selectbox">
+        <select name="branch" id="branch" onchange="this.form.submit()">
+          <option value="">all</option>
+          {{ range .Branches }}
+            <option value="{{ . }}" {{ if eq . $.FilterBranch }}selected{{ end }}>{{ . }}</option>
+          {{ end }}
+        </select>
+        <span class="ck-caret" aria-hidden="true">▼</span>
+      </span>
+    </span>
+    <span class="ck-field">
+      <label for="event_type">event_type</label>
+      <input type="text" name="event_type" id="event_type" value="{{ .FilterType }}" placeholder="e.g. PreToolUse">
+    </span>
+    <button type="submit" class="ck-btn ck-btn-primary">filter</button>
+    <span class="ck-spring"></span>
+    <span class="ck-field">
+      <label for="refresh">auto-refresh</label>
+      <span class="ck-selectbox">
+        <select name="refresh" id="refresh" onchange="this.form.submit()">
+          {{ range .RefreshOptions }}
+            <option value="{{ .Secs }}" {{ if .Selected }}selected{{ end }}>{{ .Label }}</option>
+          {{ end }}
+        </select>
+        <span class="ck-caret" aria-hidden="true">▼</span>
+      </span>
+    </span>
+    <span class="ck-field">
+      <label for="window">roster window</label>
+      <span class="ck-selectbox">
+        <select name="window" id="window" title="narrow the roster to the last N days (all = full window)" onchange="this.form.submit()">
+          {{ range .WindowOptions }}
+            <option value="{{ .Days }}" {{ if .Selected }}selected{{ end }}>{{ .Label }}</option>
+          {{ end }}
+        </select>
+        <span class="ck-caret" aria-hidden="true">▼</span>
+      </span>
+    </span>
   </form>
 
-  <div id="content">{{ template "content" . }}</div>
+  <main id="content" aria-live="polite" aria-atomic="false">{{ template "content" . }}</main>
+
+  <footer class="ck-footer">
+    clodhopper · read-only · <span class="host" id="ck-host">127.0.0.1:4555</span> — best-effort, like everything else here.
+  </footer>
 
   <script>
   // The dashboard no longer hard-reloads. It polls /api/state on the auto-refresh
@@ -243,6 +446,61 @@
       }, refresh * 1000);
     }
   })();
+
+  // Theme toggle. The head script already applied the saved choice before paint;
+  // here we just reflect it on the button and let the user flip it.
+  (function () {
+    var root = document.documentElement;
+    var btn = document.getElementById('ck-theme');
+    if (!btn) return;
+    function label() {
+      btn.textContent = root.getAttribute('data-theme') === 'light' ? '☀ light' : '☾ dark';
+    }
+    label();
+    btn.addEventListener('click', function () {
+      var next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+      root.setAttribute('data-theme', next);
+      try { localStorage.setItem('ch-theme', next); } catch (e) {}
+      label();
+    });
+  })();
+
+  // Collapsible filter strip with an active-count badge. The strip defaults to
+  // open only when a filter is actually set; the open/closed choice then persists.
+  // With JS off the strip stays visible (the form still submits via GET).
+  (function () {
+    var strip = document.getElementById('ck-filters');
+    var btn = document.getElementById('ck-filtersbtn');
+    var badge = document.getElementById('ck-fbadge');
+    if (!strip || !btn) return;
+
+    var n = 0, ids = ['source_app', 'branch', 'event_type'];
+    for (var i = 0; i < ids.length; i++) {
+      var el = document.getElementById(ids[i]);
+      if (el && el.value) n++;
+    }
+    if (badge) {
+      if (n > 0) { badge.textContent = n; badge.classList.add('on'); }
+      else { badge.classList.remove('on'); }
+    }
+
+    var stored = null;
+    try { stored = localStorage.getItem('ch-filters-open'); } catch (e) {}
+    var open = stored === 'open' || (stored === null && n > 0);
+    function apply() {
+      if (open) strip.removeAttribute('hidden'); else strip.setAttribute('hidden', '');
+      btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+    apply();
+    btn.addEventListener('click', function () {
+      open = !open;
+      try { localStorage.setItem('ch-filters-open', open ? 'open' : 'closed'); } catch (e) {}
+      apply();
+    });
+  })();
+
+  // Reflect the actual bind address in the footer rather than a hard-coded port.
+  (function () { var h = document.getElementById('ck-host'); if (h) h.textContent = location.host; })();
   </script>
 </body>
 </html>
@@ -268,96 +526,111 @@
      assistive tech, which cannot perceive the bar. Singleton branches (.Grouped
      false) carry no aria-label and read exactly as before. Roster-only because
      only Agent exposes .Grouped. */}}
-{{ define "branchcellroster" }}<td class="branch" data-label="branch"{{ if .Grouped }} aria-label="{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }} (cluster)"{{ end }}>{{ template "branchinner" . }}</td>{{ end }}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch"{{ if .Grouped }} aria-label="{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}{{ if .Rebasing }} (mid-rebase, cluster){{ else }} (cluster){{ end }}"{{ end }}>{{ template "branchinner" . }}</td>{{ end }}
 
 {{ define "content" }}
-  <div class="meta">
+  <div class="ck-meta">
     last change {{ .Generated }}
-    {{ if .RefreshSecs }}· live (checks every {{ .RefreshSecs }}s){{ else }}· auto-refresh off{{ end }}
+    {{ if .RefreshSecs }}· <span class="live">live</span> (checks every {{ .RefreshSecs }}s){{ else }}· auto-refresh off{{ end }}
   </div>
 
-  <h2>Agents (live + waiting on you)</h2>
-  {{ if .Agents }}
-  <div class="table-wrap">
-  <table class="roster">
-    <colgroup>
-      <col style="width: 5ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 18ch">
-      <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch"><col>
-    </colgroup>
-    <thead>
-      <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th><th>id</th><th>session</th></tr>
-    </thead>
-    <tbody>
-      {{ range .Agents }}
-      <tr{{ with rowClass . }} class="{{ . }}"{{ end }}>
-        <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}" title="{{ if .CI }}{{ .CI }}{{ else }}no CI{{ end }}">{{ if eq .CI "green" }}🟢{{ else if eq .CI "pending" }}🟡{{ else if eq .CI "failing" }}🔴{{ else }}—{{ end }}</td>
-        {{ template "branchcellroster" . }}
-        <td data-label="app">{{ .SourceApp }}</td>
-        <td data-label="status" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "waiting" }}background{{ else if eq .Status "idle" }}idle{{ end }}">{{ .Status }}</td>
-        <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
-        <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
-        <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
-        <td class="namecell" data-label="session">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
-      </tr>
-      {{ end }}
-    </tbody>
-  </table>
-  </div>
-  {{ else }}
-  <div class="empty">No agents working or waiting on you. (Detecting "waiting for you" needs the <code>Stop</code> and <code>Notification</code> hooks wired in <code>.claude/settings.json</code>; a waiting agent clears when its session ends — on <code>SessionEnd</code>, or via <code>clodhopper end</code> for hard-killed sessions.)</div>
-  {{ end }}
+  <section class="ck-card">
+    <div class="ck-cardhead">
+      <h2>Agents (live + waiting on you)</h2>
+      <span class="ck-cardmeta">{{ len .Agents }} live</span>
+    </div>
+    {{ if .Agents }}
+    <div class="ck-tablewrap">
+    <table class="roster">
+      <colgroup>
+        <col style="width: 5ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 20ch">
+        <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch"><col>
+      </colgroup>
+      <thead>
+        <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th><th>id</th><th>session</th></tr>
+      </thead>
+      <tbody>
+        {{ range .Agents }}
+        <tr{{ with rowClass . }} class="{{ . }}"{{ end }}>
+          <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if eq .CI "green" }}<span role="img" aria-label="CI passing">🟢</span>{{ else if eq .CI "pending" }}<span role="img" aria-label="CI pending">🟡</span>{{ else if eq .CI "failing" }}<span role="img" aria-label="CI failing">🔴</span>{{ else }}<span role="img" aria-label="no CI">—</span>{{ end }}</td>
+          {{ template "branchcellroster" . }}
+          <td data-label="app">{{ .SourceApp }}</td>
+          <td data-label="status" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "waiting" }}background{{ else if eq .Status "working" }}working{{ else if eq .Status "idle" }}idle{{ else if eq .Status "ended" }}ended{{ end }}"><span class="ck-badge"><span class="ck-dot"></span>{{ .Status }}</span></td>
+          <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
+          <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
+          <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
+          <td class="namecell" data-label="session">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
+        </tr>
+        {{ end }}
+      </tbody>
+    </table>
+    </div>
+    {{ else }}
+    <div class="empty">No agents working or waiting on you. (Detecting "waiting for you" needs the <code>Stop</code> and <code>Notification</code> hooks wired in <code>.claude/settings.json</code>; a waiting agent clears when its session ends — on <code>SessionEnd</code>, or via <code>clodhopper end</code> for hard-killed sessions.)</div>
+    {{ end }}
+  </section>
 
   {{ if .Activity }}
-  <h2>Activity (last 30 min)</h2>
-  <div class="table-wrap">
-  <table class="counts">
-    <colgroup>
-      <col style="width: 24ch"><col style="width: 18ch"><col style="width: 9ch"><col>
-    </colgroup>
-    <thead>
-      <tr><th>branch</th><th>app</th><th>events</th><th>session</th></tr>
-    </thead>
-    <tbody>
-      {{ range .Activity }}
-      <tr>
-        {{ template "branchcell" . }}
-        <td data-label="app">{{ .SourceApp }}</td>
-        <td data-label="events">{{ .Count }}</td>
-        <td class="namecell" data-label="session">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
-      </tr>
-      {{ end }}
-    </tbody>
-  </table>
-  </div>
+  <section class="ck-card">
+    <div class="ck-cardhead">
+      <h2>Activity (last 30 min)</h2>
+      <span class="ck-cardmeta">{{ len .Activity }} active</span>
+    </div>
+    <div class="ck-tablewrap">
+    <table class="counts">
+      <colgroup>
+        <col style="width: 24ch"><col style="width: 18ch"><col style="width: 9ch"><col>
+      </colgroup>
+      <thead>
+        <tr><th>branch</th><th>app</th><th>events</th><th>session</th></tr>
+      </thead>
+      <tbody>
+        {{ range .Activity }}
+        <tr>
+          {{ template "branchcell" . }}
+          <td data-label="app">{{ .SourceApp }}</td>
+          <td class="count" data-label="events">{{ .Count }}</td>
+          <td class="namecell" data-label="session">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
+        </tr>
+        {{ end }}
+      </tbody>
+    </table>
+    </div>
+  </section>
   {{ end }}
 
-  <h2>Recent events</h2>
-  {{ if .EventRows }}
-  <div class="table-wrap">
-  <table>
-    <colgroup>
-      <col style="width: 22ch"><col style="width: 14ch"><col style="width: 16ch">
-      <col style="width: 10ch"><col style="width: 15ch"><col style="width: 8ch"><col>
-    </colgroup>
-    <thead>
-      <tr><th>time</th><th>source_app</th><th>branch</th><th>id</th><th>event</th><th>tool</th><th>summary</th></tr>
-    </thead>
-    <tbody>
-      {{ range .EventRows }}
-      <tr {{ if eq .Outcome "✗" }}class="fail"{{ else if .SessionID }}style="background: color-mix(in srgb, {{ index $.SessColors .SessionID }} 14%, Canvas)"{{ end }}>
-        <td class="time" data-label="time">{{ shortTS .TS $.Now }}{{ if .Duration }} +{{ .Duration }}{{ end }}</td>
-        <td data-label="source_app">{{ .SourceApp }}</td>
-        {{ template "branchcell" . }}
-        <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
-        <td class="type" data-label="event">{{ if .Outcome }}<span title="{{ .EventType }}">{{ .Outcome }}</span>{{ else }}{{ .EventType }}{{ end }}</td>
-        <td class="tool" data-label="tool">{{ .ToolName }}</td>
-        <td class="summary" data-label="summary">{{ .Summary }}</td>
-      </tr>
-      {{ end }}
-    </tbody>
-  </table>
-  </div>
-  {{ else }}
-  <div class="empty">No events match. Is <code>clodhopper</code> on PATH, are the hooks wired in <code>.claude/settings.json</code>, and is a session active? (Capture is off when <code>CLODHOPPER_DISABLED=1</code>.)</div>
-  {{ end }}
+  <section class="ck-card">
+    <div class="ck-cardhead">
+      <h2>Recent events</h2>
+      <span class="ck-cardmeta">{{ len .EventRows }} shown</span>
+    </div>
+    {{ if .EventRows }}
+    <div class="ck-tablewrap">
+    <table class="events">
+      <colgroup>
+        <col style="width: 22ch"><col style="width: 14ch"><col style="width: 16ch">
+        <col style="width: 10ch"><col style="width: 15ch"><col style="width: 8ch"><col>
+      </colgroup>
+      <thead>
+        <tr><th>time</th><th>source_app</th><th>branch</th><th>id</th><th>event</th><th>tool</th><th>summary</th></tr>
+      </thead>
+      <tbody>
+        {{ range .EventRows }}
+        <tr {{ if eq .Outcome "✗" }}class="fail"{{ else if .SessionID }}style="background: color-mix(in srgb, {{ index $.SessColors .SessionID }} 14%, var(--surface))"{{ end }}>
+          <td class="time" data-label="time">{{ shortTS .TS $.Now }}{{ if .Duration }} +{{ .Duration }}{{ end }}</td>
+          <td data-label="source_app">{{ .SourceApp }}</td>
+          {{ template "branchcell" . }}
+          <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
+          <td class="type" data-label="event">{{ if .Outcome }}<span title="{{ .EventType }}">{{ .Outcome }}</span>{{ else }}{{ .EventType }}{{ end }}</td>
+          <td class="tool" data-label="tool">{{ .ToolName }}</td>
+          <td class="summary" data-label="summary">{{ .Summary }}</td>
+        </tr>
+        {{ end }}
+      </tbody>
+    </table>
+    </div>
+    {{ else }}
+    <div class="empty">No events match. Is <code>clodhopper</code> on PATH, are the hooks wired in <code>.claude/settings.json</code>, and is a session active? (Capture is off when <code>CLODHOPPER_DISABLED=1</code>.)</div>
+    {{ end }}
+  </section>
 {{ end }}
