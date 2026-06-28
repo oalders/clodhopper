@@ -37,7 +37,7 @@
       /* dark palette (default) */
       --bg: #0d1117; --surface: #161b22; --surface-2: #1c232c; --surface-3: #232c37;
       --border: #2a313c; --border-strong: #3a424e; --divider: #30363d;
-      --text-1: #e6edf3; --text-2: #9aa7b4; --text-3: #6b7785; --text-invert: #0d1117;
+      --text-1: #e6edf3; --text-2: #9aa7b4; --text-3: #7d8b9a; --text-invert: #0d1117;
       --brand: #d2814e; --brand-strong: #e0925f; --brand-soft: rgba(210, 129, 78, .16);
       --focus-ring: rgba(210, 129, 78, .55);
       --attention: #e8a13c; --attention-bg: rgba(232, 161, 60, .13);
@@ -50,7 +50,7 @@
     [data-theme="light"] {
       --bg: #f6f8fa; --surface: #ffffff; --surface-2: #f6f8fa; --surface-3: #eef1f4;
       --border: #d8dee4; --border-strong: #c2cad2; --divider: #c8d1da;
-      --text-1: #1f2328; --text-2: #59636e; --text-3: #818b98; --text-invert: #ffffff;
+      --text-1: #1f2328; --text-2: #59636e; --text-3: #6b7480; --text-invert: #ffffff;
       --brand: #b65a26; --brand-strong: #9d4a1c; --brand-soft: rgba(182, 90, 38, .10);
       --focus-ring: rgba(182, 90, 38, .45);
       --attention: #b35900; --attention-bg: rgba(179, 89, 0, .10);
@@ -78,6 +78,11 @@
     }
     :focus-visible { outline: none; box-shadow: var(--shadow-focus); border-radius: var(--radius-xs); }
     ::selection { background: var(--brand-soft); }
+    /* In forced-colors / Windows High Contrast the box-shadow ring is stripped,
+       so restore a real outline that the OS palette can render. */
+    @media (forced-colors: active) {
+      :focus-visible { outline: 2px solid ButtonText; box-shadow: none; }
+    }
 
     @keyframes ch-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
     @keyframes ck-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
@@ -89,7 +94,7 @@
     }
     .ck-brand { display: flex; align-items: baseline; gap: 8px; }
     .ck-prompt { color: var(--brand); font-weight: 700; font-size: var(--fs-2xl); line-height: 1; }
-    .ck-wordmark { font-size: var(--fs-2xl); font-weight: 800; letter-spacing: -0.02em; color: var(--text-1); line-height: 1; }
+    .ck-wordmark { margin: 0; font-size: var(--fs-2xl); font-weight: 800; letter-spacing: -0.02em; color: var(--text-1); line-height: 1; }
     .ck-wordmark .acct { color: var(--brand); }
     .ck-cursor {
       display: inline-block; width: 8px; height: 1.05em; background: var(--brand);
@@ -211,8 +216,11 @@
     /* Roster row state classes (emitted by rowClass() in server.go). */
     tr.alert td { background: var(--attention-bg); }
     tr.fail td { background: var(--fail-bg); }
-    tr.alert:hover td { background: color-mix(in srgb, var(--attention) 20%, var(--surface)); }
-    tr.fail:hover td { background: color-mix(in srgb, var(--fail) 20%, var(--surface)); }
+    /* Scoped to match the generic roster-hover rule above; an unscoped
+       tr.alert:hover loses the cascade to table.roster tbody tr:hover td and
+       the state tint would silently vanish under hover. */
+    table.roster tbody tr.alert:hover td { background: color-mix(in srgb, var(--attention) 20%, var(--surface)); }
+    table.roster tbody tr.fail:hover td { background: color-mix(in srgb, var(--fail) 20%, var(--surface)); }
     /* A subtle divider between (source_app, branch) groups so adjacent clusters
        stay separated. Under border-collapse this top border competes with the
        base td's bottom border; keep it >= 2px and wider than the base border or it
@@ -323,12 +331,12 @@
   <header class="ck-header">
     <div class="ck-brand">
       <span class="ck-prompt">$</span>
-      <span class="ck-wordmark">clod<span class="acct">hopper</span></span>
+      <h1 class="ck-wordmark">clod<span class="acct">hopper</span></h1>
       <span class="ck-cursor" aria-hidden="true"></span>
       <span class="ck-tagline">dashboard</span>
     </div>
     <div class="ck-headright">
-      <button type="button" id="ck-filtersbtn" class="ck-btn" aria-controls="ck-filters" aria-expanded="false">filters <span id="ck-fbadge" class="ck-fbadge"></span></button>
+      <button type="button" id="ck-filtersbtn" class="ck-btn" aria-controls="ck-filters">filters <span id="ck-fbadge" class="ck-fbadge"></span></button>
       <button type="button" id="ck-theme" class="ck-btn">☾ dark</button>
     </div>
   </header>
@@ -388,7 +396,7 @@
     </span>
   </form>
 
-  <div id="content">{{ template "content" . }}</div>
+  <main id="content" aria-live="polite" aria-atomic="false">{{ template "content" . }}</main>
 
   <footer class="ck-footer">
     clodhopper · read-only · <span class="host" id="ck-host">127.0.0.1:4555</span> — best-effort, like everything else here.
@@ -544,7 +552,7 @@
       <tbody>
         {{ range .Agents }}
         <tr{{ with rowClass . }} class="{{ . }}"{{ end }}>
-          <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}" title="{{ if .CI }}{{ .CI }}{{ else }}no CI{{ end }}">{{ if eq .CI "green" }}🟢{{ else if eq .CI "pending" }}🟡{{ else if eq .CI "failing" }}🔴{{ else }}—{{ end }}</td>
+          <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if eq .CI "green" }}<span role="img" aria-label="CI passing">🟢</span>{{ else if eq .CI "pending" }}<span role="img" aria-label="CI pending">🟡</span>{{ else if eq .CI "failing" }}<span role="img" aria-label="CI failing">🔴</span>{{ else }}<span role="img" aria-label="no CI">—</span>{{ end }}</td>
           {{ template "branchcellroster" . }}
           <td data-label="app">{{ .SourceApp }}</td>
           <td data-label="status" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if eq .Status "waiting" }}background{{ else if eq .Status "working" }}working{{ else if eq .Status "idle" }}idle{{ else if eq .Status "ended" }}ended{{ end }}"><span class="ck-badge"><span class="ck-dot"></span>{{ .Status }}</span></td>
