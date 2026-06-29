@@ -26,6 +26,29 @@ clodhopper serve    # run only when you want to look
 Capture (write) and viewing (read) are decoupled through the shared SQLite file.
 The dashboard being down never loses events; `ingest` never depends on a server.
 
+## Quickstart
+
+Up and running in about five minutes:
+
+```bash
+# 1. Install the binary (see Install for manual download / build-from-source).
+ubi --project oalders/clodhopper --in ~/.local/bin
+
+# 2. From a project's root, wire the capture hooks into its Claude Code settings.
+cd /path/to/your/project
+clodhopper init --project        # writes .claude/settings.json (idempotent)
+
+# 3. Use Claude Code in that project as normal — events start flowing immediately.
+
+# 4. When you want to look, start the dashboard:
+clodhopper serve                 # http://127.0.0.1:4555
+```
+
+That's the whole loop: hooks capture in the background, and `serve` is a
+read-only viewer you run on demand. The sections below cover install options,
+the env-var config table, exactly what is (and isn't) captured, and wiring
+details.
+
 ## Install
 
 Prebuilt binaries for macOS, Linux, and Windows (amd64 + arm64) are attached to
