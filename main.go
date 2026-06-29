@@ -155,6 +155,11 @@ func defaultHost() string {
 	return "127.0.0.1"
 }
 
+// allowPublic reads CLODHOPPER_ALLOW_PUBLIC; "1" opts in to binding a public IP.
+func allowPublic() bool {
+	return os.Getenv("CLODHOPPER_ALLOW_PUBLIC") == "1"
+}
+
 // defaultRefreshSecs reads CLODHOPPER_REFRESH_SECS (0 disables auto-refresh) or
 // returns the fallback. It is the dashboard's default cadence; the UI dropdown
 // (?refresh=N) overrides it per view.

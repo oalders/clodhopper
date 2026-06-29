@@ -298,6 +298,7 @@ func runServe(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	port := fs.Int("port", defaultPort(), "port to listen on")
 	host := fs.String("host", defaultHost(), "address to bind (127.0.0.1 default; 0.0.0.0 for LAN/container access)")
+	allowPub := fs.Bool("allow-public", allowPublic(), "allow binding to a public IP (UNSAFE: dashboard has no auth or TLS)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -325,6 +326,10 @@ func runServe(args []string) int {
 	})
 
 	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
+	if err := guardPublicBind(*host, *allowPub); err != nil {
+		fmt.Fprintln(os.Stderr, "clodhopper serve:", err)
+		return 1
+	}
 	if *host != "127.0.0.1" && *host != "localhost" && *host != "::1" {
 		fmt.Printf("clodhopper: WARNING binding %s — dashboard is reachable beyond loopback\n", addr)
 	}
