@@ -306,8 +306,14 @@
         content: attr(data-label); color: var(--text-3); font-weight: 600;
         font-size: var(--fs-xs); white-space: nowrap;
       }
-      /* Long free-text fields break to their own full-width line. */
-      td.branch, td.summary { flex-basis: 100%; }
+      /* Only the long free-text doing/summary field claims its own full-width
+         line; branch now flows inline with ci / app / status, wrapping within
+         its own cell when a name is genuinely too long. */
+      td.summary { flex-basis: 100%; flex-wrap: wrap; align-items: baseline; }
+      /* Stack the doing cell's "↳ last command" as a second line under the doing
+         text instead of a second column — matches the desktop two-line cell.
+         Events-table summary cells have no .lastcmd child, so are unaffected. */
+      td.summary .lastcmd { flex-basis: 100%; }
       /* These are nowrap on desktop; re-allow wrapping in the card. */
       td.time, td.tool, td.idle, td.sess, td.namecell { white-space: normal; }
       /* Tint the whole card rather than each cell. */
