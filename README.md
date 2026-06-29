@@ -103,6 +103,8 @@ By default the dashboard binds `127.0.0.1` (loopback only). If your browser runs
 on a different machine or namespace than the server (e.g. inside a container or
 VM), bind all interfaces with `clodhopper serve --host 0.0.0.0` (or `CLODHOPPER_HOST=0.0.0.0`)
 and reach it via that host's IP — note this exposes the dashboard to your LAN.
+A bind that resolves to a public IP is refused unless `CLODHOPPER_ALLOW_PUBLIC=1`
+(or `--allow-public`) is set, since the dashboard has no auth or TLS.
 
 To reach the dashboard from your other devices without exposing it to the LAN,
 bind it to your [Tailscale](https://tailscale.com) IP instead of `0.0.0.0`:
@@ -155,6 +157,7 @@ pane's `SIGHUP` usually kills it before cleanup runs.
 | `CLODHOPPER_DISABLED` | unset | `1` makes `ingest` a no-op. |
 | `CLODHOPPER_PORT` | `4555` | Dashboard port. |
 | `CLODHOPPER_HOST` | `127.0.0.1` | Dashboard bind address. Set `0.0.0.0` for container/LAN access. |
+| `CLODHOPPER_ALLOW_PUBLIC` | unset | Set to `1` to allow `serve` to bind a public IP (refused by default; the dashboard has no auth or TLS). Also settable per-run with `--allow-public`. |
 | `CLODHOPPER_WAITING_RETAIN_HOURS` | `720` (30 days) | How long a session with no `SessionEnd` stays on the roster. The default is generous on purpose so a long-idle but still-alive agent (overnight, a weekend, a multi-day pause) stays visible. In practice this window is also bounded by `CLODHOPPER_RETAIN_DAYS` (default 14): pruned events leave the roster regardless, so raise both to keep a session visible beyond two weeks. Reap finished or hard-killed sessions explicitly with `clodhopper end` rather than relying on this timeout. The dashboard's **roster window** dropdown narrows the board per-view (e.g. to the last day) without changing this configured cap. |
 | `CLODHOPPER_DEBUG` | unset | If set, `ingest` writes errors to stderr. |
 
