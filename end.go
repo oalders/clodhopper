@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -18,7 +19,7 @@ func runEnd(args []string) int {
 	fs := flag.NewFlagSet("end", flag.ContinueOnError)
 	branch := fs.String("branch", "", "end live sessions on this git branch")
 	cwd := fs.String("cwd", "", "end live sessions whose latest event has this cwd")
-	session := fs.String("session", "", "end this exact session id")
+	session := fs.String("session", "", "end the live session whose id starts with this prefix (the fragment shown on the roster); must be unambiguous")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -35,6 +36,13 @@ func runEnd(args []string) int {
 
 	n, err := endSessions(db, EndSelector{SessionID: *session, Branch: *branch, Cwd: *cwd}, time.Now())
 	if err != nil {
+		if amb, ok := errors.AsType[*AmbiguousSessionError](err); ok {
+			fmt.Fprintf(os.Stderr, "clodhopper end: %q matches %d live sessions; retry with a longer --session prefix:\n", amb.Prefix, len(amb.IDs))
+			for _, id := range amb.IDs {
+				fmt.Fprintln(os.Stderr, "  "+id)
+			}
+			return 2
+		}
 		fmt.Fprintln(os.Stderr, "clodhopper end:", err)
 		return 1
 	}

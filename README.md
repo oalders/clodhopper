@@ -137,8 +137,10 @@ clodhopper end --branch "$branch"
 
 This writes a synthetic `SessionEnd` for every live session on that branch. The
 script never needs Claude's `session_id` — clodhopper resolves the branch (or
-`--cwd`, or an exact `--session`) to the live sessions itself. Guard the call so
-it no-ops where the binary is absent:
+`--cwd`) to the live sessions itself. To reap one session by hand, pass
+`--session` the id fragment the roster shows; it matches by prefix and refuses
+(listing the candidates) if the fragment is ambiguous. Guard the call so it
+no-ops where the binary is absent:
 
 ```bash
 command -v clodhopper >/dev/null && clodhopper end --branch "$branch"

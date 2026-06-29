@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -159,6 +160,116 @@ func TestEndSessions_ByCwd(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("want 1 session ended for cwd /w/one, got %d", n)
+	}
+}
+
+func TestEndSessions_BySessionPrefix(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	ts := now.Add(-3 * time.Minute).Format(time.RFC3339)
+	ins := func(sess, etype string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "b1", Cwd: "/w", SessionID: sess, EventType: etype, PayloadJSON: "{}"})
+	}
+	// The full id is what `clodhopper end` historically required; the roster only
+	// shows the leading fragment, so a prefix must resolve it.
+	ins("fc49d0c6-f945-470b-8568-a2d054917ff2", "Stop")
+	ins("abcd1234-0000-0000-0000-000000000000", "Stop")
+
+	n, err := endSessions(db, EndSelector{SessionID: "fc49"}, now)
+	if err != nil {
+		t.Fatalf("endSessions: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 session ended for prefix fc49, got %d", n)
+	}
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawFC49, sawABCD bool
+	for _, a := range agents {
+		switch a.SessionID {
+		case "fc49d0c6-f945-470b-8568-a2d054917ff2":
+			sawFC49 = true
+		case "abcd1234-0000-0000-0000-000000000000":
+			sawABCD = true
+		}
+	}
+	if sawFC49 {
+		t.Error("fc49 session should be off the roster after end")
+	}
+	if !sawABCD {
+		t.Error("the non-matching session must be untouched")
+	}
+}
+
+func TestEndSessions_BySessionPrefixAmbiguous(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	ts := now.Add(-3 * time.Minute).Format(time.RFC3339)
+	ins := func(sess, etype string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "b1", Cwd: "/w", SessionID: sess, EventType: etype, PayloadJSON: "{}"})
+	}
+	ins("fc49aaaa-0000-0000-0000-000000000000", "Stop")
+	ins("fc49bbbb-0000-0000-0000-000000000000", "Stop")
+
+	n, err := endSessions(db, EndSelector{SessionID: "fc49"}, now)
+	amb, ok := errors.AsType[*AmbiguousSessionError](err)
+	if !ok {
+		t.Fatalf("want AmbiguousSessionError, got n=%d err=%v", n, err)
+	}
+	if n != 0 {
+		t.Fatalf("ambiguous prefix must end nothing, got %d", n)
+	}
+	if len(amb.IDs) != 2 {
+		t.Fatalf("want 2 candidate ids, got %v", amb.IDs)
+	}
+
+	// Nothing was ended: both sessions stay on the roster.
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 2 {
+		t.Fatalf("want both sessions still live, got %d", len(agents))
+	}
+}
+
+func TestEndSessions_PrefixIgnoresAlreadyEnded(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, sess, etype string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "b1", Cwd: "/w", SessionID: sess, EventType: etype, PayloadJSON: "{}"})
+	}
+	// Two sessions share the prefix, but one is already ended: it is not a
+	// collision, so the single live session resolves cleanly.
+	ins(at(3), "fc49aaaa-0000-0000-0000-000000000000", "Stop")
+	ins(at(30), "fc49bbbb-0000-0000-0000-000000000000", "PreToolUse")
+	ins(at(10), "fc49bbbb-0000-0000-0000-000000000000", "SessionEnd")
+
+	n, err := endSessions(db, EndSelector{SessionID: "fc49"}, now)
+	if err != nil {
+		t.Fatalf("endSessions: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("want 1 live session ended, got %d", n)
 	}
 }
 
