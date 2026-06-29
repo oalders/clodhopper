@@ -140,11 +140,39 @@ type EndSelector struct {
 	Cwd       string
 }
 
+// AmbiguousSessionError is returned by endSessions when a --session prefix
+// matches more than one live session. The roster only shows a leading fragment
+// of each session id, so a short prefix can be ambiguous; rather than end the
+// wrong agent, endSessions reports the candidates so the caller can retry with a
+// longer prefix.
+type AmbiguousSessionError struct {
+	Prefix string
+	IDs    []string
+}
+
+func (e *AmbiguousSessionError) Error() string {
+	return fmt.Sprintf("session prefix %q matches %d live sessions: %s",
+		e.Prefix, len(e.IDs), strings.Join(e.IDs, ", "))
+}
+
+// likePrefix turns a literal fragment into a LIKE pattern matching strings that
+// start with it, escaping LIKE's own wildcards so the fragment is matched
+// verbatim (session ids never contain %/_/\, but the fragment is user input).
+// Pair it with ESCAPE '\' in the query.
+func likePrefix(s string) string {
+	r := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return r.Replace(s) + "%"
+}
+
 // endSessions writes a synthetic SessionEnd row for every currently-live session
 // (one whose latest event is not already SessionEnd) matching sel, so an agent
 // that was hard-killed — and therefore never emitted its own SessionEnd — drops
 // off the roster at once instead of lingering until the waiting cap. It returns
 // the number of sessions ended. now is injected for deterministic tests.
+//
+// SessionID is matched as a prefix so the leading fragment shown on the roster
+// resolves a session; if that prefix matches more than one live session, nothing
+// is ended and an *AmbiguousSessionError lists the candidates.
 func endSessions(db *sql.DB, sel EndSelector, now time.Time) (int, error) {
 	// Resolve the selector against the latest row of each session, so branch/cwd
 	// match the session's current values.
@@ -154,8 +182,8 @@ func endSessions(db *sql.DB, sel EndSelector, now time.Time) (int, error) {
 	        AND id = (SELECT MAX(id) FROM events WHERE session_id = e.session_id)`
 	var args []any
 	if sel.SessionID != "" {
-		q += " AND session_id = ?"
-		args = append(args, sel.SessionID)
+		q += ` AND session_id LIKE ? ESCAPE '\'`
+		args = append(args, likePrefix(sel.SessionID))
 	}
 	if sel.Branch != "" {
 		q += " AND branch = ?"
@@ -186,6 +214,18 @@ func endSessions(db *sql.DB, sel EndSelector, now time.Time) (int, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return 0, err
+	}
+
+	// A session prefix that resolves to more than one live session is ambiguous:
+	// end nothing and report the candidates rather than guess. (Branch/cwd are
+	// intentionally bulk selectors, so they are exempt.)
+	if sel.SessionID != "" && len(targets) > 1 {
+		ids := make([]string, len(targets))
+		for i, l := range targets {
+			ids[i] = l.sess
+		}
+		sort.Strings(ids)
+		return 0, &AmbiguousSessionError{Prefix: sel.SessionID, IDs: ids}
 	}
 
 	ts := now.UTC().Format(time.RFC3339)
