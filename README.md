@@ -4,6 +4,8 @@ A small, project-agnostic observability tool for Claude Code. It captures
 lifecycle events from any project's hooks into a local SQLite database and
 serves a read-only, per-host dashboard.
 
+![The clodhopper dashboard](clodhopper.png)
+
 Built as the "lightweight, inspiration-only" outcome of an evaluation of
 [disler/claude-code-hooks-multi-agent-observability](https://github.com/disler/claude-code-hooks-multi-agent-observability):
 same idea (see what your agents are doing across concurrent sessions), but on
