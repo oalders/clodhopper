@@ -28,12 +28,44 @@ The dashboard being down never loses events; `ingest` never depends on a server.
 
 ## Install
 
+Prebuilt binaries for macOS, Linux, and Windows (amd64 + arm64) are attached to
+every [release](https://github.com/oalders/clodhopper/releases/latest) — no
+toolchain or C compiler required.
+
+### With `ubi` (recommended)
+
+[`ubi`](https://github.com/houseabsolute/ubi), the Universal Binary Installer,
+picks the right release asset for your platform and installs it in one step:
+
+```bash
+ubi --project oalders/clodhopper --in ~/.local/bin   # any directory on your PATH
+```
+
+### Download a release manually
+
+Grab the archive for your platform, extract the `clodhopper` binary, and drop it
+anywhere on your `PATH`.
+
+```bash
+# Linux x86_64 — bump VERSION to the latest tag on the releases page
+VERSION=0.0.6
+curl -sSL "https://github.com/oalders/clodhopper/releases/download/v${VERSION}/clodhopper_${VERSION}_linux_amd64.tar.gz" \
+  | tar -xz clodhopper
+mv clodhopper ~/.local/bin/   # or any directory on your PATH
+```
+
+Archives follow `clodhopper_<version>_<os>_<arch>.{tar.gz,zip}`; verify a
+download against the release's `checksums.txt`.
+
+### Build from source
+
 ```bash
 cd ~/.claude/clodhopper
 go install ./...        # puts `clodhopper` on your PATH (GOBIN / $GOPATH/bin)
 ```
 
-Requires CGO (a C compiler) because it uses `github.com/mattn/go-sqlite3`.
+Building from source requires CGO (a C compiler) because it uses
+`github.com/mattn/go-sqlite3`.
 
 ## Usage
 
