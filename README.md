@@ -1,5 +1,7 @@
 # clodhopper
 
+![clodhopper logo](https://www.olafalders.com/2026/06/29/on-hopping-claudes/clodhopper-logo.png)
+
 A small, project-agnostic observability tool for Claude Code. It captures
 lifecycle events from any project's hooks into a local SQLite database and
 serves a read-only, per-host dashboard.
