@@ -298,9 +298,32 @@ func runServe(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	port := fs.Int("port", defaultPort(), "port to listen on")
 	host := fs.String("host", defaultHost(), "address to bind (127.0.0.1 default; 0.0.0.0 for LAN/container access)")
+	tailscale := fs.Bool("tailscale", false, "bind to this machine's Tailscale IPv4 (`tailscale ip -4`); cannot be combined with --host")
 	allowPub := fs.Bool("allow-public", allowPublic(), "allow binding to a public IP (UNSAFE: dashboard has no auth or TLS)")
 	if err := fs.Parse(args); err != nil {
 		return 2
+	}
+
+	// --tailscale derives --host from `tailscale ip -4`, so passing both is a
+	// usage error. Only an explicit --host conflicts; the defaulted value (and
+	// CLODHOPPER_HOST) is overridden silently.
+	hostSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "host" {
+			hostSet = true
+		}
+	})
+	if *tailscale {
+		if hostSet {
+			fmt.Fprintln(os.Stderr, "clodhopper serve: --tailscale and --host cannot be used together")
+			return 2
+		}
+		ip, err := tailscaleLookup()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "clodhopper serve:", err)
+			return 1
+		}
+		*host = ip
 	}
 
 	db, err := openDB(defaultDBPath())

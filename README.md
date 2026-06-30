@@ -94,7 +94,7 @@ Building from source requires CGO (a C compiler) because it uses
 
 ```bash
 clodhopper ingest --source-app myapp       # reads one hook event as JSON on stdin
-clodhopper serve [--port 4555] [--host H] # read-only dashboard (default 127.0.0.1)
+clodhopper serve [--port 4555] [--host H | --tailscale] # read-only dashboard (default 127.0.0.1)
 clodhopper prune [--days 14]              # delete events older than N days
 clodhopper end --branch B                  # mark matching live sessions ended (teardown)
 ```
@@ -110,14 +110,19 @@ To reach the dashboard from your other devices without exposing it to the LAN,
 bind it to your [Tailscale](https://tailscale.com) IP instead of `0.0.0.0`:
 
 ```bash
-clodhopper serve --host "$(tailscale ip -4)"
+clodhopper serve --tailscale
 ```
+
+`--tailscale` resolves the host's IPv4 tailnet address (`tailscale ip -4`) and
+binds it, equivalent to `clodhopper serve --host "$(tailscale ip -4)"`. It
+cannot be combined with `--host`. Unlike the rest of clodhopper, the lookup is
+not best-effort: if `tailscale` is missing or the node is down, `serve` exits
+non-zero rather than silently bind elsewhere.
 
 This listens only on the tailnet interface, so the dashboard is reachable from
 any device on your tailnet (subject to your ACLs) but not from the local
 network. Reach it at `http://<this-host's-tailscale-ip>:4555`, or by the host's
-MagicDNS name. `tailscale ip -4` prints the host's IPv4 tailnet address; drop
-`-4` for IPv6.
+MagicDNS name.
 
 `ingest` is what hooks call. It is designed to **never** break a tool call: any
 error (bad JSON, unwritable DB, …) results in exit 0, and diagnostics are
