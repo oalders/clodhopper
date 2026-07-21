@@ -13,6 +13,16 @@ const promptPreviewLen = 80
 // maxFieldLen caps any retained free-text payload field.
 const maxFieldLen = 300
 
+// maxPathLen caps a retained filesystem path. Paths get their own, far larger
+// cap because cwd is the one retained field that is used FUNCTIONALLY rather
+// than just displayed: the dashboard hands it to the operator to paste into a
+// terminal, and lookupCI shells `gh pr checks -C <cwd>` at that literal path. A
+// value cut at maxFieldLen (and given a trailing "…") names a directory that
+// does not exist, so the cap has to sit above any real path instead of near it.
+// PATH_MAX on Linux is 4096 bytes, so nothing genuine reaches this and the
+// field still cannot grow without bound.
+const maxPathLen = 4096
+
 // payloadAllow is the set of top-level hook-payload keys we are willing to
 // persist. Everything else — notably transcript/chat content (messages,
 // content, tool_response, last_assistant_message, transcript_path) — is dropped.

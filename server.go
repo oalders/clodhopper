@@ -466,23 +466,36 @@ func summarizeChecks(buckets []string) string {
 // (document.execCommand, the path serve --tailscale takes) still works inside a
 // frame under a user gesture, unlike navigator.clipboard, so a page that framed
 // the board could overlay a decoy and have the operator copy a path of its
-// choosing. nosniff and no-referrer are cheap companions. No CSP: the page's
-// inline <style> and <script> would need nonces or hashes, which is a bigger
-// change than this buys.
+// choosing. nosniff and no-referrer are cheap companions.
+//
+// The CSP carries only the directives that need no nonces: frame-ancestors is
+// the standardised equivalent of X-Frame-Options (both are sent, since the
+// header is what older browsers honour), and base-uri/object-src close two
+// injection avenues for free. Deliberately no script-src or style-src — the
+// page's inline <style> and <script> would need nonces or hashes, a bigger
+// change than this buys, and a CSP that had to allow 'unsafe-inline' would buy
+// nothing at all.
+//
+// Called FIRST in each handler, before any error path can return: http.Error
+// writes a response, and headers set afterwards are lost, so an error response
+// would otherwise ship unhardened. Setting them up front is safe — nothing is
+// written yet — and makes "every response carries these" structural rather than
+// something each new return statement has to remember.
 func setSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
 }
 
 func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache) {
+	setSecurityHeaders(w)
 	data, err := buildDashboardData(r, db, ci)
 	if err != nil {
 		http.Error(w, "dashboard error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	setSecurityHeaders(w)
 	if err := dashboardTmpl.Execute(w, data); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
 	}
@@ -493,6 +506,7 @@ func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciC
 // last rendered and only swaps the DOM when it differs, so a quiet board never
 // repaints.
 func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache) {
+	setSecurityHeaders(w)
 	data, err := buildDashboardData(r, db, ci)
 	if err != nil {
 		http.Error(w, "dashboard error", http.StatusInternalServerError)
@@ -504,7 +518,6 @@ func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	setSecurityHeaders(w)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"signature": data.Signature,
 		"html":      buf.String(),

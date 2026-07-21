@@ -74,12 +74,14 @@ func buildEvent(raw []byte, sourceApp string) Event {
 		// The dashboard offers this path for copying into a terminal, and
 		// html/template does NOT escape a newline inside an attribute value, so a
 		// control character here would survive to the clipboard as a command
-		// terminator. A real path has none, so all of them go. Scrubbed and
-		// truncated besides, like every other retained free-text field. The
-		// unstripped cwd above is what git is asked about — that is the path the
-		// hook actually reported. Pure string work: nothing here can fail, which
-		// is the rule for anything on the ingest path.
-		Cwd:         truncate(scrubString(stripControl(cwd)), maxFieldLen),
+		// terminator. A real path has none, so all of them go. scrubString still
+		// applies — the scrub layer's fail-closed bias holds for every retained
+		// field — but the length cap is maxPathLen, not maxFieldLen: this value is
+		// used as a path, and a truncated path is a wrong path (see maxPathLen).
+		// The unstripped cwd above is what git is asked about — that is the path
+		// the hook actually reported. Pure string work: nothing here can fail,
+		// which is the rule for anything on the ingest path.
+		Cwd:         truncate(scrubString(stripControl(cwd)), maxPathLen),
 		TmuxSession: tmuxSession(),
 		SessionID:   str(p, "session_id"),
 		EventType:   str(p, "hook_event_name"),

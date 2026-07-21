@@ -236,9 +236,17 @@
     /* On a touch screen the one-line cell is a ~20px target, well under the 44px
        guidance. Pad the hit area and pull the same amount back in with a negative
        margin so the row's metrics — and the desktop layout, which never sees this
-       block — are unchanged. */
+       block — are unchanged. How much this buys depends on the layout: in the
+       scrolling-table layout (>640px, which includes tablets in landscape) the
+       `th, td { overflow: hidden }` rule above clips the hit-test region back to
+       the cell box, so padding beyond the row's own vertical budget is not
+       clickable — it is capped at roughly the row height, not 44px. Removing the
+       clipping is not the fix; it is what keeps an enlarged button from
+       overlapping the adjacent row's. So the padding stays inside that budget,
+       and the full target is only realised at <=640px, where the card layout
+       resets td to overflow: visible. */
     @media (pointer: coarse) {
-      td.branch .copycwd { padding: 12px 8px; margin: -12px -8px; }
+      td.branch .copycwd { padding: 6px 8px; margin: -6px -8px; }
     }
     .copyicon {
       color: var(--text-3); font-size: .85em; margin-left: .4em;
@@ -578,13 +586,19 @@
     var live = document.getElementById('ck-copystatus');
     var flashed = null; // the one button currently showing a transient state
     var timer = null;
+    var liveTimer = null; // pending delayed set, so a second call can cancel it
 
     // Clear, then set on a later tick: a live region whose text is unchanged may
     // not be re-announced, and copying the same path twice must still speak.
+    // Two calls inside that window would otherwise both clear before either set
+    // ran, leaving the same text set twice with no clear between — precisely the
+    // non-announcement the clear exists to prevent. So the pending set is
+    // cancelled first, the same way unflash owns the flash timeout.
     function announce(msg) {
       if (!live) return;
+      if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
       live.textContent = '';
-      setTimeout(function () { live.textContent = msg; }, 60);
+      liveTimer = setTimeout(function () { liveTimer = null; live.textContent = msg; }, 60);
     }
 
     // The single owner of the revert, shared by the timeout and the pre-empt
@@ -601,12 +615,12 @@
       flashed = null;
     }
 
-    function flash(btn, ok, path) {
+    function flash(btn, ok, msg) {
       unflash();
       var icon = btn.querySelector('.copyicon');
       btn.classList.add(ok ? 'copied' : 'copyfail');
       if (icon) icon.textContent = ok ? '✓' : '✗';
-      announce((ok ? 'copied ' : 'could not copy ') + path);
+      announce(msg);
       flashed = btn;
       timer = setTimeout(unflash, 1200);
     }
@@ -616,6 +630,17 @@
     // parser hands it back intact, so a crafted cwd could put a newline-
     // terminated shell command on the clipboard of someone about to paste into
     // a terminal. A real path contains no control characters.
+    //
+    // unusable() is the other half: a path that is not a path. The scrub layer
+    // fails closed, so a real segment shaped like a credential (…/api-key=v1/…)
+    // comes back as «redacted»; a value long enough to hit the length cap comes
+    // back with a trailing …. The stored cwd is capped at PATH_MAX so the second
+    // should not happen, but both yield a directory that does not exist. Writing
+    // that to the clipboard hands the operator a broken path they will not
+    // notice until it fails in a terminal, so refuse and say why instead.
+    function unusable(s) {
+      return s.indexOf('«redacted»') !== -1 || s.charAt(s.length - 1) === '…';
+    }
     function clean(s) { return s.replace(/[\u0000-\u001F\u007F-\u009F]/g, ''); }
 
     // Pre-secure-context fallback: select an off-screen textarea and let the
@@ -649,13 +674,18 @@
       try { if (String(window.getSelection() || '')) return; } catch (e) {}
       var path = clean(btn.getAttribute('data-cwd') || '');
       if (!path) return;
+      if (unusable(path)) {
+        flash(btn, false, 'path was redacted — not copied');
+        return;
+      }
+      function done(ok) { flash(btn, ok, (ok ? 'copied ' : 'could not copy ') + path); }
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(path).then(
-          function () { flash(btn, true, path); },
-          function () { flash(btn, legacyCopy(path), path); }
+          function () { done(true); },
+          function () { done(legacyCopy(path)); }
         );
       } else {
-        flash(btn, legacyCopy(path), path);
+        done(legacyCopy(path));
       }
     });
   })();
@@ -681,15 +711,12 @@
      tables. */}}
 {{ define "branchcell" }}<td class="branch" data-label="branch">{{ template "branchinner" . }}</td>{{ end }}
 
-{{/* branchcellroster is the roster's branch <td>. It adds a screen-reader-only
-     "(cluster)" suffix on grouped rows so the multi-session binding conveyed
+{{/* branchcellroster is the roster's branch <td>. Grouped rows carry a
+     screen-reader-only "(cluster)" note so the multi-session binding conveyed
      visually by the left accent bar (the .grouped CSS) is also announced to
      assistive tech, which cannot perceive the bar. Singleton branches (.Grouped
-     false) get no suffix and read exactly as before. Roster-only because only
-     Agent exposes .Grouped. The suffix is a .ck-sr <span> INSIDE the cell rather
-     than an aria-label on the <td>: a cell supports name-from-author, so a label
-     there would REPLACE the cell's contents for assistive tech — including the
-     copy button below — instead of composing with them.
+     false) get no note and read exactly as before. Roster-only because only
+     Agent exposes .Grouped.
 
      The branch name also becomes a click-to-copy control for the session's
      worktree path: that path is what you actually need to get to the agent
@@ -698,8 +725,19 @@
      aria-label repeats the branch (and mid-rebase state) because a button's
      label replaces its inner text, and someone who tabs straight to it would
      otherwise hear only "copy worktree path". Rows with no cwd — the only ones
-     where there is nothing to copy — render exactly as before. */}}
-{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinner" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ end }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}</td>{{ end }}
+     where there is nothing to copy — render exactly as before.
+
+     Where "(cluster)" lands depends on that button, and it must land in exactly
+     one place. A button's own aria-label REPLACES its accessible name entirely,
+     so a sibling .ck-sr span is invisible to anyone tabbing control-to-control
+     (focus mode) even though a browse-mode reader would read it. So when there
+     is a button the note is folded INTO its aria-label, exactly as
+     "(mid-rebase)" already is, and the sibling span is not emitted — emitting
+     both would have browse mode announce the cluster twice. Rows with no button
+     keep the span, which is the only carrier they have. Never an aria-label on
+     the <td>: a cell supports name-from-author, so a label there would REPLACE
+     the cell's contents for assistive tech instead of composing with them. */}}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinner" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}</td>{{ end }}
 
 {{ define "content" }}
   <div class="ck-meta">

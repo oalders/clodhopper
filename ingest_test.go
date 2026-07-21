@@ -46,6 +46,34 @@ func TestBuildEvent_StripsControlCharsFromCwd(t *testing.T) {
 	}
 }
 
+// cwd is used as a path, not just displayed: the operator pastes it into a
+// terminal and lookupCI shells `gh pr checks -C <cwd>` at it. maxFieldLen (300)
+// sits well inside the range of real nested worktree paths, and a value cut
+// there — with a "…" appended — names a directory that does not exist while
+// looking like it might. So this field gets maxPathLen instead, above any real
+// path, and stays bounded there.
+func TestBuildEvent_CwdIsNotTruncatedAtTheFieldCap(t *testing.T) {
+	long := "/home/me/" + strings.Repeat("nested/", 100) + "wt"
+	if len([]rune(long)) <= maxFieldLen {
+		t.Fatalf("test path is only %d runes; it must exceed maxFieldLen to be a test", len([]rune(long)))
+	}
+	raw := []byte(`{"hook_event_name":"Stop","session_id":"s","cwd":"` + long + `"}`)
+	if got := buildEvent(raw, "app").Cwd; got != long {
+		t.Errorf("cwd was altered: got %q (%d runes), want the path intact (%d runes)", got, len([]rune(got)), len([]rune(long)))
+	}
+
+	// Still bounded, though — just at a cap nothing genuine reaches.
+	huge := "/" + strings.Repeat("a", maxPathLen+50)
+	raw = []byte(`{"hook_event_name":"Stop","session_id":"s","cwd":"` + huge + `"}`)
+	got := buildEvent(raw, "app").Cwd
+	if n := len([]rune(got)); n != maxPathLen+1 { // +1 for the appended "…"
+		t.Errorf("cwd = %d runes, want it truncated to maxPathLen (%d) plus the ellipsis", n, maxPathLen)
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Errorf("a truncated cwd must be marked with the ellipsis the client refuses to copy: %q", got[len(got)-8:])
+	}
+}
+
 // withStdin replaces os.Stdin with a file containing data for the duration of fn.
 func withStdin(t *testing.T, data string, fn func()) {
 	t.Helper()

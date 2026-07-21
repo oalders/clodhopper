@@ -498,7 +498,14 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 			nextSeq++
 		}
 		// Ascending scan: the last write wins, so these hold the latest values.
-		s.a.SourceApp, s.a.Branch, s.a.Rebasing, s.a.Cwd, s.a.TmuxSession = app, branch, rebasing, cwd, tmuxSess
+		// Cwd is stripped again on the way out, not just on the way in: rows
+		// written before ingest started stripping are still in the database, and
+		// the roster renders this value into a title and an aria-label as well as
+		// the copy target — html/template escapes neither a newline nor any other
+		// control character in an attribute value. The client cleans it too; doing
+		// it here as well makes the two layers genuinely independent rather than
+		// leaving the server side resting on a comment.
+		s.a.SourceApp, s.a.Branch, s.a.Rebasing, s.a.Cwd, s.a.TmuxSession = app, branch, rebasing, stripControl(cwd), tmuxSess
 		s.a.LastEvent = etype
 		s.lastTS = ts
 		// notifType mirrors LastEvent (last-write-wins); deriveStatus only reads it
