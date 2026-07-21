@@ -598,7 +598,13 @@ func viewSignature(d dashboardData) string {
 		// same branch, and under an event_type filter that move need not touch
 		// the event bounds above — without this the board would keep offering
 		// the old path until some unrelated change forced a repaint.
-		fmt.Fprintf(h, "|a:%s:%s:%s:%s:%s:%s:%s:%s", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI)
+		//
+		// %q, not %s: the fields are free text that can contain the ":" used as
+		// the delimiter, so unquoted they let one field's tail masquerade as the
+		// next field's head (branch "main:/w" + cwd "one" hashing the same as
+		// branch "main" + cwd "/w/one"). A collision here is a repaint that never
+		// happens — a stale board, and now a stale copy target.
+		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI)
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)
@@ -612,7 +618,7 @@ func viewSignature(d dashboardData) string {
 		return activity[i].TmuxSession < activity[j].TmuxSession
 	})
 	for _, c := range activity {
-		fmt.Fprintf(h, "|c:%s:%s:%s:%d", c.TmuxSession, c.SourceApp, c.Branch, c.Count)
+		fmt.Fprintf(h, "|c:%q:%q:%q:%d", c.TmuxSession, c.SourceApp, c.Branch, c.Count)
 	}
 
 	return strconv.FormatUint(h.Sum64(), 16)

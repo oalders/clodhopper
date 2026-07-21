@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode"
 )
 
 func TestBuildEvent_ExtractsToolUseIDAndDuration(t *testing.T) {
@@ -26,6 +27,22 @@ func TestBuildEvent_NoDurationWhenAbsent(t *testing.T) {
 	}
 	if ev.DurationMs.Valid {
 		t.Errorf("duration should be NULL when absent, got %+v", ev.DurationMs)
+	}
+}
+
+// cwd is the one free-text field the dashboard hands to the clipboard, and
+// html/template leaves a newline in an attribute value alone — so a crafted
+// payload could otherwise plant a newline-terminated command in a path the
+// operator is about to paste into a terminal. Every control character goes; a
+// real path has none.
+func TestBuildEvent_StripsControlCharsFromCwd(t *testing.T) {
+	raw := []byte(`{"hook_event_name":"Stop","session_id":"s","cwd":"/w/a\nrm -rf /\u0007\tb"}`)
+	ev := buildEvent(raw, "app")
+	if want := "/w/arm -rf /b"; ev.Cwd != want {
+		t.Errorf("cwd = %q, want %q", ev.Cwd, want)
+	}
+	if strings.ContainsFunc(ev.Cwd, unicode.IsControl) {
+		t.Errorf("control character survived in cwd: %q", ev.Cwd)
 	}
 }
 

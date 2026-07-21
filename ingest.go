@@ -67,11 +67,19 @@ func buildEvent(raw []byte, sourceApp string) Event {
 	cwd := str(p, "cwd")
 	branch, rebasing := gitBranch(cwd)
 	ev := Event{
-		TS:          time.Now().UTC().Format(time.RFC3339),
-		SourceApp:   sourceApp,
-		Branch:      branch,
-		Rebasing:    rebasing,
-		Cwd:         cwd,
+		TS:        time.Now().UTC().Format(time.RFC3339),
+		SourceApp: sourceApp,
+		Branch:    branch,
+		Rebasing:  rebasing,
+		// The dashboard offers this path for copying into a terminal, and
+		// html/template does NOT escape a newline inside an attribute value, so a
+		// control character here would survive to the clipboard as a command
+		// terminator. A real path has none, so all of them go. Scrubbed and
+		// truncated besides, like every other retained free-text field. The
+		// unstripped cwd above is what git is asked about — that is the path the
+		// hook actually reported. Pure string work: nothing here can fail, which
+		// is the rule for anything on the ingest path.
+		Cwd:         truncate(scrubString(stripControl(cwd)), maxFieldLen),
 		TmuxSession: tmuxSession(),
 		SessionID:   str(p, "session_id"),
 		EventType:   str(p, "hook_event_name"),
@@ -258,13 +266,29 @@ func cleanSessionName(s string) string {
 		switch {
 		case isPUA(r):
 			return -1 // Nerd Font / devicon glyph — unrenderable tofu in a browser
-		case unicode.IsControl(r) && !unicode.IsSpace(r):
-			return -1 // other control chars; whitespace is left for Fields to collapse
+		case unicode.IsSpace(r):
+			return ' ' // normalise tabs/newlines to a space so stripControl leaves a separator
 		default:
 			return r
 		}
 	}, s)
-	return strings.Join(strings.Fields(cleaned), " ")
+	return strings.Join(strings.Fields(stripControl(cleaned)), " ")
+}
+
+// stripControl drops every control rune from s. No field the dashboard renders
+// has a legitimate use for one, and they are not neutralised downstream:
+// html/template escapes <, >, " and ' in an attribute value but not a newline,
+// and the HTML parser hands it back intact — enough to smuggle a
+// newline-terminated command into a clipboard copy. Callers that need
+// whitespace as a separator normalise it to a space first (see
+// cleanSessionName).
+func stripControl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, s)
 }
 
 // afterLastPUA returns the byte index just past the last Private Use Area glyph

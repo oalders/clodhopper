@@ -515,14 +515,17 @@ func TestHandleDashboard_GroupClusterClasses(t *testing.T) {
 		t.Errorf("expected exactly 2 grouped rows (the cluster), got %d, in:\n%s", n, body)
 	}
 	// The visual binding bar has a screen-reader equivalent: grouped rows' branch
-	// cell carries an aria-label "<branch> (cluster)" so assistive tech announces
-	// the cluster the bar conveys visually. Both cluster members get it; the
-	// singleton (no bar) gets none.
-	if n := strings.Count(body, `aria-label="shared (cluster)"`); n != 2 {
-		t.Errorf("expected exactly 2 cluster aria-labels, got %d, in:\n%s", n, body)
+	// cell ends in a visually-hidden " (cluster)" so assistive tech announces the
+	// cluster the bar conveys visually. It is a span inside the cell, not an
+	// aria-label on it, so it composes with the cell's contents (the branch name,
+	// and the copy button where there is a cwd) instead of replacing them. Both
+	// cluster members get it; the singleton (no bar) gets none — with three rows
+	// rendered, a count of 2 is what pins that.
+	if n := strings.Count(body, `<span class="ck-sr"> (cluster)</span>`); n != 2 {
+		t.Errorf("expected exactly 2 cluster suffixes, got %d, in:\n%s", n, body)
 	}
-	if strings.Contains(body, `aria-label="solo (cluster)"`) {
-		t.Errorf("singleton branch must not carry a cluster aria-label, in:\n%s", body)
+	if strings.Contains(body, `aria-label="shared (cluster)"`) {
+		t.Errorf("cluster suffix must not be an aria-label on the cell, in:\n%s", body)
 	}
 	// The singleton starts a new group, so it draws the inter-cluster divider.
 	// Match the class-attribute terminator `group-start"` rather than the bare
@@ -542,12 +545,12 @@ func TestHandleDashboard_GroupClusterClasses(t *testing.T) {
 			roster = roster[i : i+j]
 		}
 	}
-	// Match on branch-cell content (`>name</td>`) rather than the attribute prefix:
-	// grouped cells now carry an aria-label between data-label and `>`, so a
-	// `data-label="branch">shared` match would miss them. Within the roster table the
-	// branch name appears only as its cell's text, so this stays unambiguous.
-	soloCell := strings.Index(roster, `>solo</td>`)
-	lastSharedCell := strings.LastIndex(roster, `>shared</td>`)
+	// Match on the branch cell's opening tag plus its first text: a grouped cell no
+	// longer ends in `>name</td>` (the visually-hidden cluster suffix follows the
+	// name), while the <td> itself is now attribute-identical for every row. These
+	// rows have no cwd, so no copy button intervenes either.
+	soloCell := strings.Index(roster, `data-label="branch">solo`)
+	lastSharedCell := strings.LastIndex(roster, `data-label="branch">shared`)
 	if soloCell < 0 || lastSharedCell < 0 || soloCell < lastSharedCell {
 		t.Errorf("the two shared-branch rows should be adjacent, above the singleton; order wrong in:\n%s", body)
 	}
