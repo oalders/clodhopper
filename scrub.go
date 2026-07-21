@@ -19,8 +19,10 @@ const maxFieldLen = 300
 // terminal, and lookupCI shells `gh pr checks -C <cwd>` at that literal path. A
 // value cut at maxFieldLen (and given a trailing "…") names a directory that
 // does not exist, so the cap has to sit above any real path instead of near it.
-// PATH_MAX on Linux is 4096 bytes, so nothing genuine reaches this and the
-// field still cannot grow without bound.
+// The cap counts RUNES, not bytes (truncate slices []rune), so 4096 admits up
+// to ~16 KiB of UTF-8 for a maximally multi-byte value. That is deliberate
+// slack, not an oversight: PATH_MAX on Linux is 4096 bytes, so no genuine path
+// reaches even the rune count, and the field still cannot grow without bound.
 const maxPathLen = 4096
 
 // payloadAllow is the set of top-level hook-payload keys we are willing to

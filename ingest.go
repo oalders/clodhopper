@@ -280,10 +280,15 @@ func cleanSessionName(s string) string {
 // stripControl drops every control rune from s. No field the dashboard renders
 // has a legitimate use for one, and they are not neutralised downstream:
 // html/template escapes <, >, " and ' in an attribute value but not a newline,
-// and the HTML parser hands it back intact — enough to smuggle a
-// newline-terminated command into a clipboard copy. Callers that need
-// whitespace as a separator normalise it to a space first (see
-// cleanSessionName).
+// and the HTML parser hands it back intact. Callers that need whitespace as a
+// separator normalise it to a space first (see cleanSessionName).
+//
+// This is only about control characters. Shell-active characters ($, `, ;, |,
+// &, parentheses, redirections) are legal in a POSIX directory name and are NOT
+// stripped here — stripping them would silently corrupt a real path. They are
+// handled at the other end instead: the dashboard's copy control refuses to put
+// a path containing anything outside its allowlist on the clipboard at all (see
+// unusableReason in templates/dashboard.html).
 func stripControl(s string) string {
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) {

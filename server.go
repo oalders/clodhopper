@@ -471,10 +471,14 @@ func summarizeChecks(buckets []string) string {
 // The CSP carries only the directives that need no nonces: frame-ancestors is
 // the standardised equivalent of X-Frame-Options (both are sent, since the
 // header is what older browsers honour), and base-uri/object-src close two
-// injection avenues for free. Deliberately no script-src or style-src — the
-// page's inline <style> and <script> would need nonces or hashes, a bigger
-// change than this buys, and a CSP that had to allow 'unsafe-inline' would buy
-// nothing at all.
+// injection avenues for free. Deliberately no script-src or style-src: the
+// page's inline <style> and <script> would need nonces or hashes, which means
+// threading a per-response nonce through the template, and that is a bigger
+// change than this commit is buying. Nor are the fetch directives
+// (default-src/connect-src/img-src/form-action) set here — the page loads a
+// data: favicon and same-origin fetches only, so they could be locked down and
+// would still hold even alongside 'unsafe-inline'; that is worth doing, and is
+// tracked as its own change rather than grown onto this one.
 //
 // Called FIRST in each handler, before any error path can return: http.Error
 // writes a response, and headers set afterwards are lost, so an error response
