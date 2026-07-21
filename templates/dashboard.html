@@ -501,24 +501,35 @@
     // until the roster grew a focusable control: a keyboard user who has tabbed
     // to a copy button loses focus to <body> on the next signature change (WCAG
     // 2.4.3), and a button mid-flash is replaced by a fresh one showing nothing.
-    // So carry focus across the swap by the button's stable data-cwd key, and
-    // tell the copy handler to let go of any flash it is holding on a node that
-    // is about to be detached.
+    // So carry focus across the swap by the button's stable data-session key,
+    // and tell the copy handler to let go of any flash it is holding on a node
+    // that is about to be detached.
+    //
+    // The key is the session id, not the path: the roster is keyed by session,
+    // so the several agents sharing one worktree — the cluster this board exists
+    // to show — all render the SAME data-cwd, and a path match would land focus
+    // on whichever of them sorted first. Row order inside a cluster is not even
+    // stable between polls (the tie-break is idle seconds), so that would move
+    // the keyboard user around at random. A row with no session id has no stable
+    // key, so it simply gets no restoration rather than a guess.
     //
     // The matching button is found by scanning rather than by building a
-    // selector: data-cwd is a filesystem path and may contain quotes or
-    // brackets, and CSS.escape — the only correct way to quote it — is absent on
-    // older engines. A roster is a handful of rows; the scan is free.
+    // selector: CSS.escape — the only correct way to quote an interpolated value
+    // — is absent on older engines. A roster is a handful of rows; the scan is
+    // free. focus() is passed preventScroll because rows genuinely move between
+    // polls (freshest group first), and restoring focus must not yank the
+    // viewport of a sighted keyboard user who did not scroll. Engines that
+    // predate the options object ignore it rather than throw.
     function swapContent(html) {
       var active = document.activeElement;
       var keep = active && active.closest ? active.closest('#content .copycwd') : null;
-      var key = keep ? keep.getAttribute('data-cwd') : null;
+      var key = keep ? keep.getAttribute('data-session') : null;
       try { document.dispatchEvent(new CustomEvent('ch:contentswap')); } catch (e) {}
       document.getElementById('content').innerHTML = html;
-      if (key === null) return;
+      if (!key) return;
       var btns = document.querySelectorAll('#content .copycwd');
       for (var i = 0; i < btns.length; i++) {
-        if (btns[i].getAttribute('data-cwd') === key) { btns[i].focus(); return; }
+        if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return; }
       }
     }
 
@@ -654,8 +665,15 @@
     // html/template does not escape a newline in an attribute value and the
     // parser hands it back intact, so a crafted cwd could put a newline-
     // terminated shell command on the clipboard of someone about to paste into
-    // a terminal. A real path contains no control characters.
-    function clean(s) { return s.replace(/[\u0000-\u001F\u007F-\u009F]/g, ''); }
+    // a terminal. A real path contains no control characters, so one in the
+    // stored value means REFUSE, not repair: deleting it would leave a
+    // plausible-looking path that is not the one on disk, and handing THAT over
+    // silently is worse than handing over nothing. Tested against the raw
+    // attribute value, before anything else looks at it.
+    //
+    // It cannot be left to pathAllow below: that pattern's ES5 fallback permits
+    // every code point above U+007F, which includes the C1 controls.
+    var ctrlChars = /[\u0000-\u001F\u007F-\u009F]/;
 
     // The allowlist a path must satisfy before it may reach the clipboard. It
     // matches the FIRST character that is NOT allowed, so a match means refuse.
@@ -672,6 +690,12 @@
     // directory names copy normally; the space, because ~/Library/Application
     // Support is ordinary and entirely safe to paste; and the punctuation real
     // paths are built from: - / . _ + = , : @ ~ %. Everything else refuses.
+    //
+    // NEVER add \p{S} here to make emoji directory names copy. The class is
+    // NEGATED, so a category added to it WIDENS what is permitted, and \p{S}
+    // contains $ + < = > | ~ ^ and the backtick — it would re-admit command
+    // substitution wholesale. The explicit punctuation list alongside it
+    // subtracts nothing. Emoji paths staying refused is the correct trade.
     var pathAllow;
     try {
       pathAllow = new RegExp('[^-\\p{L}\\p{M}\\p{N} /._+=,:@~%]', 'u');
@@ -693,7 +717,9 @@
     //   …. Reachable mainly through rows written before cwd got its own
     //   PATH_MAX-sized cap; new writes are bounded below it (see maxPathLen in
     //   scrub.go).
-    // 'unsafe'    — see pathAllow above.
+    // 'unsafe'    — see pathAllow above. The click handler raises this one
+    //   itself for a control character (see ctrlChars), which pathAllow's ES5
+    //   fallback would otherwise let through above U+007F.
     //
     // The first two name a directory that does not exist; the third names one
     // that may do something. Either way, refuse and say which, rather than hand
@@ -755,9 +781,9 @@
           if (sel && String(sel) && sel.containsNode && sel.containsNode(btn, true)) return;
         } catch (e) {}
       }
-      var path = clean(btn.getAttribute('data-cwd') || '');
+      var path = btn.getAttribute('data-cwd') || '';
       if (!path) return;
-      var why = unusableReason(path);
+      var why = ctrlChars.test(path) ? 'unsafe' : unusableReason(path);
       if (why) {
         flash(btn, false, unusableMsg[why]);
         return;
@@ -821,7 +847,7 @@
      keep the span, which is the only carrier they have. Never an aria-label on
      the <td>: a cell supports name-from-author, so a label there would REPLACE
      the cell's contents for assistive tech instead of composing with them. */}}
-{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinner" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}</td>{{ end }}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinner" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}</td>{{ end }}
 
 {{ define "content" }}
   <div class="ck-meta">
