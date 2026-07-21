@@ -42,7 +42,10 @@
       --border: #2a313c; --border-strong: #3a424e; --divider: #30363d;
       --text-1: #e6edf3; --text-2: #9aa7b4; --text-3: #7d8b9a; --text-invert: #0d1117;
       --brand: #d2814e; --brand-strong: #e0925f; --brand-soft: rgba(210, 129, 78, .16);
-      --focus-ring: rgba(210, 129, 78, .55);
+      /* Opaque, not the translucent brand: composited over a card surface a
+         translucent ring measured 2.61:1, under the 3:1 WCAG 1.4.11 asks of a
+         focus indicator. At full opacity it is 5.76:1 here. */
+      --focus-ring: var(--brand);
       --attention: #e8a13c; --attention-bg: rgba(232, 161, 60, .13);
       --background: #5b9bd5; --working: #3fb950; --idle: #7d8590;
       --ok: #3fb950; --fail: #f85149; --fail-bg: rgba(248, 81, 73, .13);
@@ -55,7 +58,7 @@
       --border: #d8dee4; --border-strong: #c2cad2; --divider: #c8d1da;
       --text-1: #1f2328; --text-2: #59636e; --text-3: #6b7480; --text-invert: #ffffff;
       --brand: #b65a26; --brand-strong: #9d4a1c; --brand-soft: rgba(182, 90, 38, .10);
-      --focus-ring: rgba(182, 90, 38, .45);
+      --focus-ring: var(--brand); /* 1.88:1 translucent -> 4.69:1 opaque; see :root */
       --attention: #b35900; --attention-bg: rgba(179, 89, 0, .10);
       --background: #3a6ea5; --working: #1a7f37; --idle: #818b98;
       --ok: #1a7f37; --fail: #cf222e; --fail-bg: rgba(207, 34, 46, .08);
