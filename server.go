@@ -461,6 +461,20 @@ func summarizeChecks(buckets []string) string {
 	return "green"
 }
 
+// setSecurityHeaders hardens both dashboard responses. Framing is the one that
+// matters here: the clipboard fallback the dashboard uses on a non-secure origin
+// (document.execCommand, the path serve --tailscale takes) still works inside a
+// frame under a user gesture, unlike navigator.clipboard, so a page that framed
+// the board could overlay a decoy and have the operator copy a path of its
+// choosing. nosniff and no-referrer are cheap companions. No CSP: the page's
+// inline <style> and <script> would need nonces or hashes, which is a bigger
+// change than this buys.
+func setSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+}
+
 func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache) {
 	data, err := buildDashboardData(r, db, ci)
 	if err != nil {
@@ -468,6 +482,7 @@ func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciC
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setSecurityHeaders(w)
 	if err := dashboardTmpl.Execute(w, data); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
 	}
@@ -489,6 +504,7 @@ func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	setSecurityHeaders(w)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"signature": data.Signature,
 		"html":      buf.String(),

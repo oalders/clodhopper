@@ -315,6 +315,38 @@ func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
 	}
 }
 
+// Both routes carry the hardening headers. The framing one has teeth: the
+// clipboard fallback used on a non-secure origin still copies inside a frame,
+// so a framed dashboard is a usable decoy.
+func TestHandlers_SetSecurityHeaders(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+
+	routes := map[string]func(http.ResponseWriter, *http.Request, *sql.DB, *ciCache){
+		"/":          handleDashboard,
+		"/api/state": handleState,
+	}
+	want := map[string]string{
+		"X-Frame-Options":        "DENY",
+		"X-Content-Type-Options": "nosniff",
+		"Referrer-Policy":        "no-referrer",
+	}
+	for target, h := range routes {
+		rec := httptest.NewRecorder()
+		h(rec, httptest.NewRequest(http.MethodGet, target, nil), db, newCICache())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d", target, rec.Code)
+		}
+		for k, v := range want {
+			if got := rec.Header().Get(k); got != v {
+				t.Errorf("%s: %s = %q, want %q", target, k, got, v)
+			}
+		}
+	}
+}
+
 func TestViewSignature_IgnoresIdleButTracksEvents(t *testing.T) {
 	base := dashboardData{
 		Events:   []Event{{ID: 2}, {ID: 1}},
