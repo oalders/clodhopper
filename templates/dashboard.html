@@ -219,9 +219,10 @@
     td.branch .rebase-branch { font-style: italic; } /* a branch recovered mid-rebase, not a steady-state checkout */
     /* The roster's branch cell doubles as a click-to-copy control for the
        session's worktree path (see branchcellroster). The button is reset to
-       plain text so the column reads exactly as before apart from the ⧉ glyph,
-       and since the button — not the <td> — is now the box the text flows in,
-       the "wrap, never ellipse" rule above has to be restated on it.
+       plain text, and the ⧉ is transparent until hover or focus (see .copyicon
+       below), so at rest the column reads exactly as it did before. Since the
+       button — not the <td> — is now the box the text flows in, the "wrap, never
+       ellipse" rule above has to be restated on it.
        user-select is part of that reset, not an extra: UA stylesheets make
        buttons unselectable, and the branch name was drag-selectable text before
        it was wrapped in one. The click handler skips a click that ends a
@@ -248,9 +249,31 @@
     @media (pointer: coarse) {
       td.branch .copycwd { padding: 6px 8px; margin: -6px -8px; }
     }
+    /* The glyph is transparent at rest rather than absent: one ⧉ per roster row
+       is a column of noise, but the span stays in the flow at all times — never
+       display:none, never removed — so revealing it cannot reflow the branch name
+       beside it. Hover is scoped to the row, not the button, so crossing anywhere
+       on the row surfaces the affordance.
+       The three forced-visible states are not decoration. focus-visible is how a
+       keyboard user finds the control at all, and the two flash classes have to
+       outrank hover because that is the one moment the icon MUST be seen: a
+       keyboard copy never hovers, and a mouse copy is often followed by the
+       pointer leaving the row well inside the 1.2s window. Dropping either would
+       leave the copy silently unconfirmed. */
     .copyicon {
       color: var(--text-3); font-size: .85em; margin-left: .4em;
-      transition: color var(--dur-fast) var(--ease);
+      opacity: 0;
+      transition: color var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
+    }
+    tr:hover .copyicon,
+    .copycwd:focus-visible .copyicon,
+    .copycwd.copied .copyicon,
+    .copycwd.copyfail .copyicon { opacity: 1; }
+    /* Touch has no hover to reveal on, so there the glyph is the only thing
+       marking the cell as a control — it stays visible. Companion to the
+       (pointer: coarse) hit-area block above. */
+    @media (hover: none) {
+      .copyicon { opacity: 1; }
     }
     .copycwd:hover .copyicon { color: var(--text-1); }
     .copycwd:focus-visible .copyicon { color: var(--brand); }

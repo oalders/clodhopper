@@ -196,6 +196,43 @@ func TestHandleDashboard_CopyButtonAccessibility(t *testing.T) {
 	}
 }
 
+// The ⧉ is transparent at rest, which makes the rules that bring it BACK
+// load-bearing rather than cosmetic. A keyboard copy never hovers, and a mouse
+// copy is routinely followed by the pointer leaving the row well inside the
+// 1.2s flash window — so if either flash class stops outranking the resting
+// opacity, the ✓/✗ confirmation goes silent for sighted users while every other
+// test here (which only asserts the glyph's markup and its colour classes) keeps
+// passing. Touch is the mirror case: with no hover to reveal on, the glyph is
+// the only thing marking the cell as a control, so it must stay visible there.
+func TestDashboardCopyIcon_TransparentAtRestButForcedBackWhenItMatters(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	body := getBody(t, db, "/")
+
+	if !regexp.MustCompile(`\.copyicon\s*\{[^}]*\bopacity:\s*0\b`).MatchString(body) {
+		t.Error(".copyicon lost its resting opacity: 0 — the glyph is back on every roster row")
+	}
+
+	var reveal string
+	for _, m := range regexp.MustCompile(`([^{}]*)\{\s*opacity:\s*1;\s*\}`).FindAllStringSubmatch(body, -1) {
+		reveal += m[1]
+	}
+	for _, sel := range []string{
+		"tr:hover .copyicon",               // pointer discoverability
+		".copycwd:focus-visible .copyicon", // keyboard discoverability
+		".copycwd.copied .copyicon",        // success confirmation
+		".copycwd.copyfail .copyicon",      // refused/failed copy
+	} {
+		if !strings.Contains(reveal, sel) {
+			t.Errorf("%q no longer forces the glyph visible; reveal selectors are: %q", sel, reveal)
+		}
+	}
+
+	if !regexp.MustCompile(`@media \(hover: none\)\s*\{\s*\.copyicon\s*\{[^}]*\bopacity:\s*1\b`).MatchString(body) {
+		t.Error("touch devices have no hover to reveal on; .copyicon must stay visible under @media (hover: none)")
+	}
+}
+
 // On a grouped row that HAS a copy button, "(cluster)" must live in the button's
 // own aria-label. A button's aria-label replaces its accessible name outright, so
 // a sibling span carrying the note is silent to anyone tabbing control-to-control
