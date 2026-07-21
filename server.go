@@ -593,7 +593,12 @@ func viewSignature(d dashboardData) string {
 	agents := append([]Agent(nil), d.Agents...)
 	sort.Slice(agents, func(i, j int) bool { return agents[i].SessionID < agents[j].SessionID })
 	for _, a := range agents {
-		fmt.Fprintf(h, "|a:%s:%s:%s:%s:%s:%s:%s", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Status, a.Doing, a.CI)
+		// Cwd is folded in because the roster renders it (the branch cell's
+		// click-to-copy target). A session can move to another worktree on the
+		// same branch, and under an event_type filter that move need not touch
+		// the event bounds above — without this the board would keep offering
+		// the old path until some unrelated change forced a repaint.
+		fmt.Fprintf(h, "|a:%s:%s:%s:%s:%s:%s:%s:%s", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI)
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)

@@ -86,6 +86,90 @@ func TestHandleDashboard_EscapesHTML(t *testing.T) {
 	}
 }
 
+// The roster's branch cell is a click-to-copy control for the session's worktree
+// path. These pin the three states that matter: a live session with a cwd, one
+// without, and the escaping of a hostile path.
+func TestHandleDashboard_RosterBranchCopiesCwd(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: "/home/me/wt/fix-71",
+		SessionID: "sess-copy", EventType: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, "1 live") {
+		t.Fatalf("expected a roster row to render (nothing to assert on otherwise):\n%s", body)
+	}
+	if !strings.Contains(body, `class="copycwd"`) {
+		t.Errorf("roster branch cell has no copy button:\n%s", body)
+	}
+	if !strings.Contains(body, `data-cwd="/home/me/wt/fix-71"`) {
+		t.Errorf("copy button does not carry the session cwd:\n%s", body)
+	}
+}
+
+func TestHandleDashboard_RosterBranchWithoutCwd(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71",
+		SessionID: "sess-nocwd", EventType: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, "1 live") {
+		t.Fatalf("expected a roster row to render:\n%s", body)
+	}
+	// The bare class name also appears in the page's CSS and JS, so match the
+	// rendered attribute.
+	if strings.Contains(body, `class="copycwd"`) {
+		t.Errorf("cwd-less row must not offer a copy button:\n%s", body)
+	}
+	if !strings.Contains(body, "fix-71") {
+		t.Errorf("branch name dropped along with the button:\n%s", body)
+	}
+}
+
+func TestHandleDashboard_EscapesCwd(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: `/tmp/"><script>alert(1)</script>`,
+		SessionID: "sess-xss", EventType: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, `class="copycwd"`) {
+		t.Fatalf("expected the copy button to render:\n%s", body)
+	}
+	if strings.Contains(body, "<script>alert(1)</script>") {
+		t.Errorf("cwd was not HTML-escaped:\n%s", body)
+	}
+	if !strings.Contains(body, "&lt;script&gt;") {
+		t.Errorf("expected escaped cwd in output:\n%s", body)
+	}
+}
+
+// The copy affordance is roster-only by design: the activity and recent-events
+// branch cells share branchcell, which must stay a plain <td>. A session-less
+// event lands in both of those tables but never on the roster.
+func TestHandleDashboard_NonRosterBranchCellsHaveNoCopyButton(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: "/home/me/wt/fix-71",
+		EventType: "PreToolUse", ToolName: "Bash", Summary: "Bash: git status", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, "0 live") {
+		t.Fatalf("session-less event should not reach the roster:\n%s", body)
+	}
+	if !strings.Contains(body, "Activity (last 30 min)") || !strings.Contains(body, "Bash: git status") {
+		t.Fatalf("expected the activity and recent-events tables to render:\n%s", body)
+	}
+	if strings.Contains(body, `class="copycwd"`) {
+		t.Errorf("copy button leaked outside the roster:\n%s", body)
+	}
+}
+
 func TestHandleDashboard_RendersActivity(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
@@ -317,6 +401,20 @@ func TestViewSignature_TracksTmuxSession(t *testing.T) {
 	activityDiff.Activity = []SourceCount{{SourceApp: "myapp", TmuxSession: "beta", Count: 2}}
 	if viewSignature(base) == viewSignature(activityDiff) {
 		t.Error("signature unchanged after an activity tmux-session change")
+	}
+}
+
+func TestViewSignature_TracksCwd(t *testing.T) {
+	// The roster renders each session's cwd (the branch cell's copy target), so a
+	// session that moves worktrees must repaint — otherwise the board keeps
+	// handing out a stale path.
+	base := dashboardData{
+		Agents: []Agent{{SessionID: "s1", Branch: "main", Cwd: "/w/one", Status: statusWorking}},
+	}
+	moved := base
+	moved.Agents = []Agent{{SessionID: "s1", Branch: "main", Cwd: "/w/two", Status: statusWorking}}
+	if viewSignature(base) == viewSignature(moved) {
+		t.Error("signature unchanged after a roster cwd change")
 	}
 }
 

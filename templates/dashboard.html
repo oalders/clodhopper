@@ -214,6 +214,30 @@
        getting cut off — or hogging the row. */
     td.branch { white-space: normal; word-break: break-word; }
     td.branch .rebase-branch { font-style: italic; } /* a branch recovered mid-rebase, not a steady-state checkout */
+    /* The roster's branch cell doubles as a click-to-copy control for the
+       session's worktree path (see branchcellroster). The button is reset to
+       plain text so the column reads exactly as before apart from the ⧉ glyph,
+       and since the button — not the <td> — is now the box the text flows in,
+       the "wrap, never ellipse" rule above has to be restated on it. */
+    td.branch .copycwd {
+      appearance: none; -webkit-appearance: none;
+      background: none; border: 0; padding: 0; margin: 0;
+      font: inherit; color: inherit; text-align: left; cursor: pointer;
+      max-width: 100%; white-space: normal; word-break: break-word;
+    }
+    .copyicon {
+      color: var(--text-3); font-size: .85em; margin-left: .4em;
+      transition: color var(--dur-fast) var(--ease);
+    }
+    .copycwd:hover .copyicon { color: var(--text-1); }
+    .copycwd:focus-visible .copyicon { color: var(--brand); }
+    .copycwd.copied .copyicon { color: var(--ok); }
+
+    /* Visually hidden but still announced — the copy confirmation lives here. */
+    .ck-sr {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+    }
     .type { font-weight: 600; color: var(--text-2); }
     td.count { font-variant-numeric: tabular-nums; color: var(--text-1); font-weight: 600; }
 
@@ -408,6 +432,11 @@
 
   <main id="content" aria-live="polite" aria-atomic="false">{{ template "content" . }}</main>
 
+  <!-- Copy confirmations announce here. It lives OUTSIDE #content because the
+       poller replaces that element's innerHTML wholesale, which would wipe a
+       live region mid-announcement. -->
+  <div id="ck-copystatus" class="ck-sr" role="status" aria-live="polite"></div>
+
   <footer class="ck-footer">
     clodhopper · read-only · <span class="host" id="ck-host">127.0.0.1:4555</span> — best-effort, like everything else here.
   </footer>
@@ -509,6 +538,66 @@
     });
   })();
 
+  // Click-to-copy for the roster's worktree paths. The listener is DELEGATED from
+  // document because the poller swaps #content wholesale, which would take any
+  // per-button handler with it. navigator.clipboard is absent on a plain-HTTP
+  // origin (serve --tailscale is not a secure context), so an execCommand
+  // fallback carries those hosts; unlike the network calls here, a copy that
+  // quietly no-ops is a bug, so a total failure is announced rather than ignored.
+  (function () {
+    var live = document.getElementById('ck-copystatus');
+    var timer = null;
+
+    function announce(msg) { if (live) live.textContent = msg; }
+
+    function flash(btn, ok, path) {
+      if (!ok) { announce('could not copy ' + path); return; }
+      var icon = btn.querySelector('.copyicon');
+      btn.classList.add('copied');
+      if (icon) icon.textContent = '✓';
+      announce('copied ' + path);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(function () {
+        btn.classList.remove('copied');
+        if (icon) icon.textContent = '⧉';
+      }, 1200);
+    }
+
+    // Pre-secure-context fallback: select an off-screen textarea and let the
+    // document copy command take it.
+    function legacyCopy(text) {
+      var ok = false, ta = null;
+      try {
+        ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand('copy');
+      } catch (e) { ok = false; }
+      if (ta && ta.parentNode) ta.parentNode.removeChild(ta);
+      return ok;
+    }
+
+    document.addEventListener('click', function (ev) {
+      var btn = ev.target && ev.target.closest ? ev.target.closest('.copycwd') : null;
+      if (!btn) return;
+      var path = btn.getAttribute('data-cwd');
+      if (!path) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(path).then(
+          function () { flash(btn, true, path); },
+          function () { flash(btn, legacyCopy(path), path); }
+        );
+      } else {
+        flash(btn, legacyCopy(path), path);
+      }
+    });
+  })();
+
   // Reflect the actual bind address in the footer rather than a hard-coded port.
   (function () { var h = document.getElementById('ck-host'); if (h) h.textContent = location.host; })();
   </script>
@@ -535,8 +624,16 @@
      visually by the left accent bar (the .grouped CSS) is also announced to
      assistive tech, which cannot perceive the bar. Singleton branches (.Grouped
      false) carry no aria-label and read exactly as before. Roster-only because
-     only Agent exposes .Grouped. */}}
-{{ define "branchcellroster" }}<td class="branch" data-label="branch"{{ if .Grouped }} aria-label="{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}{{ if .Rebasing }} (mid-rebase, cluster){{ else }} (cluster){{ end }}"{{ end }}>{{ template "branchinner" . }}</td>{{ end }}
+     only Agent exposes .Grouped.
+
+     The branch name also becomes a click-to-copy control for the session's
+     worktree path: that path is what you actually need to get to the agent
+     (cd there, open an editor), and it is the one field the board knows but
+     never showed. A real <button> so it is focusable and announced; the
+     aria-label repeats the branch (and mid-rebase state) because a button's
+     label replaces its inner text for assistive tech. Rows with no cwd — the
+     only ones where there is nothing to copy — render exactly as before. */}}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch"{{ if .Grouped }} aria-label="{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}{{ if .Rebasing }} (mid-rebase, cluster){{ else }} (cluster){{ end }}"{{ end }}>{{ if .Cwd }}<button type="button" class="copycwd" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinner" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ end }}</td>{{ end }}
 
 {{ define "content" }}
   <div class="ck-meta">
