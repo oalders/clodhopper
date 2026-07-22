@@ -498,7 +498,18 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 			nextSeq++
 		}
 		// Ascending scan: the last write wins, so these hold the latest values.
-		s.a.SourceApp, s.a.Branch, s.a.Rebasing, s.a.Cwd, s.a.TmuxSession = app, branch, rebasing, cwd, tmuxSess
+		// Cwd is re-sanitized on the way out, not just on the way in: rows written
+		// before ingest started stripping (and capping) are still in the database,
+		// and the roster renders this value into a title and an aria-label as well
+		// as the copy target — html/template escapes neither a newline nor any
+		// other control character in an attribute value. The client refuses such a
+		// value too; doing the work here as well makes the two layers genuinely
+		// independent rather than leaving the server side resting on a comment.
+		// The cap is re-applied for the same reason as the strip: an oversized
+		// legacy path would otherwise be rendered three times per roster row on
+		// every page render and every /api/state poll.
+		s.a.SourceApp, s.a.Branch, s.a.Rebasing, s.a.TmuxSession = app, branch, rebasing, tmuxSess
+		s.a.Cwd = truncate(stripControl(cwd), maxPathLen)
 		s.a.LastEvent = etype
 		s.lastTS = ts
 		// notifType mirrors LastEvent (last-write-wins); deriveStatus only reads it

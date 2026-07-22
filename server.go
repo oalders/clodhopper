@@ -461,7 +461,39 @@ func summarizeChecks(buckets []string) string {
 	return "green"
 }
 
+// setSecurityHeaders hardens both dashboard responses. Framing is the one that
+// matters here: the clipboard fallback the dashboard uses on a non-secure origin
+// (document.execCommand, the path serve --tailscale takes) still works inside a
+// frame under a user gesture, unlike navigator.clipboard, so a page that framed
+// the board could overlay a decoy and have the operator copy a path of its
+// choosing. nosniff and no-referrer are cheap companions.
+//
+// The CSP carries only the directives that need no nonces: frame-ancestors is
+// the standardised equivalent of X-Frame-Options (both are sent, since the
+// header is what older browsers honour), and base-uri/object-src close two
+// injection avenues for free. Deliberately no script-src or style-src: the
+// page's inline <style> and <script> would need nonces or hashes, which means
+// threading a per-response nonce through the template, and that is a bigger
+// change than this commit is buying. Nor are the fetch directives
+// (default-src/connect-src/img-src/form-action) set here — the page loads a
+// data: favicon and same-origin fetches only, so they could be locked down and
+// would still hold even alongside 'unsafe-inline'; that is worth doing, and is
+// tracked as its own change rather than grown onto this one.
+//
+// Called FIRST in each handler, before any error path can return: http.Error
+// writes a response, and headers set afterwards are lost, so an error response
+// would otherwise ship unhardened. Setting them up front is safe — nothing is
+// written yet — and makes "every response carries these" structural rather than
+// something each new return statement has to remember.
+func setSecurityHeaders(w http.ResponseWriter) {
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
+}
+
 func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache) {
+	setSecurityHeaders(w)
 	data, err := buildDashboardData(r, db, ci)
 	if err != nil {
 		http.Error(w, "dashboard error", http.StatusInternalServerError)
@@ -478,6 +510,7 @@ func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciC
 // last rendered and only swaps the DOM when it differs, so a quiet board never
 // repaints.
 func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache) {
+	setSecurityHeaders(w)
 	data, err := buildDashboardData(r, db, ci)
 	if err != nil {
 		http.Error(w, "dashboard error", http.StatusInternalServerError)
@@ -593,7 +626,18 @@ func viewSignature(d dashboardData) string {
 	agents := append([]Agent(nil), d.Agents...)
 	sort.Slice(agents, func(i, j int) bool { return agents[i].SessionID < agents[j].SessionID })
 	for _, a := range agents {
-		fmt.Fprintf(h, "|a:%s:%s:%s:%s:%s:%s:%s", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Status, a.Doing, a.CI)
+		// Cwd is folded in because the roster renders it (the branch cell's
+		// click-to-copy target). A session can move to another worktree on the
+		// same branch, and under an event_type filter that move need not touch
+		// the event bounds above — without this the board would keep offering
+		// the old path until some unrelated change forced a repaint.
+		//
+		// %q, not %s: the fields are free text that can contain the ":" used as
+		// the delimiter, so unquoted they let one field's tail masquerade as the
+		// next field's head (branch "main:/w" + cwd "one" hashing the same as
+		// branch "main" + cwd "/w/one"). A collision here is a repaint that never
+		// happens — a stale board, and now a stale copy target.
+		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI)
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)
@@ -607,7 +651,7 @@ func viewSignature(d dashboardData) string {
 		return activity[i].TmuxSession < activity[j].TmuxSession
 	})
 	for _, c := range activity {
-		fmt.Fprintf(h, "|c:%s:%s:%s:%d", c.TmuxSession, c.SourceApp, c.Branch, c.Count)
+		fmt.Fprintf(h, "|c:%q:%q:%q:%d", c.TmuxSession, c.SourceApp, c.Branch, c.Count)
 	}
 
 	return strconv.FormatUint(h.Sum64(), 16)

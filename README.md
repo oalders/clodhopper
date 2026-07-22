@@ -126,6 +126,14 @@ any device on your tailnet (subject to your ACLs) but not from the local
 network. Reach it at `http://<this-host's-tailscale-ip>:4555`, or by the host's
 MagicDNS name.
 
+Worth knowing before you bind beyond loopback: the roster's branch cell shows
+each session's absolute worktree path on hover and copies it on click, so
+anyone who can load the dashboard can read your directory layout — which
+usually means your OS username and your project or client names. That is the
+point of the affordance (it is how you get to the agent), and the board has no
+auth either way, but it is a little more than the branch and app names the
+board used to expose.
+
 `ingest` is what hooks call. It is designed to **never** break a tool call: any
 error (bad JSON, unwritable DB, …) results in exit 0, and diagnostics are
 written to stderr only when `CLODHOPPER_DEBUG` is set.

