@@ -345,7 +345,8 @@ type Agent struct {
 	SessionID   string
 	SourceApp   string
 	Branch      string
-	Rebasing    bool // true if the session's latest event was captured mid-rebase, so Branch was recovered from rebase state
+	Rebasing    bool   // true if the session's latest event was captured mid-rebase, so Branch was recovered from rebase state
+	BranchGuess string // basename of Cwd, shown (italicised) ONLY when Branch is unknown, as a hint for locating the worktree/tmux session; "" when Branch is known or Cwd is empty
 	Cwd         string
 	TmuxSession string // tmux session name, the disambiguating label
 	Status      string // human label (see status* constants)
@@ -508,8 +509,18 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		// The cap is re-applied for the same reason as the strip: an oversized
 		// legacy path would otherwise be rendered three times per roster row on
 		// every page render and every /api/state poll.
-		s.a.SourceApp, s.a.Branch, s.a.Rebasing, s.a.TmuxSession = app, branch, rebasing, tmuxSess
+		s.a.SourceApp, s.a.TmuxSession = app, tmuxSess
 		s.a.Cwd = truncate(stripControl(cwd), maxPathLen)
+		// Branch is a stable property of the worktree, but gitBranch is best-effort
+		// and transiently returns "" under concurrent-worktree load (a timed-out
+		// `git symbolic-ref`). An empty capture must not clobber a branch the
+		// session recorded on earlier events, or a live agent's branch would blink
+		// out whenever its most recent event happened to be one that failed — same
+		// last-write-wins-but-keep-the-last-non-empty rule as slash_command and tool
+		// below. Rebasing rides with the branch it describes so the two stay in sync.
+		if branch != "" {
+			s.a.Branch, s.a.Rebasing = branch, rebasing
+		}
 		s.a.LastEvent = etype
 		s.lastTS = ts
 		// notifType mirrors LastEvent (last-write-wins); deriveStatus only reads it
@@ -542,6 +553,15 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		}
 		a := s.a
 		a.Status, a.StatusRank = label, rank
+		// When git never resolved a branch for this session (a detached HEAD that
+		// is not a rebase — see gitBranch), fall back to the cwd's basename so the
+		// operator still has a handle for the worktree / tmux session. It is only a
+		// hint (the last segment can be a subdir like ".../fix-3653/go"), so the
+		// dashboard italicises it; here we just supply the value when there is no
+		// branch and a path to take it from.
+		if a.Branch == "" && a.Cwd != "" {
+			a.BranchGuess = filepath.Base(a.Cwd)
+		}
 		if a.Doing == "" {
 			a.Doing = s.lastTool // fall back to the latest tool when no skill seen
 		}
