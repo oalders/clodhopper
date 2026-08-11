@@ -900,3 +900,97 @@ func TestHandleDashboard_FailedToolCallIsTinted(t *testing.T) {
 		t.Errorf("expected duration suffix +74ms in:\n%s", body)
 	}
 }
+
+// A worktree's branch is a stable property of the session, but gitBranch is a
+// best-effort shell-out that transiently returns "" under concurrent-worktree
+// load (a timed-out `git symbolic-ref`). When the latest event for a session is
+// one of those empty captures, the roster row must not lose the branch it has
+// recorded on every other event — a last-write-wins fold would blank a live
+// agent's branch intermittently. The last known non-empty branch is carried
+// forward, matching how the same fold already protects slash_command and tool.
+func TestRosterBranchSurvivesTransientEmptyCapture(t *testing.T) {
+	db, err := openDB(testDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+
+	// One session captures its branch on the first event, then the most recent
+	// event comes back branchless (the transient git failure). The row should
+	// still show "fix-3653".
+	insertEvent(db, Event{TS: at(3), SourceApp: "mmir", Branch: "fix-3653", Cwd: "/w/fix-3653", SessionID: "s1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(1), SourceApp: "mmir", Branch: "", Cwd: "/w/fix-3653", SessionID: "s1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("want 1 roster row, got %d", len(agents))
+	}
+	if agents[0].Branch != "fix-3653" {
+		t.Errorf("branch lost to transient empty capture: got %q, want %q", agents[0].Branch, "fix-3653")
+	}
+}
+
+// When a session's branch is unknown (a detached HEAD that is not a rebase, so
+// gitBranch legitimately reports ""), the roster still needs to help the operator
+// find the worktree / tmux session. BranchGuess carries the cwd's basename for
+// that — the last path segment, which under the worktree layout is usually the
+// branch — and stays empty when the branch is known.
+func TestRosterBranchGuessFromCwd(t *testing.T) {
+	db, err := openDB(testDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	ts := now.Add(-time.Minute).Format(time.RFC3339)
+	// s1: branch never captured, cwd present -> guess is the basename.
+	insertEvent(db, Event{TS: ts, SourceApp: "mmir", Branch: "", Cwd: "/home/olaf/.worktree/mmir/2026-08-11/fix-3655", SessionID: "s1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+	// s2: branch known -> no guess, even though cwd is present.
+	insertEvent(db, Event{TS: ts, SourceApp: "mmir", Branch: "fix-3652", Cwd: "/home/olaf/.worktree/mmir/2026-08-11/fix-3652", SessionID: "s2", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Agent{}
+	for _, a := range agents {
+		byID[a.SessionID] = a
+	}
+	if got := byID["s1"].BranchGuess; got != "fix-3655" {
+		t.Errorf("branchless session: BranchGuess = %q, want %q", got, "fix-3655")
+	}
+	if got := byID["s2"].BranchGuess; got != "" {
+		t.Errorf("branch known: BranchGuess should be empty, got %q", got)
+	}
+}
+
+// A session whose branch git never resolved (detached HEAD, not a rebase) still
+// needs to be locatable, so the roster falls back to the cwd's basename, rendered
+// italic via a .branch-guess span with a title that says it is a directory hint
+// rather than a confirmed branch. A session with a real branch shows no such span.
+func TestHandleDashboard_BranchGuessWhenBranchUnknown(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC()
+	recent := now.Add(-2 * time.Minute).Format(time.RFC3339)
+	// Branchless session with a worktree cwd -> basename shown as a guess.
+	insertEvent(db, Event{TS: recent, SourceApp: "mmir", Branch: "", Cwd: "/home/olaf/.worktree/mmir/2026-08-11/fix-3655", SessionID: "sess-detached-1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+	// A session with a real branch, for contrast.
+	insertEvent(db, Event{TS: recent, SourceApp: "mmir", Branch: "fix-3652", Cwd: "/home/olaf/.worktree/mmir/2026-08-11/fix-3652", SessionID: "sess-branch-1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+
+	body := getBody(t, db, "/")
+	if !strings.Contains(body, `<span class="branch-guess"`) || !strings.Contains(body, `>fix-3655</span>`) {
+		t.Errorf("branchless session should render the cwd basename as an italic .branch-guess hint in:\n%s", body)
+	}
+	// A known branch must NOT be dressed up as a guess.
+	if strings.Contains(body, `<span class="branch-guess" title="worktree directory">fix-3652`) {
+		t.Errorf("a known branch should render plain, not as a .branch-guess hint in:\n%s", body)
+	}
+}

@@ -217,6 +217,10 @@
        getting cut off — or hogging the row. */
     td.branch { white-space: normal; word-break: break-word; }
     td.branch .rebase-branch { font-style: italic; } /* a branch recovered mid-rebase, not a steady-state checkout */
+    /* Shown when git could not name the branch (detached HEAD): the cwd's basename
+       stands in as a locator. Italic AND muted so it reads as an unconfirmed hint,
+       distinct from a real branch name — see branchinnerroster. */
+    td.branch .branch-guess { font-style: italic; color: var(--text-3); }
     /* The roster's branch cell doubles as a click-to-copy control for the
        session's worktree path (see branchcellroster). The button is reset to
        plain text, and the ⧉ is transparent until hover or focus (see .copyicon
@@ -840,6 +844,17 @@
      do). */}}
 {{ define "branchinner" }}{{ if .Branch }}{{ if .Rebasing }}<span role="img" aria-label="mid-rebase" title="mid-rebase">🚧</span> <span class="rebase-branch">{{ .Branch }}</span>{{ else }}{{ .Branch }}{{ end }}{{ else }}—{{ end }}{{ end }}
 
+{{/* branchinnerroster is the roster's branch renderer. It is branchinner plus one
+     fallback: when git never resolved a branch (a detached HEAD that is not a
+     rebase — see gitBranch), the session would otherwise show a bare "—" with no
+     handle for finding its worktree / tmux session. BranchGuess (the cwd's
+     basename) fills that gap, rendered italic-and-muted via .branch-guess so it
+     reads as "a hint, possibly not the branch" — the last path segment can be a
+     subdirectory. It is roster-only because only Agent carries a cwd to guess
+     from; SourceCount (activity, recent events) has none, so branchcell keeps
+     using plain branchinner. */}}
+{{ define "branchinnerroster" }}{{ if .Branch }}{{ template "branchinner" . }}{{ else if .BranchGuess }}<span class="branch-guess" title="worktree directory — branch name unknown">{{ .BranchGuess }}</span>{{ else }}—{{ end }}{{ end }}
+
 {{/* branchcell is the plain branch <td> used by the activity and recent-events
      tables. */}}
 {{ define "branchcell" }}<td class="branch" data-label="branch">{{ template "branchinner" . }}</td>{{ end }}
@@ -870,7 +885,7 @@
      keep the span, which is the only carrier they have. Never an aria-label on
      the <td>: a cell supports name-from-author, so a label there would REPLACE
      the cell's contents for assistive tech instead of composing with them. */}}
-{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinner" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}</td>{{ end }}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}</td>{{ end }}
 
 {{ define "content" }}
   <div class="ck-meta">
