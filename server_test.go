@@ -1165,3 +1165,17 @@ func TestDashboardRendersActionButtonsOnlyWhenEnabled(t *testing.T) {
 		t.Fatal("action buttons / csrf token missing while enabled")
 	}
 }
+
+func TestDashboardRendersForceToggleWhenEnabled(t *testing.T) {
+	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}}
+	off := base // MergeEnabled false
+	if strings.Contains(renderDashboard(t, off), "practforce") {
+		t.Fatal("force toggle rendered while merge disabled")
+	}
+	on := base
+	on.MergeEnabled = true
+	on.CSRFToken = "tok"
+	if !strings.Contains(renderDashboard(t, on), "practforce") {
+		t.Fatal("force toggle missing while merge enabled")
+	}
+}

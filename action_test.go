@@ -192,7 +192,6 @@ func newActionCfg(mergePR, gh string) *actionConfig {
 	}
 }
 
-//nolint:unparam // force mirrors handleAction's real form field; no current test needs force=true, but the helper should stay general.
 func actionReq(sessionID, action string, force bool, token, host string) *http.Request {
 	form := url.Values{"session_id": {sessionID}, "action": {action}}
 	if force {
@@ -290,6 +289,34 @@ func TestHandleActionTeardownSuccessEndsSession(t *testing.T) {
 	rows := queryLatestEventType(t, db, "live-1")
 	if rows != "SessionEnd" {
 		t.Fatalf("latest event = %q, want SessionEnd", rows)
+	}
+}
+
+func TestHandleAction_ForceReachesArgv(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "sfx", Cwd: dir, EventType: "Stop", PayloadJSON: "{}"})
+	stub := writeStub(t, "merge-pr", `echo "$@"; exit 0`)
+	cfg := newActionCfg(stub, "gh")
+	cfg.enabled = true
+	cfg.token = "tok"
+
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("sfx", "squash", true, "tok", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	var got struct {
+		OK       bool   `json:"ok"`
+		ExitCode int    `json:"exitCode"`
+		TimedOut bool   `json:"timedOut"`
+		Output   string `json:"output"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !got.OK || !strings.Contains(got.Output, "--force") {
+		t.Fatalf("resp = %+v, want output containing --force", got)
 	}
 }
 

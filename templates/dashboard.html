@@ -330,6 +330,8 @@
     button.pract.confirm { border-color: var(--fail); color: var(--fail); background: var(--fail-bg); }
     button.pract[disabled] { opacity: 0.5; cursor: wait; }
     .actmsg { display: block; white-space: pre-wrap; font-size: var(--fs-2xs); color: var(--text-3); }
+    .actforce { display: inline-flex; align-items: center; gap: 3px; font-size: var(--fs-2xs); color: var(--text-3); cursor: pointer; }
+    .actforce input { margin: 0; }
 
     /* Visually hidden but still announced — the copy confirmation and the
        cluster suffix live here. clip-path is the modern rule; the deprecated
@@ -1047,6 +1049,10 @@
   // the request — so a stray click can never trigger a destructive merge/close.
   // window.__ckActionBusy blocks the poller (see swapContent above) from
   // wiping the confirm/spinner state out from under an in-flight request.
+  // Gated server-side on MergeEnabled: no action markup exists to wire up when
+  // disabled, and keeping the force-toggle class name out of the emitted page
+  // entirely (rather than just unused) is what the render test asserts.
+  {{ if .MergeEnabled }}
   (function () {
     var CSRF = document.body.dataset.csrf;
     window.__ckActionBusy = window.__ckActionBusy || false;
@@ -1057,6 +1063,23 @@
       close: 'closes the PR + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
       ready: 'mark PR ready?'
     };
+
+    function forceOn(group) {
+      var f = group.querySelector('.practforce');
+      return !!(f && f.checked);
+    }
+
+    // caveatFor derives the confirm-step message for action within group,
+    // escalating with a force-specific warning when the force checkbox is on
+    // (force never applies to 'ready', which the server ignores it for).
+    function caveatFor(group, action) {
+      if (action === 'ready') return CAVEAT.ready;
+      var branch = group.getAttribute('data-branch');
+      var base = branch + ': ' + CAVEAT[action];
+      return forceOn(group)
+        ? base + ' — with --force this merges/closes EVEN IF the worktree has uncommitted changes (work may be lost)'
+        : base;
+    }
 
     // unlock restores the group to its idle, clickable shape (re-enabled
     // buttons, cancel button gone, labels restored) without touching .actmsg —
@@ -1073,6 +1096,8 @@
       for (var j = 0; j < btns.length; j++) {
         if (btns[j].dataset.origLabel) { btns[j].textContent = btns[j].dataset.origLabel; delete btns[j].dataset.origLabel; }
       }
+      var f = group.querySelector('.practforce');
+      if (f) f.disabled = false;
       if (clearMsg) {
         var msg = group.querySelector('.actmsg');
         if (msg) msg.textContent = '';
@@ -1093,8 +1118,7 @@
       cancel.title = 'cancel';
       btn.insertAdjacentElement('afterend', cancel);
       if (msg) {
-        var branch = group.getAttribute('data-branch');
-        msg.textContent = action === 'ready' ? CAVEAT.ready : (branch + ': ' + CAVEAT[action]);
+        msg.textContent = caveatFor(group, action);
       }
     }
 
@@ -1104,6 +1128,8 @@
       var msg = group.querySelector('.actmsg');
       var btns = group.querySelectorAll('.pract');
       for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
+      var f = group.querySelector('.practforce');
+      if (f) f.disabled = true;
       window.__ckActionBusy = true;
       if (msg) msg.textContent = 'working…';
       fetch('/api/action', {
@@ -1114,6 +1140,7 @@
         },
         body: 'session_id=' + encodeURIComponent(sess)
             + '&action=' + encodeURIComponent(action)
+            + ((action !== 'ready' && forceOn(group)) ? '&force=true' : '')
       })
         .then(function (resp) { return resp.json().catch(function () { return { ok: false, output: 'HTTP ' + resp.status }; }); })
         .then(function (d) {
@@ -1160,7 +1187,21 @@
       }
       armConfirm(group, el);
     });
+
+    document.addEventListener('change', function (ev) {
+      var f = ev.target;
+      if (!f || !f.classList || !f.classList.contains('practforce')) return;
+      var group = f.closest('.actgroup');
+      if (!group || !group.classList.contains('confirm')) return;
+      var armed = group.querySelector('.pract.confirm');
+      if (armed && armed.dataset.origLabel) {
+        var action = armed.getAttribute('data-action');
+        var msg = group.querySelector('.actmsg');
+        if (msg && action !== 'ready') msg.textContent = caveatFor(group, action);
+      }
+    });
   })();
+  {{ end }}
 
   // Reflect the actual bind address in the footer rather than a hard-coded port.
   (function () { var h = document.getElementById('ck-host'); if (h) h.textContent = location.host; })();
@@ -1260,6 +1301,7 @@
               <button type="button" class="pract" data-action="squash-admin" title="merge-pr --squash --admin (bypasses branch protection)">admin</button>
               <button type="button" class="pract" data-action="close" title="merge-pr --close">close</button>
               <button type="button" class="pract" data-action="ready" title="gh pr ready">ready</button>
+              <label class="actforce" title="pass --force: merge even if the worktree has uncommitted changes"><input type="checkbox" class="practforce"> force</label>
               <span class="actmsg" aria-live="polite"></span>
             </span>
           </td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}
