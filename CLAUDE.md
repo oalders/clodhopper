@@ -38,7 +38,10 @@ Three subcommands, dispatched in `main.go`:
 
 - **`ingest`** (`ingest.go`) — reads ONE hook event as JSON on stdin, scrubs it,
   writes one row, exits. This is what project hooks call on every tool use.
-- **`serve`** (`server.go`) — read-only HTTP dashboard, renders `templates/dashboard.html`.
+- **`serve`** (`server.go`) — HTTP dashboard, renders `templates/dashboard.html`; read-only
+  by default, plus an **opt-in** write path (`--enable-merge`) that runs allowlisted
+  `merge-pr`/`gh pr ready` actions per roster row. `ingest` never gains write-to-repo
+  capability — the capture path stays read-only.
 - **`prune`** (`main.go`) — deletes events older than the retention window.
 
 `store.go` owns the schema, the `Event`/`Agent`/`SourceCount` types, and all
@@ -64,6 +67,12 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
    80-char preview. When adding a new captured field, add its key to the
    appropriate allowlist — fields are dropped by default. The scrub layer fails
    closed (prefers over-redaction to leaks); preserve that bias.
+
+   (The `--enable-merge` write path added to `serve` doesn't touch either
+   invariant or the ingest/capture path. It's off by default, and when on is
+   POST-only, CSRF-protected (custom `X-Clodhopper-Token` header, constant-time
+   compare), Host-header-allowlisted against DNS rebinding, and restricted to a
+   closed argv allowlist — no user-supplied string ever reaches a command line.)
 
 ### Other conventions
 

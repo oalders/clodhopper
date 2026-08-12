@@ -96,7 +96,7 @@ Building from source requires CGO (a C compiler) because it uses
 
 ```bash
 clodhopper ingest --source-app myapp       # reads one hook event as JSON on stdin
-clodhopper serve [--port 4555] [--host H | --tailscale] [--pane-peek [--pane-lines N]] # read-only dashboard (default 127.0.0.1)
+clodhopper serve [--port 4555] [--host H | --tailscale] [--pane-peek [--pane-lines N]] [--enable-merge] # dashboard (read-only unless --enable-merge; default 127.0.0.1)
 clodhopper prune [--days 14]              # delete events older than N days
 clodhopper end --branch B                  # mark matching live sessions ended (teardown)
 ```
@@ -150,6 +150,25 @@ point of the affordance (it is how you get to the agent), and the board has no
 auth either way, but it is a little more than the branch and app names the
 board used to expose.
 
+### Merging PRs from the dashboard
+
+- `--enable-merge` (default off): turn on the roster's **PR-action buttons**.
+  When set, each roster row gains squash / squash + admin / close / ready
+  buttons behind a two-step confirm. Clicking one runs your local `merge-pr` or
+  `gh pr ready` in that row's worktree — merging or closing the real PR,
+  removing the worktree, and killing the row's tmux session, same as if you'd
+  typed the command yourself. `--squash --admin` bypasses branch protection
+  using your own `gh` authentication.
+
+> **Exposure:** this is a **write** capability, not just a read one. It is
+> gated behind CSRF (a custom header token, checked in constant time), a
+> Host-header allowlist (`CLODHOPPER_ALLOWED_HOSTS`) that defends against DNS
+> rebinding, and a closed argv allowlist — no free-form string from the
+> request ever reaches a command line. None of that changes who it acts as: it
+> runs with **your** credentials against **your** repos. Enable it only on a
+> trusted network (loopback, or your tailnet via `--tailscale`), never on a
+> public bind.
+
 `ingest` is what hooks call. It is designed to **never** break a tool call: any
 error (bad JSON, unwritable DB, …) results in exit 0, and diagnostics are
 written to stderr only when `CLODHOPPER_DEBUG` is set.
@@ -191,6 +210,7 @@ pane's `SIGHUP` usually kills it before cleanup runs.
 | `CLODHOPPER_PORT` | `4555` | Dashboard port. |
 | `CLODHOPPER_HOST` | `127.0.0.1` | Dashboard bind address. Set `0.0.0.0` for container/LAN access. |
 | `CLODHOPPER_ALLOW_PUBLIC` | unset | Set to `1` to allow `serve` to bind a public IP (refused by default; the dashboard has no auth or TLS). Also settable per-run with `--allow-public`. |
+| `CLODHOPPER_ALLOWED_HOSTS` | unset | Comma-separated extra `Host:` header values accepted by the PR-action endpoint (e.g. a Tailscale MagicDNS name), beyond loopback and the bind host, which are always allowed. Only consulted when `--enable-merge` is set. |
 | `CLODHOPPER_WAITING_RETAIN_HOURS` | `720` (30 days) | How long a session with no `SessionEnd` stays on the roster. The default is generous on purpose so a long-idle but still-alive agent (overnight, a weekend, a multi-day pause) stays visible. In practice this window is also bounded by `CLODHOPPER_RETAIN_DAYS` (default 14): pruned events leave the roster regardless, so raise both to keep a session visible beyond two weeks. Reap finished or hard-killed sessions explicitly with `clodhopper end` rather than relying on this timeout. The dashboard's **roster window** dropdown narrows the board per-view (e.g. to the last day) without changing this configured cap. |
 | `CLODHOPPER_DEBUG` | unset | If set, `ingest` writes errors to stderr. |
 
