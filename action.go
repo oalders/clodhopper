@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"errors"
+	"net"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -119,4 +122,43 @@ func exitCode(err error) int {
 		return ee.ExitCode()
 	}
 	return -1
+}
+
+// hostAllowed defends the write endpoint against DNS-rebinding: even with the
+// custom-header CSRF token, a page on attacker.example that rebinds its name to
+// the dashboard's IP becomes same-origin and could read the token, so we also
+// require the Host header to name this dashboard. Loopback is always allowed;
+// bindHost covers the --host/--tailscale address; extra carries operator-declared
+// names (CLODHOPPER_ALLOWED_HOSTS) such as a Tailscale magicDNS name.
+func hostAllowed(hostHeader, bindHost string, extra []string) bool {
+	if hostHeader == "" {
+		return false
+	}
+	h := hostHeader
+	if host, _, err := net.SplitHostPort(hostHeader); err == nil {
+		h = host
+	}
+	h = strings.ToLower(strings.Trim(h, "[]"))
+	switch h {
+	case "127.0.0.1", "::1", "localhost":
+		return true
+	}
+	if bindHost != "" && h == strings.ToLower(strings.Trim(bindHost, "[]")) {
+		return true
+	}
+	for _, e := range extra {
+		if e != "" && h == strings.ToLower(e) {
+			return true
+		}
+	}
+	return false
+}
+
+// tokenOK compares a presented CSRF token against the per-serve secret in
+// constant time. An empty secret (feature misconfigured) always fails.
+func tokenOK(got, want string) bool {
+	if want == "" || len(got) != len(want) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }

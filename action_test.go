@@ -131,3 +131,28 @@ func TestRunActionTimeoutKillsProcessGroup(t *testing.T) {
 		t.Fatalf("child pid %d still alive — process group was not killed", pid)
 	}
 }
+
+func TestHostAllowed(t *testing.T) {
+	extra := []string{"box.tailnet.ts.net"}
+	yes := []string{"127.0.0.1", "127.0.0.1:4555", "localhost:4555", "[::1]:4555", "box.tailnet.ts.net", "BOX.tailnet.ts.net:4555", "100.64.0.1:4555"}
+	no := []string{"", "evil.example.com", "evil.example.com:4555", "attacker.tailnet.ts.net"}
+	for _, h := range yes {
+		if !hostAllowed(h, "100.64.0.1", extra) {
+			t.Errorf("hostAllowed(%q) = false, want true", h)
+		}
+	}
+	for _, h := range no {
+		if hostAllowed(h, "100.64.0.1", extra) {
+			t.Errorf("hostAllowed(%q) = true, want false", h)
+		}
+	}
+}
+
+func TestTokenOK(t *testing.T) {
+	if !tokenOK("abc123", "abc123") {
+		t.Fatal("equal tokens should pass")
+	}
+	if tokenOK("abc123", "abc124") || tokenOK("", "abc") || tokenOK("abc", "") {
+		t.Fatal("mismatched/empty tokens must fail")
+	}
+}
