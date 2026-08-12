@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -40,32 +41,70 @@ func TestCleanSessionName(t *testing.T) {
 	}
 }
 
-// Outside tmux ($TMUX unset), capture is empty and never errors.
-func TestTmuxSession_NotInTmux(t *testing.T) {
+// Outside tmux ($TMUX unset), both captures are empty and never error.
+func TestTmuxContext_NotInTmux(t *testing.T) {
 	t.Setenv("TMUX", "")
-	if got := tmuxSession(); got != "" {
-		t.Errorf("tmuxSession() outside tmux = %q, want \"\"", got)
+	sess, pane := tmuxContext()
+	if sess != "" || pane != "" {
+		t.Errorf("tmuxContext() outside tmux = (%q, %q), want (\"\", \"\")", sess, pane)
 	}
 }
 
-// Inside a real tmux session, capture matches `tmux display-message -p '#S'`.
-// Skipped unless the suite itself runs inside tmux with the binary present —
-// tmuxSession() reads ambient $TMUX, so we cannot fake it hermetically (unlike
-// gitBranch, which takes a dir argument).
-func TestTmuxSession_InTmux(t *testing.T) {
+// Inside a real tmux session, tmuxContext reports THIS pane ($TMUX_PANE) and the
+// session that pane belongs to. Skipped unless the suite runs inside tmux with
+// the binary present — tmuxContext reads the ambient tmux environment, so it
+// cannot be faked hermetically.
+func TestTmuxContext_InTmux(t *testing.T) {
 	if os.Getenv("TMUX") == "" {
 		t.Skip("not running inside tmux")
 	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
-	out, err := exec.Command("tmux", "display-message", "-p", "#S").Output()
+	wantPane := os.Getenv("TMUX_PANE")
+	if !paneIDRe.MatchString(wantPane) {
+		t.Skipf("no usable $TMUX_PANE (%q)", wantPane)
+	}
+	// The session name is the one that owns THIS pane, resolved by targeting it —
+	// exactly what tmuxContext does, and deliberately not the focused pane's.
+	out, err := exec.Command("tmux", "display-message", "-t", wantPane, "-p", "#{session_name}").Output()
 	if err != nil {
 		t.Skipf("tmux display-message failed: %v", err)
 	}
-	want := truncate(scrubString(cleanSessionName(string(out))), maxFieldLen)
-	if got := tmuxSession(); got != want {
-		t.Errorf("tmuxSession() = %q, want %q", got, want)
+	wantSess := truncate(scrubString(cleanSessionName(strings.TrimRight(string(out), "\n"))), maxFieldLen)
+	sess, pane := tmuxContext()
+	if sess != wantSess {
+		t.Errorf("tmuxContext() session = %q, want %q", sess, wantSess)
+	}
+	if pane != wantPane {
+		t.Errorf("tmuxContext() pane = %q, want %q", pane, wantPane)
+	}
+}
+
+// The pane id comes from $TMUX_PANE (the pane THIS process runs in), not from
+// `display-message` (which resolves to the session's active pane — the bug where
+// every peek showed one focused pane). Pointing $TMUX at a bogus socket forces
+// the session-name lookup to fail, proving the pane id survives independently and
+// a failed label lookup does not drop it.
+func TestTmuxContext_PaneFromEnv(t *testing.T) {
+	t.Setenv("TMUX", filepath.Join(t.TempDir(), "no-such-socket")+",0,0")
+	t.Setenv("TMUX_PANE", "%99")
+	sess, pane := tmuxContext()
+	if pane != "%99" {
+		t.Errorf("pane = %q, want %%99 (from $TMUX_PANE)", pane)
+	}
+	if sess != "" {
+		t.Errorf("session = %q, want \"\" (lookup against a bogus socket must fail closed)", sess)
+	}
+}
+
+// A malformed $TMUX_PANE yields no pane id: fail closed, because a peek that
+// targets the wrong pane is worse than no peek.
+func TestTmuxContext_RejectsBadPaneEnv(t *testing.T) {
+	t.Setenv("TMUX", filepath.Join(t.TempDir(), "no-such-socket")+",0,0")
+	t.Setenv("TMUX_PANE", "not-a-pane")
+	if _, pane := tmuxContext(); pane != "" {
+		t.Errorf("pane = %q, want \"\" for malformed $TMUX_PANE", pane)
 	}
 }
 
@@ -77,6 +116,9 @@ func TestBuildEvent_PopulatesTmuxSession(t *testing.T) {
 	ev := buildEvent(raw, "myapp")
 	if ev.TmuxSession != "" {
 		t.Errorf("tmux session with TMUX unset = %q, want \"\"", ev.TmuxSession)
+	}
+	if ev.TmuxPane != "" {
+		t.Errorf("tmux pane with TMUX unset = %q, want \"\"", ev.TmuxPane)
 	}
 }
 
@@ -151,5 +193,68 @@ func TestActiveCounts_GroupsByTmuxSession(t *testing.T) {
 	}
 	if !names["alpha"] || !names["beta"] {
 		t.Errorf("missing a tmux-session group: %+v", counts)
+	}
+}
+
+// A captured tmux pane id survives a write/read round-trip.
+func TestTmuxPanePersists(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", TmuxPane: "%7", EventType: "PreToolUse", PayloadJSON: "{}"})
+
+	var got string
+	if err := db.QueryRow(`SELECT tmux_pane FROM events LIMIT 1`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "%7" {
+		t.Errorf("tmux_pane = %q, want %%7", got)
+	}
+}
+
+// The roster folds in the latest tmux pane id per session (last write wins).
+func TestAgentRoster_CarriesTmuxPane(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	insertEvent(db, Event{TS: at(5), SourceApp: "myapp", Branch: "b", TmuxPane: "%1", SessionID: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "b", TmuxPane: "%2", SessionID: "s1", EventType: "Stop", PayloadJSON: "{}"})
+
+	agents, err := agentRoster(db, 30*time.Minute, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].TmuxPane != "%2" {
+		t.Fatalf("want 1 agent with pane %%2 (last write wins), got %+v", agents)
+	}
+}
+
+// A later event whose pane capture transiently failed ("") must not clobber the
+// pane id the session recorded earlier — otherwise the live-peek control blinks
+// out whenever the newest event happened to miss the capture.
+func TestAgentRoster_EmptyTmuxPaneDoesNotClobber(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	insertEvent(db, Event{TS: at(5), SourceApp: "myapp", Branch: "b", TmuxPane: "%1", SessionID: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "b", TmuxPane: "", SessionID: "s1", EventType: "Stop", PayloadJSON: "{}"})
+
+	agents, err := agentRoster(db, 30*time.Minute, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].TmuxPane != "%1" {
+		t.Fatalf("want 1 agent keeping pane %%1 (empty later capture must not clobber), got %+v", agents)
 	}
 }

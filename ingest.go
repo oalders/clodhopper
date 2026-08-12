@@ -66,6 +66,7 @@ func buildEvent(raw []byte, sourceApp string) Event {
 
 	cwd := str(p, "cwd")
 	branch, rebasing := gitBranch(cwd)
+	tmuxSess, tmuxPane := tmuxContext()
 	ev := Event{
 		TS:        time.Now().UTC().Format(time.RFC3339),
 		SourceApp: sourceApp,
@@ -82,7 +83,8 @@ func buildEvent(raw []byte, sourceApp string) Event {
 		// the hook actually reported. Pure string work: nothing here can fail,
 		// which is the rule for anything on the ingest path.
 		Cwd:         truncate(scrubString(stripControl(cwd)), maxPathLen),
-		TmuxSession: tmuxSession(),
+		TmuxSession: tmuxSess,
+		TmuxPane:    tmuxPane,
 		SessionID:   str(p, "session_id"),
 		EventType:   str(p, "hook_event_name"),
 		ToolName:    str(p, "tool_name"),
@@ -230,25 +232,42 @@ func rebaseBranch(dir string) string {
 	return ""
 }
 
-// tmuxSession returns the name of the tmux session the current process is in, or
-// "" when not inside tmux, on any error, or if it times out. Like gitBranch it is
-// deliberately best-effort: capture must never block or fail a tool call. The
-// $TMUX guard avoids spawning tmux (and its stderr noise) outside a session;
-// `display-message -p '#S'` resolves the current pane's session via $TMUX, so no
-// `-t` target is needed. The name is user-chosen free text, so it is cleaned
-// (unrenderable glyphs and padding stripped), scrubbed, and truncated to honour
-// the scrub layer's fail-closed bias.
-func tmuxSession() string {
+// tmuxContext returns the current tmux session name (cleaned for display) and the
+// pane id (raw, shape "%N") of the pane THIS process runs in. Each is "" outside
+// tmux, on any error, or on timeout — capture must never block or fail a tool
+// call.
+//
+// The pane id comes from $TMUX_PANE, not from `display-message`: tmux sets
+// $TMUX_PANE in every pane's own environment, so it is exactly the pane the hook
+// runs in. `display-message` with no target instead resolves to the SESSION's
+// currently *active* pane, so two agents sharing one tmux session would both
+// record whichever pane is focused — and every pane peek would show that one
+// pane. We fail closed: an unset or malformed $TMUX_PANE leaves the pane empty
+// (no peek control) rather than targeting the wrong pane.
+//
+// The session name is then resolved for that specific pane (a pane may belong to
+// any session); this is the one tmux shell-out, and its failure only drops the
+// display label, not the pane id.
+func tmuxContext() (session, pane string) {
 	if os.Getenv("TMUX") == "" {
-		return ""
+		return "", ""
+	}
+	if p := os.Getenv("TMUX_PANE"); paneIDRe.MatchString(p) {
+		pane = p
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "tmux", "display-message", "-p", "#S").Output()
-	if err != nil {
-		return ""
+	args := []string{"display-message", "-p", "#{session_name}"}
+	if pane != "" {
+		// Target the pane we resolved so the label matches it, not the focused pane.
+		args = []string{"display-message", "-t", pane, "-p", "#{session_name}"}
 	}
-	return truncate(scrubString(cleanSessionName(string(out))), maxFieldLen)
+	out, err := exec.CommandContext(ctx, "tmux", args...).Output()
+	if err != nil {
+		return "", pane
+	}
+	session = truncate(scrubString(cleanSessionName(strings.TrimRight(string(out), "\n"))), maxFieldLen)
+	return session, pane
 }
 
 // cleanSessionName makes a raw tmux session name safe and tidy for the web

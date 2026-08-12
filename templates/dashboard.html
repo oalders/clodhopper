@@ -287,6 +287,28 @@
        nothing happen would paste the wrong path. */
     .copycwd.copyfail .copyicon { color: var(--fail); }
 
+    /* Live pane peek: a small toggle in the session cell, and a full-width
+       monospace capture row that expands beneath it on demand. */
+    button.peek {
+      all: unset;
+      cursor: pointer;
+      opacity: 0.55;
+      padding: 0 4px;
+      color: var(--text-2);
+    }
+    button.peek:hover, button.peek:focus-visible { opacity: 1; color: var(--brand); }
+    button.peek[aria-expanded="true"] { opacity: 1; color: var(--brand); }
+    tr.panerow > td { padding: 0; background: var(--surface-3); }
+    pre.panecap {
+      margin: 0;
+      max-height: 40vh;
+      overflow: auto;
+      padding: 10px 12px;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre;
+      color: var(--text-1);
+    }
+
     /* Visually hidden but still announced — the copy confirmation and the
        cluster suffix live here. clip-path is the modern rule; the deprecated
        clip stays for browsers that only honour it. */
@@ -551,8 +573,46 @@
       var active = document.activeElement;
       var keep = active && active.closest ? active.closest('#content .copycwd') : null;
       var key = keep ? keep.getAttribute('data-session') : null;
+      // Carry any open pane-peek across the swap. innerHTML replacement detaches
+      // the expanded panerow, so without this a poll that repaints the board
+      // collapses a peek the reader is still scrolling through — and the lost
+      // height yanks the viewport, which reads as "it closes when I reach the
+      // bottom". Re-open the same pane by its stable pane id and restore both the
+      // captured text and the scroll position; we do NOT re-fetch, so it stays
+      // the one-shot snapshot it was. Keyed by data-pane-row so a row that went
+      // away (session ended, pane died) simply is not restored.
+      var openPeeks = [];
+      var rows = document.querySelectorAll('#content .panerow');
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].hidden) continue;
+        var cap = rows[i].querySelector('.panecap');
+        openPeeks.push({
+          pane: rows[i].getAttribute('data-pane-row'),
+          text: cap ? cap.textContent : '',
+          scroll: cap ? cap.scrollTop : 0
+        });
+      }
       try { document.dispatchEvent(new CustomEvent('ch:contentswap')); } catch (e) {}
       document.getElementById('content').innerHTML = html;
+      for (var p = 0; p < openPeeks.length; p++) {
+        var op = openPeeks[p];
+        if (!op.pane) continue;
+        var newRows = document.querySelectorAll('#content .panerow');
+        for (var r = 0; r < newRows.length; r++) {
+          if (newRows[r].getAttribute('data-pane-row') !== op.pane) continue;
+          newRows[r].hidden = false;
+          var c = newRows[r].querySelector('.panecap');
+          if (c) { c.textContent = op.text; c.scrollTop = op.scroll; }
+          var btns = document.querySelectorAll('#content .peek');
+          for (var b = 0; b < btns.length; b++) {
+            if (btns[b].getAttribute('data-pane') === op.pane) {
+              btns[b].setAttribute('aria-expanded', 'true');
+              break;
+            }
+          }
+          break;
+        }
+      }
       if (!key) return;
       var btns = document.querySelectorAll('#content .copycwd');
       for (var i = 0; i < btns.length; i++) {
@@ -827,6 +887,84 @@
     });
   })();
 
+  // Live pane peek: toggle the capture row and fetch it on first open. On-demand
+  // only — the row is a deliberate snapshot of "now" and does not auto-refresh.
+  // Click the ⤢ to open/close; Esc closes an open peek without the mouse.
+  (function () {
+    function paneRow(pane) {
+      var sel = '.panerow[data-pane-row="' + (window.CSS && CSS.escape ? CSS.escape(pane) : pane) + '"]';
+      return document.querySelector(sel);
+    }
+    function paneButton(pane) {
+      var btns = document.querySelectorAll('#content .peek');
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].getAttribute('data-pane') === pane) return btns[i];
+      }
+      return null;
+    }
+    function closePane(pane, focusBtn) {
+      var row = paneRow(pane);
+      if (!row || row.hidden) return false;
+      row.hidden = true;
+      var btn = paneButton(pane);
+      if (btn) {
+        btn.setAttribute('aria-expanded', 'false');
+        // Returning focus to the trigger keeps a keyboard user anchored instead of
+        // dropping them to <body> when the capture they were in disappears.
+        if (focusBtn) btn.focus({ preventScroll: true });
+      }
+      return true;
+    }
+    function openPane(pane) {
+      var row = paneRow(pane);
+      if (!row) return;
+      var pre = row.querySelector('.panecap');
+      if (!pre) return;
+      var btn = paneButton(pane);
+      if (btn) btn.setAttribute('aria-expanded', 'true');
+      row.hidden = false;
+      pre.textContent = 'loading…';
+      fetch('/api/pane?pane=' + encodeURIComponent(pane), { headers: { 'Accept': 'text/plain' } })
+        .then(function (r) { return r.ok ? r.text() : ''; })
+        .then(function (t) {
+          pre.textContent = t || '(pane unavailable)';
+          // Open scrolled to the bottom: capture-pane returns the last N lines and
+          // the freshest output — where a finished run leaves its result — is at the
+          // end, so that is what the reader wants to see first.
+          pre.scrollTop = pre.scrollHeight;
+        })
+        .catch(function () { pre.textContent = '(pane unavailable)'; });
+    }
+
+    document.addEventListener('click', function (ev) {
+      var btn = ev.target && ev.target.closest ? ev.target.closest('.peek') : null;
+      if (!btn) return;
+      var pane = btn.getAttribute('data-pane');
+      if (btn.getAttribute('aria-expanded') === 'true') { closePane(pane, false); return; }
+      openPane(pane);
+    });
+
+    // Esc dismisses an open peek. If focus is inside a peek (its capture or its ⤢
+    // button), close just that one and return focus to its button; otherwise close
+    // every open peek. preventDefault only when something actually closed, so Esc
+    // stays free for anything else on the page.
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Escape' && ev.keyCode !== 27) return;
+      var scope = ev.target && ev.target.closest ? ev.target.closest('.panerow, .peek') : null;
+      var pane = scope ? (scope.getAttribute('data-pane-row') || scope.getAttribute('data-pane')) : null;
+      var closed = false;
+      if (pane) {
+        closed = closePane(pane, true);
+      } else {
+        var rows = document.querySelectorAll('#content .panerow');
+        for (var i = 0; i < rows.length; i++) {
+          if (!rows[i].hidden && closePane(rows[i].getAttribute('data-pane-row'), false)) closed = true;
+        }
+      }
+      if (closed) ev.preventDefault();
+    });
+  })();
+
   // Reflect the actual bind address in the footer rather than a hard-coded port.
   (function () { var h = document.getElementById('ck-host'); if (h) h.textContent = location.host; })();
   </script>
@@ -918,8 +1056,9 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
-          <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
+          <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}{{ if and $.PeekEnabled .LiveTmux }} <button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="show this pane's last lines">⤢</button>{{ end }}</td>
         </tr>
+        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="8"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
         {{ end }}
       </tbody>
     </table>

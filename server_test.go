@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -628,7 +629,7 @@ func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/state", nil)
 	rec := httptest.NewRecorder()
-	handleState(rec, req, db, newCICache())
+	handleState(rec, req, db, newCICache(), &peekConfig{cache: newPaneCache()})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d", rec.Code)
 	}
@@ -666,7 +667,7 @@ func TestHandlers_SetSecurityHeaders(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 
-	routes := map[string]func(http.ResponseWriter, *http.Request, *sql.DB, *ciCache){
+	routes := map[string]func(http.ResponseWriter, *http.Request, *sql.DB, *ciCache, *peekConfig){
 		"/":          handleDashboard,
 		"/api/state": handleState,
 	}
@@ -678,7 +679,7 @@ func TestHandlers_SetSecurityHeaders(t *testing.T) {
 	}
 	for target, h := range routes {
 		rec := httptest.NewRecorder()
-		h(rec, httptest.NewRequest(http.MethodGet, target, nil), db, newCICache())
+		h(rec, httptest.NewRequest(http.MethodGet, target, nil), db, newCICache(), &peekConfig{cache: newPaneCache()})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s: status=%d", target, rec.Code)
 		}
@@ -696,7 +697,7 @@ func TestHandlers_SetSecurityHeaders(t *testing.T) {
 	closed.Close()
 	for target, h := range routes {
 		rec := httptest.NewRecorder()
-		h(rec, httptest.NewRequest(http.MethodGet, target, nil), closed, newCICache())
+		h(rec, httptest.NewRequest(http.MethodGet, target, nil), closed, newCICache(), &peekConfig{cache: newPaneCache()})
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("%s: a closed DB should 500, got %d", target, rec.Code)
 		}
@@ -1074,9 +1075,40 @@ func getBody(t *testing.T, db *sql.DB, target string) string {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	rec := httptest.NewRecorder()
-	handleDashboard(rec, req, db, newCICache())
+	handleDashboard(rec, req, db, newCICache(), &peekConfig{cache: newPaneCache()})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d", rec.Code)
 	}
 	return rec.Body.String()
+}
+
+// The peek control renders only when the feature is enabled AND the row's pane is
+// live. buildDashboardData sets LiveTmux; here we assert the template gate by
+// rendering the content template directly.
+func TestContentTemplate_PeekControlGated(t *testing.T) {
+	base := dashboardData{
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", LiveTmux: true,
+		}},
+	}
+
+	render := func(d dashboardData) string {
+		var buf bytes.Buffer
+		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+
+	on := base
+	on.PeekEnabled = true
+	if !strings.Contains(render(on), `data-pane="%3"`) {
+		t.Error("enabled + live: expected a peek control with data-pane=%3")
+	}
+
+	off := base // PeekEnabled false
+	if strings.Contains(render(off), `data-pane=`) {
+		t.Error("disabled: expected no peek control")
+	}
 }
