@@ -573,8 +573,46 @@
       var active = document.activeElement;
       var keep = active && active.closest ? active.closest('#content .copycwd') : null;
       var key = keep ? keep.getAttribute('data-session') : null;
+      // Carry any open pane-peek across the swap. innerHTML replacement detaches
+      // the expanded panerow, so without this a poll that repaints the board
+      // collapses a peek the reader is still scrolling through — and the lost
+      // height yanks the viewport, which reads as "it closes when I reach the
+      // bottom". Re-open the same pane by its stable pane id and restore both the
+      // captured text and the scroll position; we do NOT re-fetch, so it stays
+      // the one-shot snapshot it was. Keyed by data-pane-row so a row that went
+      // away (session ended, pane died) simply is not restored.
+      var openPeeks = [];
+      var rows = document.querySelectorAll('#content .panerow');
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].hidden) continue;
+        var cap = rows[i].querySelector('.panecap');
+        openPeeks.push({
+          pane: rows[i].getAttribute('data-pane-row'),
+          text: cap ? cap.textContent : '',
+          scroll: cap ? cap.scrollTop : 0
+        });
+      }
       try { document.dispatchEvent(new CustomEvent('ch:contentswap')); } catch (e) {}
       document.getElementById('content').innerHTML = html;
+      for (var p = 0; p < openPeeks.length; p++) {
+        var op = openPeeks[p];
+        if (!op.pane) continue;
+        var newRows = document.querySelectorAll('#content .panerow');
+        for (var r = 0; r < newRows.length; r++) {
+          if (newRows[r].getAttribute('data-pane-row') !== op.pane) continue;
+          newRows[r].hidden = false;
+          var c = newRows[r].querySelector('.panecap');
+          if (c) { c.textContent = op.text; c.scrollTop = op.scroll; }
+          var btns = document.querySelectorAll('#content .peek');
+          for (var b = 0; b < btns.length; b++) {
+            if (btns[b].getAttribute('data-pane') === op.pane) {
+              btns[b].setAttribute('aria-expanded', 'true');
+              break;
+            }
+          }
+          break;
+        }
+      }
       if (!key) return;
       var btns = document.querySelectorAll('#content .copycwd');
       for (var i = 0; i < btns.length; i++) {
@@ -869,7 +907,13 @@
     pre.textContent = 'loading…';
     fetch('/api/pane?pane=' + encodeURIComponent(pane), { headers: { 'Accept': 'text/plain' } })
       .then(function (r) { return r.ok ? r.text() : ''; })
-      .then(function (t) { pre.textContent = t || '(pane unavailable)'; })
+      .then(function (t) {
+        pre.textContent = t || '(pane unavailable)';
+        // Open scrolled to the bottom: capture-pane returns the last N lines and
+        // the freshest output — where a finished run leaves its result — is at the
+        // end, so that is what the reader wants to see first.
+        pre.scrollTop = pre.scrollHeight;
+      })
       .catch(function () { pre.textContent = '(pane unavailable)'; });
   });
 
