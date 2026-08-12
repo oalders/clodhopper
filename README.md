@@ -96,7 +96,7 @@ Building from source requires CGO (a C compiler) because it uses
 
 ```bash
 clodhopper ingest --source-app myapp       # reads one hook event as JSON on stdin
-clodhopper serve [--port 4555] [--host H | --tailscale] # read-only dashboard (default 127.0.0.1)
+clodhopper serve [--port 4555] [--host H | --tailscale] [--pane-peek [--pane-lines N]] # read-only dashboard (default 127.0.0.1)
 clodhopper prune [--days 14]              # delete events older than N days
 clodhopper end --branch B                  # mark matching live sessions ended (teardown)
 ```
@@ -125,6 +125,22 @@ This listens only on the tailnet interface, so the dashboard is reachable from
 any device on your tailnet (subject to your ACLs) but not from the local
 network. Reach it at `http://<this-host's-tailscale-ip>:4555`, or by the host's
 MagicDNS name.
+
+### Peeking at a live pane
+
+- `--pane-peek` (default off): enable the **live tmux pane peek**. When set, each
+  roster row whose Claude tmux pane is still alive shows a ⤢ control that expands
+  the pane's last lines inline, fetched live from `tmux capture-pane`. Nothing is
+  stored — the pane text exists only in the HTTP response.
+- `--pane-lines` (default 40, range 1–2000): how many trailing lines a peek shows.
+
+> **Exposure:** the peek streams **live terminal content** (your Claude
+> conversation, code, and anything else on that pane, including pasted secrets) to
+> whoever can reach the dashboard. It is redacted only best-effort by the same
+> secret-shaped-substring scrubber used elsewhere — a denylist that can miss
+> things — so it is **off by default** and should be enabled only where the
+> dashboard itself is on a trusted network (e.g. bound to your Tailscale IP via
+> `--tailscale`). The trust boundary is your tailnet, not the scrubber.
 
 Worth knowing before you bind beyond loopback: the roster's branch cell shows
 each session's absolute worktree path on hover and copies it on click, so
