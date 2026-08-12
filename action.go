@@ -1,6 +1,13 @@
 package main
 
-import "sync"
+import (
+	"bytes"
+	"errors"
+	"os/exec"
+	"sync"
+	"syscall"
+	"time"
+)
 
 // actionArgv maps a validated dashboard action to the binary and exact argument
 // vector to run. This is the security boundary: only these fixed vectors are
@@ -55,4 +62,61 @@ func (s *inflightSet) release(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.m, key)
+}
+
+// actionResult is the outcome of one subprocess run. Output is the combined
+// stdout+stderr, unscrubbed (the handler scrubs before returning it to a client).
+type actionResult struct {
+	ExitCode int
+	TimedOut bool
+	Output   string
+}
+
+// runAction runs bin with args in dir, capturing combined output. stdin is left
+// nil (closed): merge-pr's one interactive prompt then hits EOF and fails closed
+// instead of hanging a serve goroutine. The child gets its own process group so a
+// timeout can SIGKILL the whole tree (an in-flight `gh`/`git` child reparents and
+// survives if only the bash parent is signalled). Best-effort by construction: a
+// binary that cannot start returns ExitCode -1, never a panic.
+func runAction(bin, dir string, args []string, timeout time.Duration) actionResult {
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = dir
+	cmd.Stdin = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+
+	if err := cmd.Start(); err != nil {
+		return actionResult{ExitCode: -1, Output: err.Error()}
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		// Setpgid makes the child's pgid equal its pid, so -pid targets the
+		// whole group.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-done
+		return actionResult{ExitCode: -1, TimedOut: true, Output: buf.String()}
+	case err := <-done:
+		return actionResult{ExitCode: exitCode(err), Output: buf.String()}
+	}
+}
+
+// exitCode extracts a process exit code from Cmd.Wait's error: 0 on success, the
+// real code for a normal non-zero exit, -1 for anything else (signalled, etc.).
+func exitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
 }
