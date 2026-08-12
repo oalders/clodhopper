@@ -1131,3 +1131,37 @@ func TestContentTemplate_PeekControlGated(t *testing.T) {
 		t.Error("disabled: expected no peek control")
 	}
 }
+
+// renderDashboard executes the full dashboardTmpl (mirroring handleDashboard,
+// server.go:532) rather than just the "content" sub-template, since the
+// data-csrf attribute lives on <body>, outside "content".
+func renderDashboard(t *testing.T, d dashboardData) string {
+	t.Helper()
+	d.Now = time.Now()
+	var buf bytes.Buffer
+	if err := dashboardTmpl.Execute(&buf, d); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
+}
+
+// PR-action buttons (squash/admin/close/ready) render in the roster only when
+// --enable-merge is on, and the CSRF token is only echoed onto <body> in that
+// case too — the JS action handler reads it from data-csrf.
+func TestDashboardRendersActionButtonsOnlyWhenEnabled(t *testing.T) {
+	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}}
+	// disabled
+	off := base
+	off.MergeEnabled = false
+	if strings.Contains(renderDashboard(t, off), "data-action=") {
+		t.Fatal("action buttons rendered while disabled")
+	}
+	// enabled
+	on := base
+	on.MergeEnabled = true
+	on.CSRFToken = "tok"
+	html := renderDashboard(t, on)
+	if !strings.Contains(html, "data-action=") || !strings.Contains(html, `data-csrf="tok"`) {
+		t.Fatal("action buttons / csrf token missing while enabled")
+	}
+}

@@ -317,6 +317,20 @@
       color: var(--text-1);
     }
 
+    /* Roster PR-action buttons: compact, two-step confirm, and an inline
+       result/status line. */
+    .actgroup { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+    button.pract {
+      font-family: var(--font-mono); font-size: var(--fs-2xs); line-height: 1.2;
+      padding: 2px 6px; border-radius: var(--radius-xs);
+      border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text-2);
+      cursor: pointer;
+    }
+    button.pract:hover, button.pract:focus-visible { background: var(--surface-3); color: var(--text-1); }
+    button.pract.confirm { border-color: var(--fail); color: var(--fail); background: var(--fail-bg); }
+    button.pract[disabled] { opacity: 0.5; cursor: wait; }
+    .actmsg { display: block; white-space: pre-wrap; font-size: var(--fs-2xs); color: var(--text-3); }
+
     /* Visually hidden but still announced — the copy confirmation and the
        cluster suffix live here. clip-path is the modern rule; the deprecated
        clip stays for browsers that only honour it. */
@@ -469,7 +483,7 @@
     }
   </style>
 </head>
-<body data-refresh="{{ .RefreshSecs }}" data-signature="{{ .Signature }}">
+<body data-refresh="{{ .RefreshSecs }}" data-signature="{{ .Signature }}"{{ if .MergeEnabled }} data-csrf="{{ .CSRFToken }}"{{ end }}>
   <header class="ck-header">
     <div class="ck-brand">
       <span class="ck-prompt">$</span>
@@ -599,6 +613,12 @@
     // viewport of a sighted keyboard user who did not scroll. Engines that
     // predate the options object ignore it rather than throw.
     function swapContent(html) {
+      // An in-flight PR-action confirm/spinner lives inside #content; wiping it
+      // out from under the reader mid-confirm (or mid-request) would silently
+      // drop their state and re-arm the buttons underneath a pending fetch.
+      // Skip this poll's repaint entirely and let the next one (after the
+      // action settles and clears the busy flag) pick up the fresh signature.
+      if (window.__ckActionBusy) return;
       var active = document.activeElement;
       var keep = active && active.closest ? active.closest('#content .copycwd') : null;
       var key = keep ? keep.getAttribute('data-session') : null;
@@ -657,7 +677,11 @@
         fetch('/api/state' + location.search, { headers: { 'Accept': 'application/json' } })
           .then(function (r) { return r.json(); })
           .then(function (d) {
-            if (d.signature !== sig) {
+            // Don't advance sig while an action is busy: swapContent will
+            // no-op this poll, and if we recorded the new signature anyway
+            // the stale board would never get repainted once the action
+            // clears (the next poll would see d.signature === sig and skip).
+            if (d.signature !== sig && !window.__ckActionBusy) {
               sig = d.signature;
               swapContent(d.html);
               tickIdle();
@@ -1018,6 +1042,117 @@
     });
   })();
 
+  // Roster PR-action buttons (squash/admin/close/ready): a two-step confirm —
+  // first click arms the group and states the consequence, second click fires
+  // the request — so a stray click can never trigger a destructive merge/close.
+  // window.__ckActionBusy blocks the poller (see swapContent above) from
+  // wiping the confirm/spinner state out from under an in-flight request.
+  (function () {
+    var CSRF = document.body.dataset.csrf;
+    window.__ckActionBusy = window.__ckActionBusy || false;
+
+    var CAVEAT = {
+      squash: 'merges + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
+      'squash-admin': 'merges (bypassing branch protection) + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
+      close: 'closes the PR + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
+      ready: 'mark PR ready?'
+    };
+
+    // unlock restores the group to its idle, clickable shape (re-enabled
+    // buttons, cancel button gone, labels restored) without touching .actmsg —
+    // callers that want the message cleared too pass clearMsg.
+    function unlock(group, clearMsg) {
+      var btns = group.querySelectorAll('.pract');
+      for (var i = 0; i < btns.length; i++) {
+        btns[i].disabled = false;
+        btns[i].classList.remove('confirm');
+      }
+      group.classList.remove('confirm');
+      var cancel = group.querySelector('.actcancel');
+      if (cancel) cancel.remove();
+      for (var j = 0; j < btns.length; j++) {
+        if (btns[j].dataset.origLabel) { btns[j].textContent = btns[j].dataset.origLabel; delete btns[j].dataset.origLabel; }
+      }
+      if (clearMsg) {
+        var msg = group.querySelector('.actmsg');
+        if (msg) msg.textContent = '';
+      }
+    }
+
+    function armConfirm(group, btn) {
+      var action = btn.getAttribute('data-action');
+      var msg = group.querySelector('.actmsg');
+      group.classList.add('confirm');
+      btn.classList.add('confirm');
+      btn.dataset.origLabel = btn.textContent;
+      btn.textContent = '✓ confirm';
+      var cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.className = 'pract actcancel';
+      cancel.textContent = '✕';
+      cancel.title = 'cancel';
+      btn.insertAdjacentElement('afterend', cancel);
+      if (msg) {
+        var branch = group.getAttribute('data-branch');
+        msg.textContent = action === 'ready' ? CAVEAT.ready : (branch + ': ' + CAVEAT[action]);
+      }
+    }
+
+    function fire(group, btn) {
+      var action = btn.getAttribute('data-action');
+      var sess = group.getAttribute('data-session');
+      var msg = group.querySelector('.actmsg');
+      var btns = group.querySelectorAll('.pract');
+      for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
+      window.__ckActionBusy = true;
+      if (msg) msg.textContent = 'working…';
+      fetch('/api/action', {
+        method: 'POST',
+        headers: {
+          'X-Clodhopper-Token': CSRF,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'session_id=' + encodeURIComponent(sess)
+            + '&action=' + encodeURIComponent(action)
+      })
+        .then(function (resp) { return resp.json().catch(function () { return { ok: false, output: 'HTTP ' + resp.status }; }); })
+        .then(function (d) {
+          // IMPORTANT: assign result via textContent, never innerHTML — output is
+          // raw git/gh text; scrubString removed secrets but not HTML.
+          if (msg) {
+            msg.textContent = d.ok
+              ? (action === 'ready' ? 'PR marked ready' : 'done — row will clear')
+              : ('failed: ' + (d.output || ('exit ' + d.exitCode)));
+            if (d.timedOut) msg.textContent = 'timed out — teardown may be incomplete; verify before retrying';
+          }
+          // A successful destructive action is followed by the row disappearing
+          // on the next poll (session/worktree gone); leave it locked so nothing
+          // flashes back to life first. Anything else — failure or "ready",
+          // which leaves the row in place — unlocks the buttons for a retry.
+          if (!d.ok || action === 'ready') unlock(group, false);
+        })
+        .catch(function (e) { if (msg) msg.textContent = 'request failed: ' + e; unlock(group, false); })
+        .finally(function () { window.__ckActionBusy = false; });
+    }
+
+    document.addEventListener('click', function (ev) {
+      var el = ev.target && ev.target.closest ? ev.target.closest('.pract') : null;
+      if (!el) return;
+      var group = el.closest('.actgroup');
+      if (!group) return;
+
+      if (el.classList.contains('actcancel')) {
+        unlock(group, true);
+        return;
+      }
+      if (group.classList.contains('confirm')) {
+        fire(group, group.querySelector('.pract.confirm') || el);
+        return;
+      }
+      armConfirm(group, el);
+    });
+  })();
+
   // Reflect the actual bind address in the footer rather than a hard-coded port.
   (function () { var h = document.getElementById('ck-host'); if (h) h.textContent = location.host; })();
   </script>
@@ -1094,10 +1229,10 @@
     <table class="roster">
       <colgroup>
         <col style="width: 5ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 20ch">
-        <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch"><col>
+        <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch"><col><col style="width: 20ch">
       </colgroup>
       <thead>
-        <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th><th>id</th><th>session</th></tr>
+        <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th><th>id</th><th>session</th><th>actions</th></tr>
       </thead>
       <tbody>
         {{ range .Agents }}
@@ -1110,8 +1245,17 @@
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
           <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}{{ if and $.PeekEnabled .LiveTmux }} <button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="show this pane's last lines">⤢</button>{{ end }}</td>
+          {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions">
+            <span class="actgroup" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
+              <button type="button" class="pract" data-action="squash" title="merge-pr --squash">squash</button>
+              <button type="button" class="pract" data-action="squash-admin" title="merge-pr --squash --admin (bypasses branch protection)">admin</button>
+              <button type="button" class="pract" data-action="close" title="merge-pr --close">close</button>
+              <button type="button" class="pract" data-action="ready" title="gh pr ready">ready</button>
+              <span class="actmsg" aria-live="polite"></span>
+            </span>
+          </td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}
         </tr>
-        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="8"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
+        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="9"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
         {{ end }}
       </tbody>
     </table>
