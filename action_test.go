@@ -1,6 +1,11 @@
 package main
 
 import (
+	"database/sql"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -154,5 +159,188 @@ func TestTokenOK(t *testing.T) {
 	}
 	if tokenOK("abc123", "abc124") || tokenOK("", "abc") || tokenOK("abc", "") {
 		t.Fatal("mismatched/empty tokens must fail")
+	}
+}
+
+// openTestDB opens a fresh sqlite db in a temp dir for handleAction tests.
+func openTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := openDB(testDB(t))
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
+// queryLatestEventType returns the event_type of sessionID's most recent row.
+func queryLatestEventType(t *testing.T, db *sql.DB, sessionID string) string {
+	t.Helper()
+	var et string
+	if err := db.QueryRow(
+		`SELECT event_type FROM events WHERE session_id = ? ORDER BY id DESC LIMIT 1`,
+		sessionID).Scan(&et); err != nil {
+		t.Fatalf("queryLatestEventType(%q): %v", sessionID, err)
+	}
+	return et
+}
+
+func newActionCfg(mergePR, gh string) *actionConfig {
+	return &actionConfig{
+		enabled: true, mergePR: mergePR, gh: gh,
+		token: "secret", bindHost: "127.0.0.1", inflight: newInflightSet(),
+	}
+}
+
+//nolint:unparam // force mirrors handleAction's real form field; no current test needs force=true, but the helper should stay general.
+func actionReq(sessionID, action string, force bool, token, host string) *http.Request {
+	form := url.Values{"session_id": {sessionID}, "action": {action}}
+	if force {
+		form.Set("force", "true")
+	}
+	r := httptest.NewRequest(http.MethodPost, "/api/action", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if token != "" {
+		r.Header.Set("X-Clodhopper-Token", token)
+	}
+	if host != "" {
+		r.Host = host
+	}
+	return r
+}
+
+func TestHandleActionDisabled(t *testing.T) {
+	db := openTestDB(t)
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	cfg.enabled = false
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("s", "squash", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("code = %d, want 403", w.Code)
+	}
+}
+
+func TestHandleActionMethodHostToken(t *testing.T) {
+	db := openTestDB(t)
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	// wrong method
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/action", nil)
+	r.Host = "127.0.0.1"
+	handleAction(w, r, db, cfg, time.Now())
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("method: %d", w.Code)
+	}
+	// bad host
+	w = httptest.NewRecorder()
+	handleAction(w, actionReq("s", "squash", false, "secret", "evil.example.com"), db, cfg, time.Now())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("host: %d", w.Code)
+	}
+	// bad token
+	w = httptest.NewRecorder()
+	handleAction(w, actionReq("s", "squash", false, "wrong", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("token: %d", w.Code)
+	}
+}
+
+func TestHandleActionUnknownActionAndSession(t *testing.T) {
+	db := openTestDB(t)
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	// unknown action
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("s", "nuke", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("action: %d", w.Code)
+	}
+	// valid action but session has no cwd on record
+	w = httptest.NewRecorder()
+	handleAction(w, actionReq("ghost", "squash", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("session: %d", w.Code)
+	}
+}
+
+func TestHandleActionTeardownSuccessEndsSession(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-1", Cwd: dir, EventType: "Stop", PayloadJSON: "{}"})
+	stub := writeStub(t, "merge", `echo "Merged #7"; exit 0`)
+	cfg := newActionCfg(stub, "/bin/true")
+
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("live-1", "squash", false, "secret", "127.0.0.1"), db, cfg, time.Date(2026, 8, 12, 10, 5, 0, 0, time.UTC))
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	var got struct {
+		OK       bool   `json:"ok"`
+		ExitCode int    `json:"exitCode"`
+		Output   string `json:"output"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &got)
+	if !got.OK || got.ExitCode != 0 || !strings.Contains(got.Output, "Merged #7") {
+		t.Fatalf("resp = %+v", got)
+	}
+	// Session must now be ended (synthetic SessionEnd is the latest event).
+	if cwd, _ := latestCwdForSession(db, "live-1"); cwd != dir {
+		t.Fatalf("cwd changed unexpectedly: %q", cwd)
+	}
+	rows := queryLatestEventType(t, db, "live-1")
+	if rows != "SessionEnd" {
+		t.Fatalf("latest event = %q, want SessionEnd", rows)
+	}
+}
+
+func TestHandleActionReadyDoesNotEndSession(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-2", Cwd: dir, EventType: "Stop", PayloadJSON: "{}"})
+	stub := writeStub(t, "gh", `echo "marked ready"; exit 0`)
+	cfg := newActionCfg("/bin/false", stub)
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("live-2", "ready", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d", w.Code)
+	}
+	if queryLatestEventType(t, db, "live-2") == "SessionEnd" {
+		t.Fatal("ready must not end the session")
+	}
+}
+
+func TestHandleActionFailureSurfaced(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-3", Cwd: dir, EventType: "Stop", PayloadJSON: "{}"})
+	stub := writeStub(t, "merge", `echo "uncommitted changes" >&2; exit 1`)
+	cfg := newActionCfg(stub, "/bin/true")
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("live-3", "close", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	var got struct {
+		OK     bool   `json:"ok"`
+		Output string `json:"output"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &got)
+	if got.OK || !strings.Contains(got.Output, "uncommitted changes") {
+		t.Fatalf("resp = %+v", got)
+	}
+	// Failure must NOT end the session.
+	if queryLatestEventType(t, db, "live-3") == "SessionEnd" {
+		t.Fatal("failed action must not end the session")
+	}
+}
+
+func TestHandleActionConcurrent409(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-4", Cwd: dir, EventType: "Stop", PayloadJSON: "{}"})
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	// Pre-acquire to simulate an in-flight action for this session.
+	cfg.inflight.acquire("live-4")
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("live-4", "squash", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusConflict {
+		t.Fatalf("code = %d, want 409", w.Code)
 	}
 }

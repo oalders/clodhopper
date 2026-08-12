@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"crypto/subtle"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"net"
+	"net/http"
 	"os/exec"
 	"strings"
 	"sync"
@@ -161,4 +164,101 @@ func tokenOK(got, want string) bool {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
+// actionTimeout / readyTimeout bound the two action classes. Teardown does real
+// work (docker-teardown, kill-worktree-procs, submodule-forced worktree remove,
+// session kill), so it gets a generous ceiling; gh pr ready is a single API call.
+const (
+	actionTimeout = 120 * time.Second
+	readyTimeout  = 20 * time.Second
+)
+
+// actionConfig is serve's write-path state. Binary names are injected so tests
+// substitute stubs; token is the per-serve CSRF secret; allowedHosts extends the
+// Host allowlist beyond loopback + bindHost.
+type actionConfig struct {
+	enabled      bool
+	mergePR      string // path/name of the merge-pr binary
+	gh           string // path/name of the gh binary
+	token        string
+	bindHost     string
+	allowedHosts []string
+	inflight     *inflightSet
+}
+
+// handleAction serves POST /api/action: run one allowlisted PR action for a
+// roster row's worktree. now is injected so the synthetic SessionEnd timestamp
+// is deterministic in tests. Every early return uses a plain http status; only a
+// completed run writes the JSON body.
+func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actionConfig, now time.Time) {
+	setSecurityHeaders(w)
+	if !cfg.enabled {
+		http.Error(w, "PR actions disabled", http.StatusForbidden)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !hostAllowed(r.Host, cfg.bindHost, cfg.allowedHosts) {
+		http.Error(w, "host not allowed", http.StatusForbidden)
+		return
+	}
+	if !tokenOK(r.Header.Get("X-Clodhopper-Token"), cfg.token) {
+		http.Error(w, "bad token", http.StatusForbidden)
+		return
+	}
+
+	sessionID := r.FormValue("session_id")
+	action := r.FormValue("action")
+	force := r.FormValue("force") == "true"
+
+	binary, args, teardown, ok := actionArgv(action, force)
+	if !ok {
+		http.Error(w, "unknown action", http.StatusBadRequest)
+		return
+	}
+
+	cwd, err := latestCwdForSession(db, sessionID)
+	if err != nil {
+		http.Error(w, "lookup failed", http.StatusInternalServerError)
+		return
+	}
+	if cwd == "" {
+		http.Error(w, "unknown session", http.StatusNotFound)
+		return
+	}
+
+	if !cfg.inflight.acquire(sessionID) {
+		http.Error(w, "action already running for this session", http.StatusConflict)
+		return
+	}
+	defer cfg.inflight.release(sessionID)
+
+	bin := cfg.mergePR
+	timeout := actionTimeout
+	if binary == "gh" {
+		bin, timeout = cfg.gh, readyTimeout
+	}
+	res := runAction(bin, cwd, args, timeout)
+
+	// A clean teardown hard-kills the session, so it never emits its own
+	// SessionEnd; write a synthetic one so the row drops. Best-effort: a failure
+	// here does not change what we report about the merge itself. A timeout is
+	// NOT treated as success even at exit 0 (the deadline may have fired after
+	// the merge but mid-teardown), so it never ends the session here.
+	if teardown && res.ExitCode == 0 && !res.TimedOut {
+		if _, err := endSessions(db, EndSelector{SessionID: sessionID}, now); err != nil {
+			debugf("action: endSessions after merge: %v", err)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":       res.ExitCode == 0 && !res.TimedOut,
+		"exitCode": res.ExitCode,
+		"timedOut": res.TimedOut,
+		"output":   scrubString(res.Output),
+	})
 }
