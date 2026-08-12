@@ -287,6 +287,28 @@
        nothing happen would paste the wrong path. */
     .copycwd.copyfail .copyicon { color: var(--fail); }
 
+    /* Live pane peek: a small toggle in the session cell, and a full-width
+       monospace capture row that expands beneath it on demand. */
+    button.peek {
+      all: unset;
+      cursor: pointer;
+      opacity: 0.55;
+      padding: 0 4px;
+      color: var(--text-2);
+    }
+    button.peek:hover, button.peek:focus-visible { opacity: 1; color: var(--brand); }
+    button.peek[aria-expanded="true"] { opacity: 1; color: var(--brand); }
+    tr.panerow > td { padding: 0; background: var(--surface-3); }
+    pre.panecap {
+      margin: 0;
+      max-height: 40vh;
+      overflow: auto;
+      padding: 10px 12px;
+      font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre;
+      color: var(--text-1);
+    }
+
     /* Visually hidden but still announced — the copy confirmation and the
        cluster suffix live here. clip-path is the modern rule; the deprecated
        clip stays for browsers that only honour it. */
@@ -826,6 +848,30 @@
       }
     });
   })();
+
+  // Live pane peek: toggle the capture row and fetch it on first open. On-demand
+  // only — the row is a deliberate snapshot of "now" and does not auto-refresh.
+  document.addEventListener('click', function (ev) {
+    var btn = ev.target && ev.target.closest ? ev.target.closest('.peek') : null;
+    if (!btn) return;
+    var pane = btn.getAttribute('data-pane');
+    var sel = '.panerow[data-pane-row="' + (window.CSS && CSS.escape ? CSS.escape(pane) : pane) + '"]';
+    var row = document.querySelector(sel);
+    if (!row) return;
+    var pre = row.querySelector('.panecap');
+    if (btn.getAttribute('aria-expanded') === 'true') {
+      row.hidden = true;
+      btn.setAttribute('aria-expanded', 'false');
+      return;
+    }
+    btn.setAttribute('aria-expanded', 'true');
+    row.hidden = false;
+    pre.textContent = 'loading…';
+    fetch('/api/pane?pane=' + encodeURIComponent(pane), { headers: { 'Accept': 'text/plain' } })
+      .then(function (r) { return r.ok ? r.text() : ''; })
+      .then(function (t) { pre.textContent = t || '(pane unavailable)'; })
+      .catch(function () { pre.textContent = '(pane unavailable)'; });
+  });
 
   // Reflect the actual bind address in the footer rather than a hard-coded port.
   (function () { var h = document.getElementById('ck-host'); if (h) h.textContent = location.host; })();
