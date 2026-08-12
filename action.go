@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net"
@@ -185,6 +187,15 @@ type actionConfig struct {
 	bindHost     string
 	allowedHosts []string
 	inflight     *inflightSet
+}
+
+// randomToken returns a 256-bit hex CSRF secret, regenerated each serve start.
+func randomToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }
 
 // handleAction serves POST /api/action: run one allowlisted PR action for a

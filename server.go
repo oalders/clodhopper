@@ -212,6 +212,8 @@ type dashboardData struct {
 	SessColors     map[string]string // session id -> chip/tint color; see assignSessColors
 	Signature      string            // fingerprint of the report-worthy view; see viewSignature
 	PeekEnabled    bool              // true when serve --pane-peek is set; gates the roster's live-pane peek control
+	MergeEnabled   bool              // true when serve --enable-merge is set; gates the roster's PR-action buttons
+	CSRFToken      string            // per-serve secret echoed into the page for the action fetch; "" when MergeEnabled is false
 }
 
 // refreshOption is one entry in the auto-refresh interval dropdown.
@@ -303,6 +305,7 @@ func runServe(args []string) int {
 	allowPub := fs.Bool("allow-public", allowPublic(), "allow binding to a public IP (UNSAFE: dashboard has no auth or TLS)")
 	panePeek := fs.Bool("pane-peek", false, "enable the live tmux pane peek (streams pane content to the dashboard; use only on a trusted network such as your tailnet)")
 	paneLines := fs.Int("pane-lines", paneLinesDefault, "lines shown in a pane peek (1..2000)")
+	enableMerge := fs.Bool("enable-merge", false, "enable PR-action buttons on the roster (merge-pr --squash/--admin/--close, gh pr ready); writes to your repos — use only on a trusted network")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -338,21 +341,40 @@ func runServe(args []string) int {
 
 	ci := newCICache()
 	peek := &peekConfig{enabled: *panePeek, lines: clampPaneLines(*paneLines), cache: newPaneCache()}
+	act := &actionConfig{
+		enabled:      *enableMerge,
+		mergePR:      "merge-pr",
+		gh:           "gh",
+		bindHost:     *host,
+		allowedHosts: allowedHosts(),
+		inflight:     newInflightSet(),
+	}
+	if act.enabled {
+		tok, err := randomToken()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "clodhopper serve: token:", err)
+			return 1
+		}
+		act.token = tok
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
 		}
-		handleDashboard(w, r, db, ci, peek)
+		handleDashboard(w, r, db, ci, peek, act)
 	})
 	// JSON polling endpoint: the dashboard's JS hits this on the refresh interval
 	// and re-renders only when the returned signature changes.
 	mux.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
-		handleState(w, r, db, ci, peek)
+		handleState(w, r, db, ci, peek, act)
 	})
 	mux.HandleFunc("/api/pane", func(w http.ResponseWriter, r *http.Request) {
 		handlePane(w, r, peek, time.Now())
+	})
+	mux.HandleFunc("/api/action", func(w http.ResponseWriter, r *http.Request) {
+		handleAction(w, r, db, act, time.Now())
 	})
 
 	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
@@ -499,9 +521,9 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
 }
 
-func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache, peek *peekConfig) {
+func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache, peek *peekConfig, act *actionConfig) {
 	setSecurityHeaders(w)
-	data, err := buildDashboardData(r, db, ci, peek)
+	data, err := buildDashboardData(r, db, ci, peek, act)
 	if err != nil {
 		http.Error(w, "dashboard error", http.StatusInternalServerError)
 		return
@@ -516,9 +538,9 @@ func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciC
 // {"signature": ..., "html": ...}. The client compares the signature to what it
 // last rendered and only swaps the DOM when it differs, so a quiet board never
 // repaints.
-func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache, peek *peekConfig) {
+func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache, peek *peekConfig, act *actionConfig) {
 	setSecurityHeaders(w)
-	data, err := buildDashboardData(r, db, ci, peek)
+	data, err := buildDashboardData(r, db, ci, peek, act)
 	if err != nil {
 		http.Error(w, "dashboard error", http.StatusInternalServerError)
 		return
@@ -537,7 +559,7 @@ func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache
 
 // buildDashboardData assembles the view model shared by the full page and the
 // JSON poll endpoint, including its signature.
-func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConfig) (dashboardData, error) {
+func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConfig, act *actionConfig) (dashboardData, error) {
 	q := r.URL.Query()
 	source := q.Get("source_app")
 	branch := q.Get("branch")
@@ -615,6 +637,8 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConf
 		Now:            now,
 		SessColors:     assignSessColors(agents, events),
 		PeekEnabled:    peek.enabled,
+		MergeEnabled:   act.enabled,
+		CSRFToken:      act.token,
 	}
 	data.Signature = viewSignature(data)
 	return data, nil

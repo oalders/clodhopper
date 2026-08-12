@@ -629,7 +629,7 @@ func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/state", nil)
 	rec := httptest.NewRecorder()
-	handleState(rec, req, db, newCICache(), &peekConfig{cache: newPaneCache()})
+	handleState(rec, req, db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d", rec.Code)
 	}
@@ -658,6 +658,25 @@ func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
 	}
 }
 
+func TestBuildDashboardDataMergeFlags(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ci := newCICache()
+	peek := &peekConfig{}
+	cfg := &actionConfig{enabled: true, token: "tok"}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	data, err := buildDashboardData(r, db, ci, peek, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !data.MergeEnabled || data.CSRFToken != "tok" {
+		t.Fatalf("MergeEnabled=%v CSRFToken=%q", data.MergeEnabled, data.CSRFToken)
+	}
+}
+
 // Both routes carry the hardening headers. The framing one has teeth: the
 // clipboard fallback used on a non-secure origin still copies inside a frame,
 // so a framed dashboard is a usable decoy.
@@ -667,7 +686,7 @@ func TestHandlers_SetSecurityHeaders(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 
-	routes := map[string]func(http.ResponseWriter, *http.Request, *sql.DB, *ciCache, *peekConfig){
+	routes := map[string]func(http.ResponseWriter, *http.Request, *sql.DB, *ciCache, *peekConfig, *actionConfig){
 		"/":          handleDashboard,
 		"/api/state": handleState,
 	}
@@ -679,7 +698,7 @@ func TestHandlers_SetSecurityHeaders(t *testing.T) {
 	}
 	for target, h := range routes {
 		rec := httptest.NewRecorder()
-		h(rec, httptest.NewRequest(http.MethodGet, target, nil), db, newCICache(), &peekConfig{cache: newPaneCache()})
+		h(rec, httptest.NewRequest(http.MethodGet, target, nil), db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s: status=%d", target, rec.Code)
 		}
@@ -697,7 +716,7 @@ func TestHandlers_SetSecurityHeaders(t *testing.T) {
 	closed.Close()
 	for target, h := range routes {
 		rec := httptest.NewRecorder()
-		h(rec, httptest.NewRequest(http.MethodGet, target, nil), closed, newCICache(), &peekConfig{cache: newPaneCache()})
+		h(rec, httptest.NewRequest(http.MethodGet, target, nil), closed, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("%s: a closed DB should 500, got %d", target, rec.Code)
 		}
@@ -1075,7 +1094,7 @@ func getBody(t *testing.T, db *sql.DB, target string) string {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	rec := httptest.NewRecorder()
-	handleDashboard(rec, req, db, newCICache(), &peekConfig{cache: newPaneCache()})
+	handleDashboard(rec, req, db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d", rec.Code)
 	}
