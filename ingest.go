@@ -233,28 +233,40 @@ func rebaseBranch(dir string) string {
 }
 
 // tmuxContext returns the current tmux session name (cleaned for display) and the
-// current pane id (raw, shape "%N"), both resolved via $TMUX. Each is "" outside
+// pane id (raw, shape "%N") of the pane THIS process runs in. Each is "" outside
 // tmux, on any error, or on timeout — capture must never block or fail a tool
-// call. A single display-message call returns both fields (pane id first, so the
-// session name, which may contain odd characters, is the free-form remainder), so
-// ingest still spawns tmux at most once.
+// call.
+//
+// The pane id comes from $TMUX_PANE, not from `display-message`: tmux sets
+// $TMUX_PANE in every pane's own environment, so it is exactly the pane the hook
+// runs in. `display-message` with no target instead resolves to the SESSION's
+// currently *active* pane, so two agents sharing one tmux session would both
+// record whichever pane is focused — and every pane peek would show that one
+// pane. We fail closed: an unset or malformed $TMUX_PANE leaves the pane empty
+// (no peek control) rather than targeting the wrong pane.
+//
+// The session name is then resolved for that specific pane (a pane may belong to
+// any session); this is the one tmux shell-out, and its failure only drops the
+// display label, not the pane id.
 func tmuxContext() (session, pane string) {
 	if os.Getenv("TMUX") == "" {
 		return "", ""
 	}
+	if p := os.Getenv("TMUX_PANE"); paneIDRe.MatchString(p) {
+		pane = p
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "tmux", "display-message", "-p", "#{pane_id}\t#{session_name}").Output()
+	args := []string{"display-message", "-p", "#{session_name}"}
+	if pane != "" {
+		// Target the pane we resolved so the label matches it, not the focused pane.
+		args = []string{"display-message", "-t", pane, "-p", "#{session_name}"}
+	}
+	out, err := exec.CommandContext(ctx, "tmux", args...).Output()
 	if err != nil {
-		return "", ""
+		return "", pane
 	}
-	parts := strings.SplitN(strings.TrimRight(string(out), "\n"), "\t", 2)
-	if paneIDRe.MatchString(parts[0]) {
-		pane = parts[0]
-	}
-	if len(parts) == 2 {
-		session = truncate(scrubString(cleanSessionName(parts[1])), maxFieldLen)
-	}
+	session = truncate(scrubString(cleanSessionName(strings.TrimRight(string(out), "\n"))), maxFieldLen)
 	return session, pane
 }
 

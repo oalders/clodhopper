@@ -50,9 +50,10 @@ func TestTmuxContext_NotInTmux(t *testing.T) {
 	}
 }
 
-// Inside a real tmux session, tmuxContext matches tmux's own display-message.
-// Skipped unless the suite runs inside tmux with the binary present — tmuxContext
-// reads ambient $TMUX, so it cannot be faked hermetically.
+// Inside a real tmux session, tmuxContext reports THIS pane ($TMUX_PANE) and the
+// session that pane belongs to. Skipped unless the suite runs inside tmux with
+// the binary present — tmuxContext reads the ambient tmux environment, so it
+// cannot be faked hermetically.
 func TestTmuxContext_InTmux(t *testing.T) {
 	if os.Getenv("TMUX") == "" {
 		t.Skip("not running inside tmux")
@@ -60,19 +61,50 @@ func TestTmuxContext_InTmux(t *testing.T) {
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
-	out, err := exec.Command("tmux", "display-message", "-p", "#{pane_id}\t#{session_name}").Output()
+	wantPane := os.Getenv("TMUX_PANE")
+	if !paneIDRe.MatchString(wantPane) {
+		t.Skipf("no usable $TMUX_PANE (%q)", wantPane)
+	}
+	// The session name is the one that owns THIS pane, resolved by targeting it —
+	// exactly what tmuxContext does, and deliberately not the focused pane's.
+	out, err := exec.Command("tmux", "display-message", "-t", wantPane, "-p", "#{session_name}").Output()
 	if err != nil {
 		t.Skipf("tmux display-message failed: %v", err)
 	}
-	parts := strings.SplitN(strings.TrimRight(string(out), "\n"), "\t", 2)
-	wantPane := parts[0]
-	wantSess := truncate(scrubString(cleanSessionName(parts[1])), maxFieldLen)
+	wantSess := truncate(scrubString(cleanSessionName(strings.TrimRight(string(out), "\n"))), maxFieldLen)
 	sess, pane := tmuxContext()
 	if sess != wantSess {
 		t.Errorf("tmuxContext() session = %q, want %q", sess, wantSess)
 	}
 	if pane != wantPane {
 		t.Errorf("tmuxContext() pane = %q, want %q", pane, wantPane)
+	}
+}
+
+// The pane id comes from $TMUX_PANE (the pane THIS process runs in), not from
+// `display-message` (which resolves to the session's active pane — the bug where
+// every peek showed one focused pane). Pointing $TMUX at a bogus socket forces
+// the session-name lookup to fail, proving the pane id survives independently and
+// a failed label lookup does not drop it.
+func TestTmuxContext_PaneFromEnv(t *testing.T) {
+	t.Setenv("TMUX", filepath.Join(t.TempDir(), "no-such-socket")+",0,0")
+	t.Setenv("TMUX_PANE", "%99")
+	sess, pane := tmuxContext()
+	if pane != "%99" {
+		t.Errorf("pane = %q, want %%99 (from $TMUX_PANE)", pane)
+	}
+	if sess != "" {
+		t.Errorf("session = %q, want \"\" (lookup against a bogus socket must fail closed)", sess)
+	}
+}
+
+// A malformed $TMUX_PANE yields no pane id: fail closed, because a peek that
+// targets the wrong pane is worse than no peek.
+func TestTmuxContext_RejectsBadPaneEnv(t *testing.T) {
+	t.Setenv("TMUX", filepath.Join(t.TempDir(), "no-such-socket")+",0,0")
+	t.Setenv("TMUX_PANE", "not-a-pane")
+	if _, pane := tmuxContext(); pane != "" {
+		t.Errorf("pane = %q, want \"\" for malformed $TMUX_PANE", pane)
 	}
 }
 
