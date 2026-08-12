@@ -66,6 +66,7 @@ func buildEvent(raw []byte, sourceApp string) Event {
 
 	cwd := str(p, "cwd")
 	branch, rebasing := gitBranch(cwd)
+	tmuxSess, tmuxPane := tmuxContext()
 	ev := Event{
 		TS:        time.Now().UTC().Format(time.RFC3339),
 		SourceApp: sourceApp,
@@ -82,7 +83,8 @@ func buildEvent(raw []byte, sourceApp string) Event {
 		// the hook actually reported. Pure string work: nothing here can fail,
 		// which is the rule for anything on the ingest path.
 		Cwd:         truncate(scrubString(stripControl(cwd)), maxPathLen),
-		TmuxSession: tmuxSession(),
+		TmuxSession: tmuxSess,
+		TmuxPane:    tmuxPane,
 		SessionID:   str(p, "session_id"),
 		EventType:   str(p, "hook_event_name"),
 		ToolName:    str(p, "tool_name"),
@@ -230,25 +232,30 @@ func rebaseBranch(dir string) string {
 	return ""
 }
 
-// tmuxSession returns the name of the tmux session the current process is in, or
-// "" when not inside tmux, on any error, or if it times out. Like gitBranch it is
-// deliberately best-effort: capture must never block or fail a tool call. The
-// $TMUX guard avoids spawning tmux (and its stderr noise) outside a session;
-// `display-message -p '#S'` resolves the current pane's session via $TMUX, so no
-// `-t` target is needed. The name is user-chosen free text, so it is cleaned
-// (unrenderable glyphs and padding stripped), scrubbed, and truncated to honour
-// the scrub layer's fail-closed bias.
-func tmuxSession() string {
+// tmuxContext returns the current tmux session name (cleaned for display) and the
+// current pane id (raw, shape "%N"), both resolved via $TMUX. Each is "" outside
+// tmux, on any error, or on timeout — capture must never block or fail a tool
+// call. A single display-message call returns both fields (pane id first, so the
+// session name, which may contain odd characters, is the free-form remainder), so
+// ingest still spawns tmux at most once.
+func tmuxContext() (session, pane string) {
 	if os.Getenv("TMUX") == "" {
-		return ""
+		return "", ""
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "tmux", "display-message", "-p", "#S").Output()
+	out, err := exec.CommandContext(ctx, "tmux", "display-message", "-p", "#{pane_id}\t#{session_name}").Output()
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	return truncate(scrubString(cleanSessionName(string(out))), maxFieldLen)
+	parts := strings.SplitN(strings.TrimRight(string(out), "\n"), "\t", 2)
+	if paneIDRe.MatchString(parts[0]) {
+		pane = parts[0]
+	}
+	if len(parts) == 2 {
+		session = truncate(scrubString(cleanSessionName(parts[1])), maxFieldLen)
+	}
+	return session, pane
 }
 
 // cleanSessionName makes a raw tmux session name safe and tidy for the web

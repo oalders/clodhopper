@@ -22,6 +22,7 @@ type Event struct {
 	Rebasing     bool   // true if the work tree at Cwd was mid-rebase at capture, so Branch was recovered from rebase state
 	Cwd          string
 	TmuxSession  string // tmux session name at capture time, "" if not in tmux
+	TmuxPane     string // tmux pane id ("%N") of the Claude pane at capture time, "" if not in tmux
 	SlashCommand string // first slash-command token from a UserPromptSubmit prompt, "" otherwise (no arguments retained)
 	SessionID    string
 	EventType    string

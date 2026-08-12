@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -40,32 +41,38 @@ func TestCleanSessionName(t *testing.T) {
 	}
 }
 
-// Outside tmux ($TMUX unset), capture is empty and never errors.
-func TestTmuxSession_NotInTmux(t *testing.T) {
+// Outside tmux ($TMUX unset), both captures are empty and never error.
+func TestTmuxContext_NotInTmux(t *testing.T) {
 	t.Setenv("TMUX", "")
-	if got := tmuxSession(); got != "" {
-		t.Errorf("tmuxSession() outside tmux = %q, want \"\"", got)
+	sess, pane := tmuxContext()
+	if sess != "" || pane != "" {
+		t.Errorf("tmuxContext() outside tmux = (%q, %q), want (\"\", \"\")", sess, pane)
 	}
 }
 
-// Inside a real tmux session, capture matches `tmux display-message -p '#S'`.
-// Skipped unless the suite itself runs inside tmux with the binary present —
-// tmuxSession() reads ambient $TMUX, so we cannot fake it hermetically (unlike
-// gitBranch, which takes a dir argument).
-func TestTmuxSession_InTmux(t *testing.T) {
+// Inside a real tmux session, tmuxContext matches tmux's own display-message.
+// Skipped unless the suite runs inside tmux with the binary present — tmuxContext
+// reads ambient $TMUX, so it cannot be faked hermetically.
+func TestTmuxContext_InTmux(t *testing.T) {
 	if os.Getenv("TMUX") == "" {
 		t.Skip("not running inside tmux")
 	}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		t.Skip("tmux not available")
 	}
-	out, err := exec.Command("tmux", "display-message", "-p", "#S").Output()
+	out, err := exec.Command("tmux", "display-message", "-p", "#{pane_id}\t#{session_name}").Output()
 	if err != nil {
 		t.Skipf("tmux display-message failed: %v", err)
 	}
-	want := truncate(scrubString(cleanSessionName(string(out))), maxFieldLen)
-	if got := tmuxSession(); got != want {
-		t.Errorf("tmuxSession() = %q, want %q", got, want)
+	parts := strings.SplitN(strings.TrimRight(string(out), "\n"), "\t", 2)
+	wantPane := parts[0]
+	wantSess := truncate(scrubString(cleanSessionName(parts[1])), maxFieldLen)
+	sess, pane := tmuxContext()
+	if sess != wantSess {
+		t.Errorf("tmuxContext() session = %q, want %q", sess, wantSess)
+	}
+	if pane != wantPane {
+		t.Errorf("tmuxContext() pane = %q, want %q", pane, wantPane)
 	}
 }
 
@@ -77,6 +84,9 @@ func TestBuildEvent_PopulatesTmuxSession(t *testing.T) {
 	ev := buildEvent(raw, "myapp")
 	if ev.TmuxSession != "" {
 		t.Errorf("tmux session with TMUX unset = %q, want \"\"", ev.TmuxSession)
+	}
+	if ev.TmuxPane != "" {
+		t.Errorf("tmux pane with TMUX unset = %q, want \"\"", ev.TmuxPane)
 	}
 }
 
