@@ -889,33 +889,81 @@
 
   // Live pane peek: toggle the capture row and fetch it on first open. On-demand
   // only — the row is a deliberate snapshot of "now" and does not auto-refresh.
-  document.addEventListener('click', function (ev) {
-    var btn = ev.target && ev.target.closest ? ev.target.closest('.peek') : null;
-    if (!btn) return;
-    var pane = btn.getAttribute('data-pane');
-    var sel = '.panerow[data-pane-row="' + (window.CSS && CSS.escape ? CSS.escape(pane) : pane) + '"]';
-    var row = document.querySelector(sel);
-    if (!row) return;
-    var pre = row.querySelector('.panecap');
-    if (btn.getAttribute('aria-expanded') === 'true') {
-      row.hidden = true;
-      btn.setAttribute('aria-expanded', 'false');
-      return;
+  // Click the ⤢ to open/close; Esc closes an open peek without the mouse.
+  (function () {
+    function paneRow(pane) {
+      var sel = '.panerow[data-pane-row="' + (window.CSS && CSS.escape ? CSS.escape(pane) : pane) + '"]';
+      return document.querySelector(sel);
     }
-    btn.setAttribute('aria-expanded', 'true');
-    row.hidden = false;
-    pre.textContent = 'loading…';
-    fetch('/api/pane?pane=' + encodeURIComponent(pane), { headers: { 'Accept': 'text/plain' } })
-      .then(function (r) { return r.ok ? r.text() : ''; })
-      .then(function (t) {
-        pre.textContent = t || '(pane unavailable)';
-        // Open scrolled to the bottom: capture-pane returns the last N lines and
-        // the freshest output — where a finished run leaves its result — is at the
-        // end, so that is what the reader wants to see first.
-        pre.scrollTop = pre.scrollHeight;
-      })
-      .catch(function () { pre.textContent = '(pane unavailable)'; });
-  });
+    function paneButton(pane) {
+      var btns = document.querySelectorAll('#content .peek');
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].getAttribute('data-pane') === pane) return btns[i];
+      }
+      return null;
+    }
+    function closePane(pane, focusBtn) {
+      var row = paneRow(pane);
+      if (!row || row.hidden) return false;
+      row.hidden = true;
+      var btn = paneButton(pane);
+      if (btn) {
+        btn.setAttribute('aria-expanded', 'false');
+        // Returning focus to the trigger keeps a keyboard user anchored instead of
+        // dropping them to <body> when the capture they were in disappears.
+        if (focusBtn) btn.focus({ preventScroll: true });
+      }
+      return true;
+    }
+    function openPane(pane) {
+      var row = paneRow(pane);
+      if (!row) return;
+      var pre = row.querySelector('.panecap');
+      if (!pre) return;
+      var btn = paneButton(pane);
+      if (btn) btn.setAttribute('aria-expanded', 'true');
+      row.hidden = false;
+      pre.textContent = 'loading…';
+      fetch('/api/pane?pane=' + encodeURIComponent(pane), { headers: { 'Accept': 'text/plain' } })
+        .then(function (r) { return r.ok ? r.text() : ''; })
+        .then(function (t) {
+          pre.textContent = t || '(pane unavailable)';
+          // Open scrolled to the bottom: capture-pane returns the last N lines and
+          // the freshest output — where a finished run leaves its result — is at the
+          // end, so that is what the reader wants to see first.
+          pre.scrollTop = pre.scrollHeight;
+        })
+        .catch(function () { pre.textContent = '(pane unavailable)'; });
+    }
+
+    document.addEventListener('click', function (ev) {
+      var btn = ev.target && ev.target.closest ? ev.target.closest('.peek') : null;
+      if (!btn) return;
+      var pane = btn.getAttribute('data-pane');
+      if (btn.getAttribute('aria-expanded') === 'true') { closePane(pane, false); return; }
+      openPane(pane);
+    });
+
+    // Esc dismisses an open peek. If focus is inside a peek (its capture or its ⤢
+    // button), close just that one and return focus to its button; otherwise close
+    // every open peek. preventDefault only when something actually closed, so Esc
+    // stays free for anything else on the page.
+    document.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Escape' && ev.keyCode !== 27) return;
+      var scope = ev.target && ev.target.closest ? ev.target.closest('.panerow, .peek') : null;
+      var pane = scope ? (scope.getAttribute('data-pane-row') || scope.getAttribute('data-pane')) : null;
+      var closed = false;
+      if (pane) {
+        closed = closePane(pane, true);
+      } else {
+        var rows = document.querySelectorAll('#content .panerow');
+        for (var i = 0; i < rows.length; i++) {
+          if (!rows[i].hidden && closePane(rows[i].getAttribute('data-pane-row'), false)) closed = true;
+        }
+      }
+      if (closed) ev.preventDefault();
+    });
+  })();
 
   // Reflect the actual bind address in the footer rather than a hard-coded port.
   (function () { var h = document.getElementById('ck-host'); if (h) h.textContent = location.host; })();
