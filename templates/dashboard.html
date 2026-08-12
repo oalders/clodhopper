@@ -24,6 +24,14 @@
        usually serves on 127.0.0.1), so the dashboard never blocks on the font. */
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap');
 
+    /* The UA `[hidden] { display: none }` rule is weaker than ANY author `display`
+       rule regardless of specificity — origin outranks specificity — so the mobile
+       `tr { display: flex }` card layout below silently defeats it, leaving a
+       `hidden` panerow visible and impossible to collapse. Re-assert the hidden
+       attribute at author level (with !important, the idiomatic guard) so toggling
+       `row.hidden` reliably shows and hides the pane peek. */
+    [hidden] { display: none !important; }
+
     /* --- Design tokens -----------------------------------------------------
        Colors are themed: :root carries the dark palette (the default), and
        [data-theme="light"] overrides only the color tokens. Non-color tokens
@@ -432,6 +440,27 @@
          row is both group-start and grouped. */
       tr.group-start { border-top: 2px solid var(--divider); }
       tr.grouped { border-left: 3px solid var(--idle); }
+      /* The peek panel is a full-width scroller, not a card. On desktop the pre's
+         width is bounded by table-layout:fixed + the colgroup + th,td overflow:hidden,
+         so its overflow:auto scrolls internally. The card layout drops all three and
+         td becomes a flex parent, so white-space:pre grows the pre to its widest line
+         and blows the row past the viewport. Take the panerow out of the card: a plain
+         full-width block whose td is a block (not flex) box again bounds the pre, so it
+         scrolls internally instead. content:none drops the empty data-label pseudo the
+         borrowed cell would otherwise print. */
+      /* Shown, the peek is a full-width block, not a flex card. Hiding is handled
+         by the author `[hidden] { display: none !important }` reset at the top —
+         it beats this rule and the generic `tr { display: flex }`, so `row.hidden`
+         reliably collapses the peek. */
+      tr.panerow { display: block; padding: 0; border: none; background: none; }
+      tr.panerow > td { display: block; min-width: 0; }
+      tr.panerow td::before { content: none; }
+      /* Wrap the capture instead of scrolling it sideways: 80-column terminal
+         output is painful to read by horizontal scroll on a phone. pre-wrap keeps
+         the newlines and leading indentation; overflow-wrap:anywhere breaks the
+         occasional unbroken token (a long path or hash) so nothing forces width.
+         Long captures still scroll vertically within max-height. */
+      pre.panecap { white-space: pre-wrap; overflow-wrap: anywhere; }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -915,6 +944,30 @@
       }
       return true;
     }
+    // A line that is nothing but one separator character repeated (----, ====,
+    // ────) carries no more information at 80 columns than at 30, but on a phone
+    // the wrap turns it into a stack of blank-looking rows. Collapse an over-long
+    // pure-separator line to a single short rule so it stays one line; every other
+    // line is returned untouched. Display-only (the stored/served capture is not
+    // changed) and mobile-only — desktop keeps the verbatim capture.
+    function collapseRules(text) {
+      if (!(window.matchMedia && window.matchMedia('(max-width: 640px)').matches)) return text;
+      var lines = text.split('\n');
+      for (var i = 0; i < lines.length; i++) {
+        var core = lines[i].trim();
+        if (core.length <= 32) continue;
+        var ch = core.charAt(0);
+        if (/[0-9a-z\s]/i.test(ch)) continue; // only genuine separator glyphs
+        var uniform = true;
+        for (var j = 1; j < core.length; j++) {
+          if (core.charAt(j) !== ch) { uniform = false; break; }
+        }
+        if (!uniform) continue;
+        var lead = lines[i].slice(0, lines[i].indexOf(ch));
+        lines[i] = lead + new Array(33).join(ch); // 32 of the same glyph
+      }
+      return lines.join('\n');
+    }
     function openPane(pane) {
       var row = paneRow(pane);
       if (!row) return;
@@ -927,7 +980,7 @@
       fetch('/api/pane?pane=' + encodeURIComponent(pane), { headers: { 'Accept': 'text/plain' } })
         .then(function (r) { return r.ok ? r.text() : ''; })
         .then(function (t) {
-          pre.textContent = t || '(pane unavailable)';
+          pre.textContent = t ? collapseRules(t) : '(pane unavailable)';
           // Open scrolled to the bottom: capture-pane returns the last N lines and
           // the freshest output — where a finished run leaves its result — is at the
           // end, so that is what the reader wants to see first.
