@@ -1146,7 +1146,16 @@
         return;
       }
       if (group.classList.contains('confirm')) {
-        fire(group, group.querySelector('.pract.confirm') || el);
+        var armed = group.querySelector('.pract.confirm');
+        if (armed && el !== armed) {
+          // A different action button was clicked while one was already armed —
+          // never fire the stale armed action. Re-arm to the newly clicked
+          // button instead, so the reader has to confirm THIS action too.
+          unlock(group, false);
+          armConfirm(group, el);
+          return;
+        }
+        fire(group, armed || el);
         return;
       }
       armConfirm(group, el);
@@ -1229,10 +1238,10 @@
     <table class="roster">
       <colgroup>
         <col style="width: 5ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 20ch">
-        <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch"><col><col style="width: 20ch">
+        <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch"><col>{{ if .MergeEnabled }}<col style="width: 20ch">{{ end }}
       </colgroup>
       <thead>
-        <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th><th>id</th><th>session</th><th>actions</th></tr>
+        <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th><th>id</th><th>session</th>{{ if .MergeEnabled }}<th>actions</th>{{ end }}</tr>
       </thead>
       <tbody>
         {{ range .Agents }}
