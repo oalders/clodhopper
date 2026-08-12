@@ -690,7 +690,7 @@ func TestHandleDashboard_WindowNarrowsRoster(t *testing.T) {
 	// rosterIDs returns the set of session ids on the roster for a given URL.
 	rosterIDs := func(target string) map[string]bool {
 		req := httptest.NewRequest(http.MethodGet, target, nil)
-		data, err := buildDashboardData(req, db, newCICache())
+		data, err := buildDashboardData(req, db, newCICache(), &peekConfig{cache: newPaneCache()})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -733,7 +733,7 @@ func TestHandleDashboard_WindowAtCapTreatedAsAll(t *testing.T) {
 	insertEvent(db, Event{TS: at(2), SourceApp: "myapp", Branch: "br", SessionID: "s1", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
 
 	req := httptest.NewRequest(http.MethodGet, "/?window=30", nil)
-	data, err := buildDashboardData(req, db, newCICache())
+	data, err := buildDashboardData(req, db, newCICache(), &peekConfig{cache: newPaneCache()})
 	if err != nil {
 		t.Fatal(err)
 	}

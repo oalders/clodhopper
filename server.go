@@ -211,6 +211,7 @@ type dashboardData struct {
 	Now            time.Time         // render time, passed to shortTS so it can hide same-day dates
 	SessColors     map[string]string // session id -> chip/tint color; see assignSessColors
 	Signature      string            // fingerprint of the report-worthy view; see viewSignature
+	PeekEnabled    bool              // true when serve --pane-peek is set; gates the roster's live-pane peek control
 }
 
 // refreshOption is one entry in the auto-refresh interval dropdown.
@@ -300,6 +301,8 @@ func runServe(args []string) int {
 	host := fs.String("host", defaultHost(), "address to bind (127.0.0.1 default; 0.0.0.0 for LAN/container access)")
 	tailscale := fs.Bool("tailscale", false, "bind to this machine's Tailscale IPv4 (`tailscale ip -4`); cannot be combined with --host")
 	allowPub := fs.Bool("allow-public", allowPublic(), "allow binding to a public IP (UNSAFE: dashboard has no auth or TLS)")
+	panePeek := fs.Bool("pane-peek", false, "enable the live tmux pane peek (streams pane content to the dashboard; use only on a trusted network such as your tailnet)")
+	paneLines := fs.Int("pane-lines", paneLinesDefault, "lines shown in a pane peek (1..2000)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -334,18 +337,22 @@ func runServe(args []string) int {
 	defer db.Close()
 
 	ci := newCICache()
+	peek := &peekConfig{enabled: *panePeek, lines: clampPaneLines(*paneLines), cache: newPaneCache()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
 		}
-		handleDashboard(w, r, db, ci)
+		handleDashboard(w, r, db, ci, peek)
 	})
 	// JSON polling endpoint: the dashboard's JS hits this on the refresh interval
 	// and re-renders only when the returned signature changes.
 	mux.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
-		handleState(w, r, db, ci)
+		handleState(w, r, db, ci, peek)
+	})
+	mux.HandleFunc("/api/pane", func(w http.ResponseWriter, r *http.Request) {
+		handlePane(w, r, peek, time.Now())
 	})
 
 	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
@@ -492,9 +499,9 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
 }
 
-func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache) {
+func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache, peek *peekConfig) {
 	setSecurityHeaders(w)
-	data, err := buildDashboardData(r, db, ci)
+	data, err := buildDashboardData(r, db, ci, peek)
 	if err != nil {
 		http.Error(w, "dashboard error", http.StatusInternalServerError)
 		return
@@ -509,9 +516,9 @@ func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciC
 // {"signature": ..., "html": ...}. The client compares the signature to what it
 // last rendered and only swaps the DOM when it differs, so a quiet board never
 // repaints.
-func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache) {
+func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache, peek *peekConfig) {
 	setSecurityHeaders(w)
-	data, err := buildDashboardData(r, db, ci)
+	data, err := buildDashboardData(r, db, ci, peek)
 	if err != nil {
 		http.Error(w, "dashboard error", http.StatusInternalServerError)
 		return
@@ -530,7 +537,7 @@ func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache
 
 // buildDashboardData assembles the view model shared by the full page and the
 // JSON poll endpoint, including its signature.
-func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache) (dashboardData, error) {
+func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConfig) (dashboardData, error) {
 	q := r.URL.Query()
 	source := q.Get("source_app")
 	branch := q.Get("branch")
@@ -572,6 +579,11 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache) (dashboardData
 	}
 	enrichCI(agents, ci, now)
 	demotePendingCI(agents)
+	if peek.enabled {
+		for i := range agents {
+			agents[i].LiveTmux = agents[i].TmuxPane != "" && peek.cache.live(agents[i].TmuxPane, now)
+		}
+	}
 
 	activity, err := activeCounts(db, agentWindow, now)
 	if err != nil {
@@ -602,6 +614,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache) (dashboardData
 		Generated:      now.Format("15:04:05"),
 		Now:            now,
 		SessColors:     assignSessColors(agents, events),
+		PeekEnabled:    peek.enabled,
 	}
 	data.Signature = viewSignature(data)
 	return data, nil
