@@ -203,3 +203,26 @@ func TestAgentRoster_CarriesTmuxPane(t *testing.T) {
 		t.Fatalf("want 1 agent with pane %%2 (last write wins), got %+v", agents)
 	}
 }
+
+// A later event whose pane capture transiently failed ("") must not clobber the
+// pane id the session recorded earlier — otherwise the live-peek control blinks
+// out whenever the newest event happened to miss the capture.
+func TestAgentRoster_EmptyTmuxPaneDoesNotClobber(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	insertEvent(db, Event{TS: at(5), SourceApp: "myapp", Branch: "b", TmuxPane: "%1", SessionID: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "b", TmuxPane: "", SessionID: "s1", EventType: "Stop", PayloadJSON: "{}"})
+
+	agents, err := agentRoster(db, 30*time.Minute, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].TmuxPane != "%1" {
+		t.Fatalf("want 1 agent keeping pane %%1 (empty later capture must not clobber), got %+v", agents)
+	}
+}
