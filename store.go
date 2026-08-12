@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS events (
   rebasing     INTEGER,
   cwd          TEXT,
   tmux_session TEXT,
+  tmux_pane    TEXT,
   session_id   TEXT,
   event_type   TEXT NOT NULL,
   tool_name    TEXT,
@@ -65,6 +66,7 @@ var migrations = []string{
 	`ALTER TABLE events ADD COLUMN duration_ms INTEGER`,
 	`ALTER TABLE events ADD COLUMN rebasing INTEGER`,
 	`ALTER TABLE events ADD COLUMN slash_command TEXT`,
+	`ALTER TABLE events ADD COLUMN tmux_pane TEXT`,
 }
 
 // defaultDBPath returns CLODHOPPER_DB if set, else ~/.claude/clodhopper/var/events.db.
@@ -126,9 +128,9 @@ func retryOnLock(fn func() error) error {
 
 func insertEvent(db *sql.DB, ev Event) error {
 	_, err := db.Exec(
-		`INSERT INTO events (ts, source_app, branch, rebasing, cwd, tmux_session, session_id, event_type, tool_name, summary, slash_command, tool_use_id, duration_ms, payload_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		ev.TS, ev.SourceApp, ev.Branch, ev.Rebasing, ev.Cwd, ev.TmuxSession, ev.SessionID, ev.EventType, ev.ToolName, ev.Summary, ev.SlashCommand, ev.ToolUseID, ev.DurationMs, ev.PayloadJSON,
+		`INSERT INTO events (ts, source_app, branch, rebasing, cwd, tmux_session, tmux_pane, session_id, event_type, tool_name, summary, slash_command, tool_use_id, duration_ms, payload_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ev.TS, ev.SourceApp, ev.Branch, ev.Rebasing, ev.Cwd, ev.TmuxSession, ev.TmuxPane, ev.SessionID, ev.EventType, ev.ToolName, ev.Summary, ev.SlashCommand, ev.ToolUseID, ev.DurationMs, ev.PayloadJSON,
 	)
 	return err
 }
@@ -350,6 +352,8 @@ type Agent struct {
 	BranchGuess string // basename of Cwd, shown (italicised) ONLY when Branch is unknown, as a hint for locating the worktree/tmux session; "" when Branch is known or Cwd is empty
 	Cwd         string
 	TmuxSession string // tmux session name, the disambiguating label
+	TmuxPane    string // tmux pane id ("%N") of the latest event's Claude pane; targets the live pane peek, "" if unknown
+	LiveTmux    bool   // true when TmuxPane is currently a live tmux pane (set by the server layer when --pane-peek is on); drives the peek control
 	Status      string // human label (see status* constants)
 	StatusRank  int    // sort key; lower = more urgent
 	Doing       string // most recent skill/command, else latest tool/event
@@ -469,7 +473,7 @@ func deriveStatus(lastEvent, notifType, lastTool string, idleSecs int) (label st
 func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, error) {
 	since := now.Add(-waitingCap).UTC().Format(time.RFC3339)
 	rows, err := db.Query(
-		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(rebasing,0), COALESCE(cwd,''), COALESCE(tmux_session,''), COALESCE(session_id,''),
+		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(rebasing,0), COALESCE(cwd,''), COALESCE(tmux_session,''), COALESCE(tmux_pane,''), COALESCE(session_id,''),
 		        event_type, COALESCE(tool_name,''), COALESCE(summary,''), COALESCE(slash_command,''),
 		        COALESCE(CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.notification_type') END,'')
 		 FROM events WHERE ts >= ? AND session_id IS NOT NULL AND session_id <> ''
@@ -488,9 +492,9 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	byID := map[string]*state{}
 	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
 	for rows.Next() {
-		var ts, app, branch, cwd, tmuxSess, sess, etype, tool, summary, slashCmd, notifType string
+		var ts, app, branch, cwd, tmuxSess, tmuxPane, sess, etype, tool, summary, slashCmd, notifType string
 		var rebasing bool
-		if err := rows.Scan(&ts, &app, &branch, &rebasing, &cwd, &tmuxSess, &sess, &etype, &tool, &summary, &slashCmd, &notifType); err != nil {
+		if err := rows.Scan(&ts, &app, &branch, &rebasing, &cwd, &tmuxSess, &tmuxPane, &sess, &etype, &tool, &summary, &slashCmd, &notifType); err != nil {
 			return nil, err
 		}
 		s := byID[sess]
@@ -510,7 +514,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		// The cap is re-applied for the same reason as the strip: an oversized
 		// legacy path would otherwise be rendered three times per roster row on
 		// every page render and every /api/state poll.
-		s.a.SourceApp, s.a.TmuxSession = app, tmuxSess
+		s.a.SourceApp, s.a.TmuxSession, s.a.TmuxPane = app, tmuxSess, tmuxPane
 		s.a.Cwd = truncate(stripControl(cwd), maxPathLen)
 		// Branch is a stable property of the worktree, but gitBranch is best-effort
 		// and transiently returns "" under concurrent-worktree load (a timed-out

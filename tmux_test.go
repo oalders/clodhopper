@@ -163,3 +163,43 @@ func TestActiveCounts_GroupsByTmuxSession(t *testing.T) {
 		t.Errorf("missing a tmux-session group: %+v", counts)
 	}
 }
+
+// A captured tmux pane id survives a write/read round-trip.
+func TestTmuxPanePersists(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", TmuxPane: "%7", EventType: "PreToolUse", PayloadJSON: "{}"})
+
+	var got string
+	if err := db.QueryRow(`SELECT tmux_pane FROM events LIMIT 1`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "%7" {
+		t.Errorf("tmux_pane = %q, want %%7", got)
+	}
+}
+
+// The roster folds in the latest tmux pane id per session (last write wins).
+func TestAgentRoster_CarriesTmuxPane(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	insertEvent(db, Event{TS: at(5), SourceApp: "myapp", Branch: "b", TmuxPane: "%1", SessionID: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "b", TmuxPane: "%2", SessionID: "s1", EventType: "Stop", PayloadJSON: "{}"})
+
+	agents, err := agentRoster(db, 30*time.Minute, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].TmuxPane != "%2" {
+		t.Fatalf("want 1 agent with pane %%2 (last write wins), got %+v", agents)
+	}
+}
