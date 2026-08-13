@@ -428,7 +428,7 @@
     @media (max-width: 960px) and (min-width: 641px) {
       .ck-tablewrap { overflow-x: auto; }
       table.events { min-width: 118ch; }
-      table.roster { min-width: 132ch; }
+      table.roster { min-width: 151ch; } /* sum of fixed cols incl. the 30ch actions col when --enable-merge is on */
       table.counts { min-width: 48ch; }
     }
 
@@ -1192,7 +1192,12 @@
   {{ if .MergeEnabled }}
   (function () {
     var CSRF = document.body.dataset.csrf;
-    window.__ckActionBusy = window.__ckActionBusy || false;
+    // A COUNT of in-flight actions, not a boolean: the roster can have many
+    // actionable rows, and a user can fire a second while the first is pending.
+    // A boolean's first .finally would clear it while others are still in flight,
+    // letting the poller repaint #content out from under them. The count only
+    // reaches 0 when the last action settles.
+    window.__ckActionBusy = window.__ckActionBusy || 0;
 
     var CAVEAT = {
       squash: 'merges + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
@@ -1324,7 +1329,7 @@
       for (var k = 0; k < radios.length; k++) radios[k].disabled = true;
       var admin = group.querySelector('.practadmin');
       if (admin) admin.disabled = true;
-      window.__ckActionBusy = true;
+      window.__ckActionBusy++;
       if (msg) msg.textContent = 'working…';
       fetch('/api/action', {
         method: 'POST',
@@ -1362,7 +1367,7 @@
           if (!d.ok || !clears) { unlock(group, false); restoreFocus(); }
         })
         .catch(function (e) { if (msg) msg.textContent = 'request failed: ' + e; unlock(group, false); restoreFocus(); })
-        .finally(function () { window.__ckActionBusy = false; });
+        .finally(function () { window.__ckActionBusy = Math.max(0, window.__ckActionBusy - 1); });
     }
 
     document.addEventListener('click', function (ev) {
@@ -1372,7 +1377,12 @@
       if (!group) return;
 
       if (el.classList.contains('actcancel')) {
+        // unlock() removes the cancel button (the focused element), which would
+        // drop keyboard focus to <body>. Return focus to the run button the
+        // reader was confirming, mirroring fire()'s restoreFocus.
+        var armedBtn = group.querySelector('.pract.confirm');
         unlock(group, true);
+        if (armedBtn && armedBtn.isConnected && !armedBtn.disabled) armedBtn.focus();
         return;
       }
       // A no-confirm action (new-monitor: spawning a watcher destroys nothing)
@@ -1540,7 +1550,7 @@
             </span>
           </td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}
         </tr>
-        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="9"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
+        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="{{ if $.MergeEnabled }}9{{ else }}8{{ end }}"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
         {{ end }}
       </tbody>
     </table>

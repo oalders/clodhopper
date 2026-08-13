@@ -1267,6 +1267,39 @@ func TestContentTemplate_PeekButtonSurvivesLongName(t *testing.T) {
 	}
 }
 
+// The peek panerow spans the whole roster width with a colspan, but the roster's
+// column count is conditional: the actions column only exists under --enable-merge.
+// A hardcoded colspan would under- or over-span the table in one of the two modes,
+// so it must track MergeEnabled.
+func TestContentTemplate_PanerowColspanTracksMergeEnabled(t *testing.T) {
+	render := func(d dashboardData) string {
+		var buf bytes.Buffer
+		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+	base := dashboardData{
+		PeekEnabled: true,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", LiveTmux: true, HasPane: true,
+		}},
+	}
+
+	off := base
+	off.MergeEnabled = false
+	if got := render(off); !strings.Contains(got, `colspan="8"`) || strings.Contains(got, `colspan="9"`) {
+		t.Errorf("merge off: panerow must span 8 columns (no actions col):\n%s", got)
+	}
+
+	on := base
+	on.MergeEnabled = true
+	if got := render(on); !strings.Contains(got, `colspan="9"`) || strings.Contains(got, `colspan="8"`) {
+		t.Errorf("merge on: panerow must span 9 columns (incl. actions col):\n%s", got)
+	}
+}
+
 // renderDashboard executes the full dashboardTmpl (mirroring handleDashboard,
 // server.go:532) rather than just the "content" sub-template, since the
 // data-csrf attribute lives on <body>, outside "content".
