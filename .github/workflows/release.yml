@@ -32,13 +32,31 @@ jobs:
         with:
           go-version: stable
 
-      # zig cross-compiles the linux and windows CGO targets (see .goreleaser.yaml).
+      # zig cross-compiles the linux CGO targets from the macOS runner (see
+      # .goreleaser.yaml). Installed directly rather than via mlugg/setup-zig,
+      # whose action still declares Node.js 20 and trips the runner's Node 20
+      # deprecation warning.
       # NOTE: keep zig >= 0.14.0 — 0.13.0 has a CGO cross-compile regression
       # (ziglang/zig#20689), fixed in 0.14.0.
       - name: Set up Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.14.1
+        env:
+          ZIG_VERSION: 0.14.1
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64|aarch64) arch=aarch64 ;;
+            x86_64) arch=x86_64 ;;
+            *) echo "unsupported runner arch: $(uname -m)" >&2; exit 1 ;;
+          esac
+          url="https://ziglang.org/download/${ZIG_VERSION}/zig-${arch}-macos-${ZIG_VERSION}.tar.xz"
+          echo "Downloading $url"
+          curl -fSL --retry 3 "$url" -o "$RUNNER_TEMP/zig.tar.xz"
+          mkdir -p "$RUNNER_TEMP/zig"
+          tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP/zig" --strip-components=1
+          echo "$RUNNER_TEMP/zig" >> "$GITHUB_PATH"
+
+      - name: Verify Zig
+        run: zig version
 
       # darwin targets build with clang against this runner's macOS SDK.
       - name: Resolve macOS SDK path
