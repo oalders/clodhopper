@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -89,7 +90,7 @@ func usage() {
 
 USAGE
   clodhopper ingest --source-app NAME   read one hook event (JSON on stdin), store it
-  clodhopper serve [--port N] [--host H | --tailscale]   serve the dashboard (default 127.0.0.1; --host 0.0.0.0 for container/LAN; --tailscale binds the Tailscale IPv4)
+  clodhopper serve [--port N] [--host H | --tailscale] [--enable-merge]   serve the dashboard (default 127.0.0.1; --host 0.0.0.0 for container/LAN; --tailscale binds the Tailscale IPv4; --enable-merge turns on the roster's PR-action buttons)
   clodhopper prune [--days N]           delete events older than N days
   clodhopper init [--project|--local]   wire clodhopper hooks into .claude/settings(.local).json
   clodhopper end --branch B | --cwd D | --session PREFIX   mark matching live sessions ended (--session takes the roster id fragment)
@@ -103,6 +104,7 @@ ENV
   CLODHOPPER_HOST                  dashboard bind address (default 127.0.0.1)
   CLODHOPPER_REFRESH_SECS          dashboard live-update poll cadence, 0 = off (default 5)
   CLODHOPPER_WAITING_RETAIN_HOURS  hours a waiting agent stays on the roster (default 720 = 30 days; evict via 'clodhopper end')
+  CLODHOPPER_ALLOWED_HOSTS         comma-separated extra Host header values accepted by --enable-merge's endpoint (e.g. a Tailscale magicDNS name)
   CLODHOPPER_DEBUG                 write ingest errors to stderr (otherwise silent)
 `)
 }
@@ -135,6 +137,23 @@ func waitingRetainHours() int {
 		}
 	}
 	return defaultWaitingRetainHours
+}
+
+// allowedHosts reads CLODHOPPER_ALLOWED_HOSTS (comma-separated) — extra Host
+// header values accepted by the PR-action endpoint, e.g. a Tailscale magicDNS
+// name. Loopback and the bind host are always allowed without listing.
+func allowedHosts() []string {
+	v := os.Getenv("CLODHOPPER_ALLOWED_HOSTS")
+	if v == "" {
+		return nil
+	}
+	var out []string
+	for _, s := range strings.Split(v, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // defaultPort reads CLODHOPPER_PORT or returns the fallback.

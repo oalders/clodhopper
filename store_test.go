@@ -479,3 +479,34 @@ func TestFoldToolEvents_AnchorsAtStartNotCompletion(t *testing.T) {
 		t.Errorf("folded call should sit last (at its Pre position) as ✓ 3.1s, got %+v", last)
 	}
 }
+
+func TestLatestCwdForSession(t *testing.T) {
+	db, err := openDB(testDB(t))
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	defer db.Close()
+
+	// two events for the same session; the later cwd wins
+	if err := insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "sess-1", Cwd: "/old/wt", EventType: "PreToolUse", PayloadJSON: "{}"}); err != nil {
+		t.Fatalf("insertEvent: %v", err)
+	}
+	if err := insertEvent(db, Event{TS: "2026-08-12T10:01:00Z", SourceApp: "x", SessionID: "sess-1", Cwd: "/new/wt", EventType: "PreToolUse", PayloadJSON: "{}"}); err != nil {
+		t.Fatalf("insertEvent: %v", err)
+	}
+	// a different session, and one with no cwd, to prove filtering
+	if err := insertEvent(db, Event{TS: "2026-08-12T10:02:00Z", SourceApp: "x", SessionID: "sess-2", Cwd: "/other", EventType: "PreToolUse", PayloadJSON: "{}"}); err != nil {
+		t.Fatalf("insertEvent: %v", err)
+	}
+
+	got, err := latestCwdForSession(db, "sess-1")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if got != "/new/wt" {
+		t.Fatalf("cwd = %q, want /new/wt", got)
+	}
+	if got, _ := latestCwdForSession(db, "nope"); got != "" {
+		t.Fatalf("unknown session cwd = %q, want empty", got)
+	}
+}

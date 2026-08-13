@@ -629,7 +629,7 @@ func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/state", nil)
 	rec := httptest.NewRecorder()
-	handleState(rec, req, db, newCICache(), &peekConfig{cache: newPaneCache()})
+	handleState(rec, req, db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d", rec.Code)
 	}
@@ -658,6 +658,25 @@ func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
 	}
 }
 
+func TestBuildDashboardDataMergeFlags(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ci := newCICache()
+	peek := &peekConfig{}
+	cfg := &actionConfig{enabled: true, token: "tok"}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	data, err := buildDashboardData(r, db, ci, peek, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !data.MergeEnabled || data.CSRFToken != "tok" {
+		t.Fatalf("MergeEnabled=%v CSRFToken=%q", data.MergeEnabled, data.CSRFToken)
+	}
+}
+
 // Both routes carry the hardening headers. The framing one has teeth: the
 // clipboard fallback used on a non-secure origin still copies inside a frame,
 // so a framed dashboard is a usable decoy.
@@ -667,7 +686,7 @@ func TestHandlers_SetSecurityHeaders(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 
-	routes := map[string]func(http.ResponseWriter, *http.Request, *sql.DB, *ciCache, *peekConfig){
+	routes := map[string]func(http.ResponseWriter, *http.Request, *sql.DB, *ciCache, *peekConfig, *actionConfig){
 		"/":          handleDashboard,
 		"/api/state": handleState,
 	}
@@ -679,7 +698,7 @@ func TestHandlers_SetSecurityHeaders(t *testing.T) {
 	}
 	for target, h := range routes {
 		rec := httptest.NewRecorder()
-		h(rec, httptest.NewRequest(http.MethodGet, target, nil), db, newCICache(), &peekConfig{cache: newPaneCache()})
+		h(rec, httptest.NewRequest(http.MethodGet, target, nil), db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%s: status=%d", target, rec.Code)
 		}
@@ -697,7 +716,7 @@ func TestHandlers_SetSecurityHeaders(t *testing.T) {
 	closed.Close()
 	for target, h := range routes {
 		rec := httptest.NewRecorder()
-		h(rec, httptest.NewRequest(http.MethodGet, target, nil), closed, newCICache(), &peekConfig{cache: newPaneCache()})
+		h(rec, httptest.NewRequest(http.MethodGet, target, nil), closed, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("%s: a closed DB should 500, got %d", target, rec.Code)
 		}
@@ -1075,7 +1094,7 @@ func getBody(t *testing.T, db *sql.DB, target string) string {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	rec := httptest.NewRecorder()
-	handleDashboard(rec, req, db, newCICache(), &peekConfig{cache: newPaneCache()})
+	handleDashboard(rec, req, db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d", rec.Code)
 	}
@@ -1110,5 +1129,88 @@ func TestContentTemplate_PeekControlGated(t *testing.T) {
 	off := base // PeekEnabled false
 	if strings.Contains(render(off), `data-pane=`) {
 		t.Error("disabled: expected no peek control")
+	}
+}
+
+// The roster's session name and its peek button must be siblings, with the name
+// in its own .sessname box. Otherwise a long tmux session name ellipses inside the
+// overflow:hidden namecell and takes the trailing ⤢ with it — the peek control
+// silently vanishes for exactly the busiest sessions (see the flex rule on
+// table.roster td.namecell in the template).
+func TestContentTemplate_PeekButtonSurvivesLongName(t *testing.T) {
+	d := dashboardData{
+		PeekEnabled: true,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
+			TmuxSession: "nono redirect buildx state to the worktree",
+			TmuxPane:    "%2310", LiveTmux: true,
+		}},
+	}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+
+	// The name lives in its own span so only it truncates.
+	name := `<span class="sessname">nono redirect buildx state to the worktree</span>`
+	if !strings.Contains(html, name) {
+		t.Fatalf("session name not wrapped in .sessname:\n%s", html)
+	}
+	// The button is a sibling AFTER that span, not nested inside it.
+	nameEnd := strings.Index(html, name) + len(name)
+	rest := html[nameEnd:]
+	btn := strings.Index(rest, `class="peek"`)
+	nextCell := strings.Index(rest, "</td>")
+	if btn == -1 || btn > nextCell {
+		t.Fatalf("peek button must immediately follow the .sessname span within the cell:\n%s", html)
+	}
+}
+
+// renderDashboard executes the full dashboardTmpl (mirroring handleDashboard,
+// server.go:532) rather than just the "content" sub-template, since the
+// data-csrf attribute lives on <body>, outside "content".
+func renderDashboard(t *testing.T, d dashboardData) string {
+	t.Helper()
+	d.Now = time.Now()
+	var buf bytes.Buffer
+	if err := dashboardTmpl.Execute(&buf, d); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
+}
+
+// PR-action buttons (squash/admin/close/ready) render in the roster only when
+// --enable-merge is on, and the CSRF token is only echoed onto <body> in that
+// case too — the JS action handler reads it from data-csrf.
+func TestDashboardRendersActionButtonsOnlyWhenEnabled(t *testing.T) {
+	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}}
+	// disabled
+	off := base
+	off.MergeEnabled = false
+	if strings.Contains(renderDashboard(t, off), "data-action=") {
+		t.Fatal("action buttons rendered while disabled")
+	}
+	// enabled
+	on := base
+	on.MergeEnabled = true
+	on.CSRFToken = "tok"
+	html := renderDashboard(t, on)
+	if !strings.Contains(html, "data-action=") || !strings.Contains(html, `data-csrf="tok"`) {
+		t.Fatal("action buttons / csrf token missing while enabled")
+	}
+}
+
+func TestDashboardRendersForceToggleWhenEnabled(t *testing.T) {
+	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}}
+	off := base // MergeEnabled false
+	if strings.Contains(renderDashboard(t, off), "practforce") {
+		t.Fatal("force toggle rendered while merge disabled")
+	}
+	on := base
+	on.MergeEnabled = true
+	on.CSRFToken = "tok"
+	if !strings.Contains(renderDashboard(t, on), "practforce") {
+		t.Fatal("force toggle missing while merge enabled")
 	}
 }

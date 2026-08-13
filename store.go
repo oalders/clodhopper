@@ -245,6 +245,29 @@ func endSessions(db *sql.DB, sel EndSelector, now time.Time) (int, error) {
 	return len(targets), nil
 }
 
+// latestCwdForSession returns the worktree cwd of sessionID's most recent event
+// that recorded one, sanitized the same way agentRoster sanitizes cwd on the way
+// out (legacy rows may hold un-sanitized values). It returns "" (nil error) when
+// the session is unknown or never recorded a cwd — the caller treats that as
+// "no target" and 404s, so a missing row is not an error.
+func latestCwdForSession(db *sql.DB, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", nil
+	}
+	var cwd string
+	err := db.QueryRow(
+		`SELECT COALESCE(cwd,'') FROM events
+		 WHERE session_id = ? AND cwd IS NOT NULL AND cwd <> ''
+		 ORDER BY id DESC LIMIT 1`, sessionID).Scan(&cwd)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return truncate(stripControl(cwd), maxPathLen), nil
+}
+
 // pruneOld deletes events older than the given number of days and returns the
 // number of rows removed.
 func pruneOld(db *sql.DB, days int) (int64, error) {
