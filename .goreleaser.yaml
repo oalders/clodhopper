@@ -7,8 +7,12 @@
 #   - darwin (amd64+arm64): native clang against the runner's macOS SDK. zig
 #     cannot link macOS CGO binaries — Apple's SDK isn't redistributable, so
 #     zig lacks libresolv / system frameworks that Go's net + go-sqlite3 need.
-#   - linux + windows (amd64+arm64): `zig cc`, which ships libc stubs for every
-#     target and cross-compiles cleanly from the macOS host.
+#   - linux (amd64+arm64): `zig cc`, which ships libc stubs for every target and
+#     cross-compiles cleanly from the macOS host.
+#
+# Windows is intentionally not a target: the serve write path uses Unix-only
+# process-group primitives (syscall.Setpgid / syscall.Kill), and the tmux/merge-pr
+# workflows it drives are Unix-only anyway.
 version: 2
 
 project_name: clodhopper
@@ -34,11 +38,10 @@ builds:
     goos:
       - linux
       - darwin
-      - windows
     goarch:
       - amd64
       - arm64
-    # Per-target C compiler. linux/windows use zig (libc stubs for every target);
+    # Per-target C compiler. linux uses zig (libc stubs for every target);
     # darwin uses clang with -isysroot pointing at SDK_PATH (the macOS runner's
     # SDK, resolved via `xcrun --show-sdk-path` in the workflow) and -arch to
     # select the slice, so both macOS arches build natively against a real SDK.
@@ -63,24 +66,10 @@ builds:
         env:
           - CC=clang -arch arm64 -isysroot {{ .Env.SDK_PATH }}
           - CXX=clang++ -arch arm64 -isysroot {{ .Env.SDK_PATH }}
-      - goos: windows
-        goarch: amd64
-        env:
-          - CC=zig cc -target x86_64-windows-gnu
-          - CXX=zig c++ -target x86_64-windows-gnu
-      - goos: windows
-        goarch: arm64
-        env:
-          - CC=zig cc -target aarch64-windows-gnu
-          - CXX=zig c++ -target aarch64-windows-gnu
 
 archives:
   - id: clodhopper
     formats: [tar.gz]
-    # Use zip for Windows so it unpacks cleanly there.
-    format_overrides:
-      - goos: windows
-        formats: [zip]
     files:
       - README.md
       - CLAUDE.md
