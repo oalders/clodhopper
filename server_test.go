@@ -1423,7 +1423,7 @@ func TestContentTemplate_SessionNamePreservedInPeekTitle(t *testing.T) {
 	html := buf.String()
 
 	// The session name lives in the peek button's title, ahead of the peek hint.
-	want := `class="peek" data-pane="%2310" aria-expanded="false" title="nono redirect buildx state to the worktree — show this pane's last lines"`
+	want := `class="peek" data-pane="%2310" aria-expanded="false" aria-label="show pane for nono redirect buildx state to the worktree" title="nono redirect buildx state to the worktree — show this pane's last lines"`
 	if !strings.Contains(html, want) {
 		t.Fatalf("session name must be preserved in the peek button title:\n%s", html)
 	}
@@ -1470,6 +1470,63 @@ func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 	if got := render(on); !strings.Contains(got, `colspan="8"`) ||
 		strings.Contains(got, `colspan="9"`) || strings.Contains(got, `colspan="7"`) {
 		t.Errorf("peek on + merge on: panel rows must span 8 columns:\n%s", got)
+	}
+
+	// Peek OFF + merge on: no panerow (peek gates it), but the merge actrow still
+	// spans 8 — the controls column is present under merge alone.
+	mergeOnly := dashboardData{
+		MergeEnabled: true,
+		PeekEnabled:  false,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting, HasPane: true,
+		}},
+	}
+	if got := render(mergeOnly); !strings.Contains(got, `colspan="8"`) ||
+		strings.Contains(got, `colspan="9"`) || strings.Contains(got, `colspan="7"`) {
+		t.Errorf("merge on, peek off: actrow must span 8 columns:\n%s", got)
+	}
+}
+
+// The peek button's accessible name must carry the tmux session, not just the
+// bare "⤢" glyph: title alone is not a reliable accessible name, so an explicit
+// aria-label mirrors the actbtn/copycwd pattern. And in peek-only mode a row with
+// no live pane emits neither the peek button nor a merge toggle, so the controls
+// cell must fall back to the roster's "—" convention instead of an empty wrapper.
+func TestContentTemplate_PeekControlsCellA11yAndEmptyState(t *testing.T) {
+	render := func(d dashboardData) string {
+		var buf bytes.Buffer
+		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+
+	// Live pane, peek on: the peek button names its session in aria-label.
+	live := dashboardData{
+		PeekEnabled: true,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", LiveTmux: true,
+		}},
+	}
+	if got := render(live); !strings.Contains(got, `aria-label="show pane for sess"`) {
+		t.Errorf("peek button must carry an aria-label naming its session:\n%s", got)
+	}
+
+	// Peek on but the row has no live pane: no peek button, no merge toggle, so the
+	// controls cell shows "—" rather than an empty .ctrlwrap.
+	dead := dashboardData{
+		PeekEnabled: true,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting, LiveTmux: false,
+		}},
+	}
+	got := render(dead)
+	if strings.Contains(got, `class="peek"`) {
+		t.Errorf("no live pane: peek button must not render:\n%s", got)
+	}
+	if !strings.Contains(got, `<div class="ctrlwrap">—</div>`) {
+		t.Errorf("no live pane: controls cell must fall back to \"—\":\n%s", got)
 	}
 }
 

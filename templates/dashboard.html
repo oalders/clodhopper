@@ -314,6 +314,9 @@
       color: var(--text-2);
     }
     button.peek:hover, button.peek:focus-visible { opacity: 1; color: var(--brand); }
+    /* all:unset drops the global :focus-visible ring, and colour alone is not a
+       sufficient focus indicator (WCAG 2.4.7); restore a real ring (matches actbtn). */
+    button.peek:focus-visible { box-shadow: var(--shadow-focus); }
     button.peek[aria-expanded="true"] { opacity: 1; color: var(--brand); }
     tr.panerow > td { padding: 0; background: var(--surface-3); }
     pre.panecap {
@@ -479,7 +482,7 @@
       .ck-tablewrap { overflow-x: auto; }
       table.events { min-width: 118ch; }
       table.roster { min-width: 121ch; } /* sum of the fixed cols in the default read-only layout */
-      {{ if .MergeEnabled }}table.roster { min-width: 151ch; } /* + the 30ch actions col that --enable-merge adds */{{ end }}
+      {{ if .MergeEnabled }}table.roster { min-width: 151ch; } /* + the 30ch actions col that --enable-merge adds */{{ else if .PeekEnabled }}table.roster { min-width: 127ch; } /* + the 6ch actions col that --pane-peek adds */{{ end }}
       table.counts { min-width: 48ch; }
     }
 
@@ -1778,9 +1781,9 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
-          {{ if or $.PeekEnabled $.MergeEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ if and $.PeekEnabled .LiveTmux }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if and $.MergeEnabled .SessionID }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="squash · admin · close · ready · monitor ci"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ else if $.MergeEnabled }}—{{ end }}</div></td>{{ end }}
+          {{ if or $.PeekEnabled $.MergeEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.MergeEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="squash · admin · close · ready · monitor ci"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
         </tr>
-        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="{{ if or $.PeekEnabled $.MergeEnabled }}8{{ else }}7{{ end }}"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
+        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="8"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
         {{ if and $.MergeEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="8"><div class="actpanel">
             {{ if .HasPane }}
             <div class="actcol" role="group" aria-label="session actions">
