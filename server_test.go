@@ -1222,6 +1222,38 @@ func TestContentTemplate_ControlsCellRendersUnderPeekAlone(t *testing.T) {
 	}
 }
 
+// With neither peek nor merge enabled (the default read-only layout), the shared
+// controls column must not exist at all — no <th>actions</th> header and no
+// <td class="actions"> body cell — so header and body column counts stay in
+// lockstep. This is the fourth gating permutation; the peek-only, merge-only, and
+// both cases are covered elsewhere.
+func TestContentTemplate_ControlsColumnAbsentWhenNeitherEnabled(t *testing.T) {
+	d := dashboardData{
+		PeekEnabled:  false,
+		MergeEnabled: false,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", LiveTmux: true,
+		}},
+	}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+
+	if strings.Contains(html, "<th>actions</th>") {
+		t.Errorf("neither peek nor merge: controls header column must be absent:\n%s", html)
+	}
+	if strings.Contains(html, `<td class="actions"`) {
+		t.Errorf("neither peek nor merge: controls body cell must be absent:\n%s", html)
+	}
+	// The dropped session column stays gone regardless.
+	if strings.Contains(html, "<th>session</th>") {
+		t.Errorf("session header column must be removed:\n%s", html)
+	}
+}
+
 // The shared controls cell wraps its buttons (peek + merge toggle) in an inner
 // .ctrlwrap flex wrapper, NOT directly on the <td>. A display:flex <td> drops out
 // of the table's border-collapse and paints its own bottom border as an orphaned
