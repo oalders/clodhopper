@@ -395,11 +395,16 @@
       transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
     }
     button.prmode:hover:not([aria-checked="true"]) { color: var(--text-1); }
-    button.prmode[aria-checked="true"] { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+    /* Selection cue is the brand-tinted fill + weight; the label itself is
+       full-strength text-1, NOT --brand. The reference (ActionBar.jsx) tints the
+       active label --brand on --brand-soft, but that pair is ~4.2:1 (dark) /
+       ~3.9:1 (light) — under WCAG 1.4.3 AA for this text size — so this diverges
+       from the reference to keep the selected action legible. */
+    button.prmode[aria-checked="true"] { background: var(--brand-soft); color: var(--text-1); font-weight: 600; }
     /* overflow:hidden on the group clips an outset ring, so use an inset one. */
     button.prmode:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--focus-ring); }
     button.prmode[disabled] { cursor: wait; opacity: 0.55; }
-    .prcmd { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; }
+    .prcmd { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
     .actforce input:disabled { cursor: default; }
     label.actforce:has(input:disabled) { opacity: 0.45; cursor: default; }
 
@@ -1542,31 +1547,57 @@
         .finally(function () { delete group.dataset.ckFiring; window.__ckActionBusy = Math.max(0, window.__ckActionBusy - 1); });
     }
 
+    // The PR-mode chooser is a segmented toggle of role="radio" buttons, not
+    // native radios, so selecting a mode moves aria-checked AND the roving
+    // tabindex (only the checked segment is tabbable) to the pressed segment,
+    // per the WAI-ARIA radiogroup pattern. Keeps the form (disabled modifiers,
+    // run action, command line) and any armed caveat in step with the choice.
+    function selectMode(mgroup, modeBtn, moveFocus) {
+      var modes = mgroup.querySelectorAll('.prmode');
+      for (var mi = 0; mi < modes.length; mi++) {
+        var on = modes[mi] === modeBtn;
+        modes[mi].setAttribute('aria-checked', on ? 'true' : 'false');
+        modes[mi].tabIndex = on ? 0 : -1;
+      }
+      if (moveFocus) modeBtn.focus();
+      if (mgroup.classList.contains('prform')) syncForm(mgroup);
+      if (mgroup.classList.contains('confirm')) {
+        var mArmed = mgroup.querySelector('.pract.confirm');
+        if (mArmed && mArmed.dataset.origLabel) {
+          // The mapped action may have changed (e.g. squash → close), so
+          // re-derive the caveat for whatever the run button now targets.
+          var mMsg = mgroup.querySelector('.actmsg');
+          if (mMsg) mMsg.textContent = caveatFor(mgroup, mArmed.getAttribute('data-action'));
+        }
+      }
+    }
+
+    // Arrow keys move selection within the segmented toggle (roving focus),
+    // Home/End jump to the ends — the radiogroup keyboard contract.
+    document.addEventListener('keydown', function (ev) {
+      var modeBtn = ev.target && ev.target.closest ? ev.target.closest('.prmode') : null;
+      if (!modeBtn || modeBtn.disabled) return;
+      var mgroup = modeBtn.closest('.actgroup');
+      if (!mgroup) return;
+      var modes = [].slice.call(mgroup.querySelectorAll('.prmode'));
+      var idx = modes.indexOf(modeBtn), next = -1;
+      if (ev.key === 'ArrowRight' || ev.key === 'ArrowDown') next = (idx + 1) % modes.length;
+      else if (ev.key === 'ArrowLeft' || ev.key === 'ArrowUp') next = (idx - 1 + modes.length) % modes.length;
+      else if (ev.key === 'Home') next = 0;
+      else if (ev.key === 'End') next = modes.length - 1;
+      else return;
+      ev.preventDefault();
+      selectMode(mgroup, modes[next], true);
+    });
+
     document.addEventListener('click', function (ev) {
-      // The PR-mode segmented toggle is a group of role="radio" buttons, not
-      // native radios, so selection is a click that moves aria-checked to the
-      // pressed segment. Handle it before the .pract dispatch below.
+      // Selecting a mode is a click that moves the toggle; handle it before the
+      // .pract dispatch below.
       var modeBtn = ev.target && ev.target.closest ? ev.target.closest('.prmode') : null;
       if (modeBtn) {
         if (modeBtn.disabled) return;
         var mgroup = modeBtn.closest('.actgroup');
-        if (!mgroup) return;
-        var modes = mgroup.querySelectorAll('.prmode');
-        for (var mi = 0; mi < modes.length; mi++) {
-          modes[mi].setAttribute('aria-checked', modes[mi] === modeBtn ? 'true' : 'false');
-        }
-        // Keep the form (disabled modifiers, run action, command line) in step
-        // with the new choice before touching a possible armed confirm.
-        if (mgroup.classList.contains('prform')) syncForm(mgroup);
-        if (mgroup.classList.contains('confirm')) {
-          var mArmed = mgroup.querySelector('.pract.confirm');
-          if (mArmed && mArmed.dataset.origLabel) {
-            // The mapped action may have changed (e.g. squash → close), so
-            // re-derive the caveat for whatever the run button now targets.
-            var mMsg = mgroup.querySelector('.actmsg');
-            if (mMsg) mMsg.textContent = caveatFor(mgroup, mArmed.getAttribute('data-action'));
-          }
-        }
+        if (mgroup) selectMode(mgroup, modeBtn, false);
         return;
       }
       var el = ev.target && ev.target.closest ? ev.target.closest('.pract') : null;
@@ -1743,7 +1774,7 @@
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
           <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}><span class="sessname">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</span>{{ if and $.PeekEnabled .LiveTmux }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="show this pane's last lines">⤢</button>{{ end }}</td>
-          {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions"><button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" title="squash · admin · close · ready · monitor ci"><span class="actdots">⋯</span><span class="actword">actions</span></button></td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}
+          {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions"><button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="squash · admin · close · ready · monitor ci"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button></td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="{{ if $.MergeEnabled }}9{{ else }}8{{ end }}"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
         {{ if and $.MergeEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="9"><div class="actpanel">
@@ -1761,9 +1792,9 @@
               <span class="acteyebrow">pull request</span>
               <span class="actgroup prform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
                 <span class="prchoice" role="radiogroup" aria-label="PR action">
-                  <button type="button" role="radio" class="prmode" data-mode="squash" aria-checked="true" title="merge-pr --squash">squash</button>
-                  <button type="button" role="radio" class="prmode" data-mode="close" aria-checked="false" title="merge-pr --close">close</button>
-                  <button type="button" role="radio" class="prmode" data-mode="ready" aria-checked="false" title="gh pr ready">ready</button>
+                  <button type="button" role="radio" class="prmode" data-mode="squash" aria-checked="true" tabindex="0" title="merge-pr --squash">squash</button>
+                  <button type="button" role="radio" class="prmode" data-mode="close" aria-checked="false" tabindex="-1" title="merge-pr --close">close</button>
+                  <button type="button" role="radio" class="prmode" data-mode="ready" aria-checked="false" tabindex="-1" title="gh pr ready">ready</button>
                 </span>
                 <label class="actforce" title="merge-pr --admin: bypass branch protection (squash only)"><input type="checkbox" class="practadmin"> --admin</label>
                 <label class="actforce" title="--force: merge even with uncommitted changes (squash only)"><input type="checkbox" class="practforce"> --force</label>
