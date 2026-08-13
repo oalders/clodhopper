@@ -1232,6 +1232,54 @@ func TestContentTemplate_SessionActionsGatedOnPaneNotPeek(t *testing.T) {
 	}
 }
 
+// The session + PR actions are hidden behind a disclosure by default: the roster
+// cell shows only a "⋯ actions" toggle, and the clusters live in a separate
+// panel row that is `hidden` until the toggle is pressed. This mirrors the design
+// (Roster.jsx), where the always-visible form would otherwise multiply row height.
+func TestContentTemplate_ActionsHiddenBehindDisclosure(t *testing.T) {
+	d := dashboardData{
+		MergeEnabled: true,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", HasPane: true,
+		}},
+	}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+
+	// The actions cell is just the toggle, collapsed by default.
+	if !strings.Contains(html, `class="actbtn" data-actions="s1" aria-expanded="false"`) {
+		t.Errorf("expected a collapsed ⋯ actions toggle in the actions cell:\n%s", html)
+	}
+	// The panel row exists and is hidden until the toggle opens it.
+	if !strings.Contains(html, `<tr class="actrow" hidden data-actions-row="s1">`) {
+		t.Errorf("expected a hidden actions panel row:\n%s", html)
+	}
+
+	// The form must NOT sit in the visible actions <td> — it belongs in the hidden
+	// panel row. Isolate the cell and assert the clusters are absent from it.
+	cellStart := strings.Index(html, `<td class="actions"`)
+	if cellStart == -1 {
+		t.Fatalf("no actions cell rendered:\n%s", html)
+	}
+	cell := html[cellStart : cellStart+strings.Index(html[cellStart:], "</td>")]
+	if strings.Contains(cell, "prrun") || strings.Contains(cell, "monitor-ci") {
+		t.Errorf("actions must be hidden behind the toggle, not inline in the cell:\n%s", cell)
+	}
+	// And they DO live inside the hidden panel row.
+	rowStart := strings.Index(html, `<tr class="actrow" hidden`)
+	if rowStart == -1 {
+		t.Fatalf("no actions panel row rendered:\n%s", html)
+	}
+	panel := html[rowStart:]
+	if !strings.Contains(panel, `class="pract prrun"`) || !strings.Contains(panel, `data-action="monitor-ci"`) {
+		t.Errorf("PR form + session buttons must render inside the hidden panel row:\n%s", panel)
+	}
+}
+
 // The roster's session name and its peek button must be siblings, with the name
 // in its own .sessname box. Otherwise a long tmux session name ellipses inside the
 // overflow:hidden namecell and takes the trailing ⤢ with it — the peek control

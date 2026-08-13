@@ -328,6 +328,30 @@
       color: var(--text-1);
     }
 
+    /* Roster actions live behind a disclosure: the cell shows only a small
+       "⋯ actions" toggle (styled like the peek control), and the session +
+       PR clusters expand into a full-width panel row on demand — mutually
+       exclusive with the pane peek for the same row. */
+    button.actbtn {
+      all: unset;
+      cursor: pointer;
+      font-family: var(--font-mono); font-size: var(--fs-xs);
+      opacity: 0.7;
+      padding: 0 4px;
+      color: var(--text-2);
+      white-space: nowrap;
+    }
+    button.actbtn:hover, button.actbtn:focus-visible { opacity: 1; color: var(--brand); }
+    button.actbtn[aria-expanded="true"] { opacity: 1; color: var(--brand); }
+    tr.actrow > td { padding: 0; background: var(--surface-3); }
+    .actpanel { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 24px; padding: 12px; }
+    .actcol { display: flex; flex-direction: column; gap: 6px; }
+    .actcol.prcol { flex: 1 1 320px; }
+    .acteyebrow {
+      font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--text-3);
+    }
+
     /* Roster PR-action buttons: compact, two-step confirm, and an inline
        result/status line. */
     .actgroup { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
@@ -343,10 +367,9 @@
     .actmsg { display: block; white-space: pre-wrap; font-size: var(--fs-2xs); color: var(--text-3); }
     .actforce { display: inline-flex; align-items: center; gap: 3px; font-size: var(--fs-2xs); color: var(--text-3); cursor: pointer; }
     .actforce input { margin: 0; }
-    /* The actions cell holds up to two clusters — the session buttons and the PR
-       form — which stack rather than crowd one line. */
-    td.actions .actgroup { display: flex; flex-wrap: wrap; align-items: center; }
-    td.actions .actgroup + .actgroup { margin-top: 8px; }
+    /* Inside the disclosure panel each cluster (session buttons, PR form) lays
+       its controls out on one wrapping line. */
+    .actpanel .actgroup { display: flex; flex-wrap: wrap; align-items: center; }
     /* PR form: a three-way choice, its modifiers, the exact command it will run,
        and one run button. --admin/--force grey out unless squash is chosen. */
     .prchoice { display: inline-flex; gap: 8px; flex-wrap: wrap; }
@@ -454,7 +477,7 @@
       /* The roster is not a table on a phone; it is a card with a hierarchy.
          Grid placement rather than source order: status leads, the identity
          fields (app / id / session) fall to one muted footer line. */
-      table.roster tbody tr:not(.panerow) {
+      table.roster tbody tr:not(.panerow):not(.actrow) {
         display: grid;
         grid-template-columns: auto minmax(0, 1fr) auto;
         align-items: baseline;
@@ -487,13 +510,14 @@
         border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
         background: var(--surface-2);
       }
-      /* The action cluster becomes a two-column grid of full-size buttons,
-         with force and the result line spanning it. */
-      td.actions .actgroup { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
-      td.actions button.pract { min-height: 44px; font-size: var(--fs-sm); border-radius: var(--radius-sm); }
-      td.actions .actforce { grid-column: 1 / -1; min-height: 44px; font-size: var(--fs-sm); }
-      td.actions .actforce input { width: 18px; height: 18px; }
-      td.actions .actmsg { grid-column: 1 / -1; }
+      /* The actions toggle is the only thing in its cell — a full-width 44px
+         control that expands the panel row beneath the card. */
+      table.roster td.actions button.actbtn {
+        display: flex; align-items: center; justify-content: center;
+        width: 100%; min-height: 44px; padding: 0 12px;
+        border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+        background: var(--surface-2); opacity: 1;
+      }
       td {
         display: flex; gap: 7px; min-width: 0;
         border: none; padding: 0; overflow: visible; white-space: normal;
@@ -503,21 +527,25 @@
         content: attr(data-label); color: var(--text-3); font-weight: 600;
         font-size: var(--fs-xs); white-space: nowrap;
       }
-      /* The generic td reset above makes td.actions a flex ROW, which lays the
-         two .actgroup clusters (session buttons + PR form) side by side. Restate
-         it as a column so the clusters stack — this rule outranks the bare `td`
-         reset on specificity, so it wins regardless of source order. */
-      td.actions { flex-direction: column; align-items: stretch; }
-      /* The PR form is a 1fr 1fr grid (see td.actions .actgroup above); the
-         command preview, the radio choices, and the lone run button must span
-         BOTH tracks or the nowrap command line overflows the row, the run
+      /* Inside the expanded panel the two clusters stack full-width, and the PR
+         cluster becomes a two-column grid of full-size buttons with force, the
+         choices, the command preview, and the run button spanning both tracks. */
+      .actrow .actpanel { flex-direction: column; gap: 16px; }
+      .actrow .actcol { width: 100%; }
+      .actpanel .actgroup { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
+      .actpanel button.pract { min-height: 44px; font-size: var(--fs-sm); border-radius: var(--radius-sm); }
+      .actpanel .actforce { grid-column: 1 / -1; min-height: 44px; font-size: var(--fs-sm); }
+      .actpanel .actforce input { width: 18px; height: 18px; }
+      .actpanel .actmsg { grid-column: 1 / -1; }
+      /* The PR form's command preview, radio choices, and lone run button must
+         span BOTH tracks or the nowrap command line overflows the row, the run
          button strands half-width, and the touch targets shrink. */
-      td.actions .prchoice { grid-column: 1 / -1; }
+      .actpanel .prchoice { grid-column: 1 / -1; }
       /* Grow the text to match the enlarged tap targets — 10px (--fs-2xs) is hard
          to read on a phone even with a 44px hit area. */
-      td.actions .prchoice label { min-height: 44px; align-items: center; font-size: var(--fs-sm); }
-      td.actions .prcmd { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; font-size: var(--fs-sm); }
-      td.actions .prrun { grid-column: 1 / -1; }
+      .actpanel .prchoice label { min-height: 44px; align-items: center; font-size: var(--fs-sm); }
+      .actpanel .prcmd { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; font-size: var(--fs-sm); }
+      .actpanel .prrun { grid-column: 1 / -1; }
       /* Only the long free-text doing/summary field claims its own full-width
          line; branch now flows inline with ci / app / status, wrapping within
          its own cell when a name is genuinely too long. */
@@ -550,9 +578,9 @@
          by the author `[hidden] { display: none !important }` reset at the top —
          it beats this rule and the generic `tr { display: flex }`, so `row.hidden`
          reliably collapses the peek. */
-      tr.panerow { display: block; padding: 0; border: none; background: none; }
-      tr.panerow > td { display: block; min-width: 0; }
-      tr.panerow td::before { content: none; }
+      tr.panerow, tr.actrow { display: block; padding: 0; border: none; background: none; }
+      tr.panerow > td, tr.actrow > td { display: block; min-width: 0; }
+      tr.panerow td::before, tr.actrow td::before { content: none; }
       /* Wrap the capture instead of scrolling it sideways: 80-column terminal
          output is painful to read by horizontal scroll on a phone. pre-wrap keeps
          the newlines and leading indentation; overflow-wrap:anywhere breaks the
@@ -728,6 +756,17 @@
           scroll: cap ? cap.scrollTop : undefined
         });
       }
+      // Carry any open actions panel across the swap too. Its contents are
+      // server-rendered (unlike the JS-fetched peek), so we only need to remember
+      // which rows were expanded and re-open them by their stable session id; the
+      // fresh markup supplies the form. Keyed by data-actions-row so a session
+      // that ended simply is not restored.
+      var openActs = [];
+      var arows = document.querySelectorAll('#content .actrow');
+      for (var ai = 0; ai < arows.length; ai++) {
+        if (arows[ai].hidden) continue;
+        openActs.push(arows[ai].getAttribute('data-actions-row'));
+      }
       try { document.dispatchEvent(new CustomEvent('ch:contentswap')); } catch (e) {}
       document.getElementById('content').innerHTML = html;
       for (var p = 0; p < openPeeks.length; p++) {
@@ -751,6 +790,23 @@
           for (var b = 0; b < btns.length; b++) {
             if (btns[b].getAttribute('data-pane') === op.pane) {
               btns[b].setAttribute('aria-expanded', 'true');
+              break;
+            }
+          }
+          break;
+        }
+      }
+      for (var ap = 0; ap < openActs.length; ap++) {
+        var asess = openActs[ap];
+        if (!asess) continue;
+        var newActs = document.querySelectorAll('#content .actrow');
+        for (var ar = 0; ar < newActs.length; ar++) {
+          if (newActs[ar].getAttribute('data-actions-row') !== asess) continue;
+          newActs[ar].hidden = false;
+          var abtns = document.querySelectorAll('#content .actbtn');
+          for (var ab = 0; ab < abtns.length; ab++) {
+            if (abtns[ab].getAttribute('data-actions') === asess) {
+              abtns[ab].setAttribute('aria-expanded', 'true');
               break;
             }
           }
@@ -1108,6 +1164,62 @@
       }
       return true;
     }
+    // The actions disclosure mirrors the peek: the cell shows a "⋯ actions"
+    // toggle and the session + PR clusters expand into a full-width panel row.
+    // Peek and actions share one open slot per roster row, so opening one closes
+    // the other (see closeOtherPanels) — matching the design's per-row toggle.
+    function actRow(sess) {
+      var sel = '.actrow[data-actions-row="' + (window.CSS && CSS.escape ? CSS.escape(sess) : sess) + '"]';
+      return document.querySelector(sel);
+    }
+    function actButton(sess) {
+      var btns = document.querySelectorAll('#content .actbtn');
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].getAttribute('data-actions') === sess) return btns[i];
+      }
+      return null;
+    }
+    function closeAct(sess, focusBtn) {
+      var row = actRow(sess);
+      if (!row || row.hidden) return false;
+      row.hidden = true;
+      var btn = actButton(sess);
+      if (btn) {
+        btn.setAttribute('aria-expanded', 'false');
+        if (focusBtn) btn.focus({ preventScroll: true });
+      }
+      return true;
+    }
+    // The peek row and the actions row for a session sit as siblings right after
+    // their main roster row. Walk back to that main row and collapse any OTHER
+    // open panel attached to it, so a row never shows both peek and actions.
+    function mainRowOf(panelRow) {
+      var n = panelRow.previousElementSibling;
+      while (n && (n.classList.contains('panerow') || n.classList.contains('actrow'))) {
+        n = n.previousElementSibling;
+      }
+      return n;
+    }
+    function closeOtherPanels(openingRow) {
+      var main = mainRowOf(openingRow);
+      if (!main) return;
+      var n = main.nextElementSibling;
+      while (n && (n.classList.contains('panerow') || n.classList.contains('actrow'))) {
+        if (n !== openingRow && !n.hidden) {
+          if (n.classList.contains('panerow')) closePane(n.getAttribute('data-pane-row'), false);
+          else closeAct(n.getAttribute('data-actions-row'), false);
+        }
+        n = n.nextElementSibling;
+      }
+    }
+    function openAct(sess) {
+      var row = actRow(sess);
+      if (!row) return;
+      closeOtherPanels(row);
+      var btn = actButton(sess);
+      if (btn) btn.setAttribute('aria-expanded', 'true');
+      row.hidden = false;
+    }
     // A line that is nothing but one separator character repeated (----, ====,
     // ────) carries no more information at 80 columns than at 30, but on a phone
     // the wrap turns it into a stack of blank-looking rows. Collapse an over-long
@@ -1137,6 +1249,7 @@
       if (!row) return;
       var pre = row.querySelector('.panecap');
       if (!pre) return;
+      closeOtherPanels(row);
       var btn = paneButton(pane);
       if (btn) btn.setAttribute('aria-expanded', 'true');
       row.hidden = false;
@@ -1154,11 +1267,20 @@
     }
 
     document.addEventListener('click', function (ev) {
-      var btn = ev.target && ev.target.closest ? ev.target.closest('.peek') : null;
-      if (!btn) return;
-      var pane = btn.getAttribute('data-pane');
-      if (btn.getAttribute('aria-expanded') === 'true') { closePane(pane, false); return; }
-      openPane(pane);
+      if (!ev.target || !ev.target.closest) return;
+      var peekBtn = ev.target.closest('.peek');
+      if (peekBtn) {
+        var pane = peekBtn.getAttribute('data-pane');
+        if (peekBtn.getAttribute('aria-expanded') === 'true') { closePane(pane, false); return; }
+        openPane(pane);
+        return;
+      }
+      var actBtn = ev.target.closest('.actbtn');
+      if (actBtn) {
+        var sess = actBtn.getAttribute('data-actions');
+        if (actBtn.getAttribute('aria-expanded') === 'true') { closeAct(sess, false); return; }
+        openAct(sess);
+      }
     });
 
     // Esc dismisses an open peek. If focus is inside a peek (its capture or its ⤢
@@ -1167,15 +1289,22 @@
     // stays free for anything else on the page.
     document.addEventListener('keydown', function (ev) {
       if (ev.key !== 'Escape' && ev.keyCode !== 27) return;
-      var scope = ev.target && ev.target.closest ? ev.target.closest('.panerow, .peek') : null;
-      var pane = scope ? (scope.getAttribute('data-pane-row') || scope.getAttribute('data-pane')) : null;
+      var scope = ev.target && ev.target.closest ? ev.target.closest('.panerow, .peek, .actrow, .actbtn') : null;
       var closed = false;
-      if (pane) {
-        closed = closePane(pane, true);
+      if (scope && (scope.classList.contains('panerow') || scope.classList.contains('peek'))) {
+        var pane = scope.getAttribute('data-pane-row') || scope.getAttribute('data-pane');
+        if (pane) closed = closePane(pane, true);
+      } else if (scope && (scope.classList.contains('actrow') || scope.classList.contains('actbtn'))) {
+        var sess = scope.getAttribute('data-actions-row') || scope.getAttribute('data-actions');
+        if (sess) closed = closeAct(sess, true);
       } else {
         var rows = document.querySelectorAll('#content .panerow');
         for (var i = 0; i < rows.length; i++) {
           if (!rows[i].hidden && closePane(rows[i].getAttribute('data-pane-row'), false)) closed = true;
+        }
+        var arows = document.querySelectorAll('#content .actrow');
+        for (var k = 0; k < arows.length; k++) {
+          if (!arows[k].hidden && closeAct(arows[k].getAttribute('data-actions-row'), false)) closed = true;
         }
       }
       if (closed) ev.preventDefault();
@@ -1533,29 +1662,36 @@
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
           <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}><span class="sessname">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</span>{{ if and $.PeekEnabled .LiveTmux }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="show this pane's last lines">⤢</button>{{ end }}</td>
-          {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions">
-            {{ if .HasPane }}
-            <span class="actgroup actsession" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
-              <button type="button" class="pract" data-action="monitor-ci" title="/clear then /monitor-ci in the running pane">monitor ci</button>
-              <button type="button" class="pract" data-action="new-monitor" data-noconfirm="true" title="split a new pane running /monitor-ci">+ watcher</button>
-              <span class="actmsg" aria-live="polite"></span>
-            </span>
-            {{ end }}
-            <span class="actgroup prform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
-              <span class="prchoice" role="radiogroup" aria-label="PR action">
-                <label><input type="radio" name="prmode-{{ .SessionID }}" class="prmode" value="squash" checked> squash</label>
-                <label><input type="radio" name="prmode-{{ .SessionID }}" class="prmode" value="close"> close</label>
-                <label><input type="radio" name="prmode-{{ .SessionID }}" class="prmode" value="ready"> ready</label>
-              </span>
-              <label class="actforce" title="merge-pr --admin: bypass branch protection (squash only)"><input type="checkbox" class="practadmin"> --admin (squash only)</label>
-              <label class="actforce" title="--force: merge even with uncommitted changes (squash only)"><input type="checkbox" class="practforce"> --force (squash only)</label>
-              <code class="prcmd" id="prcmd-{{ .SessionID }}" aria-live="polite">merge-pr --squash</code>
-              <button type="button" class="pract prrun" data-action="squash" title="run the selected PR action" aria-describedby="prcmd-{{ .SessionID }}">run</button>
-              <span class="actmsg" aria-live="polite"></span>
-            </span>
-          </td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}
+          {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions"><button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" title="squash · admin · close · ready · monitor ci">⋯ actions</button></td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="{{ if $.MergeEnabled }}9{{ else }}8{{ end }}"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
+        {{ if and $.MergeEnabled .SessionID }}<tr class="actrow" hidden data-actions-row="{{ .SessionID }}"><td colspan="9"><div class="actpanel">
+            {{ if .HasPane }}
+            <div class="actcol">
+              <span class="acteyebrow">session</span>
+              <span class="actgroup actsession" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
+                <button type="button" class="pract" data-action="monitor-ci" title="/clear then /monitor-ci in the running pane">monitor ci</button>
+                <button type="button" class="pract" data-action="new-monitor" data-noconfirm="true" title="split a new pane running /monitor-ci">+ watcher</button>
+                <span class="actmsg" aria-live="polite"></span>
+              </span>
+            </div>
+            {{ end }}
+            <div class="actcol prcol">
+              <span class="acteyebrow">pull request</span>
+              <span class="actgroup prform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
+                <span class="prchoice" role="radiogroup" aria-label="PR action">
+                  <label><input type="radio" name="prmode-{{ .SessionID }}" class="prmode" value="squash" checked> squash</label>
+                  <label><input type="radio" name="prmode-{{ .SessionID }}" class="prmode" value="close"> close</label>
+                  <label><input type="radio" name="prmode-{{ .SessionID }}" class="prmode" value="ready"> ready</label>
+                </span>
+                <label class="actforce" title="merge-pr --admin: bypass branch protection (squash only)"><input type="checkbox" class="practadmin"> --admin (squash only)</label>
+                <label class="actforce" title="--force: merge even with uncommitted changes (squash only)"><input type="checkbox" class="practforce"> --force (squash only)</label>
+                <code class="prcmd" id="prcmd-{{ .SessionID }}" aria-live="polite">merge-pr --squash</code>
+                <button type="button" class="pract prrun" data-action="squash" title="run the selected PR action" aria-describedby="prcmd-{{ .SessionID }}">run</button>
+                <span class="actmsg" aria-live="polite"></span>
+              </span>
+            </div>
+          </div></td></tr>{{ end }}
         {{ end }}
       </tbody>
     </table>
