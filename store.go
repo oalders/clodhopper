@@ -399,6 +399,7 @@ type Agent struct {
 	Cwd         string
 	TmuxSession string // tmux session name, the disambiguating label
 	TmuxPane    string // tmux pane id ("%N") of the latest event's Claude pane; targets the live pane peek, "" if unknown
+	HasPane     bool   // true when the session recorded a tmux pane id (TmuxPane != ""); gates the session-action buttons under --enable-merge, decoupled from --pane-peek (the peek's liveness cache is only populated when peek is on)
 	LiveTmux    bool   // true when TmuxPane is currently a live tmux pane (set by the server layer when --pane-peek is on); drives the peek control
 	Status      string // human label (see status* constants)
 	StatusRank  int    // sort key; lower = more urgent
@@ -613,6 +614,11 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		}
 		a := s.a
 		a.Status, a.StatusRank = label, rank
+		// Pane presence is resolved here (independent of --pane-peek) so the
+		// session-action buttons can gate on it under --enable-merge alone; the
+		// backend re-resolves and re-validates the pane server-side before any
+		// tmux command runs, so presence is the correct decoupled gate.
+		a.HasPane = a.TmuxPane != ""
 		// When git never resolved a branch for this session (a detached HEAD that
 		// is not a rebase — see gitBranch), fall back to the cwd's basename so the
 		// operator still has a handle for the worktree / tmux session. It is only a

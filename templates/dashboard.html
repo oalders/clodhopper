@@ -352,7 +352,7 @@
     .prchoice { display: inline-flex; gap: 8px; flex-wrap: wrap; }
     .prchoice label { display: inline-flex; align-items: center; gap: 3px; font-size: var(--fs-2xs); color: var(--text-2); cursor: pointer; }
     .prchoice input { margin: 0; }
-    .prcmd { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-3); white-space: nowrap; }
+    .prcmd { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-2); white-space: nowrap; }
     .actforce input:disabled { cursor: default; }
     label.actforce:has(input:disabled) { opacity: 0.45; cursor: default; }
 
@@ -502,6 +502,16 @@
         content: attr(data-label); color: var(--text-3); font-weight: 600;
         font-size: var(--fs-xs); white-space: nowrap;
       }
+      /* The generic td reset above makes td.actions a flex ROW, which lays the
+         two .actgroup clusters (session buttons + PR form) side by side. Restate
+         it as a column so the clusters stack — this rule outranks the bare `td`
+         reset on specificity, so it wins regardless of source order. */
+      td.actions { flex-direction: column; align-items: stretch; }
+      /* The PR form is a 1fr 1fr grid (see td.actions .actgroup above); the
+         command preview and the radio choices must span BOTH tracks or the
+         nowrap command line overflows the row and squeezes the run button. */
+      td.actions .prchoice { grid-column: 1 / -1; }
+      td.actions .prcmd { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; }
       /* Only the long free-text doing/summary field claims its own full-width
          line; branch now flows inline with ci / app / status, wrapping within
          its own cell when a name is genuinely too long. */
@@ -562,7 +572,7 @@
     <div class="ck-headright">
       <button type="button" id="ck-filtersbtn" class="ck-btn" aria-controls="ck-filters">filters <span id="ck-fbadge" class="ck-fbadge"></span></button>
       <button type="button" id="ck-debug" class="ck-btn" aria-pressed="false" title="show the Activity + Recent-events diagnostics">debug</button>
-      <button type="button" id="ck-theme" class="ck-btn">☾ dark</button>
+      <button type="button" id="ck-theme" class="ck-btn" aria-pressed="false">☾ dark</button>
     </div>
   </header>
 
@@ -778,7 +788,11 @@
     var btn = document.getElementById('ck-theme');
     if (!btn) return;
     function label() {
-      btn.textContent = root.getAttribute('data-theme') === 'light' ? '☀ light' : '☾ dark';
+      var light = root.getAttribute('data-theme') === 'light';
+      btn.textContent = light ? '☀ light' : '☾ dark';
+      // aria-pressed = "is the light theme engaged?", matching the binary-toggle
+      // convention #ck-debug uses and the [aria-pressed="true"] button styling.
+      btn.setAttribute('aria-pressed', light ? 'true' : 'false');
     }
     label();
     btn.addEventListener('click', function () {
@@ -1485,7 +1499,7 @@
           <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
           <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}><span class="sessname">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</span>{{ if and $.PeekEnabled .LiveTmux }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="show this pane's last lines">⤢</button>{{ end }}</td>
           {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions">
-            {{ if .LiveTmux }}
+            {{ if .HasPane }}
             <span class="actgroup actsession" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
               <button type="button" class="pract" data-action="monitor-ci" title="/clear then /monitor-ci in the running pane">monitor ci</button>
               <button type="button" class="pract" data-action="new-monitor" data-noconfirm="true" title="split a new pane running /monitor-ci">+ watcher</button>
@@ -1498,10 +1512,10 @@
                 <label><input type="radio" name="prmode-{{ .SessionID }}" class="prmode" value="close"> close</label>
                 <label><input type="radio" name="prmode-{{ .SessionID }}" class="prmode" value="ready"> ready</label>
               </span>
-              <label class="actforce" title="merge-pr --admin: bypass branch protection (squash only)"><input type="checkbox" class="practadmin"> --admin</label>
-              <label class="actforce" title="--force: merge even with uncommitted changes (squash only)"><input type="checkbox" class="practforce"> --force</label>
-              <code class="prcmd">merge-pr --squash</code>
-              <button type="button" class="pract prrun" data-action="squash" title="run the selected PR action">run</button>
+              <label class="actforce" title="merge-pr --admin: bypass branch protection (squash only)"><input type="checkbox" class="practadmin"> --admin (squash only)</label>
+              <label class="actforce" title="--force: merge even with uncommitted changes (squash only)"><input type="checkbox" class="practforce"> --force (squash only)</label>
+              <code class="prcmd" id="prcmd-{{ .SessionID }}">merge-pr --squash</code>
+              <button type="button" class="pract prrun" data-action="squash" title="run the selected PR action" aria-describedby="prcmd-{{ .SessionID }}">run</button>
               <span class="actmsg" aria-live="polite"></span>
             </span>
           </td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}

@@ -1180,6 +1180,58 @@ func TestContentTemplate_PeekControlGated(t *testing.T) {
 	}
 }
 
+// The session-action buttons (monitor ci / + watcher) are gated on pane
+// PRESENCE, not on --pane-peek: handleAction accepts monitor-ci/new-monitor
+// whenever --enable-merge is on, so the buttons must render under merge alone
+// (peek off) for any row that recorded a pane. Gating on LiveTmux (which is only
+// populated when peek is enabled) would hide buttons the backend would accept.
+func TestContentTemplate_SessionActionsGatedOnPaneNotPeek(t *testing.T) {
+	render := func(d dashboardData) string {
+		var buf bytes.Buffer
+		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+
+	// Merge on, peek OFF, a row that has a pane but LiveTmux false (as it would be
+	// when the peek liveness cache never ran because peek is disabled).
+	withPane := dashboardData{
+		MergeEnabled: true,
+		PeekEnabled:  false,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", HasPane: true, LiveTmux: false,
+		}},
+	}
+	html := render(withPane)
+	if !strings.Contains(html, `data-action="monitor-ci"`) {
+		t.Errorf("merge on + pane present: expected the monitor-ci button:\n%s", html)
+	}
+	if !strings.Contains(html, `data-action="new-monitor"`) {
+		t.Errorf("merge on + pane present: expected the + watcher button:\n%s", html)
+	}
+	// The peek control itself stays gated on PeekEnabled — no ⤢ when peek is off.
+	if strings.Contains(html, `class="peek"`) {
+		t.Errorf("peek off: peek control must not render:\n%s", html)
+	}
+
+	// A row with no pane has nothing live to target, so the session buttons drop
+	// even under merge; the PR form still renders.
+	noPane := withPane
+	noPane.Agents = []Agent{{
+		SessionID: "s2", SourceApp: "app", Branch: "feature", Status: statusWaiting,
+		HasPane: false,
+	}}
+	html = render(noPane)
+	if strings.Contains(html, `data-action="monitor-ci"`) {
+		t.Errorf("no pane: session-action buttons must not render:\n%s", html)
+	}
+	if !strings.Contains(html, `class="pract prrun"`) {
+		t.Errorf("no pane: PR form should still render:\n%s", html)
+	}
+}
+
 // The roster's session name and its peek button must be siblings, with the name
 // in its own .sessname box. Otherwise a long tmux session name ellipses inside the
 // overflow:hidden namecell and takes the trailing ⤢ with it — the peek control

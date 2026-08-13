@@ -176,6 +176,32 @@ func TestRunActionTimeoutKillsProcessGroup(t *testing.T) {
 	}
 }
 
+func TestRunTmuxTimeoutKillsProcessGroup(t *testing.T) {
+	// Mirror of TestRunActionTimeoutKillsProcessGroup for the tmux exec path: a
+	// hung tmux invocation must be SIGKILLed as a whole process group after the
+	// timeout, not left with a reparented child surviving.
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	stub := writeStub(t, "hangtmux", `sleep 30 & echo $! > `+pidFile+`; sleep 30`)
+	start := time.Now()
+	_, r := runTmux(stub, t.TempDir(), []string{"send-keys"}, 500*time.Millisecond)
+	if !r.TimedOut {
+		t.Fatalf("expected TimedOut, got %+v", r)
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Fatal("runTmux did not return promptly after timeout")
+	}
+	// Give the kill a moment to propagate, then assert the child is gone.
+	time.Sleep(200 * time.Millisecond)
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Skipf("child pid not recorded: %v", err) // stub race; not the unit under test
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	if pid > 0 && syscall.Kill(pid, 0) == nil {
+		t.Fatalf("child pid %d still alive — process group was not killed", pid)
+	}
+}
+
 func TestHostAllowed(t *testing.T) {
 	extra := []string{"box.tailnet.ts.net"}
 	yes := []string{"127.0.0.1", "127.0.0.1:4555", "localhost:4555", "[::1]:4555", "box.tailnet.ts.net", "BOX.tailnet.ts.net:4555", "100.64.0.1:4555"}
