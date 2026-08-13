@@ -268,6 +268,29 @@ func latestCwdForSession(db *sql.DB, sessionID string) (string, error) {
 	return truncate(stripControl(cwd), maxPathLen), nil
 }
 
+// latestPaneForSession returns the tmux pane id of sessionID's most recent event
+// that recorded one. It mirrors latestCwdForSession: "" (nil error) when the
+// session is unknown or never recorded a pane, which the caller treats as "no
+// live pane to target". The value is NOT trusted here — the caller re-validates
+// it against paneIDRe before it ever reaches a tmux command.
+func latestPaneForSession(db *sql.DB, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", nil
+	}
+	var pane string
+	err := db.QueryRow(
+		`SELECT COALESCE(tmux_pane,'') FROM events
+		 WHERE session_id = ? AND tmux_pane IS NOT NULL AND tmux_pane <> ''
+		 ORDER BY id DESC LIMIT 1`, sessionID).Scan(&pane)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return pane, nil
+}
+
 // pruneOld deletes events older than the given number of days and returns the
 // number of rows removed.
 func pruneOld(db *sql.DB, days int) (int64, error) {

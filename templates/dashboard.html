@@ -342,6 +342,18 @@
     .actmsg { display: block; white-space: pre-wrap; font-size: var(--fs-2xs); color: var(--text-3); }
     .actforce { display: inline-flex; align-items: center; gap: 3px; font-size: var(--fs-2xs); color: var(--text-3); cursor: pointer; }
     .actforce input { margin: 0; }
+    /* The actions cell holds up to two clusters — the session buttons and the PR
+       form — which stack rather than crowd one line. */
+    td.actions .actgroup { display: flex; flex-wrap: wrap; align-items: center; }
+    td.actions .actgroup + .actgroup { margin-top: 8px; }
+    /* PR form: a three-way choice, its modifiers, the exact command it will run,
+       and one run button. --admin/--force grey out unless squash is chosen. */
+    .prchoice { display: inline-flex; gap: 8px; flex-wrap: wrap; }
+    .prchoice label { display: inline-flex; align-items: center; gap: 3px; font-size: var(--fs-2xs); color: var(--text-2); cursor: pointer; }
+    .prchoice input { margin: 0; }
+    .prcmd { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-3); white-space: nowrap; }
+    .actforce input:disabled { cursor: default; }
+    label.actforce:has(input:disabled) { opacity: 0.45; cursor: default; }
 
     /* Visually hidden but still announced — the copy confirmation and the
        cluster suffix live here. clip-path is the modern rule; the deprecated
@@ -1114,12 +1126,43 @@
       squash: 'merges + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
       'squash-admin': 'merges (bypassing branch protection) + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
       close: 'closes the PR + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
-      ready: 'mark PR ready?'
+      ready: 'mark PR ready?',
+      'monitor-ci': '/clear then /monitor-ci — drops the agent\'s current context'
     };
 
     function forceOn(group) {
       var f = group.querySelector('.practforce');
-      return !!(f && f.checked);
+      // A disabled --force (the box is greyed for close/ready) never contributes,
+      // even if it was left checked from a previous squash selection.
+      return !!(f && f.checked && !f.disabled);
+    }
+
+    // syncForm keeps the PR-form cluster consistent with its radio choice: --admin
+    // and --force apply to squash only (greyed and cleared otherwise), the run
+    // button's data-action tracks the mapped server action (squash / squash-admin
+    // / close / ready), and the shown command line mirrors actionArgv exactly.
+    function syncForm(group) {
+      var mode = 'squash';
+      var radios = group.querySelectorAll('.prmode');
+      for (var i = 0; i < radios.length; i++) { if (radios[i].checked) { mode = radios[i].value; break; } }
+      var isSquash = (mode === 'squash');
+      var admin = group.querySelector('.practadmin');
+      var force = group.querySelector('.practforce');
+      if (admin) { admin.disabled = !isSquash; if (!isSquash) admin.checked = false; }
+      if (force) { force.disabled = !isSquash; if (!isSquash) force.checked = false; }
+      var action = mode;
+      if (isSquash && admin && admin.checked) action = 'squash-admin';
+      var run = group.querySelector('.prrun');
+      if (run) run.setAttribute('data-action', action);
+      var cmd;
+      if (mode === 'ready') {
+        cmd = 'gh pr ready';
+      } else {
+        cmd = (action === 'squash-admin') ? 'merge-pr --squash --admin' : 'merge-pr --' + mode;
+        if (force && force.checked) cmd += ' --force';
+      }
+      var out = group.querySelector('.prcmd');
+      if (out) out.textContent = cmd;
     }
 
     // caveatFor derives the confirm-step message for action within group,
@@ -1151,6 +1194,13 @@
       }
       var f = group.querySelector('.practforce');
       if (f) f.disabled = false;
+      var radios = group.querySelectorAll('.prmode');
+      for (var k = 0; k < radios.length; k++) radios[k].disabled = false;
+      var admin = group.querySelector('.practadmin');
+      if (admin) admin.disabled = false;
+      // Restore the form's mode-dependent disabled/greyed state (unlock just
+      // re-enabled everything unconditionally).
+      if (group.classList.contains('prform')) syncForm(group);
       if (clearMsg) {
         var msg = group.querySelector('.actmsg');
         if (msg) msg.textContent = '';
@@ -1183,6 +1233,10 @@
       for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
       var f = group.querySelector('.practforce');
       if (f) f.disabled = true;
+      var radios = group.querySelectorAll('.prmode');
+      for (var k = 0; k < radios.length; k++) radios[k].disabled = true;
+      var admin = group.querySelector('.practadmin');
+      if (admin) admin.disabled = true;
       window.__ckActionBusy = true;
       if (msg) msg.textContent = 'working…';
       fetch('/api/action', {
@@ -1197,19 +1251,28 @@
       })
         .then(function (resp) { return resp.json().catch(function () { return { ok: false, output: 'HTTP ' + resp.status }; }); })
         .then(function (d) {
+          // A merge/close hard-kills the session, so its row clears on the next
+          // poll; ready and the session actions leave the row in place.
+          var clears = (action === 'squash' || action === 'squash-admin' || action === 'close');
           // IMPORTANT: assign result via textContent, never innerHTML — output is
           // raw git/gh text; scrubString removed secrets but not HTML.
           if (msg) {
             msg.textContent = d.ok
-              ? (action === 'ready' ? 'PR marked ready' : 'done — row will clear')
+              ? (clears ? 'done — row will clear'
+                 : action === 'ready' ? 'PR marked ready'
+                 : action === 'monitor-ci' ? 'sent /monitor-ci'
+                 : action === 'new-monitor' ? 'watcher started'
+                 : 'done')
               : ('failed: ' + (d.output || ('exit ' + d.exitCode)));
-            if (d.timedOut) msg.textContent = 'timed out — teardown may be incomplete; verify before retrying';
+            if (d.timedOut) msg.textContent = clears
+              ? 'timed out — teardown may be incomplete; verify before retrying'
+              : 'timed out — verify before retrying';
           }
-          // A successful destructive action is followed by the row disappearing
+          // A successful row-clearing action is followed by the row disappearing
           // on the next poll (session/worktree gone); leave it locked so nothing
-          // flashes back to life first. Anything else — failure or "ready",
-          // which leaves the row in place — unlocks the buttons for a retry.
-          if (!d.ok || action === 'ready') unlock(group, false);
+          // flashes back to life first. Anything else — failure, or an action that
+          // leaves the row in place — unlocks the buttons for a retry.
+          if (!d.ok || !clears) unlock(group, false);
         })
         .catch(function (e) { if (msg) msg.textContent = 'request failed: ' + e; unlock(group, false); })
         .finally(function () { window.__ckActionBusy = false; });
@@ -1223,6 +1286,14 @@
 
       if (el.classList.contains('actcancel')) {
         unlock(group, true);
+        return;
+      }
+      // A no-confirm action (new-monitor: spawning a watcher destroys nothing)
+      // fires on a single press. If a sibling in the same cluster was mid-confirm,
+      // drop that armed state first so it cannot fire by accident.
+      if (el.getAttribute('data-noconfirm') === 'true') {
+        if (group.classList.contains('confirm')) unlock(group, false);
+        fire(group, el);
         return;
       }
       if (group.classList.contains('confirm')) {
@@ -1243,16 +1314,28 @@
 
     document.addEventListener('change', function (ev) {
       var f = ev.target;
-      if (!f || !f.classList || !f.classList.contains('practforce')) return;
+      if (!f || !f.classList) return;
+      if (!f.classList.contains('practforce') && !f.classList.contains('practadmin') && !f.classList.contains('prmode')) return;
       var group = f.closest('.actgroup');
-      if (!group || !group.classList.contains('confirm')) return;
+      if (!group) return;
+      // Keep the form (disabled modifiers, run action, command line) in step with
+      // the choice before anything about a possible armed confirm.
+      if (group.classList.contains('prform')) syncForm(group);
+      if (!group.classList.contains('confirm')) return;
       var armed = group.querySelector('.pract.confirm');
       if (armed && armed.dataset.origLabel) {
+        // The mapped action may have changed (e.g. squash → squash-admin), so
+        // re-derive the caveat for whatever the run button now targets.
         var action = armed.getAttribute('data-action');
         var msg = group.querySelector('.actmsg');
-        if (msg && action !== 'ready') msg.textContent = caveatFor(group, action);
+        if (msg) msg.textContent = caveatFor(group, action);
       }
     });
+
+    // The initial page's forms come pre-rendered by the server; sync once so their
+    // modifier/disabled state is correct even before the first interaction.
+    var forms = document.querySelectorAll('.actgroup.prform');
+    for (var fi = 0; fi < forms.length; fi++) syncForm(forms[fi]);
   })();
   {{ end }}
 
@@ -1349,12 +1432,23 @@
           <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
           <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}><span class="sessname">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</span>{{ if and $.PeekEnabled .LiveTmux }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="show this pane's last lines">⤢</button>{{ end }}</td>
           {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions">
-            <span class="actgroup" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
-              <button type="button" class="pract" data-action="squash" title="merge-pr --squash">squash</button>
-              <button type="button" class="pract" data-action="squash-admin" title="merge-pr --squash --admin (bypasses branch protection)">admin</button>
-              <button type="button" class="pract" data-action="close" title="merge-pr --close">close</button>
-              <button type="button" class="pract" data-action="ready" title="gh pr ready">ready</button>
-              <label class="actforce" title="pass --force: merge even if the worktree has uncommitted changes"><input type="checkbox" class="practforce"> force</label>
+            {{ if .LiveTmux }}
+            <span class="actgroup actsession" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
+              <button type="button" class="pract" data-action="monitor-ci" title="/clear then /monitor-ci in the running pane">monitor ci</button>
+              <button type="button" class="pract" data-action="new-monitor" data-noconfirm="true" title="split a new pane running /monitor-ci">+ watcher</button>
+              <span class="actmsg" aria-live="polite"></span>
+            </span>
+            {{ end }}
+            <span class="actgroup prform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
+              <span class="prchoice" role="radiogroup" aria-label="PR action">
+                <label><input type="radio" name="prmode-{{ .SessionID }}" class="prmode" value="squash" checked> squash</label>
+                <label><input type="radio" name="prmode-{{ .SessionID }}" class="prmode" value="close"> close</label>
+                <label><input type="radio" name="prmode-{{ .SessionID }}" class="prmode" value="ready"> ready</label>
+              </span>
+              <label class="actforce" title="merge-pr --admin: bypass branch protection (squash only)"><input type="checkbox" class="practadmin"> --admin</label>
+              <label class="actforce" title="--force: merge even with uncommitted changes (squash only)"><input type="checkbox" class="practforce"> --force</label>
+              <code class="prcmd">merge-pr --squash</code>
+              <button type="button" class="pract prrun" data-action="squash" title="run the selected PR action">run</button>
               <span class="actmsg" aria-live="polite"></span>
             </span>
           </td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}

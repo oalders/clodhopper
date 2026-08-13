@@ -345,6 +345,7 @@ func runServe(args []string) int {
 		enabled:      *enableMerge,
 		mergePR:      "merge-pr",
 		gh:           "gh",
+		tmux:         "tmux",
 		bindHost:     *host,
 		allowedHosts: allowedHosts(),
 		inflight:     newInflightSet(),
