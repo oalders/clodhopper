@@ -1255,8 +1255,12 @@ func TestContentTemplate_ActionsHiddenBehindDisclosure(t *testing.T) {
 		t.Errorf("expected a collapsed ⋯ actions toggle in the actions cell:\n%s", html)
 	}
 	// The panel row exists and is hidden until the toggle opens it.
-	if !strings.Contains(html, `<tr class="actrow" hidden data-actions-row="s1">`) {
+	if !strings.Contains(html, `<tr class="actrow" hidden id="actrow-s1" data-actions-row="s1">`) {
 		t.Errorf("expected a hidden actions panel row:\n%s", html)
+	}
+	// The toggle is linked to the panel it controls.
+	if !strings.Contains(html, `aria-controls="actrow-s1"`) {
+		t.Errorf("expected the toggle to reference its panel via aria-controls:\n%s", html)
 	}
 
 	// The form must NOT sit in the visible actions <td> — it belongs in the hidden
@@ -1277,6 +1281,51 @@ func TestContentTemplate_ActionsHiddenBehindDisclosure(t *testing.T) {
 	panel := html[rowStart:]
 	if !strings.Contains(panel, `class="pract prrun"`) || !strings.Contains(panel, `data-action="monitor-ci"`) {
 		t.Errorf("PR form + session buttons must render inside the hidden panel row:\n%s", panel)
+	}
+}
+
+// With peek AND merge both on for a live pane, a row emits three consecutive
+// sibling rows: the main roster row, its panerow, then its actrow. The disclosure
+// JS (mainRowOf/closeOtherPanels) walks these siblings to enforce that peek and
+// actions are mutually exclusive per row, so their ordering and adjacency is a
+// load-bearing contract — reordering or inserting a row between them would break
+// mutual exclusion silently, with no other test rendering peek + merge together.
+func TestContentTemplate_PanelRowsAdjacentToMainRow(t *testing.T) {
+	d := dashboardData{
+		MergeEnabled: true, PeekEnabled: true,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", HasPane: true, LiveTmux: true,
+		}},
+	}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+
+	iToggle := strings.Index(html, `data-actions="s1"`) // in the main row's actions cell
+	paneOpen := `<tr class="panerow"`
+	actOpen := `<tr class="actrow"`
+	iPane := strings.Index(html, paneOpen)
+	iAct := strings.Index(html, actOpen)
+	if iToggle == -1 || iPane == -1 || iAct == -1 {
+		t.Fatalf("expected main-row toggle, panerow, and actrow all rendered:\n%s", html)
+	}
+	if iToggle >= iPane || iPane >= iAct {
+		t.Fatalf("expected order main-row (%d) < panerow (%d) < actrow (%d):\n%s", iToggle, iPane, iAct, html)
+	}
+	// Between the main row's toggle and the panerow: exactly the main row's own
+	// </tr> and no other row opening — i.e. the panerow directly follows.
+	mid1 := html[iToggle:iPane]
+	if strings.Count(mid1, "</tr>") != 1 || strings.Count(mid1, "<tr ") != 0 {
+		t.Errorf("panerow must immediately follow the main row (intervening rows):\n%s", html[iToggle:iAct])
+	}
+	// Between the panerow's opening and the actrow: exactly the panerow's own </tr>
+	// and no other row opening — i.e. the actrow directly follows the panerow.
+	mid2 := html[iPane+len(paneOpen) : iAct]
+	if strings.Count(mid2, "</tr>") != 1 || strings.Count(mid2, "<tr ") != 0 {
+		t.Errorf("actrow must immediately follow the panerow (intervening rows):\n%s", html[iToggle:iAct])
 	}
 }
 

@@ -342,6 +342,9 @@
       white-space: nowrap;
     }
     button.actbtn:hover, button.actbtn:focus-visible { opacity: 1; color: var(--brand); }
+    /* all:unset drops the global :focus-visible ring, and colour alone is not a
+       sufficient focus indicator (WCAG 2.4.7); restore a real ring. */
+    button.actbtn:focus-visible { outline: none; box-shadow: var(--shadow-focus); border-radius: var(--radius-xs); }
     button.actbtn[aria-expanded="true"] { opacity: 1; color: var(--brand); }
     tr.actrow > td { padding: 0; background: var(--surface-3); }
     .actpanel { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 24px; padding: 12px; }
@@ -1182,6 +1185,8 @@
     function closeAct(sess, focusBtn) {
       var row = actRow(sess);
       if (!row || row.hidden) return false;
+      // Never leave an armed destructive confirm inside a panel we are hiding.
+      if (window.__ckDisarm) window.__ckDisarm(row);
       row.hidden = true;
       var btn = actButton(sess);
       if (btn) {
@@ -1567,6 +1572,17 @@
     // modifier/disabled state is correct even before the first interaction.
     var forms = document.querySelectorAll('.actgroup.prform');
     for (var fi = 0; fi < forms.length; fi++) syncForm(forms[fi]);
+
+    // Collapsing the actions panel (Escape, the toggle, or opening the peek on the
+    // same row) reads as "cancel" to a user. An armed two-step confirm must NOT
+    // survive out of sight — otherwise reopening the panel and clicking once would
+    // fire a destructive merge/close with no fresh confirmation. Exposed so the
+    // disclosure logic (in the peek IIFE) can disarm a row before hiding it.
+    window.__ckDisarm = function (root) {
+      if (!root || !root.querySelectorAll) return;
+      var groups = root.querySelectorAll('.actgroup.confirm');
+      for (var i = 0; i < groups.length; i++) unlock(groups[i], true);
+    };
   })();
   {{ end }}
 
@@ -1662,12 +1678,12 @@
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
           <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}><span class="sessname">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</span>{{ if and $.PeekEnabled .LiveTmux }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="show this pane's last lines">⤢</button>{{ end }}</td>
-          {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions"><button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" title="squash · admin · close · ready · monitor ci">⋯ actions</button></td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}
+          {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions"><button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" title="squash · admin · close · ready · monitor ci">⋯ actions</button></td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="{{ if $.MergeEnabled }}9{{ else }}8{{ end }}"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
-        {{ if and $.MergeEnabled .SessionID }}<tr class="actrow" hidden data-actions-row="{{ .SessionID }}"><td colspan="9"><div class="actpanel">
+        {{ if and $.MergeEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="9"><div class="actpanel">
             {{ if .HasPane }}
-            <div class="actcol">
+            <div class="actcol" role="group" aria-label="session actions">
               <span class="acteyebrow">session</span>
               <span class="actgroup actsession" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
                 <button type="button" class="pract" data-action="monitor-ci" title="/clear then /monitor-ci in the running pane">monitor ci</button>
@@ -1676,7 +1692,7 @@
               </span>
             </div>
             {{ end }}
-            <div class="actcol prcol">
+            <div class="actcol prcol" role="group" aria-label="pull request actions">
               <span class="acteyebrow">pull request</span>
               <span class="actgroup prform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
                 <span class="prchoice" role="radiogroup" aria-label="PR action">
