@@ -221,10 +221,16 @@
        get narrow — more so with the actions column present — so a long tmux
        session name would ellipse AND clip the trailing button out of the
        overflow:hidden cell, making the peek control silently vanish. Make the
-       cell a flex row so only the name (.sessname) truncates; the button is a
-       non-shrinking sibling that stays visible. Scoped to the roster: the
-       activity table's namecell has no button and truncates fine as a plain cell. */
-    table.roster td.namecell { display: flex; align-items: baseline; gap: 4px; }
+       name+button a flex row so only the name (.sessname) truncates; the button
+       is a non-shrinking sibling that stays visible.
+       The flex lives on an inner .sessline wrapper, NOT the <td>: a display:flex
+       <td> stops being a table-cell box and drops out of border-collapse, so it
+       paints its own bottom border as an orphaned bar floating above the shared
+       row separator (visible under the session name, worse on hover). Keeping the
+       <td> a real cell lets its border collapse into the row grid like every
+       other column. Scoped to the roster: the activity table's namecell has no
+       button and truncates fine as a plain cell. */
+    table.roster td.namecell .sessline { display: flex; align-items: baseline; gap: 4px; }
     table.roster td.namecell .sessname { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     td.idle { font-variant-numeric: tabular-nums; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
@@ -519,7 +525,8 @@
       table.roster td.summary  { grid-area: 3 / 1 / auto / 4; }
       table.roster td[data-label="app"] { grid-area: 4 / 1; }
       table.roster td.sess     { grid-area: 4 / 2; }
-      table.roster td.namecell { grid-area: 4 / 3; justify-content: flex-end; }
+      table.roster td.namecell { grid-area: 4 / 3; }
+      table.roster td.namecell .sessline { justify-content: flex-end; }
       table.roster td.actions  { grid-area: 5 / 1 / auto / 4; }
       /* The footer line is context, not content. */
       table.roster td[data-label="app"],
@@ -1778,7 +1785,7 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
-          <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}><span class="sessname">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</span>{{ if and $.PeekEnabled .LiveTmux }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="show this pane's last lines">⤢</button>{{ end }}</td>
+          <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}><div class="sessline"><span class="sessname">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</span>{{ if and $.PeekEnabled .LiveTmux }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="show this pane's last lines">⤢</button>{{ end }}</div></td>
           {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions"><button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="squash · admin · close · ready · monitor ci"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button></td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="{{ if $.MergeEnabled }}9{{ else }}8{{ end }}"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}

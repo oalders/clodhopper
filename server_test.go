@@ -1180,6 +1180,40 @@ func TestContentTemplate_PeekControlGated(t *testing.T) {
 	}
 }
 
+// The roster's session name and its peek button live inside a .sessline wrapper,
+// NOT directly in the <td>. The flex layout that keeps a long name from clipping
+// the peek button must sit on that inner wrapper: a display:flex <td> drops out of
+// the table's border-collapse and paints its own bottom border as an orphaned bar
+// under the session column (worse on hover). Keeping the <td> a plain cell — with
+// the flex on .sessline — is what collapses the border like every other column, so
+// this guards against a regression back to flex-on-<td>.
+func TestContentTemplate_SessionCellUsesInnerFlexWrapper(t *testing.T) {
+	var buf bytes.Buffer
+	d := dashboardData{
+		PeekEnabled: true,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", LiveTmux: true,
+		}},
+	}
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+
+	// The name+peek content is wrapped, so the <td> itself carries no flex.
+	if !strings.Contains(html, `<td class="namecell" data-label="session" title="sess"><div class="sessline">`) {
+		t.Errorf("session cell must wrap its content in <div class=\"sessline\">:\n%s", html)
+	}
+	// The peek button must be inside that wrapper (before the wrapper closes), so a
+	// long name truncates while the button stays in the visible cell.
+	i := strings.Index(html, `<div class="sessline">`)
+	j := strings.Index(html, `</div></td>`)
+	if i < 0 || j < 0 || j < i || !strings.Contains(html[i:j], `class="peek"`) {
+		t.Errorf("peek button must render inside the .sessline wrapper:\n%s", html)
+	}
+}
+
 // The session-action buttons (monitor ci / + watcher) are gated on pane
 // PRESENCE, not on --pane-peek: handleAction accepts monitor-ci/new-monitor
 // whenever --enable-merge is on, so the buttons must render under merge alone
