@@ -1,0 +1,184 @@
+<!-- @dsCard group="Dashboard" viewport="1180x660" name="clodhopper dashboard" subtitle="The refined, responsive recreation — roster, activity, event feed" -->
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clodhopper dashboard</title>
+<link rel="stylesheet" href="../../styles.css">
+<style>
+  body { background: var(--bg); }
+  .ck-app { max-width: 1180px; margin: 0 auto; padding: 22px 22px 40px; }
+
+  /* ── header / wordmark ─────────────────────────────────────────────── */
+  .ck-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+               gap: 10px 16px; margin-bottom: 16px; }
+  .ck-brand { display: flex; align-items: baseline; gap: 8px; }
+  .ck-prompt { color: var(--brand); }
+  .ck-word { font-size: var(--fs-2xl); font-weight: var(--fw-black);
+             letter-spacing: var(--tracking-tight); color: var(--text-1); }
+  .ck-hop { color: var(--brand); }
+  .ck-cursor { width: 8px; height: 1.05em; background: var(--brand); border-radius: 1px;
+               align-self: center; animation: ck-blink 1.1s steps(1) infinite; }
+  @keyframes ck-blink { 50% { opacity: 0; } }
+  .ck-tagline { font-size: var(--fs-sm); color: var(--text-3); }
+  .ck-headright { display: flex; align-items: center; gap: 14px; }
+  .ck-meta { font-size: var(--fs-sm); color: var(--text-3); }
+  .ck-live { color: var(--working); }
+
+  /* ── filter bar ────────────────────────────────────────────────────── */
+  .ck-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+                padding: 12px 14px; margin-bottom: 18px;
+                background: var(--surface); border: 1px solid var(--border);
+                border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); }
+  .ck-spring { flex: 1 1 24px; }
+  .ck-fbadge { display: inline-flex; align-items: center; justify-content: center;
+               min-width: 16px; height: 16px; margin-left: 6px; padding: 0 4px;
+               border-radius: var(--radius-pill); background: var(--brand); color: var(--text-invert);
+               font-size: var(--fs-2xs); font-weight: var(--fw-bold); }
+
+  .ck-sections { display: flex; flex-direction: column; gap: 20px; }
+  .ck-pad { padding: 6px 18px 14px; }
+
+  /* ── tables ────────────────────────────────────────────────────────── */
+  .ck-tablewrap { width: 100%; }
+  .ck-table { border-collapse: collapse; width: 100%; table-layout: fixed;
+              font-size: var(--fs-base); }
+  .ck-table th, .ck-table td {
+    text-align: left; padding: var(--cell-pad-y) var(--cell-pad-x);
+    border-bottom: 1px solid var(--border); vertical-align: top;
+    overflow: hidden; text-overflow: ellipsis; }
+  .ck-table tbody tr:last-child td { border-bottom: none; }
+  .ck-table th { position: sticky; top: 0; z-index: 1;
+    background: var(--surface-2); color: var(--text-2);
+    font-weight: var(--fw-semibold); font-size: var(--fs-xs);
+    letter-spacing: var(--tracking-wide); text-transform: lowercase;
+    border-bottom: 1px solid var(--border-strong); }
+  .ck-table tbody tr { transition: background var(--dur-fast) var(--ease); }
+  .ck-roster tbody tr:hover td { background: var(--surface-3); }
+
+  .ck-app, .ck-table td.ck-app { color: var(--text-2); }
+  .ck-table td.ck-app { white-space: nowrap; }
+  td.ck-idle, td.ck-sess, td.ck-name, td.ck-time, td.ck-tool, td.ck-event { white-space: nowrap; }
+  td.ck-idle { color: var(--text-2); font-variant-numeric: tabular-nums; }
+  td.ck-name { color: var(--text-2); }
+  td.ck-branch { white-space: normal; word-break: break-word; }
+  td.ck-doing { white-space: pre-wrap; word-break: break-word; color: var(--text-1); }
+  .ck-em { font-style: italic; color: var(--text-3); }
+  .ck-lastcmd { color: var(--text-3); font-size: 0.85em; margin-top: 2px; }
+  td.ck-summary { white-space: pre-wrap; word-break: break-word; color: var(--text-2); }
+  .ck-etype { font-weight: var(--fw-semibold); color: var(--text-2); }
+  .ck-tool { color: var(--text-1); }
+  .ck-dur { color: var(--text-3); }
+  .ck-count { font-variant-numeric: tabular-nums; color: var(--text-1); font-weight: var(--fw-semibold); }
+  .ck-ci, th.ck-ci { text-align: center; padding-left: 4px; padding-right: 4px; }
+
+  /* row states — the structural signal, ported from rowClass() */
+  .ck-roster tr.alert td { background: var(--attention-bg); }
+  .ck-roster tr.alert:hover td { background: color-mix(in srgb, var(--attention) 20%, var(--surface)); }
+  .ck-table tr.fail td { background: var(--fail-bg); }
+  .ck-roster tr.group-start td { border-top: 2px solid var(--divider); }
+  .ck-roster tr.grouped td:first-child { box-shadow: inset 3px 0 0 var(--idle); }
+
+  /* ── new roster controls (copy path · peek · actions) ──────────────── */
+  .ck-branchcell { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+  .ck-copy { opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
+  .ck-roster tr:hover .ck-copy, .ck-copy:focus-visible { opacity: 1; }
+  td.ck-name { display: flex; align-items: baseline; gap: 6px; }
+  .ck-sessname { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .ck-actbtn { font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.2;
+               padding: 3px 8px; border-radius: var(--radius-sm);
+               border: 1px solid var(--border-strong); background: var(--surface-2);
+               color: var(--text-2); cursor: pointer;
+               transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
+  .ck-actbtn:hover { background: var(--surface-3); color: var(--text-1); }
+  .ck-actbtn[aria-expanded="true"] { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
+  .ck-roster tr.ck-panelrow td { padding: 0; background: var(--surface-2); }
+  .ck-roster tr.ck-panelrow:hover td { background: var(--surface-2); }
+  .ck-panelpad { padding: 12px 14px; }
+
+  /* ── footer ────────────────────────────────────────────────────────── */
+  .ck-footer { margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--border);
+               font-size: var(--fs-sm); color: var(--text-3); text-align: center; }
+
+  /* ── agent cards (the ≤640px roster; Roster.jsx swaps to them by media query) ── */
+  /* The roster stops being a table here and renders as prioritised cards
+     (see Roster.jsx): status + branch lead, doing follows, identity fields
+     drop to a muted footer, and peek/actions are 44px controls. */
+  .ck-agents { display: flex; flex-direction: column; gap: 10px; padding: 10px; }
+  .ck-agent { display: flex; flex-direction: column; gap: 8px;
+              border: 1px solid var(--border); border-radius: var(--radius);
+              padding: 10px 12px; background: var(--surface); }
+  .ck-agent.alert { background: var(--attention-bg);
+                    border-color: color-mix(in srgb, var(--attention) 35%, var(--border)); }
+  .ck-agent.grouped { border-left: 3px solid var(--idle); }
+  .ck-agent.group-start { border-top: 2px solid var(--divider); }
+  .ck-agent-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .ck-agent-idle { color: var(--text-3); font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
+  .ck-agent-branch { display: flex; align-items: baseline; gap: 8px;
+                     font-size: var(--fs-md); line-height: 1.4; overflow-wrap: anywhere; }
+  .ck-agent-branch > :first-child { flex: none; }
+  .ck-agent-doing { color: var(--text-1); font-size: var(--fs-sm);
+                    white-space: pre-wrap; word-break: break-word; }
+  /* One quiet line of identity: app · id · tmux. It never wraps — it truncates,
+     because nothing here is worth a second line on a phone. */
+  .ck-agent-foot { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 10px;
+                   color: var(--text-3); font-size: var(--fs-xs); line-height: 1.6;
+                   min-width: 0; white-space: nowrap; overflow: hidden; }
+  .ck-agent-foot > * { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .ck-agent-controls { display: flex; gap: 8px; }
+  .ck-agent-controls > * { flex: 1 1 0; justify-content: center; }
+  .ck-agent-controls .ck-actbtn { min-height: 44px; font-size: var(--fs-sm); }
+  .ck-agent-actions { border-top: 1px solid var(--border); padding-top: 10px; }
+
+  /* ════ responsive — three tiers, faithful to the shipped dashboard ════ */
+  @media (max-width: 960px) and (min-width: 641px) {
+    .ck-tablewrap { overflow-x: auto; }
+    .ck-roster { min-width: 116ch; }
+    .ck-events { min-width: 100ch; }
+    .ck-counts { min-width: 52ch; }
+  }
+
+  @media (max-width: 640px) {
+    .ck-app { padding: 16px 12px 32px; }
+    .ck-word { font-size: var(--fs-xl); }
+
+
+    /* Debug sections (activity + events) keep the table→card treatment. */
+    .ck-table, .ck-table tbody { display: block; width: auto; }
+    .ck-table thead { display: none; }
+    .ck-table tr {
+      display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px;
+      border: 1px solid var(--border); border-radius: var(--radius);
+      padding: 10px 12px; margin: 10px; background: var(--surface); }
+    .ck-table td {
+      display: flex; gap: 7px; min-width: 0; border: none; padding: 0;
+      overflow: visible; white-space: normal; }
+    .ck-table td::before {
+      content: attr(data-label); color: var(--text-3);
+      font-weight: var(--fw-semibold); white-space: nowrap; font-size: var(--fs-xs);
+      align-self: center; }
+    .ck-table td.ck-summary { flex-basis: 100%; }
+    td.ck-idle, td.ck-sess, td.ck-name, td.ck-time, td.ck-tool, td.ck-event, .ck-table td.ck-app { white-space: normal; }
+    .ck-table tr.fail td { background: transparent !important; }
+    .ck-table tr.fail { background: var(--fail-bg); }
+  }
+</style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js"></script>
+  <script src="../../_ds_bundle.js"></script>
+  <script src="data.js"></script>
+  <script type="text/babel" data-presets="react" src="Roster.jsx"></script>
+  <script type="text/babel" data-presets="react" src="Activity.jsx"></script>
+  <script type="text/babel" data-presets="react" src="RecentEvents.jsx"></script>
+  <script type="text/babel" data-presets="react" src="App.jsx"></script>
+  <script type="text/babel" data-presets="react">
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
