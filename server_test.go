@@ -931,7 +931,8 @@ func TestHandleDashboard_SessionColors(t *testing.T) {
 	if !strings.Contains(body, "color-mix") {
 		t.Errorf("expected a color-mix row tint:\n%s", body)
 	}
-	// The roster carries a column headed "session" (the tmux session name).
+	// The activity table carries a column headed "session" (the tmux session
+	// name); the roster's own session column was folded into the controls cell.
 	if !strings.Contains(body, "<th>session</th>") {
 		t.Errorf("expected a session column header:\n%s", body)
 	}
@@ -1088,9 +1089,9 @@ func TestHandleDashboard_RendersTmuxSession(t *testing.T) {
 	// The activity table (<th>events</th>) is debug-gated.
 	body := getBody(t, db, "/?debug=1")
 	for _, want := range []string{
-		"roster-colors",    // the disambiguating name appears
+		"roster-colors",    // the disambiguating name appears (activity table)
 		"fix-1710",         // branch shown in its own column
-		"<th>session</th>", // roster's session-name column (now last)
+		"<th>session</th>", // activity table's session-name column
 		"<th>branch</th>",  // roster keeps a distinct branch column
 		"<th>events</th>",  // activity table renders
 		"<th>id</th>",      // the renamed session-id chip column
@@ -1180,14 +1181,54 @@ func TestContentTemplate_PeekControlGated(t *testing.T) {
 	}
 }
 
-// The roster's session name and its peek button live inside a .sessline wrapper,
-// NOT directly in the <td>. The flex layout that keeps a long name from clipping
-// the peek button must sit on that inner wrapper: a display:flex <td> drops out of
-// the table's border-collapse and paints its own bottom border as an orphaned bar
-// under the session column (worse on hover). Keeping the <td> a plain cell — with
-// the flex on .sessline — is what collapses the border like every other column, so
+// The shared controls cell must exist under peek alone (merge off) — a state that
+// was impossible before the session/controls columns were folded together, when
+// the actions cell only rendered under --enable-merge. With peek on and merge off
+// the cell renders and holds the ⤢ peek button (and no merge toggle).
+func TestContentTemplate_ControlsCellRendersUnderPeekAlone(t *testing.T) {
+	d := dashboardData{
+		PeekEnabled:  true,
+		MergeEnabled: false,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", LiveTmux: true,
+		}},
+	}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+
+	if !strings.Contains(html, `<td class="actions" data-label="actions">`) {
+		t.Fatalf("peek on, merge off: expected a controls cell to render:\n%s", html)
+	}
+	// The controls cell holds the peek button.
+	cellStart := strings.Index(html, `<td class="actions"`)
+	cell := html[cellStart : cellStart+strings.Index(html[cellStart:], "</td>")]
+	if !strings.Contains(cell, `class="peek" data-pane="%3"`) {
+		t.Errorf("controls cell must hold the peek button:\n%s", cell)
+	}
+	// No merge toggle when merge is off.
+	if strings.Contains(cell, "actbtn") {
+		t.Errorf("merge off: no actbtn toggle should render:\n%s", cell)
+	}
+	// The removed session <th> is gone; the header shows the shared controls column.
+	if strings.Contains(html, "<th>session</th>") {
+		t.Errorf("session header column must be removed:\n%s", html)
+	}
+	if !strings.Contains(html, "<th>actions</th>") {
+		t.Errorf("peek on: controls (actions) header column must render:\n%s", html)
+	}
+}
+
+// The shared controls cell wraps its buttons (peek + merge toggle) in an inner
+// .ctrlwrap flex wrapper, NOT directly on the <td>. A display:flex <td> drops out
+// of the table's border-collapse and paints its own bottom border as an orphaned
+// bar under the controls column (worse on hover). Keeping the <td> a plain cell —
+// with the flex on .ctrlwrap — collapses the border like every other column, so
 // this guards against a regression back to flex-on-<td>.
-func TestContentTemplate_SessionCellUsesInnerFlexWrapper(t *testing.T) {
+func TestContentTemplate_ControlsCellUsesInnerFlexWrapper(t *testing.T) {
 	var buf bytes.Buffer
 	d := dashboardData{
 		PeekEnabled: true,
@@ -1201,16 +1242,15 @@ func TestContentTemplate_SessionCellUsesInnerFlexWrapper(t *testing.T) {
 	}
 	html := buf.String()
 
-	// The name+peek content is wrapped, so the <td> itself carries no flex.
-	if !strings.Contains(html, `<td class="namecell" data-label="session" title="sess"><div class="sessline">`) {
-		t.Errorf("session cell must wrap its content in <div class=\"sessline\">:\n%s", html)
+	// The controls cell wraps its buttons, so the <td> itself carries no flex.
+	if !strings.Contains(html, `<td class="actions" data-label="actions"><div class="ctrlwrap">`) {
+		t.Errorf("controls cell must wrap its content in <div class=\"ctrlwrap\">:\n%s", html)
 	}
-	// The peek button must be inside that wrapper (before the wrapper closes), so a
-	// long name truncates while the button stays in the visible cell.
-	i := strings.Index(html, `<div class="sessline">`)
+	// The peek button must be inside that wrapper (before the wrapper closes).
+	i := strings.Index(html, `<div class="ctrlwrap">`)
 	j := strings.Index(html, `</div></td>`)
 	if i < 0 || j < 0 || j < i || !strings.Contains(html[i:j], `class="peek"`) {
-		t.Errorf("peek button must render inside the .sessline wrapper:\n%s", html)
+		t.Errorf("peek button must render inside the .ctrlwrap wrapper:\n%s", html)
 	}
 }
 
@@ -1363,12 +1403,11 @@ func TestContentTemplate_PanelRowsAdjacentToMainRow(t *testing.T) {
 	}
 }
 
-// The roster's session name and its peek button must be siblings, with the name
-// in its own .sessname box. Otherwise a long tmux session name ellipses inside the
-// overflow:hidden namecell and takes the trailing ⤢ with it — the peek control
-// silently vanishes for exactly the busiest sessions (see the flex rule on
-// table.roster td.namecell in the template).
-func TestContentTemplate_PeekButtonSurvivesLongName(t *testing.T) {
+// The tmux session name is no longer a visible roster column, but it must not
+// vanish entirely: it is preserved in the peek button's title attribute so it is
+// still discoverable on hover. This guards that the name survives the column
+// removal rather than being dropped.
+func TestContentTemplate_SessionNamePreservedInPeekTitle(t *testing.T) {
 	d := dashboardData{
 		PeekEnabled: true,
 		Agents: []Agent{{
@@ -1383,26 +1422,24 @@ func TestContentTemplate_PeekButtonSurvivesLongName(t *testing.T) {
 	}
 	html := buf.String()
 
-	// The name lives in its own span so only it truncates.
-	name := `<span class="sessname">nono redirect buildx state to the worktree</span>`
-	if !strings.Contains(html, name) {
-		t.Fatalf("session name not wrapped in .sessname:\n%s", html)
+	// The session name lives in the peek button's title, ahead of the peek hint.
+	want := `class="peek" data-pane="%2310" aria-expanded="false" title="nono redirect buildx state to the worktree — show this pane's last lines"`
+	if !strings.Contains(html, want) {
+		t.Fatalf("session name must be preserved in the peek button title:\n%s", html)
 	}
-	// The button is a sibling AFTER that span, not nested inside it.
-	nameEnd := strings.Index(html, name) + len(name)
-	rest := html[nameEnd:]
-	btn := strings.Index(rest, `class="peek"`)
-	nextCell := strings.Index(rest, "</td>")
-	if btn == -1 || btn > nextCell {
-		t.Fatalf("peek button must immediately follow the .sessname span within the cell:\n%s", html)
+	// The removed session column leaves no .sessname/.sessline behind.
+	if strings.Contains(html, "sessname") || strings.Contains(html, "sessline") {
+		t.Errorf("removed session cell markup (sessname/sessline) must not render:\n%s", html)
 	}
 }
 
-// The peek panerow spans the whole roster width with a colspan, but the roster's
-// column count is conditional: the actions column only exists under --enable-merge.
-// A hardcoded colspan would under- or over-span the table in one of the two modes,
-// so it must track MergeEnabled.
-func TestContentTemplate_PanerowColspanTracksMergeEnabled(t *testing.T) {
+// The peek panerow and merge actrow span the whole roster width with a colspan.
+// After folding the session column into the shared controls column, the base
+// roster is 7 columns plus one controls column whenever peek OR merge is on. A
+// panerow only exists when peek is on, so the controls column is always present
+// and the panerow always spans 8 (never the old 9, never the base 7). Likewise the
+// actrow (merge-only) spans 8. A hardcoded stale colspan would mis-span the table.
+func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 	render := func(d dashboardData) string {
 		var buf bytes.Buffer
 		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
@@ -1418,16 +1455,21 @@ func TestContentTemplate_PanerowColspanTracksMergeEnabled(t *testing.T) {
 		}},
 	}
 
+	// Peek on, merge off: controls col present (holds the peek button) → panerow
+	// spans 8, not the old 9 nor the base 7.
 	off := base
 	off.MergeEnabled = false
-	if got := render(off); !strings.Contains(got, `colspan="8"`) || strings.Contains(got, `colspan="9"`) {
-		t.Errorf("merge off: panerow must span 8 columns (no actions col):\n%s", got)
+	if got := render(off); !strings.Contains(got, `colspan="8"`) ||
+		strings.Contains(got, `colspan="9"`) || strings.Contains(got, `colspan="7"`) {
+		t.Errorf("peek on, merge off: panerow must span 8 columns:\n%s", got)
 	}
 
+	// Peek on + merge on: both panerow and actrow span 8.
 	on := base
 	on.MergeEnabled = true
-	if got := render(on); !strings.Contains(got, `colspan="9"`) || strings.Contains(got, `colspan="8"`) {
-		t.Errorf("merge on: panerow must span 9 columns (incl. actions col):\n%s", got)
+	if got := render(on); !strings.Contains(got, `colspan="8"`) ||
+		strings.Contains(got, `colspan="9"`) || strings.Contains(got, `colspan="7"`) {
+		t.Errorf("peek on + merge on: panel rows must span 8 columns:\n%s", got)
 	}
 }
 
