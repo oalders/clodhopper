@@ -512,8 +512,10 @@
          BOTH tracks or the nowrap command line overflows the row, the run
          button strands half-width, and the touch targets shrink. */
       td.actions .prchoice { grid-column: 1 / -1; }
-      td.actions .prchoice label { min-height: 44px; align-items: center; }
-      td.actions .prcmd { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; }
+      /* Grow the text to match the enlarged tap targets — 10px (--fs-2xs) is hard
+         to read on a phone even with a 44px hit area. */
+      td.actions .prchoice label { min-height: 44px; align-items: center; font-size: var(--fs-sm); }
+      td.actions .prcmd { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; font-size: var(--fs-sm); }
       td.actions .prrun { grid-column: 1 / -1; }
       /* Only the long free-text doing/summary field claims its own full-width
          line; branch now flows inline with ci / app / status, wrapping within
@@ -1289,6 +1291,9 @@
       cancel.className = 'pract actcancel';
       cancel.textContent = '✕';
       cancel.title = 'cancel';
+      // The visible glyph is not a reliable accessible name (a title is not used
+      // as the name when text content is present), so name the control explicitly.
+      cancel.setAttribute('aria-label', 'cancel');
       btn.insertAdjacentElement('afterend', cancel);
       if (msg) {
         msg.textContent = caveatFor(group, action);
@@ -1300,6 +1305,18 @@
       var sess = group.getAttribute('data-session');
       var msg = group.querySelector('.actmsg');
       var btns = group.querySelectorAll('.pract');
+      // Disabling the pressed control blurs it to <body>, so a keyboard user
+      // loses their place the instant they confirm. Remember what was focused
+      // and put focus back once the group is unlocked (see restoreFocus below).
+      var focused = document.activeElement;
+      function restoreFocus() {
+        if (focused && focused.isConnected && !focused.disabled && typeof focused.focus === 'function') {
+          focused.focus();
+          return;
+        }
+        var run = group.querySelector('.pract:not([disabled])');
+        if (run) run.focus();
+      }
       for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
       var f = group.querySelector('.practforce');
       if (f) f.disabled = true;
@@ -1342,9 +1359,9 @@
           // on the next poll (session/worktree gone); leave it locked so nothing
           // flashes back to life first. Anything else — failure, or an action that
           // leaves the row in place — unlocks the buttons for a retry.
-          if (!d.ok || !clears) unlock(group, false);
+          if (!d.ok || !clears) { unlock(group, false); restoreFocus(); }
         })
-        .catch(function (e) { if (msg) msg.textContent = 'request failed: ' + e; unlock(group, false); })
+        .catch(function (e) { if (msg) msg.textContent = 'request failed: ' + e; unlock(group, false); restoreFocus(); })
         .finally(function () { window.__ckActionBusy = false; });
     }
 
@@ -1485,7 +1502,7 @@
     <table class="roster">
       <colgroup>
         <col style="width: 5ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 20ch">
-        <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch"><col>{{ if .MergeEnabled }}<col style="width: 20ch">{{ end }}
+        <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch"><col>{{ if .MergeEnabled }}<col style="width: 30ch">{{ end }}
       </colgroup>
       <thead>
         <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th><th>id</th><th>session</th>{{ if .MergeEnabled }}<th>actions</th>{{ end }}</tr>
