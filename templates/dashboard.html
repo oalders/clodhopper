@@ -331,8 +331,8 @@
        result/status line. */
     .actgroup { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
     button.pract {
-      font-family: var(--font-mono); font-size: var(--fs-2xs); line-height: 1.2;
-      padding: 2px 6px; border-radius: var(--radius-xs);
+      font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.2;
+      padding: 3px 8px; min-height: 24px; border-radius: var(--radius-xs);
       border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text-2);
       cursor: pointer;
     }
@@ -467,6 +467,19 @@
          a path. Drop the affordance rather than shrink it. */
       table.roster td.branch .copyicon { display: none; }
       table.roster td.branch .copycwd { cursor: default; }
+      /* Peek becomes a real control on touch. */
+      table.roster td.namecell button.peek {
+        min-height: 44px; padding: 0 12px;
+        border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+        background: var(--surface-2);
+      }
+      /* The action cluster becomes a two-column grid of full-size buttons,
+         with force and the result line spanning it. */
+      td.actions .actgroup { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
+      td.actions button.pract { min-height: 44px; font-size: var(--fs-sm); border-radius: var(--radius-sm); }
+      td.actions .actforce { grid-column: 1 / -1; min-height: 44px; font-size: var(--fs-sm); }
+      td.actions .actforce input { width: 18px; height: 18px; }
+      td.actions .actmsg { grid-column: 1 / -1; }
       td {
         display: flex; gap: 7px; min-width: 0;
         border: none; padding: 0; overflow: visible; white-space: normal;
