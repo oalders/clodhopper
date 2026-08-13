@@ -1408,7 +1408,9 @@
         if (force && force.checked) cmd += ' --force';
       }
       var out = group.querySelector('.prcmd');
-      if (out) out.textContent = cmd;
+      // title mirrors the text so a hover reveals the full command when the
+      // preview truncates (desktop .prcmd is nowrap + ellipsis).
+      if (out) { out.textContent = cmd; out.title = cmd; }
     }
 
     // caveatFor derives the confirm-step message for action within group,
@@ -1575,6 +1577,9 @@
     // Arrow keys move selection within the segmented toggle (roving focus),
     // Home/End jump to the ends — the radiogroup keyboard contract.
     document.addEventListener('keydown', function (ev) {
+      // Don't hijack browser/OS chords (Ctrl/Alt/Cmd+Arrow); only bare keys move
+      // the toggle.
+      if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.shiftKey) return;
       var modeBtn = ev.target && ev.target.closest ? ev.target.closest('.prmode') : null;
       if (!modeBtn || modeBtn.disabled) return;
       var mgroup = modeBtn.closest('.actgroup');
