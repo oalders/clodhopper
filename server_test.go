@@ -1254,6 +1254,41 @@ func TestContentTemplate_ControlsColumnAbsentWhenNeitherEnabled(t *testing.T) {
 	}
 }
 
+// #87 dropped the desktop session column, but the phone card has no column to
+// fall back on, so the tmux session name rides along as a muted .tmuxname suffix
+// inside the roster branch cell (CSS hides it on the desktop table, reveals it on
+// the ≤640px card). Assert the span carries the session name when present and is
+// absent when there is no tmux session.
+func TestContentTemplate_TmuxNameRidesAlongInBranchCell(t *testing.T) {
+	render := func(session string) string {
+		d := dashboardData{Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
+			Branch: "fix-85", TmuxSession: session,
+		}}}
+		var buf bytes.Buffer
+		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+
+	withName := render("clodhopper-fix-85")
+	// The span lives inside the branch cell and carries the tmux session name.
+	branchStart := strings.Index(withName, `<td class="branch"`)
+	if branchStart < 0 {
+		t.Fatalf("no branch cell rendered:\n%s", withName)
+	}
+	branchCell := withName[branchStart : branchStart+strings.Index(withName[branchStart:], "</td>")]
+	if !strings.Contains(branchCell, `<span class="tmuxname" data-label="session">clodhopper-fix-85</span>`) {
+		t.Errorf("branch cell must carry the tmux session name as a .tmuxname suffix:\n%s", branchCell)
+	}
+
+	// No tmux session → no dangling empty span.
+	if got := render(""); strings.Contains(got, "tmuxname") {
+		t.Errorf("no tmux session: .tmuxname span must not render:\n%s", got)
+	}
+}
+
 // The shared controls cell wraps its buttons (peek + merge toggle) in an inner
 // .ctrlwrap flex wrapper, NOT directly on the <td>. A display:flex <td> drops out
 // of the table's border-collapse and paints its own bottom border as an orphaned

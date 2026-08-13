@@ -238,6 +238,10 @@
        stands in as a locator. Italic AND muted so it reads as an unconfirmed hint,
        distinct from a real branch name — see branchinnerroster. */
     td.branch .branch-guess { font-style: italic; color: var(--text-3); }
+    /* The tmux session name rode along in a dedicated column until #87 dropped it.
+       Keep the data available on the phone card (where there is no desktop column to
+       consult) as a muted suffix in the branch cell; hidden on the desktop table. */
+    .tmuxname { display: none; }
     /* The roster's branch cell doubles as a click-to-copy control for the
        session's worktree path (see branchcellroster). The button is reset to
        plain text, and the ⧉ is transparent until hover or focus (see .copyicon
@@ -532,6 +536,16 @@
          a path. Drop the affordance rather than shrink it. */
       table.roster td.branch .copyicon { display: none; }
       table.roster td.branch .copycwd { cursor: default; }
+      /* Surface the tmux session name on the card as a muted suffix after the
+         branch — there is no session column here to fall back on. It shrinks and
+         ellipsizes so a long name shows only "some of" itself rather than pushing
+         the branch off the line. */
+      table.roster td.branch { flex-wrap: wrap; align-items: baseline; }
+      table.roster td.branch .tmuxname {
+        display: inline-block; min-width: 0; max-width: 100%;
+        color: var(--text-3); font-size: var(--fs-xs); font-weight: 400;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
       /* Peek and the actions toggle share one controls cell on the card; the
          inner wrapper stretches so each is a full-width-eligible 44px target,
          sitting side by side when both are present. */
@@ -1748,7 +1762,7 @@
      keep the span, which is the only carrier they have. Never an aria-label on
      the <td>: a cell supports name-from-author, so a label there would REPLACE
      the cell's contents for assistive tech instead of composing with them. */}}
-{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}</td>{{ end }}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}{{ if .TmuxSession }}<span class="tmuxname" data-label="session">{{ .TmuxSession }}</span>{{ end }}</td>{{ end }}
 
 {{ define "content" }}
   <div class="ck-meta">
