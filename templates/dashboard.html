@@ -508,10 +508,13 @@
          reset on specificity, so it wins regardless of source order. */
       td.actions { flex-direction: column; align-items: stretch; }
       /* The PR form is a 1fr 1fr grid (see td.actions .actgroup above); the
-         command preview and the radio choices must span BOTH tracks or the
-         nowrap command line overflows the row and squeezes the run button. */
+         command preview, the radio choices, and the lone run button must span
+         BOTH tracks or the nowrap command line overflows the row, the run
+         button strands half-width, and the touch targets shrink. */
       td.actions .prchoice { grid-column: 1 / -1; }
+      td.actions .prchoice label { min-height: 44px; align-items: center; }
       td.actions .prcmd { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; }
+      td.actions .prrun { grid-column: 1 / -1; }
       /* Only the long free-text doing/summary field claims its own full-width
          line; branch now flows inline with ci / app / status, wrapping within
          its own cell when a name is genuinely too long. */
@@ -1514,7 +1517,7 @@
               </span>
               <label class="actforce" title="merge-pr --admin: bypass branch protection (squash only)"><input type="checkbox" class="practadmin"> --admin (squash only)</label>
               <label class="actforce" title="--force: merge even with uncommitted changes (squash only)"><input type="checkbox" class="practforce"> --force (squash only)</label>
-              <code class="prcmd" id="prcmd-{{ .SessionID }}">merge-pr --squash</code>
+              <code class="prcmd" id="prcmd-{{ .SessionID }}" aria-live="polite">merge-pr --squash</code>
               <button type="button" class="pract prrun" data-action="squash" title="run the selected PR action" aria-describedby="prcmd-{{ .SessionID }}">run</button>
               <span class="actmsg" aria-live="polite"></span>
             </span>
