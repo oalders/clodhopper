@@ -334,25 +334,30 @@
        exclusive with the pane peek for the same row. */
     button.actbtn {
       all: unset;
+      box-sizing: border-box;
       cursor: pointer;
-      font-family: var(--font-mono); font-size: var(--fs-xs);
-      opacity: 0.7;
-      padding: 0 4px;
-      color: var(--text-2);
-      white-space: nowrap;
+      font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.2;
+      padding: 3px 8px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border-strong); background: var(--surface-2);
+      color: var(--text-2); white-space: nowrap;
+      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
     }
-    button.actbtn:hover, button.actbtn:focus-visible { opacity: 1; color: var(--brand); }
+    button.actbtn:hover { background: var(--surface-3); color: var(--text-1); }
     /* all:unset drops the global :focus-visible ring, and colour alone is not a
        sufficient focus indicator (WCAG 2.4.7); restore a real ring. */
-    button.actbtn:focus-visible { outline: none; box-shadow: var(--shadow-focus); border-radius: var(--radius-xs); }
-    button.actbtn[aria-expanded="true"] { opacity: 1; color: var(--brand); }
-    tr.actrow > td { padding: 0; background: var(--surface-3); }
+    button.actbtn:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+    button.actbtn[aria-expanded="true"] { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
+    /* The "actions" column already labels this control, so the desktop toggle is
+       just the "⋯" affordance — the word is redundant per column. On the phone
+       card there is no header, so the word (and a caret) come back below. */
+    button.actbtn .actword { display: none; }
+    tr.actrow > td { padding: 0; background: var(--surface-2); }
     .actpanel { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 24px; padding: 12px; }
     .actcol { display: flex; flex-direction: column; gap: 6px; }
     .actcol.prcol { flex: 1 1 320px; }
     .acteyebrow {
       font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.06em;
-      color: var(--text-2); /* text-3 on the surface-3 panel is only ~4.05:1; text-2 clears AA */
+      color: var(--text-3); /* matches the design; text-3 on the surface-2 panel is ~4.5:1 (clears AA) */
     }
 
     /* Roster PR-action buttons: compact, two-step confirm, and an inline
@@ -367,20 +372,34 @@
     button.pract:hover, button.pract:focus-visible { background: var(--surface-3); color: var(--text-1); }
     button.pract.confirm { border-color: var(--fail); color: var(--fail); background: var(--fail-bg); }
     button.pract[disabled] { opacity: 0.5; cursor: wait; }
-    /* text-2, not text-3: this reports the outcome of a destructive merge/close and
-       text-3 on the surface-3 panel is only ~4.05:1 (below AA); text-2 clears 4.5:1. */
-    .actmsg { display: block; white-space: pre-wrap; font-size: var(--fs-2xs); color: var(--text-2); }
-    .actforce { display: inline-flex; align-items: center; gap: 3px; font-size: var(--fs-2xs); color: var(--text-2); cursor: pointer; }
-    .actforce input { margin: 0; }
+    /* The result line and command preview match the design's muted text-3; on the
+       surface-2 panel that is ~4.5:1 (clears AA). Modifier labels stay text-2 (the
+       design's enabled-checkbox colour), dimming to text-3 only when disabled. */
+    .actmsg { display: block; white-space: pre-wrap; font-size: var(--fs-2xs); color: var(--text-3); }
+    .actforce { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--text-2); cursor: pointer; }
+    .actforce input { margin: 0; accent-color: var(--brand); }
     /* Inside the disclosure panel each cluster (session buttons, PR form) lays
        its controls out on one wrapping line. */
     .actpanel .actgroup { display: flex; flex-wrap: wrap; align-items: center; }
     /* PR form: a three-way choice, its modifiers, the exact command it will run,
-       and one run button. --admin/--force grey out unless squash is chosen. */
-    .prchoice { display: inline-flex; gap: 8px; flex-wrap: wrap; }
-    .prchoice label { display: inline-flex; align-items: center; gap: 3px; font-size: var(--fs-2xs); color: var(--text-2); cursor: pointer; }
-    .prchoice input { margin: 0; }
-    .prcmd { font-family: var(--font-mono); font-size: var(--fs-2xs); color: var(--text-2); white-space: nowrap; }
+       and one run button. The choice is a SEGMENTED TOGGLE — one bordered group of
+       role=radio buttons (squash · close · ready), the active segment brand-tinted
+       — not separate radio inputs (matches ActionBar.jsx). --admin/--force grey
+       out unless squash is chosen. */
+    .prchoice { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow: hidden; }
+    button.prmode {
+      all: unset; box-sizing: border-box; cursor: pointer; text-align: center;
+      font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.2;
+      padding: 4px 10px; min-height: 26px;
+      color: var(--text-2); background: transparent;
+      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+    }
+    button.prmode:hover:not([aria-checked="true"]) { color: var(--text-1); }
+    button.prmode[aria-checked="true"] { background: var(--brand-soft); color: var(--brand); font-weight: 600; }
+    /* overflow:hidden on the group clips an outset ring, so use an inset one. */
+    button.prmode:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--focus-ring); }
+    button.prmode[disabled] { cursor: wait; opacity: 0.55; }
+    .prcmd { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; }
     .actforce input:disabled { cursor: default; }
     label.actforce:has(input:disabled) { opacity: 0.45; cursor: default; }
 
@@ -516,13 +535,19 @@
         background: var(--surface-2);
       }
       /* The actions toggle is the only thing in its cell — a full-width 44px
-         control that expands the panel row beneath the card. */
+         control that expands the panel row beneath the card. With no column
+         header on the card it reads "actions ⌄" (the caret makes it obviously a
+         disclosure control, not a text field), flipping to "⌃" when open. */
       table.roster td.actions button.actbtn {
-        display: flex; align-items: center; justify-content: center;
+        display: flex; align-items: center; justify-content: center; gap: 4px;
         width: 100%; min-height: 44px; padding: 0 12px;
         border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-        background: var(--surface-2); opacity: 1;
+        background: var(--surface-2); font-size: var(--fs-sm);
       }
+      table.roster td.actions button.actbtn .actdots { display: none; }
+      table.roster td.actions button.actbtn .actword { display: inline; }
+      table.roster td.actions button.actbtn::after { content: "⌄"; }
+      table.roster td.actions button.actbtn[aria-expanded="true"]::after { content: "⌃"; }
       td {
         display: flex; gap: 7px; min-width: 0;
         border: none; padding: 0; overflow: visible; white-space: normal;
@@ -545,10 +570,12 @@
       /* The PR form's command preview, radio choices, and lone run button must
          span BOTH tracks or the nowrap command line overflows the row, the run
          button strands half-width, and the touch targets shrink. */
-      .actpanel .prchoice { grid-column: 1 / -1; }
-      /* Grow the text to match the enlarged tap targets — 10px (--fs-2xs) is hard
-         to read on a phone even with a 44px hit area. */
-      .actpanel .prchoice label { min-height: 44px; align-items: center; font-size: var(--fs-sm); }
+      /* The segmented toggle spans the row and splits into three equal 44px
+         segments (matches the design's stacked layout). */
+      .actpanel .prchoice { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      /* Grow the text to match the enlarged tap targets — 11px is hard to read on
+         a phone even with a 44px hit area. */
+      .actpanel button.prmode { min-height: 44px; font-size: var(--fs-sm); }
       .actpanel .prcmd { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; font-size: var(--fs-sm); }
       .actpanel .prrun { grid-column: 1 / -1; }
       /* Only the long free-text doing/summary field claims its own full-width
@@ -1351,14 +1378,14 @@
       return !!(f && f.checked && !f.disabled);
     }
 
-    // syncForm keeps the PR-form cluster consistent with its radio choice: --admin
+    // syncForm keeps the PR-form cluster consistent with its selected mode: --admin
     // and --force apply to squash only (greyed and cleared otherwise), the run
     // button's data-action tracks the mapped server action (squash / squash-admin
     // / close / ready), and the shown command line mirrors actionArgv exactly.
     function syncForm(group) {
       var mode = 'squash';
       var radios = group.querySelectorAll('.prmode');
-      for (var i = 0; i < radios.length; i++) { if (radios[i].checked) { mode = radios[i].value; break; } }
+      for (var i = 0; i < radios.length; i++) { if (radios[i].getAttribute('aria-checked') === 'true') { mode = radios[i].getAttribute('data-mode'); break; } }
       var isSquash = (mode === 'squash');
       var admin = group.querySelector('.practadmin');
       var force = group.querySelector('.practforce');
@@ -1516,6 +1543,32 @@
     }
 
     document.addEventListener('click', function (ev) {
+      // The PR-mode segmented toggle is a group of role="radio" buttons, not
+      // native radios, so selection is a click that moves aria-checked to the
+      // pressed segment. Handle it before the .pract dispatch below.
+      var modeBtn = ev.target && ev.target.closest ? ev.target.closest('.prmode') : null;
+      if (modeBtn) {
+        if (modeBtn.disabled) return;
+        var mgroup = modeBtn.closest('.actgroup');
+        if (!mgroup) return;
+        var modes = mgroup.querySelectorAll('.prmode');
+        for (var mi = 0; mi < modes.length; mi++) {
+          modes[mi].setAttribute('aria-checked', modes[mi] === modeBtn ? 'true' : 'false');
+        }
+        // Keep the form (disabled modifiers, run action, command line) in step
+        // with the new choice before touching a possible armed confirm.
+        if (mgroup.classList.contains('prform')) syncForm(mgroup);
+        if (mgroup.classList.contains('confirm')) {
+          var mArmed = mgroup.querySelector('.pract.confirm');
+          if (mArmed && mArmed.dataset.origLabel) {
+            // The mapped action may have changed (e.g. squash → close), so
+            // re-derive the caveat for whatever the run button now targets.
+            var mMsg = mgroup.querySelector('.actmsg');
+            if (mMsg) mMsg.textContent = caveatFor(mgroup, mArmed.getAttribute('data-action'));
+          }
+        }
+        return;
+      }
       var el = ev.target && ev.target.closest ? ev.target.closest('.pract') : null;
       if (!el) return;
       var group = el.closest('.actgroup');
@@ -1557,7 +1610,7 @@
     document.addEventListener('change', function (ev) {
       var f = ev.target;
       if (!f || !f.classList) return;
-      if (!f.classList.contains('practforce') && !f.classList.contains('practadmin') && !f.classList.contains('prmode')) return;
+      if (!f.classList.contains('practforce') && !f.classList.contains('practadmin')) return;
       var group = f.closest('.actgroup');
       if (!group) return;
       // Keep the form (disabled modifiers, run action, command line) in step with
@@ -1690,7 +1743,7 @@
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
           <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}><span class="sessname">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</span>{{ if and $.PeekEnabled .LiveTmux }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="show this pane's last lines">⤢</button>{{ end }}</td>
-          {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions"><button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" title="squash · admin · close · ready · monitor ci">⋯ actions</button></td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}
+          {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions"><button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" title="squash · admin · close · ready · monitor ci"><span class="actdots">⋯</span><span class="actword">actions</span></button></td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="{{ if $.MergeEnabled }}9{{ else }}8{{ end }}"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
         {{ if and $.MergeEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="9"><div class="actpanel">
@@ -1708,12 +1761,12 @@
               <span class="acteyebrow">pull request</span>
               <span class="actgroup prform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
                 <span class="prchoice" role="radiogroup" aria-label="PR action">
-                  <label><input type="radio" name="prmode-{{ .SessionID }}" class="prmode" value="squash" checked> squash</label>
-                  <label><input type="radio" name="prmode-{{ .SessionID }}" class="prmode" value="close"> close</label>
-                  <label><input type="radio" name="prmode-{{ .SessionID }}" class="prmode" value="ready"> ready</label>
+                  <button type="button" role="radio" class="prmode" data-mode="squash" aria-checked="true" title="merge-pr --squash">squash</button>
+                  <button type="button" role="radio" class="prmode" data-mode="close" aria-checked="false" title="merge-pr --close">close</button>
+                  <button type="button" role="radio" class="prmode" data-mode="ready" aria-checked="false" title="gh pr ready">ready</button>
                 </span>
-                <label class="actforce" title="merge-pr --admin: bypass branch protection (squash only)"><input type="checkbox" class="practadmin"> --admin (squash only)</label>
-                <label class="actforce" title="--force: merge even with uncommitted changes (squash only)"><input type="checkbox" class="practforce"> --force (squash only)</label>
+                <label class="actforce" title="merge-pr --admin: bypass branch protection (squash only)"><input type="checkbox" class="practadmin"> --admin</label>
+                <label class="actforce" title="--force: merge even with uncommitted changes (squash only)"><input type="checkbox" class="practforce"> --force</label>
                 <code class="prcmd" id="prcmd-{{ .SessionID }}" aria-live="polite">merge-pr --squash</code>
                 <button type="button" class="pract prrun" data-action="squash" title="run the selected PR action" aria-describedby="prcmd-{{ .SessionID }}">run</button>
                 <span class="actmsg" aria-live="polite"></span>
