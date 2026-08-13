@@ -1132,6 +1132,41 @@ func TestContentTemplate_PeekControlGated(t *testing.T) {
 	}
 }
 
+// The roster's session name and its peek button must be siblings, with the name
+// in its own .sessname box. Otherwise a long tmux session name ellipses inside the
+// overflow:hidden namecell and takes the trailing ⤢ with it — the peek control
+// silently vanishes for exactly the busiest sessions (see the flex rule on
+// table.roster td.namecell in the template).
+func TestContentTemplate_PeekButtonSurvivesLongName(t *testing.T) {
+	d := dashboardData{
+		PeekEnabled: true,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
+			TmuxSession: "nono redirect buildx state to the worktree",
+			TmuxPane:    "%2310", LiveTmux: true,
+		}},
+	}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+
+	// The name lives in its own span so only it truncates.
+	name := `<span class="sessname">nono redirect buildx state to the worktree</span>`
+	if !strings.Contains(html, name) {
+		t.Fatalf("session name not wrapped in .sessname:\n%s", html)
+	}
+	// The button is a sibling AFTER that span, not nested inside it.
+	nameEnd := strings.Index(html, name) + len(name)
+	rest := html[nameEnd:]
+	btn := strings.Index(rest, `class="peek"`)
+	nextCell := strings.Index(rest, "</td>")
+	if btn == -1 || btn > nextCell {
+		t.Fatalf("peek button must immediately follow the .sessname span within the cell:\n%s", html)
+	}
+}
+
 // renderDashboard executes the full dashboardTmpl (mirroring handleDashboard,
 // server.go:532) rather than just the "content" sub-template, since the
 // data-csrf attribute lives on <body>, outside "content".

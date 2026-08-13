@@ -84,6 +84,45 @@ func TestRunActionSuccess(t *testing.T) {
 	}
 }
 
+func TestActionEnvStripsTmux(t *testing.T) {
+	in := []string{"PATH=/bin", "TMUX=/tmp/tmux-1000/default,123,4", "HOME=/home/x", "TMUX_PANE=%7", "TMUXFOO=keep"}
+	got := actionEnv(in)
+	for _, kv := range got {
+		if strings.HasPrefix(kv, "TMUX=") || strings.HasPrefix(kv, "TMUX_PANE=") {
+			t.Fatalf("tmux var leaked: %q in %v", kv, got)
+		}
+	}
+	// Only the two exact keys are dropped; unrelated vars (incl. TMUX-prefixed
+	// names that aren't TMUX/TMUX_PANE) survive.
+	for _, want := range []string{"PATH=/bin", "HOME=/home/x", "TMUXFOO=keep"} {
+		found := false
+		for _, kv := range got {
+			if kv == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("dropped unrelated var %q; got %v", want, got)
+		}
+	}
+}
+
+// End to end: a child spawned by runAction must not see serve's $TMUX, so
+// merge-pr falls back to matching the worktree instead of killing serve's own
+// session. Set TMUX in this process and confirm the subprocess reads it empty.
+func TestRunActionChildHasNoTmux(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,999,0")
+	t.Setenv("TMUX_PANE", "%99")
+	stub := writeStub(t, "envcheck", `echo "TMUX=[${TMUX:-}] PANE=[${TMUX_PANE:-}]"; exit 0`)
+	r := runAction(stub, t.TempDir(), nil, 5*time.Second)
+	if r.ExitCode != 0 || r.TimedOut {
+		t.Fatalf("got %+v", r)
+	}
+	if !strings.Contains(r.Output, "TMUX=[] PANE=[]") {
+		t.Fatalf("child saw serve's tmux env: %q", r.Output)
+	}
+}
+
 func TestRunActionFailureCapturesStderr(t *testing.T) {
 	stub := writeStub(t, "fail", `echo "boom" >&2; exit 3`)
 	r := runAction(stub, t.TempDir(), nil, 5*time.Second)

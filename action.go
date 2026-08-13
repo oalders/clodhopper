@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -90,6 +91,7 @@ func runAction(bin, dir string, args []string, timeout time.Duration) actionResu
 	cmd := exec.Command(bin, args...)
 	cmd.Dir = dir
 	cmd.Stdin = nil
+	cmd.Env = actionEnv(os.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
@@ -114,6 +116,26 @@ func runAction(bin, dir string, args []string, timeout time.Duration) actionResu
 	case err := <-done:
 		return actionResult{ExitCode: exitCode(err), Output: buf.String()}
 	}
+}
+
+// actionEnv strips serve's own tmux context ($TMUX / $TMUX_PANE) from the child
+// environment. An action's cwd already points at the target row's worktree, but
+// merge-pr resolves which tmux session to kill from $TMUX first ("run from inside
+// the worktree's session") and only falls back to matching a pane's start-path
+// against the worktree when $TMUX is unset. Inherited unchanged, that first branch
+// names the session serve itself runs in — so a merge would tear down the
+// dashboard's own tmux session instead of the merged branch's. Dropping these two
+// forces the worktree-matching fallback, which keys off the cwd we already set.
+// Same reason ingest is careful never to trust an ambient $TMUX_PANE.
+func actionEnv(env []string) []string {
+	out := env[:0:0]
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "TMUX=") || strings.HasPrefix(kv, "TMUX_PANE=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // exitCode extracts a process exit code from Cmd.Wait's error: 0 on success, the

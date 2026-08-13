@@ -215,6 +215,16 @@
     table.roster tbody tr:hover td { background: var(--surface-3); transition: background var(--dur-fast) var(--ease); }
 
     td.time, td.tool, td.idle, td.sess, td.namecell { white-space: nowrap; }
+    /* The roster's session cell carries the live-pane peek button after the name.
+       Under table-layout:fixed the session column absorbs leftover width and can
+       get narrow — more so with the actions column present — so a long tmux
+       session name would ellipse AND clip the trailing button out of the
+       overflow:hidden cell, making the peek control silently vanish. Make the
+       cell a flex row so only the name (.sessname) truncates; the button is a
+       non-shrinking sibling that stays visible. Scoped to the roster: the
+       activity table's namecell has no button and truncates fine as a plain cell. */
+    table.roster td.namecell { display: flex; align-items: baseline; gap: 4px; }
+    table.roster td.namecell .sessname { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     td.idle { font-variant-numeric: tabular-nums; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
     td.summary em { font-style: italic; color: var(--text-3); } /* a completed phase, not one in progress */
@@ -1294,7 +1304,7 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
-          <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}{{ if and $.PeekEnabled .LiveTmux }} <button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="show this pane's last lines">⤢</button>{{ end }}</td>
+          <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}><span class="sessname">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</span>{{ if and $.PeekEnabled .LiveTmux }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="show this pane's last lines">⤢</button>{{ end }}</td>
           {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions">
             <span class="actgroup" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
               <button type="button" class="pract" data-action="squash" title="merge-pr --squash">squash</button>
