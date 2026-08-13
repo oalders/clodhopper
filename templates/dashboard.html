@@ -352,7 +352,7 @@
     .actcol.prcol { flex: 1 1 320px; }
     .acteyebrow {
       font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.06em;
-      color: var(--text-3);
+      color: var(--text-2); /* text-3 on the surface-3 panel is only ~4.05:1; text-2 clears AA */
     }
 
     /* Roster PR-action buttons: compact, two-step confirm, and an inline
@@ -367,8 +367,10 @@
     button.pract:hover, button.pract:focus-visible { background: var(--surface-3); color: var(--text-1); }
     button.pract.confirm { border-color: var(--fail); color: var(--fail); background: var(--fail-bg); }
     button.pract[disabled] { opacity: 0.5; cursor: wait; }
-    .actmsg { display: block; white-space: pre-wrap; font-size: var(--fs-2xs); color: var(--text-3); }
-    .actforce { display: inline-flex; align-items: center; gap: 3px; font-size: var(--fs-2xs); color: var(--text-3); cursor: pointer; }
+    /* text-2, not text-3: this reports the outcome of a destructive merge/close and
+       text-3 on the surface-3 panel is only ~4.05:1 (below AA); text-2 clears 4.5:1. */
+    .actmsg { display: block; white-space: pre-wrap; font-size: var(--fs-2xs); color: var(--text-2); }
+    .actforce { display: inline-flex; align-items: center; gap: 3px; font-size: var(--fs-2xs); color: var(--text-2); cursor: pointer; }
     .actforce input { margin: 0; }
     /* Inside the disclosure panel each cluster (session buttons, PR form) lays
        its controls out on one wrapping line. */
@@ -539,7 +541,7 @@
       .actpanel button.pract { min-height: 44px; font-size: var(--fs-sm); border-radius: var(--radius-sm); }
       .actpanel .actforce { grid-column: 1 / -1; min-height: 44px; font-size: var(--fs-sm); }
       .actpanel .actforce input { width: 18px; height: 18px; }
-      .actpanel .actmsg { grid-column: 1 / -1; }
+      .actpanel .actmsg { grid-column: 1 / -1; font-size: var(--fs-sm); } /* the destructive-action result line skipped the mobile size bump the other controls got */
       /* The PR form's command preview, radio choices, and lone run button must
          span BOTH tracks or the nowrap command line overflows the row, the run
          button strands half-width, and the touch targets shrink. */
