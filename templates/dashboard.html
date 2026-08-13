@@ -437,6 +437,36 @@
         border: 1px solid var(--border); border-radius: var(--radius);
         padding: 10px 12px; margin: 10px; background: var(--surface);
       }
+      /* The roster is not a table on a phone; it is a card with a hierarchy.
+         Grid placement rather than source order: status leads, the identity
+         fields (app / id / session) fall to one muted footer line. */
+      table.roster tbody tr:not(.panerow) {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: baseline;
+        gap: 8px;
+      }
+      table.roster td.status   { grid-area: 1 / 1 / auto / 3; }
+      table.roster td.idle     { grid-area: 1 / 3; justify-self: end; }
+      table.roster td.ci       { grid-area: 2 / 1; }
+      table.roster td.branch   { grid-area: 2 / 2 / auto / 4; font-size: var(--fs-md); }
+      table.roster td.summary  { grid-area: 3 / 1 / auto / 4; }
+      table.roster td[data-label="app"] { grid-area: 4 / 1; }
+      table.roster td.sess     { grid-area: 4 / 2; }
+      table.roster td.namecell { grid-area: 4 / 3; justify-content: flex-end; }
+      table.roster td.actions  { grid-area: 5 / 1 / auto / 4; }
+      /* The footer line is context, not content. */
+      table.roster td[data-label="app"],
+      table.roster td.sess,
+      table.roster td.namecell { color: var(--text-3); font-size: var(--fs-xs); }
+      /* Column names are noise once the layout says what each field is; only
+         the idle timer still needs naming. */
+      table.roster td::before { content: none; }
+      table.roster td.idle::before { content: attr(data-label); }
+      /* Copy-to-clipboard has no utility on a phone — there is nowhere to paste
+         a path. Drop the affordance rather than shrink it. */
+      table.roster td.branch .copyicon { display: none; }
+      table.roster td.branch .copycwd { cursor: default; }
       td {
         display: flex; gap: 7px; min-width: 0;
         border: none; padding: 0; overflow: visible; white-space: normal;
