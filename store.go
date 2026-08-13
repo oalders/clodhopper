@@ -268,6 +268,29 @@ func latestCwdForSession(db *sql.DB, sessionID string) (string, error) {
 	return truncate(stripControl(cwd), maxPathLen), nil
 }
 
+// latestPaneForSession returns the tmux pane id of sessionID's most recent event
+// that recorded one. It mirrors latestCwdForSession: "" (nil error) when the
+// session is unknown or never recorded a pane, which the caller treats as "no
+// live pane to target". The value is NOT trusted here — the caller re-validates
+// it against paneIDRe before it ever reaches a tmux command.
+func latestPaneForSession(db *sql.DB, sessionID string) (string, error) {
+	if sessionID == "" {
+		return "", nil
+	}
+	var pane string
+	err := db.QueryRow(
+		`SELECT COALESCE(tmux_pane,'') FROM events
+		 WHERE session_id = ? AND tmux_pane IS NOT NULL AND tmux_pane <> ''
+		 ORDER BY id DESC LIMIT 1`, sessionID).Scan(&pane)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return pane, nil
+}
+
 // pruneOld deletes events older than the given number of days and returns the
 // number of rows removed.
 func pruneOld(db *sql.DB, days int) (int64, error) {
@@ -376,6 +399,7 @@ type Agent struct {
 	Cwd         string
 	TmuxSession string // tmux session name, the disambiguating label
 	TmuxPane    string // tmux pane id ("%N") of the latest event's Claude pane; targets the live pane peek, "" if unknown
+	HasPane     bool   // true when the session recorded a tmux pane id (TmuxPane != ""); gates the session-action buttons under --enable-merge, decoupled from --pane-peek (the peek's liveness cache is only populated when peek is on)
 	LiveTmux    bool   // true when TmuxPane is currently a live tmux pane (set by the server layer when --pane-peek is on); drives the peek control
 	Status      string // human label (see status* constants)
 	StatusRank  int    // sort key; lower = more urgent
@@ -590,6 +614,11 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		}
 		a := s.a
 		a.Status, a.StatusRank = label, rank
+		// Pane presence is resolved here (independent of --pane-peek) so the
+		// session-action buttons can gate on it under --enable-merge alone; the
+		// backend re-resolves and re-validates the pane server-side before any
+		// tmux command runs, so presence is the correct decoupled gate.
+		a.HasPane = a.TmuxPane != ""
 		// When git never resolved a branch for this session (a detached HEAD that
 		// is not a rebase — see gitBranch), fall back to the cwd's basename so the
 		// operator still has a handle for the worktree / tmux session. It is only a

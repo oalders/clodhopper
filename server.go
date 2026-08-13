@@ -214,6 +214,7 @@ type dashboardData struct {
 	PeekEnabled    bool              // true when serve --pane-peek is set; gates the roster's live-pane peek control
 	MergeEnabled   bool              // true when serve --enable-merge is set; gates the roster's PR-action buttons
 	CSRFToken      string            // per-serve secret echoed into the page for the action fetch; "" when MergeEnabled is false
+	Debug          bool              // true when ?debug=1; renders the Activity + Recent-events diagnostics sections (off by default: the roster is the whole board)
 }
 
 // refreshOption is one entry in the auto-refresh interval dropdown.
@@ -345,6 +346,7 @@ func runServe(args []string) int {
 		enabled:      *enableMerge,
 		mergePR:      "merge-pr",
 		gh:           "gh",
+		tmux:         "tmux",
 		bindHost:     *host,
 		allowedHosts: allowedHosts(),
 		inflight:     newInflightSet(),
@@ -564,6 +566,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConf
 	source := q.Get("source_app")
 	branch := q.Get("branch")
 	etype := q.Get("event_type")
+	debug := q.Get("debug") == "1"
 
 	refresh := defaultRefreshSecs()
 	if v := q.Get("refresh"); v != "" {
@@ -639,6 +642,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConf
 		PeekEnabled:    peek.enabled,
 		MergeEnabled:   act.enabled,
 		CSRFToken:      act.token,
+		Debug:          debug,
 	}
 	data.Signature = viewSignature(data)
 	return data, nil

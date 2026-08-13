@@ -57,14 +57,14 @@ func TestHandleDashboard_RendersAndFilters(t *testing.T) {
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "PreToolUse", ToolName: "Bash", Summary: "Bash: git status", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: now, SourceApp: "other", EventType: "SessionStart", Summary: "SessionStart", PayloadJSON: "{}"})
 
-	// No filter: both source apps present.
-	body := getBody(t, db, "/")
+	// No filter: both source apps present. Recent events is a debug-gated section.
+	body := getBody(t, db, "/?debug=1")
 	if !strings.Contains(body, "Bash: git status") || !strings.Contains(body, "SessionStart") {
 		t.Errorf("dashboard missing events:\n%s", body)
 	}
 
 	// Filter by source_app.
-	body = getBody(t, db, "/?source_app=other")
+	body = getBody(t, db, "/?source_app=other&debug=1")
 	if strings.Contains(body, "Bash: git status") {
 		t.Errorf("source filter leaked myapp event:\n%s", body)
 	}
@@ -79,7 +79,8 @@ func TestHandleDashboard_EscapesHTML(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "PreToolUse", ToolName: "Bash", Summary: `<script>alert(1)</script>`, PayloadJSON: "{}"})
 
-	body := getBody(t, db, "/")
+	// The summary is rendered in the debug-gated Recent-events section.
+	body := getBody(t, db, "/?debug=1")
 	if strings.Contains(body, "<script>alert(1)</script>") {
 		t.Errorf("summary was not HTML-escaped:\n%s", body)
 	}
@@ -596,7 +597,7 @@ func TestHandleDashboard_NonRosterBranchCellsHaveNoCopyButton(t *testing.T) {
 	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: "/home/me/wt/fix-71",
 		EventType: "PreToolUse", ToolName: "Bash", Summary: "Bash: git status", PayloadJSON: "{}"})
 
-	body := getBody(t, db, "/")
+	body := getBody(t, db, "/?debug=1")
 	if !strings.Contains(body, "0 live") {
 		t.Fatalf("session-less event should not reach the roster:\n%s", body)
 	}
@@ -615,9 +616,54 @@ func TestHandleDashboard_RendersActivity(t *testing.T) {
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "fix-2499", EventType: "PreToolUse", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "fix-2499", EventType: "Stop", PayloadJSON: "{}"})
 
-	body := getBody(t, db, "/")
+	// The Activity section is a diagnostics section, gated behind ?debug=1.
+	body := getBody(t, db, "/?debug=1")
 	if !strings.Contains(body, "Activity (last 30 min)") {
 		t.Errorf("activity section missing:\n%s", body)
+	}
+}
+
+func TestBuildDashboardData_DebugFlag(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mk := func(target string) dashboardData {
+		r := httptest.NewRequest(http.MethodGet, target, nil)
+		d, err := buildDashboardData(r, db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	if mk("/").Debug {
+		t.Error("Debug should be false without ?debug=1")
+	}
+	if mk("/?debug=0").Debug {
+		t.Error("Debug should be false for ?debug=0")
+	}
+	if !mk("/?debug=1").Debug {
+		t.Error("Debug should be true for ?debug=1")
+	}
+}
+
+// The two diagnostics sections render only when Debug is set; the roster is the
+// whole page by default.
+func TestHandleDashboard_DiagnosticsGatedOnDebug(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "b", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "b", EventType: "Stop", PayloadJSON: "{}"})
+
+	off := getBody(t, db, "/")
+	if strings.Contains(off, "Activity (last 30 min)") || strings.Contains(off, "Recent events") {
+		t.Errorf("diagnostics rendered with debug off:\n%s", off)
+	}
+	on := getBody(t, db, "/?debug=1")
+	if !strings.Contains(on, "Activity (last 30 min)") || !strings.Contains(on, "Recent events") {
+		t.Errorf("diagnostics missing with debug on:\n%s", on)
 	}
 }
 
@@ -627,7 +673,7 @@ func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "PreToolUse", ToolName: "Bash", Summary: "Bash: git status", PayloadJSON: "{}"})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/state?debug=1", nil)
 	rec := httptest.NewRecorder()
 	handleState(rec, req, db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
 	if rec.Code != http.StatusOK {
@@ -867,7 +913,8 @@ func TestHandleDashboard_SessionColors(t *testing.T) {
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "SessionStart",
 		Summary: "SessionStart", PayloadJSON: "{}"})
 
-	body := getBody(t, db, "/")
+	// The Recent-events row tint lives in a debug-gated section.
+	body := getBody(t, db, "/?debug=1")
 	// Only one session is visible, so assignSessColors hits no collision and hands
 	// it its hash-preferred color — i.e. exactly sessColor("sess-abc").
 	want := sessColor("sess-abc")
@@ -1038,7 +1085,8 @@ func TestHandleDashboard_RendersTmuxSession(t *testing.T) {
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "fix-1710", TmuxSession: "roster-colors",
 		SessionID: "sess-a", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
 
-	body := getBody(t, db, "/")
+	// The activity table (<th>events</th>) is debug-gated.
+	body := getBody(t, db, "/?debug=1")
 	for _, want := range []string{
 		"roster-colors",    // the disambiguating name appears
 		"fix-1710",         // branch shown in its own column
@@ -1132,6 +1180,189 @@ func TestContentTemplate_PeekControlGated(t *testing.T) {
 	}
 }
 
+// The roster's session name and its peek button live inside a .sessline wrapper,
+// NOT directly in the <td>. The flex layout that keeps a long name from clipping
+// the peek button must sit on that inner wrapper: a display:flex <td> drops out of
+// the table's border-collapse and paints its own bottom border as an orphaned bar
+// under the session column (worse on hover). Keeping the <td> a plain cell — with
+// the flex on .sessline — is what collapses the border like every other column, so
+// this guards against a regression back to flex-on-<td>.
+func TestContentTemplate_SessionCellUsesInnerFlexWrapper(t *testing.T) {
+	var buf bytes.Buffer
+	d := dashboardData{
+		PeekEnabled: true,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", LiveTmux: true,
+		}},
+	}
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+
+	// The name+peek content is wrapped, so the <td> itself carries no flex.
+	if !strings.Contains(html, `<td class="namecell" data-label="session" title="sess"><div class="sessline">`) {
+		t.Errorf("session cell must wrap its content in <div class=\"sessline\">:\n%s", html)
+	}
+	// The peek button must be inside that wrapper (before the wrapper closes), so a
+	// long name truncates while the button stays in the visible cell.
+	i := strings.Index(html, `<div class="sessline">`)
+	j := strings.Index(html, `</div></td>`)
+	if i < 0 || j < 0 || j < i || !strings.Contains(html[i:j], `class="peek"`) {
+		t.Errorf("peek button must render inside the .sessline wrapper:\n%s", html)
+	}
+}
+
+// The session-action buttons (monitor ci / + watcher) are gated on pane
+// PRESENCE, not on --pane-peek: handleAction accepts monitor-ci/new-monitor
+// whenever --enable-merge is on, so the buttons must render under merge alone
+// (peek off) for any row that recorded a pane. Gating on LiveTmux (which is only
+// populated when peek is enabled) would hide buttons the backend would accept.
+func TestContentTemplate_SessionActionsGatedOnPaneNotPeek(t *testing.T) {
+	render := func(d dashboardData) string {
+		var buf bytes.Buffer
+		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+
+	// Merge on, peek OFF, a row that has a pane but LiveTmux false (as it would be
+	// when the peek liveness cache never ran because peek is disabled).
+	withPane := dashboardData{
+		MergeEnabled: true,
+		PeekEnabled:  false,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", HasPane: true, LiveTmux: false,
+		}},
+	}
+	html := render(withPane)
+	if !strings.Contains(html, `data-action="monitor-ci"`) {
+		t.Errorf("merge on + pane present: expected the monitor-ci button:\n%s", html)
+	}
+	if !strings.Contains(html, `data-action="new-monitor"`) {
+		t.Errorf("merge on + pane present: expected the + watcher button:\n%s", html)
+	}
+	// The peek control itself stays gated on PeekEnabled — no ⤢ when peek is off.
+	if strings.Contains(html, `class="peek"`) {
+		t.Errorf("peek off: peek control must not render:\n%s", html)
+	}
+
+	// A row with no pane has nothing live to target, so the session buttons drop
+	// even under merge; the PR form still renders.
+	noPane := withPane
+	noPane.Agents = []Agent{{
+		SessionID: "s2", SourceApp: "app", Branch: "feature", Status: statusWaiting,
+		HasPane: false,
+	}}
+	html = render(noPane)
+	if strings.Contains(html, `data-action="monitor-ci"`) {
+		t.Errorf("no pane: session-action buttons must not render:\n%s", html)
+	}
+	if !strings.Contains(html, `class="pract prrun"`) {
+		t.Errorf("no pane: PR form should still render:\n%s", html)
+	}
+}
+
+// The session + PR actions are hidden behind a disclosure by default: the roster
+// cell shows only a "⋯ actions" toggle, and the clusters live in a separate
+// panel row that is `hidden` until the toggle is pressed. This mirrors the design
+// (Roster.jsx), where the always-visible form would otherwise multiply row height.
+func TestContentTemplate_ActionsHiddenBehindDisclosure(t *testing.T) {
+	d := dashboardData{
+		MergeEnabled: true,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", HasPane: true,
+		}},
+	}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+
+	// The actions cell is just the toggle, collapsed by default.
+	if !strings.Contains(html, `class="actbtn" data-actions="s1" aria-expanded="false"`) {
+		t.Errorf("expected a collapsed ⋯ actions toggle in the actions cell:\n%s", html)
+	}
+	// The panel row exists and is hidden until the toggle opens it.
+	if !strings.Contains(html, `<tr class="actrow" hidden id="actrow-s1" data-actions-row="s1">`) {
+		t.Errorf("expected a hidden actions panel row:\n%s", html)
+	}
+	// The toggle is linked to the panel it controls.
+	if !strings.Contains(html, `aria-controls="actrow-s1"`) {
+		t.Errorf("expected the toggle to reference its panel via aria-controls:\n%s", html)
+	}
+
+	// The form must NOT sit in the visible actions <td> — it belongs in the hidden
+	// panel row. Isolate the cell and assert the clusters are absent from it.
+	cellStart := strings.Index(html, `<td class="actions"`)
+	if cellStart == -1 {
+		t.Fatalf("no actions cell rendered:\n%s", html)
+	}
+	cell := html[cellStart : cellStart+strings.Index(html[cellStart:], "</td>")]
+	if strings.Contains(cell, "prrun") || strings.Contains(cell, "monitor-ci") {
+		t.Errorf("actions must be hidden behind the toggle, not inline in the cell:\n%s", cell)
+	}
+	// And they DO live inside the hidden panel row.
+	rowStart := strings.Index(html, `<tr class="actrow" hidden`)
+	if rowStart == -1 {
+		t.Fatalf("no actions panel row rendered:\n%s", html)
+	}
+	panel := html[rowStart:]
+	if !strings.Contains(panel, `class="pract prrun"`) || !strings.Contains(panel, `data-action="monitor-ci"`) {
+		t.Errorf("PR form + session buttons must render inside the hidden panel row:\n%s", panel)
+	}
+}
+
+// With peek AND merge both on for a live pane, a row emits three consecutive
+// sibling rows: the main roster row, its panerow, then its actrow. The disclosure
+// JS (mainRowOf/closeOtherPanels) walks these siblings to enforce that peek and
+// actions are mutually exclusive per row, so their ordering and adjacency is a
+// load-bearing contract — reordering or inserting a row between them would break
+// mutual exclusion silently, with no other test rendering peek + merge together.
+func TestContentTemplate_PanelRowsAdjacentToMainRow(t *testing.T) {
+	d := dashboardData{
+		MergeEnabled: true, PeekEnabled: true,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", HasPane: true, LiveTmux: true,
+		}},
+	}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+
+	iToggle := strings.Index(html, `data-actions="s1"`) // in the main row's actions cell
+	paneOpen := `<tr class="panerow"`
+	actOpen := `<tr class="actrow"`
+	iPane := strings.Index(html, paneOpen)
+	iAct := strings.Index(html, actOpen)
+	if iToggle == -1 || iPane == -1 || iAct == -1 {
+		t.Fatalf("expected main-row toggle, panerow, and actrow all rendered:\n%s", html)
+	}
+	if iToggle >= iPane || iPane >= iAct {
+		t.Fatalf("expected order main-row (%d) < panerow (%d) < actrow (%d):\n%s", iToggle, iPane, iAct, html)
+	}
+	// Between the main row's toggle and the panerow: exactly the main row's own
+	// </tr> and no other row opening — i.e. the panerow directly follows.
+	mid1 := html[iToggle:iPane]
+	if strings.Count(mid1, "</tr>") != 1 || strings.Count(mid1, "<tr ") != 0 {
+		t.Errorf("panerow must immediately follow the main row (intervening rows):\n%s", html[iToggle:iAct])
+	}
+	// Between the panerow's opening and the actrow: exactly the panerow's own </tr>
+	// and no other row opening — i.e. the actrow directly follows the panerow.
+	mid2 := html[iPane+len(paneOpen) : iAct]
+	if strings.Count(mid2, "</tr>") != 1 || strings.Count(mid2, "<tr ") != 0 {
+		t.Errorf("actrow must immediately follow the panerow (intervening rows):\n%s", html[iToggle:iAct])
+	}
+}
+
 // The roster's session name and its peek button must be siblings, with the name
 // in its own .sessname box. Otherwise a long tmux session name ellipses inside the
 // overflow:hidden namecell and takes the trailing ⤢ with it — the peek control
@@ -1164,6 +1395,39 @@ func TestContentTemplate_PeekButtonSurvivesLongName(t *testing.T) {
 	nextCell := strings.Index(rest, "</td>")
 	if btn == -1 || btn > nextCell {
 		t.Fatalf("peek button must immediately follow the .sessname span within the cell:\n%s", html)
+	}
+}
+
+// The peek panerow spans the whole roster width with a colspan, but the roster's
+// column count is conditional: the actions column only exists under --enable-merge.
+// A hardcoded colspan would under- or over-span the table in one of the two modes,
+// so it must track MergeEnabled.
+func TestContentTemplate_PanerowColspanTracksMergeEnabled(t *testing.T) {
+	render := func(d dashboardData) string {
+		var buf bytes.Buffer
+		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+	base := dashboardData{
+		PeekEnabled: true,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", LiveTmux: true, HasPane: true,
+		}},
+	}
+
+	off := base
+	off.MergeEnabled = false
+	if got := render(off); !strings.Contains(got, `colspan="8"`) || strings.Contains(got, `colspan="9"`) {
+		t.Errorf("merge off: panerow must span 8 columns (no actions col):\n%s", got)
+	}
+
+	on := base
+	on.MergeEnabled = true
+	if got := render(on); !strings.Contains(got, `colspan="9"`) || strings.Contains(got, `colspan="8"`) {
+		t.Errorf("merge on: panerow must span 9 columns (incl. actions col):\n%s", got)
 	}
 }
 

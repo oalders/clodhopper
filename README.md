@@ -160,14 +160,45 @@ board used to expose.
   typed the command yourself. `--squash --admin` bypasses branch protection
   using your own `gh` authentication.
 
+The PR-action form on each row is a three-way radio (squash / close / ready)
+plus two modifiers and a single **run** button:
+
+- **squash** runs `merge-pr --squash`; **close** runs `merge-pr --close`;
+  **ready** runs `gh pr ready` (non-destructive — the session keeps running).
+- **`--admin`** (squash only) adds `--admin`, bypassing branch protection with
+  your `gh` auth. **`--force`** (squash only) adds `--force`, merging even with
+  uncommitted changes in the worktree. Both grey out unless squash is selected.
+- The exact command it will run is shown inline, and **run** is a two-step
+  confirm: the first click states the consequence, the second fires it — so a
+  stray click can never trigger a merge or close.
+
+When a row's Claude session is in a live tmux pane, it also gains two **session
+actions** that drive that pane directly (they do not touch a PR):
+
+- **monitor ci** sends `/clear` then `/monitor-ci` into the agent's own pane.
+  This is **destructive**: `/clear` drops the agent's current context.
+- **+ watcher** is additive: it opens a **new** pane in the existing tmux
+  session running `nn claude`, then sends `/monitor-ci` to it, leaving the
+  original agent untouched.
+
 > **Exposure:** this is a **write** capability, not just a read one. It is
 > gated behind CSRF (a custom header token, checked in constant time), a
 > Host-header allowlist (`CLODHOPPER_ALLOWED_HOSTS`) that defends against DNS
 > rebinding, and a closed argv allowlist — no free-form string from the
 > request ever reaches a command line. None of that changes who it acts as: it
-> runs with **your** credentials against **your** repos. Enable it only on a
-> trusted network (loopback, or your tailnet via `--tailscale`), never on a
-> public bind.
+> runs with **your** credentials against **your** repos. The session actions
+> additionally send **keystrokes into live tmux panes**. Everything here is
+> gated behind `--enable-merge`, so enable it only on a **trusted,
+> single-operator network** (loopback, or your tailnet via `--tailscale`),
+> never on a public bind.
+
+### The debug view
+
+By default the dashboard shows only the **roster** — the "which agent needs me"
+board. The **Activity** and **Recent events** sections are diagnostics, hidden
+unless you opt in: click **debug** in the header (or add `?debug=1` to the URL).
+The choice persists across reloads and rides along with the other query params
+(filters, refresh, roster window).
 
 `ingest` is what hooks call. It is designed to **never** break a tool call: any
 error (bad JSON, unwritable DB, …) results in exit 0, and diagnostics are

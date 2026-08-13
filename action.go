@@ -118,6 +118,81 @@ func runAction(bin, dir string, args []string, timeout time.Duration) actionResu
 	}
 }
 
+// runTmux runs the tmux binary with a FIXED argument vector (no shell, no
+// request string on the command line) and returns its clean stdout separately
+// from the combined diagnostic output. Unlike runAction it does NOT strip
+// $TMUX/$TMUX_PANE: targeting is by the explicit -t pane id the caller resolved
+// server-side, and the command must reach the SAME tmux server whose pane ids the
+// peek feature enumerated — which is the server named by serve's inherited $TMUX.
+// Best-effort by construction: a tmux that cannot start returns ExitCode -1.
+func runTmux(tmuxBin, dir string, args []string, timeout time.Duration) (stdout string, res actionResult) {
+	cmd := exec.Command(tmuxBin, args...)
+	cmd.Dir = dir
+	cmd.Stdin = nil
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+
+	if err := cmd.Start(); err != nil {
+		return "", actionResult{ExitCode: -1, Output: err.Error()}
+	}
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-done
+		return outBuf.String(), actionResult{ExitCode: -1, TimedOut: true, Output: errBuf.String()}
+	case err := <-done:
+		out := errBuf.String()
+		if out == "" {
+			out = outBuf.String()
+		}
+		return outBuf.String(), actionResult{ExitCode: exitCode(err), Output: out}
+	}
+}
+
+// runSessionAction executes one of the tmux session actions against a pane the
+// caller has already resolved server-side and validated with paneIDRe. The
+// command strings (/clear, /monitor-ci, nn claude) are FIXED constants; only pane
+// ids vary, and any pane split-window emits is re-validated before reuse.
+//
+//   - monitor-ci: send /clear then /monitor-ci into the agent's own pane (one
+//     send-keys call — /clear and /monitor-ci are literal keys, Enter is tmux's
+//     key name for the return that submits each).
+//   - new-monitor: split a NEW pane in the same window running `nn claude`,
+//     capture its pane id, then send /monitor-ci to it. The new pane's TUI must
+//     finish booting before those keys land, so there is an inherent startup race
+//     — we send immediately after the split (no shell sleep is available). It
+//     does NOT tear the session down.
+func runSessionAction(tmuxBin, action, pane, dir string) actionResult {
+	switch action {
+	case "monitor-ci":
+		_, res := runTmux(tmuxBin, dir,
+			[]string{"send-keys", "-t", pane, "/clear", "Enter", "/monitor-ci", "Enter"}, tmuxTimeout)
+		return res
+	case "new-monitor":
+		out, res := runTmux(tmuxBin, dir,
+			[]string{"split-window", "-t", pane, "-P", "-F", "#{pane_id}", "nn", "claude"}, tmuxTimeout)
+		if res.ExitCode != 0 || res.TimedOut {
+			return res
+		}
+		newPane := strings.TrimSpace(out)
+		if !paneIDRe.MatchString(newPane) {
+			return actionResult{ExitCode: -1, Output: "split-window returned no valid pane id"}
+		}
+		_, res2 := runTmux(tmuxBin, dir,
+			[]string{"send-keys", "-t", newPane, "/monitor-ci", "Enter"}, tmuxTimeout)
+		return res2
+	default:
+		return actionResult{ExitCode: -1, Output: "unknown session action"}
+	}
+}
+
 // actionEnv strips serve's own tmux context ($TMUX / $TMUX_PANE) from the child
 // environment. An action's cwd already points at the target row's worktree, but
 // merge-pr resolves which tmux session to kill from $TMUX first ("run from inside
@@ -196,6 +271,11 @@ func tokenOK(got, want string) bool {
 const (
 	actionTimeout = 120 * time.Second
 	readyTimeout  = 20 * time.Second
+	// tmuxTimeout bounds a session action's tmux invocations. send-keys and
+	// split-window are quick local RPCs to the tmux server (split-window returns
+	// as soon as the pane exists, it does not wait for `nn claude`), so a few
+	// seconds is generous.
+	tmuxTimeout = 10 * time.Second
 )
 
 // actionConfig is serve's write-path state. Binary names are injected so tests
@@ -205,6 +285,7 @@ type actionConfig struct {
 	enabled      bool
 	mergePR      string // path/name of the merge-pr binary
 	gh           string // path/name of the gh binary
+	tmux         string // path/name of the tmux binary (session actions); tests stub it
 	token        string
 	bindHost     string
 	allowedHosts []string
@@ -246,6 +327,43 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 	sessionID := r.FormValue("session_id")
 	action := r.FormValue("action")
 	force := r.FormValue("force") == "true"
+
+	// Session actions (monitor-ci / new-monitor) act on the agent's LIVE tmux
+	// pane rather than merging a PR, so they take a separate path: the pane is
+	// resolved server-side from session_id and validated against paneIDRe before
+	// any tmux command runs. They reuse every guard already checked above
+	// (enabled, method, host, token) plus the inflight dedupe below.
+	if action == "monitor-ci" || action == "new-monitor" {
+		pane, err := latestPaneForSession(db, sessionID)
+		if err != nil {
+			http.Error(w, "lookup failed", http.StatusInternalServerError)
+			return
+		}
+		// A missing/blank/malformed pane means there is nothing live to target
+		// (unknown session, or the agent is not in tmux). Same 4xx shape as the
+		// no-session case; the client only offers these behind .LiveTmux anyway.
+		if !paneIDRe.MatchString(pane) {
+			http.Error(w, "unknown session", http.StatusNotFound)
+			return
+		}
+		if !cfg.inflight.acquire(sessionID) {
+			http.Error(w, "action already running for this session", http.StatusConflict)
+			return
+		}
+		defer cfg.inflight.release(sessionID)
+		// The split runs in the agent's worktree if we know it; tmux inherits the
+		// target pane's cwd regardless, so an empty dir is harmless.
+		cwd, _ := latestCwdForSession(db, sessionID)
+		res := runSessionAction(cfg.tmux, action, pane, cwd)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":       res.ExitCode == 0 && !res.TimedOut,
+			"exitCode": res.ExitCode,
+			"timedOut": res.TimedOut,
+			"output":   scrubString(res.Output),
+		})
+		return
+	}
 
 	binary, args, teardown, ok := actionArgv(action, force)
 	if !ok {

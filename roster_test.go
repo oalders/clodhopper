@@ -594,7 +594,7 @@ func TestHandleDashboard_FlagsRebasingEverywhere(t *testing.T) {
 	insertEvent(db, Event{TS: recent, SourceApp: "myapp", Branch: "fix-7", Rebasing: true, SessionID: "sess-rebasing-1", TmuxSession: "tmux-r", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: recent, SourceApp: "myapp", Branch: "fix-8", SessionID: "sess-normal-1", TmuxSession: "tmux-n", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 
-	body := getBody(t, db, "/")
+	body := getBody(t, db, "/?debug=1")
 	// Roster row + Activity tally + Recent events row = three markers for the one
 	// rebasing branch; fix-8 contributes none.
 	if n := strings.Count(body, `aria-label="mid-rebase"`); n != 3 {
@@ -866,7 +866,7 @@ func TestHandleDashboard_FoldsToolEvents(t *testing.T) {
 		ToolName: "Bash", Summary: "Bash: go build", ToolUseID: "t1",
 		DurationMs: sql.NullInt64{Int64: 3100, Valid: true}, PayloadJSON: "{}"})
 
-	body := getBody(t, db, "/")
+	body := getBody(t, db, "/?debug=1")
 	if !strings.Contains(body, "+3.1s") {
 		t.Errorf("expected duration suffix +3.1s in:\n%s", body)
 	}
@@ -888,7 +888,7 @@ func TestHandleDashboard_FailedToolCallIsTinted(t *testing.T) {
 		ToolName: "Bash", Summary: "Bash: false", ToolUseID: "tf",
 		DurationMs: sql.NullInt64{Int64: 74, Valid: true}, PayloadJSON: "{}"})
 
-	body := getBody(t, db, "/")
+	body := getBody(t, db, "/?debug=1")
 	// A failed call folds to a ✗ row carrying the fail tint and its duration.
 	if !strings.Contains(body, "✗") {
 		t.Errorf("expected failure glyph in:\n%s", body)

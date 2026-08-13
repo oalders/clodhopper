@@ -176,6 +176,32 @@ func TestRunActionTimeoutKillsProcessGroup(t *testing.T) {
 	}
 }
 
+func TestRunTmuxTimeoutKillsProcessGroup(t *testing.T) {
+	// Mirror of TestRunActionTimeoutKillsProcessGroup for the tmux exec path: a
+	// hung tmux invocation must be SIGKILLed as a whole process group after the
+	// timeout, not left with a reparented child surviving.
+	pidFile := filepath.Join(t.TempDir(), "child.pid")
+	stub := writeStub(t, "hangtmux", `sleep 30 & echo $! > `+pidFile+`; sleep 30`)
+	start := time.Now()
+	_, r := runTmux(stub, t.TempDir(), []string{"send-keys"}, 500*time.Millisecond)
+	if !r.TimedOut {
+		t.Fatalf("expected TimedOut, got %+v", r)
+	}
+	if time.Since(start) > 3*time.Second {
+		t.Fatal("runTmux did not return promptly after timeout")
+	}
+	// Give the kill a moment to propagate, then assert the child is gone.
+	time.Sleep(200 * time.Millisecond)
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Skipf("child pid not recorded: %v", err) // stub race; not the unit under test
+	}
+	pid, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	if pid > 0 && syscall.Kill(pid, 0) == nil {
+		t.Fatalf("child pid %d still alive — process group was not killed", pid)
+	}
+}
+
 func TestHostAllowed(t *testing.T) {
 	extra := []string{"box.tailnet.ts.net"}
 	yes := []string{"127.0.0.1", "127.0.0.1:4555", "localhost:4555", "[::1]:4555", "box.tailnet.ts.net", "BOX.tailnet.ts.net:4555", "100.64.0.1:4555"}
@@ -408,5 +434,156 @@ func TestHandleActionConcurrent409(t *testing.T) {
 	handleAction(w, actionReq("live-4", "squash", false, "secret", "127.0.0.1"), db, cfg, time.Now())
 	if w.Code != http.StatusConflict {
 		t.Fatalf("code = %d, want 409", w.Code)
+	}
+}
+
+func TestLatestPaneForSession(t *testing.T) {
+	db := openTestDB(t)
+	if p, err := latestPaneForSession(db, "nope"); err != nil || p != "" {
+		t.Fatalf("absent session: p=%q err=%v", p, err)
+	}
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "s1", TmuxPane: "%5", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: "2026-08-12T10:01:00Z", SourceApp: "x", SessionID: "s1", TmuxPane: "%9", EventType: "Stop", PayloadJSON: "{}"})
+	if p, _ := latestPaneForSession(db, "s1"); p != "%9" {
+		t.Fatalf("want latest pane %%9, got %q", p)
+	}
+	// A newer event that recorded no pane must not shadow the last known one:
+	// the query skips blank panes, so the most recent non-empty value wins.
+	insertEvent(db, Event{TS: "2026-08-12T10:02:00Z", SourceApp: "x", SessionID: "s1", EventType: "Stop", PayloadJSON: "{}"})
+	if p, _ := latestPaneForSession(db, "s1"); p != "%9" {
+		t.Fatalf("blank pane shadowed the last known one: %q", p)
+	}
+}
+
+// tmuxLogStub returns a fake tmux binary that appends each invocation's argv
+// (space-joined) to a log file and prints the pane id %77 for split-window, so a
+// test can assert the exact commands runSessionAction issues.
+func tmuxLogStub(t *testing.T) (bin, logPath string) {
+	t.Helper()
+	logPath = filepath.Join(t.TempDir(), "tmux.log")
+	bin = writeStub(t, "tmux", `echo "$@" >> `+logPath+`
+if [ "$1" = "split-window" ]; then echo "%77"; fi
+exit 0`)
+	return bin, logPath
+}
+
+func TestHandleActionMonitorCIBuildsArgv(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-m", Cwd: dir, TmuxPane: "%12", EventType: "Stop", PayloadJSON: "{}"})
+	stub, logPath := tmuxLogStub(t)
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	cfg.tmux = stub
+
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("live-m", "monitor-ci", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	got, _ := os.ReadFile(logPath)
+	want := "send-keys -t %12 /clear Enter /monitor-ci Enter\n"
+	if string(got) != want {
+		t.Fatalf("argv = %q, want %q", got, want)
+	}
+	// A session action never tears the session down.
+	if queryLatestEventType(t, db, "live-m") == "SessionEnd" {
+		t.Fatal("monitor-ci must not end the session")
+	}
+}
+
+func TestHandleActionMonitorCIGuards(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "g1", Cwd: dir, TmuxPane: "%1", EventType: "Stop", PayloadJSON: "{}"})
+	stub, logPath := tmuxLogStub(t)
+
+	// disabled
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	cfg.tmux = stub
+	cfg.enabled = false
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("g1", "monitor-ci", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("disabled: %d", w.Code)
+	}
+	cfg.enabled = true
+
+	// wrong method
+	w = httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/action", nil)
+	r.Host = "127.0.0.1"
+	handleAction(w, r, db, cfg, time.Now())
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("method: %d", w.Code)
+	}
+	// bad host
+	w = httptest.NewRecorder()
+	handleAction(w, actionReq("g1", "monitor-ci", false, "secret", "evil.example.com"), db, cfg, time.Now())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("host: %d", w.Code)
+	}
+	// bad token
+	w = httptest.NewRecorder()
+	handleAction(w, actionReq("g1", "monitor-ci", false, "wrong", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("token: %d", w.Code)
+	}
+	// None of the rejected requests may have reached tmux.
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatal("tmux ran despite a rejected request")
+	}
+}
+
+func TestHandleActionNewMonitorBuildsArgv(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "nm", Cwd: dir, TmuxPane: "%3", EventType: "Stop", PayloadJSON: "{}"})
+	stub, logPath := tmuxLogStub(t)
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	cfg.tmux = stub
+
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("nm", "new-monitor", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	got, _ := os.ReadFile(logPath)
+	// split the new pane running `nn claude`, capture its id, then send the
+	// command into it. The pane ids are server-resolved (%3) and stub-returned
+	// (%77) — never client input.
+	want := "split-window -t %3 -P -F #{pane_id} nn claude\nsend-keys -t %77 /monitor-ci Enter\n"
+	if string(got) != want {
+		t.Fatalf("argv = %q, want %q", got, want)
+	}
+	if queryLatestEventType(t, db, "nm") == "SessionEnd" {
+		t.Fatal("new-monitor must not end the session")
+	}
+}
+
+func TestHandleActionSessionActionRejectsBadPane(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	// session with a cwd but no pane on record
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "nopane", Cwd: dir, EventType: "Stop", PayloadJSON: "{}"})
+	// session whose recorded pane is malformed (fails paneIDRe)
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "badpane", Cwd: dir, TmuxPane: "; rm -rf /", EventType: "Stop", PayloadJSON: "{}"})
+	stub, logPath := tmuxLogStub(t)
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	cfg.tmux = stub
+
+	cases := []struct{ sess, action string }{
+		{"nopane", "monitor-ci"},
+		{"badpane", "monitor-ci"},
+		{"ghost", "new-monitor"}, // wholly unknown session
+	}
+	for _, c := range cases {
+		w := httptest.NewRecorder()
+		handleAction(w, actionReq(c.sess, c.action, false, "secret", "127.0.0.1"), db, cfg, time.Now())
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("%s/%s: code = %d, want 404", c.sess, c.action, w.Code)
+		}
+	}
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatal("tmux ran for a session with no valid pane")
 	}
 }

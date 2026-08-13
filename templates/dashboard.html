@@ -128,6 +128,7 @@
     }
     .ck-btn:hover { background: var(--surface-3); }
     .ck-btn:active { transform: translateY(1px); }
+    .ck-btn[aria-pressed="true"] { background: var(--surface-3); border-color: var(--brand); color: var(--text-1); }
     .ck-btn-primary { background: var(--brand); border-color: transparent; color: var(--text-invert); }
     .ck-btn-primary:hover { background: var(--brand-strong); }
     .ck-fbadge {
@@ -220,10 +221,16 @@
        get narrow — more so with the actions column present — so a long tmux
        session name would ellipse AND clip the trailing button out of the
        overflow:hidden cell, making the peek control silently vanish. Make the
-       cell a flex row so only the name (.sessname) truncates; the button is a
-       non-shrinking sibling that stays visible. Scoped to the roster: the
-       activity table's namecell has no button and truncates fine as a plain cell. */
-    table.roster td.namecell { display: flex; align-items: baseline; gap: 4px; }
+       name+button a flex row so only the name (.sessname) truncates; the button
+       is a non-shrinking sibling that stays visible.
+       The flex lives on an inner .sessline wrapper, NOT the <td>: a display:flex
+       <td> stops being a table-cell box and drops out of border-collapse, so it
+       paints its own bottom border as an orphaned bar floating above the shared
+       row separator (visible under the session name, worse on hover). Keeping the
+       <td> a real cell lets its border collapse into the row grid like every
+       other column. Scoped to the roster: the activity table's namecell has no
+       button and truncates fine as a plain cell. */
+    table.roster td.namecell .sessline { display: flex; align-items: baseline; gap: 4px; }
     table.roster td.namecell .sessname { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
     td.idle { font-variant-numeric: tabular-nums; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
@@ -327,21 +334,85 @@
       color: var(--text-1);
     }
 
+    /* Roster actions live behind a disclosure: the cell shows only a small
+       "⋯ actions" toggle (styled like the peek control), and the session +
+       PR clusters expand into a full-width panel row on demand — mutually
+       exclusive with the pane peek for the same row. */
+    button.actbtn {
+      all: unset;
+      box-sizing: border-box;
+      cursor: pointer;
+      font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.2;
+      padding: 3px 8px; border-radius: var(--radius-sm);
+      border: 1px solid var(--border-strong); background: var(--surface-2);
+      color: var(--text-2); white-space: nowrap;
+      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+    }
+    button.actbtn:hover { background: var(--surface-3); color: var(--text-1); }
+    /* all:unset drops the global :focus-visible ring, and colour alone is not a
+       sufficient focus indicator (WCAG 2.4.7); restore a real ring. */
+    button.actbtn:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
+    button.actbtn[aria-expanded="true"] { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
+    /* The "actions" column already labels this control, so the desktop toggle is
+       just the "⋯" affordance — the word is redundant per column. On the phone
+       card there is no header, so the word (and a caret) come back below. */
+    button.actbtn .actword { display: none; }
+    tr.actrow > td { padding: 0; background: var(--surface-2); }
+    .actpanel { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 24px; padding: 12px; }
+    .actcol { display: flex; flex-direction: column; gap: 6px; }
+    .actcol.prcol { flex: 1 1 320px; }
+    .acteyebrow {
+      font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--text-3); /* matches the design; text-3 on the surface-2 panel is ~4.5:1 (clears AA) */
+    }
+
     /* Roster PR-action buttons: compact, two-step confirm, and an inline
        result/status line. */
     .actgroup { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
     button.pract {
-      font-family: var(--font-mono); font-size: var(--fs-2xs); line-height: 1.2;
-      padding: 2px 6px; border-radius: var(--radius-xs);
+      font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.2;
+      padding: 3px 8px; min-height: 24px; border-radius: var(--radius-xs);
       border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text-2);
       cursor: pointer;
     }
     button.pract:hover, button.pract:focus-visible { background: var(--surface-3); color: var(--text-1); }
     button.pract.confirm { border-color: var(--fail); color: var(--fail); background: var(--fail-bg); }
     button.pract[disabled] { opacity: 0.5; cursor: wait; }
+    /* The result line and command preview match the design's muted text-3; on the
+       surface-2 panel that is ~4.5:1 (clears AA). Modifier labels stay text-2 (the
+       design's enabled-checkbox colour), dimming to text-3 only when disabled. */
     .actmsg { display: block; white-space: pre-wrap; font-size: var(--fs-2xs); color: var(--text-3); }
-    .actforce { display: inline-flex; align-items: center; gap: 3px; font-size: var(--fs-2xs); color: var(--text-3); cursor: pointer; }
-    .actforce input { margin: 0; }
+    .actforce { display: inline-flex; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--text-2); cursor: pointer; }
+    .actforce input { margin: 0; accent-color: var(--brand); }
+    /* Inside the disclosure panel each cluster (session buttons, PR form) lays
+       its controls out on one wrapping line. */
+    .actpanel .actgroup { display: flex; flex-wrap: wrap; align-items: center; }
+    /* PR form: a three-way choice, its modifiers, the exact command it will run,
+       and one run button. The choice is a SEGMENTED TOGGLE — one bordered group of
+       role=radio buttons (squash · close · ready), the active segment brand-tinted
+       — not separate radio inputs (matches ActionBar.jsx). --admin/--force grey
+       out unless squash is chosen. */
+    .prchoice { display: inline-flex; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow: hidden; }
+    button.prmode {
+      all: unset; box-sizing: border-box; cursor: pointer; text-align: center;
+      font-family: var(--font-mono); font-size: var(--fs-xs); line-height: 1.2;
+      padding: 4px 10px; min-height: 26px;
+      color: var(--text-2); background: transparent;
+      transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+    }
+    button.prmode:hover:not([aria-checked="true"]) { color: var(--text-1); }
+    /* Selection cue is the brand-tinted fill + weight; the label itself is
+       full-strength text-1, NOT --brand. The reference (ActionBar.jsx) tints the
+       active label --brand on --brand-soft, but that pair is ~4.2:1 (dark) /
+       ~3.9:1 (light) — under WCAG 1.4.3 AA for this text size — so this diverges
+       from the reference to keep the selected action legible. */
+    button.prmode[aria-checked="true"] { background: var(--brand-soft); color: var(--text-1); font-weight: 600; }
+    /* overflow:hidden on the group clips an outset ring, so use an inset one. */
+    button.prmode:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--focus-ring); }
+    button.prmode[disabled] { cursor: wait; opacity: 0.55; }
+    .prcmd { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-3); white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .actforce input:disabled { cursor: default; }
+    label.actforce:has(input:disabled) { opacity: 0.45; cursor: default; }
 
     /* Visually hidden but still announced — the copy confirmation and the
        cluster suffix live here. clip-path is the modern rule; the deprecated
@@ -415,7 +486,8 @@
     @media (max-width: 960px) and (min-width: 641px) {
       .ck-tablewrap { overflow-x: auto; }
       table.events { min-width: 118ch; }
-      table.roster { min-width: 132ch; }
+      table.roster { min-width: 121ch; } /* sum of the fixed cols in the default read-only layout */
+      {{ if .MergeEnabled }}table.roster { min-width: 151ch; } /* + the 30ch actions col that --enable-merge adds */{{ end }}
       table.counts { min-width: 48ch; }
     }
 
@@ -437,6 +509,57 @@
         border: 1px solid var(--border); border-radius: var(--radius);
         padding: 10px 12px; margin: 10px; background: var(--surface);
       }
+      /* The roster is not a table on a phone; it is a card with a hierarchy.
+         Grid placement rather than source order: status leads, the identity
+         fields (app / id / session) fall to one muted footer line. */
+      table.roster tbody tr:not(.panerow):not(.actrow) {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: baseline;
+        gap: 8px;
+      }
+      table.roster td.status   { grid-area: 1 / 1 / auto / 3; }
+      table.roster td.idle     { grid-area: 1 / 3; justify-self: end; }
+      table.roster td.ci       { grid-area: 2 / 1; }
+      table.roster td.branch   { grid-area: 2 / 2 / auto / 4; font-size: var(--fs-md); }
+      table.roster td.summary  { grid-area: 3 / 1 / auto / 4; }
+      table.roster td[data-label="app"] { grid-area: 4 / 1; }
+      table.roster td.sess     { grid-area: 4 / 2; }
+      table.roster td.namecell { grid-area: 4 / 3; }
+      table.roster td.namecell .sessline { justify-content: flex-end; }
+      table.roster td.actions  { grid-area: 5 / 1 / auto / 4; }
+      /* The footer line is context, not content. */
+      table.roster td[data-label="app"],
+      table.roster td.sess,
+      table.roster td.namecell { color: var(--text-3); font-size: var(--fs-xs); }
+      /* Column names are noise once the layout says what each field is; only
+         the idle timer still needs naming. */
+      table.roster td::before { content: none; }
+      table.roster td.idle::before { content: attr(data-label); }
+      /* Copy-to-clipboard has no utility on a phone — there is nowhere to paste
+         a path. Drop the affordance rather than shrink it. */
+      table.roster td.branch .copyicon { display: none; }
+      table.roster td.branch .copycwd { cursor: default; }
+      /* Peek becomes a real control on touch. */
+      table.roster td.namecell button.peek {
+        min-height: 44px; padding: 0 12px;
+        border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+        background: var(--surface-2);
+      }
+      /* The actions toggle is the only thing in its cell — a full-width 44px
+         control that expands the panel row beneath the card. With no column
+         header on the card it reads "actions ⌄" (the caret makes it obviously a
+         disclosure control, not a text field), flipping to "⌃" when open. */
+      table.roster td.actions button.actbtn {
+        display: flex; align-items: center; justify-content: center; gap: 4px;
+        width: 100%; min-height: 44px; padding: 0 12px;
+        border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+        background: var(--surface-2); font-size: var(--fs-sm);
+      }
+      table.roster td.actions button.actbtn .actdots { display: none; }
+      table.roster td.actions button.actbtn .actword { display: inline; }
+      table.roster td.actions button.actbtn::after { content: "⌄"; }
+      table.roster td.actions button.actbtn[aria-expanded="true"]::after { content: "⌃"; }
       td {
         display: flex; gap: 7px; min-width: 0;
         border: none; padding: 0; overflow: visible; white-space: normal;
@@ -446,6 +569,27 @@
         content: attr(data-label); color: var(--text-3); font-weight: 600;
         font-size: var(--fs-xs); white-space: nowrap;
       }
+      /* Inside the expanded panel the two clusters stack full-width, and the PR
+         cluster becomes a two-column grid of full-size buttons with force, the
+         choices, the command preview, and the run button spanning both tracks. */
+      .actrow .actpanel { flex-direction: column; gap: 16px; }
+      .actrow .actcol { width: 100%; }
+      .actpanel .actgroup { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
+      .actpanel button.pract { min-height: 44px; font-size: var(--fs-sm); border-radius: var(--radius-sm); }
+      .actpanel .actforce { grid-column: 1 / -1; min-height: 44px; font-size: var(--fs-sm); }
+      .actpanel .actforce input { width: 18px; height: 18px; }
+      .actpanel .actmsg { grid-column: 1 / -1; font-size: var(--fs-sm); } /* the destructive-action result line skipped the mobile size bump the other controls got */
+      /* The PR form's command preview, radio choices, and lone run button must
+         span BOTH tracks or the nowrap command line overflows the row, the run
+         button strands half-width, and the touch targets shrink. */
+      /* The segmented toggle spans the row and splits into three equal 44px
+         segments (matches the design's stacked layout). */
+      .actpanel .prchoice { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      /* Grow the text to match the enlarged tap targets — 11px is hard to read on
+         a phone even with a 44px hit area. */
+      .actpanel button.prmode { min-height: 44px; font-size: var(--fs-sm); }
+      .actpanel .prcmd { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; font-size: var(--fs-sm); }
+      .actpanel .prrun { grid-column: 1 / -1; }
       /* Only the long free-text doing/summary field claims its own full-width
          line; branch now flows inline with ci / app / status, wrapping within
          its own cell when a name is genuinely too long. */
@@ -478,9 +622,9 @@
          by the author `[hidden] { display: none !important }` reset at the top —
          it beats this rule and the generic `tr { display: flex }`, so `row.hidden`
          reliably collapses the peek. */
-      tr.panerow { display: block; padding: 0; border: none; background: none; }
-      tr.panerow > td { display: block; min-width: 0; }
-      tr.panerow td::before { content: none; }
+      tr.panerow, tr.actrow { display: block; padding: 0; border: none; background: none; }
+      tr.panerow > td, tr.actrow > td { display: block; min-width: 0; }
+      tr.panerow td::before, tr.actrow td::before { content: none; }
       /* Wrap the capture instead of scrolling it sideways: 80-column terminal
          output is painful to read by horizontal scroll on a phone. pre-wrap keeps
          the newlines and leading indentation; overflow-wrap:anywhere breaks the
@@ -505,7 +649,8 @@
     </div>
     <div class="ck-headright">
       <button type="button" id="ck-filtersbtn" class="ck-btn" aria-controls="ck-filters">filters <span id="ck-fbadge" class="ck-fbadge"></span></button>
-      <button type="button" id="ck-theme" class="ck-btn">☾ dark</button>
+      <button type="button" id="ck-debug" class="ck-btn" aria-pressed="false" title="show the Activity + Recent-events diagnostics">debug</button>
+      <button type="button" id="ck-theme" class="ck-btn" aria-pressed="false">☾ dark</button>
     </div>
   </header>
 
@@ -650,8 +795,21 @@
         openPeeks.push({
           pane: rows[i].getAttribute('data-pane-row'),
           text: cap ? cap.textContent : '',
-          scroll: cap ? cap.scrollTop : 0
+          // undefined (not 0) when there is no capture to measure, so the restore
+          // path can tell "no saved position" apart from "saved at the top".
+          scroll: cap ? cap.scrollTop : undefined
         });
+      }
+      // Carry any open actions panel across the swap too. Its contents are
+      // server-rendered (unlike the JS-fetched peek), so we only need to remember
+      // which rows were expanded and re-open them by their stable session id; the
+      // fresh markup supplies the form. Keyed by data-actions-row so a session
+      // that ended simply is not restored.
+      var openActs = [];
+      var arows = document.querySelectorAll('#content .actrow');
+      for (var ai = 0; ai < arows.length; ai++) {
+        if (arows[ai].hidden) continue;
+        openActs.push(arows[ai].getAttribute('data-actions-row'));
       }
       try { document.dispatchEvent(new CustomEvent('ch:contentswap')); } catch (e) {}
       document.getElementById('content').innerHTML = html;
@@ -663,11 +821,36 @@
           if (newRows[r].getAttribute('data-pane-row') !== op.pane) continue;
           newRows[r].hidden = false;
           var c = newRows[r].querySelector('.panecap');
-          if (c) { c.textContent = op.text; c.scrollTop = op.scroll; }
+          if (c) {
+            c.textContent = op.text;
+            // Restore the reader's scroll position when we captured one (even 0,
+            // meaning they were at the top); with no saved position, fall to the
+            // bottom where the freshest output is, matching openPane(). An open
+            // peek always has a .panecap, so this bottom-fall is defensive.
+            if (typeof op.scroll === 'number') c.scrollTop = op.scroll;
+            else c.scrollTop = c.scrollHeight;
+          }
           var btns = document.querySelectorAll('#content .peek');
           for (var b = 0; b < btns.length; b++) {
             if (btns[b].getAttribute('data-pane') === op.pane) {
               btns[b].setAttribute('aria-expanded', 'true');
+              break;
+            }
+          }
+          break;
+        }
+      }
+      for (var ap = 0; ap < openActs.length; ap++) {
+        var asess = openActs[ap];
+        if (!asess) continue;
+        var newActs = document.querySelectorAll('#content .actrow');
+        for (var ar = 0; ar < newActs.length; ar++) {
+          if (newActs[ar].getAttribute('data-actions-row') !== asess) continue;
+          newActs[ar].hidden = false;
+          var abtns = document.querySelectorAll('#content .actbtn');
+          for (var ab = 0; ab < abtns.length; ab++) {
+            if (abtns[ab].getAttribute('data-actions') === asess) {
+              abtns[ab].setAttribute('aria-expanded', 'true');
               break;
             }
           }
@@ -711,7 +894,11 @@
     var btn = document.getElementById('ck-theme');
     if (!btn) return;
     function label() {
-      btn.textContent = root.getAttribute('data-theme') === 'light' ? '☀ light' : '☾ dark';
+      var light = root.getAttribute('data-theme') === 'light';
+      btn.textContent = light ? '☀ light' : '☾ dark';
+      // aria-pressed = "is the light theme engaged?", matching the binary-toggle
+      // convention #ck-debug uses and the [aria-pressed="true"] button styling.
+      btn.setAttribute('aria-pressed', light ? 'true' : 'false');
     }
     label();
     btn.addEventListener('click', function () {
@@ -753,6 +940,47 @@
       open = !open;
       try { localStorage.setItem('ch-filters-open', open ? 'open' : 'closed'); } catch (e) {}
       apply();
+    });
+  })();
+
+  // Debug toggle: the Activity + Recent-events sections are diagnostics nobody
+  // reads in normal use (and most of the scroll on a phone), so the server only
+  // renders them for ?debug=1. The choice persists in localStorage and drives the
+  // URL; enabling/disabling is a single navigation that preserves other params
+  // (filters, refresh, window) so the poller keeps fetching the right view.
+  (function () {
+    var btn = document.getElementById('ck-debug');
+    if (!btn) return;
+    var params = new URLSearchParams(location.search);
+    var urlOn = params.get('debug') === '1';
+    var storedOn = false;
+    try { storedOn = localStorage.getItem('ch-debug') === 'on'; } catch (e) {}
+
+    // Saved 'on' but the URL lacks the param: reflect it with ONE reload. The
+    // added param makes this loop-safe — after it, urlOn is true and we skip.
+    if (storedOn && !urlOn) {
+      params.set('debug', '1');
+      location.search = params.toString();
+      return;
+    }
+    // The URL enables debug (e.g. a shared link) but storage disagrees: adopt it,
+    // no reload needed since the sections are already rendered.
+    if (urlOn && !storedOn) {
+      try { localStorage.setItem('ch-debug', 'on'); } catch (e) {}
+    }
+
+    btn.setAttribute('aria-pressed', urlOn ? 'true' : 'false');
+    btn.addEventListener('click', function () {
+      var p = new URLSearchParams(location.search);
+      if (urlOn) {
+        p.delete('debug');
+        try { localStorage.setItem('ch-debug', ''); } catch (e) {}
+      } else {
+        p.set('debug', '1');
+        try { localStorage.setItem('ch-debug', 'on'); } catch (e) {}
+      }
+      var qs = p.toString();
+      location.search = qs ? '?' + qs : '';
     });
   })();
 
@@ -980,6 +1208,64 @@
       }
       return true;
     }
+    // The actions disclosure mirrors the peek: the cell shows a "⋯ actions"
+    // toggle and the session + PR clusters expand into a full-width panel row.
+    // Peek and actions share one open slot per roster row, so opening one closes
+    // the other (see closeOtherPanels) — matching the design's per-row toggle.
+    function actRow(sess) {
+      var sel = '.actrow[data-actions-row="' + (window.CSS && CSS.escape ? CSS.escape(sess) : sess) + '"]';
+      return document.querySelector(sel);
+    }
+    function actButton(sess) {
+      var btns = document.querySelectorAll('#content .actbtn');
+      for (var i = 0; i < btns.length; i++) {
+        if (btns[i].getAttribute('data-actions') === sess) return btns[i];
+      }
+      return null;
+    }
+    function closeAct(sess, focusBtn) {
+      var row = actRow(sess);
+      if (!row || row.hidden) return false;
+      // Never leave an armed destructive confirm inside a panel we are hiding.
+      if (window.__ckDisarm) window.__ckDisarm(row);
+      row.hidden = true;
+      var btn = actButton(sess);
+      if (btn) {
+        btn.setAttribute('aria-expanded', 'false');
+        if (focusBtn) btn.focus({ preventScroll: true });
+      }
+      return true;
+    }
+    // The peek row and the actions row for a session sit as siblings right after
+    // their main roster row. Walk back to that main row and collapse any OTHER
+    // open panel attached to it, so a row never shows both peek and actions.
+    function mainRowOf(panelRow) {
+      var n = panelRow.previousElementSibling;
+      while (n && (n.classList.contains('panerow') || n.classList.contains('actrow'))) {
+        n = n.previousElementSibling;
+      }
+      return n;
+    }
+    function closeOtherPanels(openingRow) {
+      var main = mainRowOf(openingRow);
+      if (!main) return;
+      var n = main.nextElementSibling;
+      while (n && (n.classList.contains('panerow') || n.classList.contains('actrow'))) {
+        if (n !== openingRow && !n.hidden) {
+          if (n.classList.contains('panerow')) closePane(n.getAttribute('data-pane-row'), false);
+          else closeAct(n.getAttribute('data-actions-row'), false);
+        }
+        n = n.nextElementSibling;
+      }
+    }
+    function openAct(sess) {
+      var row = actRow(sess);
+      if (!row) return;
+      closeOtherPanels(row);
+      var btn = actButton(sess);
+      if (btn) btn.setAttribute('aria-expanded', 'true');
+      row.hidden = false;
+    }
     // A line that is nothing but one separator character repeated (----, ====,
     // ────) carries no more information at 80 columns than at 30, but on a phone
     // the wrap turns it into a stack of blank-looking rows. Collapse an over-long
@@ -1009,6 +1295,7 @@
       if (!row) return;
       var pre = row.querySelector('.panecap');
       if (!pre) return;
+      closeOtherPanels(row);
       var btn = paneButton(pane);
       if (btn) btn.setAttribute('aria-expanded', 'true');
       row.hidden = false;
@@ -1026,11 +1313,20 @@
     }
 
     document.addEventListener('click', function (ev) {
-      var btn = ev.target && ev.target.closest ? ev.target.closest('.peek') : null;
-      if (!btn) return;
-      var pane = btn.getAttribute('data-pane');
-      if (btn.getAttribute('aria-expanded') === 'true') { closePane(pane, false); return; }
-      openPane(pane);
+      if (!ev.target || !ev.target.closest) return;
+      var peekBtn = ev.target.closest('.peek');
+      if (peekBtn) {
+        var pane = peekBtn.getAttribute('data-pane');
+        if (peekBtn.getAttribute('aria-expanded') === 'true') { closePane(pane, false); return; }
+        openPane(pane);
+        return;
+      }
+      var actBtn = ev.target.closest('.actbtn');
+      if (actBtn) {
+        var sess = actBtn.getAttribute('data-actions');
+        if (actBtn.getAttribute('aria-expanded') === 'true') { closeAct(sess, false); return; }
+        openAct(sess);
+      }
     });
 
     // Esc dismisses an open peek. If focus is inside a peek (its capture or its ⤢
@@ -1039,15 +1335,22 @@
     // stays free for anything else on the page.
     document.addEventListener('keydown', function (ev) {
       if (ev.key !== 'Escape' && ev.keyCode !== 27) return;
-      var scope = ev.target && ev.target.closest ? ev.target.closest('.panerow, .peek') : null;
-      var pane = scope ? (scope.getAttribute('data-pane-row') || scope.getAttribute('data-pane')) : null;
+      var scope = ev.target && ev.target.closest ? ev.target.closest('.panerow, .peek, .actrow, .actbtn') : null;
       var closed = false;
-      if (pane) {
-        closed = closePane(pane, true);
+      if (scope && (scope.classList.contains('panerow') || scope.classList.contains('peek'))) {
+        var pane = scope.getAttribute('data-pane-row') || scope.getAttribute('data-pane');
+        if (pane) closed = closePane(pane, true);
+      } else if (scope && (scope.classList.contains('actrow') || scope.classList.contains('actbtn'))) {
+        var sess = scope.getAttribute('data-actions-row') || scope.getAttribute('data-actions');
+        if (sess) closed = closeAct(sess, true);
       } else {
         var rows = document.querySelectorAll('#content .panerow');
         for (var i = 0; i < rows.length; i++) {
           if (!rows[i].hidden && closePane(rows[i].getAttribute('data-pane-row'), false)) closed = true;
+        }
+        var arows = document.querySelectorAll('#content .actrow');
+        for (var k = 0; k < arows.length; k++) {
+          if (!arows[k].hidden && closeAct(arows[k].getAttribute('data-actions-row'), false)) closed = true;
         }
       }
       if (closed) ev.preventDefault();
@@ -1065,18 +1368,56 @@
   {{ if .MergeEnabled }}
   (function () {
     var CSRF = document.body.dataset.csrf;
-    window.__ckActionBusy = window.__ckActionBusy || false;
+    // A COUNT of in-flight actions, not a boolean: the roster can have many
+    // actionable rows, and a user can fire a second while the first is pending.
+    // A boolean's first .finally would clear it while others are still in flight,
+    // letting the poller repaint #content out from under them. The count only
+    // reaches 0 when the last action settles.
+    window.__ckActionBusy = window.__ckActionBusy || 0;
 
     var CAVEAT = {
       squash: 'merges + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
       'squash-admin': 'merges (bypassing branch protection) + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
       close: 'closes the PR + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
-      ready: 'mark PR ready?'
+      ready: 'mark PR ready?',
+      'monitor-ci': '/clear then /monitor-ci — drops the agent\'s current context'
     };
 
     function forceOn(group) {
       var f = group.querySelector('.practforce');
-      return !!(f && f.checked);
+      // A disabled --force (the box is greyed for close/ready) never contributes,
+      // even if it was left checked from a previous squash selection.
+      return !!(f && f.checked && !f.disabled);
+    }
+
+    // syncForm keeps the PR-form cluster consistent with its selected mode: --admin
+    // and --force apply to squash only (greyed and cleared otherwise), the run
+    // button's data-action tracks the mapped server action (squash / squash-admin
+    // / close / ready), and the shown command line mirrors actionArgv exactly.
+    function syncForm(group) {
+      var mode = 'squash';
+      var radios = group.querySelectorAll('.prmode');
+      for (var i = 0; i < radios.length; i++) { if (radios[i].getAttribute('aria-checked') === 'true') { mode = radios[i].getAttribute('data-mode'); break; } }
+      var isSquash = (mode === 'squash');
+      var admin = group.querySelector('.practadmin');
+      var force = group.querySelector('.practforce');
+      if (admin) { admin.disabled = !isSquash; if (!isSquash) admin.checked = false; }
+      if (force) { force.disabled = !isSquash; if (!isSquash) force.checked = false; }
+      var action = mode;
+      if (isSquash && admin && admin.checked) action = 'squash-admin';
+      var run = group.querySelector('.prrun');
+      if (run) run.setAttribute('data-action', action);
+      var cmd;
+      if (mode === 'ready') {
+        cmd = 'gh pr ready';
+      } else {
+        cmd = (action === 'squash-admin') ? 'merge-pr --squash --admin' : 'merge-pr --' + mode;
+        if (force && force.checked) cmd += ' --force';
+      }
+      var out = group.querySelector('.prcmd');
+      // title mirrors the text so a hover reveals the full command when the
+      // preview truncates (desktop .prcmd is nowrap + ellipsis).
+      if (out) { out.textContent = cmd; out.title = cmd; }
     }
 
     // caveatFor derives the confirm-step message for action within group,
@@ -1108,6 +1449,13 @@
       }
       var f = group.querySelector('.practforce');
       if (f) f.disabled = false;
+      var radios = group.querySelectorAll('.prmode');
+      for (var k = 0; k < radios.length; k++) radios[k].disabled = false;
+      var admin = group.querySelector('.practadmin');
+      if (admin) admin.disabled = false;
+      // Restore the form's mode-dependent disabled/greyed state (unlock just
+      // re-enabled everything unconditionally).
+      if (group.classList.contains('prform')) syncForm(group);
       if (clearMsg) {
         var msg = group.querySelector('.actmsg');
         if (msg) msg.textContent = '';
@@ -1126,6 +1474,9 @@
       cancel.className = 'pract actcancel';
       cancel.textContent = '✕';
       cancel.title = 'cancel';
+      // The visible glyph is not a reliable accessible name (a title is not used
+      // as the name when text content is present), so name the control explicitly.
+      cancel.setAttribute('aria-label', 'cancel');
       btn.insertAdjacentElement('afterend', cancel);
       if (msg) {
         msg.textContent = caveatFor(group, action);
@@ -1137,10 +1488,34 @@
       var sess = group.getAttribute('data-session');
       var msg = group.querySelector('.actmsg');
       var btns = group.querySelectorAll('.pract');
+      // Disabling the pressed control blurs it to <body>, so a keyboard user
+      // loses their place the instant they confirm. Remember what was focused
+      // and put focus back once the group is unlocked (see restoreFocus below).
+      // Snapshot the focused control before the disable loop below blurs it.
+      // (On Safari a mouse click doesn't focus a <button>, so for mouse users
+      // this may be a prior control or nothing — the enabled-.pract fallback in
+      // restoreFocus covers that; it matters for keyboard users, who this helps.)
+      var focused = document.activeElement;
+      function restoreFocus() {
+        if (focused && focused.isConnected && !focused.disabled && typeof focused.focus === 'function') {
+          focused.focus();
+          return;
+        }
+        var run = group.querySelector('.pract:not([disabled])');
+        if (run) run.focus();
+      }
       for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
       var f = group.querySelector('.practforce');
       if (f) f.disabled = true;
-      window.__ckActionBusy = true;
+      var radios = group.querySelectorAll('.prmode');
+      for (var k = 0; k < radios.length; k++) radios[k].disabled = true;
+      var admin = group.querySelector('.practadmin');
+      if (admin) admin.disabled = true;
+      window.__ckActionBusy++;
+      // Mark this group as in-flight so __ckDisarm won't tear it down: unlocking
+      // a fired group would drop the "working…" state and re-enable its buttons
+      // mid-request, letting a reopen fire a second concurrent destructive action.
+      group.dataset.ckFiring = '1';
       if (msg) msg.textContent = 'working…';
       fetch('/api/action', {
         method: 'POST',
@@ -1154,32 +1529,109 @@
       })
         .then(function (resp) { return resp.json().catch(function () { return { ok: false, output: 'HTTP ' + resp.status }; }); })
         .then(function (d) {
+          // A merge/close hard-kills the session, so its row clears on the next
+          // poll; ready and the session actions leave the row in place.
+          var clears = (action === 'squash' || action === 'squash-admin' || action === 'close');
           // IMPORTANT: assign result via textContent, never innerHTML — output is
           // raw git/gh text; scrubString removed secrets but not HTML.
           if (msg) {
             msg.textContent = d.ok
-              ? (action === 'ready' ? 'PR marked ready' : 'done — row will clear')
+              ? (clears ? 'done — row will clear'
+                 : action === 'ready' ? 'PR marked ready'
+                 : action === 'monitor-ci' ? 'sent /monitor-ci'
+                 : action === 'new-monitor' ? 'watcher started'
+                 : 'done')
               : ('failed: ' + (d.output || ('exit ' + d.exitCode)));
-            if (d.timedOut) msg.textContent = 'timed out — teardown may be incomplete; verify before retrying';
+            if (d.timedOut) msg.textContent = clears
+              ? 'timed out — teardown may be incomplete; verify before retrying'
+              : 'timed out — verify before retrying';
           }
-          // A successful destructive action is followed by the row disappearing
+          // A successful row-clearing action is followed by the row disappearing
           // on the next poll (session/worktree gone); leave it locked so nothing
-          // flashes back to life first. Anything else — failure or "ready",
-          // which leaves the row in place — unlocks the buttons for a retry.
-          if (!d.ok || action === 'ready') unlock(group, false);
+          // flashes back to life first. Anything else — failure, or an action that
+          // leaves the row in place — unlocks the buttons for a retry.
+          if (!d.ok || !clears) { unlock(group, false); restoreFocus(); }
         })
-        .catch(function (e) { if (msg) msg.textContent = 'request failed: ' + e; unlock(group, false); })
-        .finally(function () { window.__ckActionBusy = false; });
+        .catch(function (e) { if (msg) msg.textContent = 'request failed: ' + e; unlock(group, false); restoreFocus(); })
+        .finally(function () { delete group.dataset.ckFiring; window.__ckActionBusy = Math.max(0, window.__ckActionBusy - 1); });
     }
 
+    // The PR-mode chooser is a segmented toggle of role="radio" buttons, not
+    // native radios, so selecting a mode moves aria-checked AND the roving
+    // tabindex (only the checked segment is tabbable) to the pressed segment,
+    // per the WAI-ARIA radiogroup pattern. Keeps the form (disabled modifiers,
+    // run action, command line) and any armed caveat in step with the choice.
+    function selectMode(mgroup, modeBtn, moveFocus) {
+      var modes = mgroup.querySelectorAll('.prmode');
+      for (var mi = 0; mi < modes.length; mi++) {
+        var on = modes[mi] === modeBtn;
+        modes[mi].setAttribute('aria-checked', on ? 'true' : 'false');
+        modes[mi].tabIndex = on ? 0 : -1;
+      }
+      if (moveFocus) modeBtn.focus();
+      if (mgroup.classList.contains('prform')) syncForm(mgroup);
+      if (mgroup.classList.contains('confirm')) {
+        var mArmed = mgroup.querySelector('.pract.confirm');
+        if (mArmed && mArmed.dataset.origLabel) {
+          // The mapped action may have changed (e.g. squash → close), so
+          // re-derive the caveat for whatever the run button now targets.
+          var mMsg = mgroup.querySelector('.actmsg');
+          if (mMsg) mMsg.textContent = caveatFor(mgroup, mArmed.getAttribute('data-action'));
+        }
+      }
+    }
+
+    // Arrow keys move selection within the segmented toggle (roving focus),
+    // Home/End jump to the ends — the radiogroup keyboard contract.
+    document.addEventListener('keydown', function (ev) {
+      // Don't hijack browser/OS chords (Ctrl/Alt/Cmd+Arrow); only bare keys move
+      // the toggle.
+      if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.shiftKey) return;
+      var modeBtn = ev.target && ev.target.closest ? ev.target.closest('.prmode') : null;
+      if (!modeBtn || modeBtn.disabled) return;
+      var mgroup = modeBtn.closest('.actgroup');
+      if (!mgroup) return;
+      var modes = [].slice.call(mgroup.querySelectorAll('.prmode'));
+      var idx = modes.indexOf(modeBtn), next = -1;
+      if (ev.key === 'ArrowRight' || ev.key === 'ArrowDown') next = (idx + 1) % modes.length;
+      else if (ev.key === 'ArrowLeft' || ev.key === 'ArrowUp') next = (idx - 1 + modes.length) % modes.length;
+      else if (ev.key === 'Home') next = 0;
+      else if (ev.key === 'End') next = modes.length - 1;
+      else return;
+      ev.preventDefault();
+      selectMode(mgroup, modes[next], true);
+    });
+
     document.addEventListener('click', function (ev) {
+      // Selecting a mode is a click that moves the toggle; handle it before the
+      // .pract dispatch below.
+      var modeBtn = ev.target && ev.target.closest ? ev.target.closest('.prmode') : null;
+      if (modeBtn) {
+        if (modeBtn.disabled) return;
+        var mgroup = modeBtn.closest('.actgroup');
+        if (mgroup) selectMode(mgroup, modeBtn, false);
+        return;
+      }
       var el = ev.target && ev.target.closest ? ev.target.closest('.pract') : null;
       if (!el) return;
       var group = el.closest('.actgroup');
       if (!group) return;
 
       if (el.classList.contains('actcancel')) {
+        // unlock() removes the cancel button (the focused element), which would
+        // drop keyboard focus to <body>. Return focus to the run button the
+        // reader was confirming, mirroring fire()'s restoreFocus.
+        var armedBtn = group.querySelector('.pract.confirm');
         unlock(group, true);
+        if (armedBtn && armedBtn.isConnected && !armedBtn.disabled) armedBtn.focus();
+        return;
+      }
+      // A no-confirm action (new-monitor: spawning a watcher destroys nothing)
+      // fires on a single press. If a sibling in the same cluster was mid-confirm,
+      // drop that armed state first so it cannot fire by accident.
+      if (el.getAttribute('data-noconfirm') === 'true') {
+        if (group.classList.contains('confirm')) unlock(group, false);
+        fire(group, el);
         return;
       }
       if (group.classList.contains('confirm')) {
@@ -1200,16 +1652,45 @@
 
     document.addEventListener('change', function (ev) {
       var f = ev.target;
-      if (!f || !f.classList || !f.classList.contains('practforce')) return;
+      if (!f || !f.classList) return;
+      if (!f.classList.contains('practforce') && !f.classList.contains('practadmin')) return;
       var group = f.closest('.actgroup');
-      if (!group || !group.classList.contains('confirm')) return;
+      if (!group) return;
+      // Keep the form (disabled modifiers, run action, command line) in step with
+      // the choice before anything about a possible armed confirm.
+      if (group.classList.contains('prform')) syncForm(group);
+      if (!group.classList.contains('confirm')) return;
       var armed = group.querySelector('.pract.confirm');
       if (armed && armed.dataset.origLabel) {
+        // The mapped action may have changed (e.g. squash → squash-admin), so
+        // re-derive the caveat for whatever the run button now targets.
         var action = armed.getAttribute('data-action');
         var msg = group.querySelector('.actmsg');
-        if (msg && action !== 'ready') msg.textContent = caveatFor(group, action);
+        if (msg) msg.textContent = caveatFor(group, action);
       }
     });
+
+    // The initial page's forms come pre-rendered by the server; sync once so their
+    // modifier/disabled state is correct even before the first interaction.
+    var forms = document.querySelectorAll('.actgroup.prform');
+    for (var fi = 0; fi < forms.length; fi++) syncForm(forms[fi]);
+
+    // Collapsing the actions panel (Escape, the toggle, or opening the peek on the
+    // same row) reads as "cancel" to a user. An armed two-step confirm must NOT
+    // survive out of sight — otherwise reopening the panel and clicking once would
+    // fire a destructive merge/close with no fresh confirmation. Exposed so the
+    // disclosure logic (in the peek IIFE) can disarm a row before hiding it.
+    window.__ckDisarm = function (root) {
+      if (!root || !root.querySelectorAll) return;
+      var groups = root.querySelectorAll('.actgroup.confirm');
+      for (var i = 0; i < groups.length; i++) {
+        // fire() leaves the .confirm class on until the request settles, so an
+        // in-flight group still matches here. Skip those: disarm only cancels an
+        // armed-but-unfired confirm, never one whose action is already running.
+        if (groups[i].dataset.ckFiring === '1') continue;
+        unlock(groups[i], true);
+      }
+    };
   })();
   {{ end }}
 
@@ -1289,7 +1770,7 @@
     <table class="roster">
       <colgroup>
         <col style="width: 5ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 20ch">
-        <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch"><col>{{ if .MergeEnabled }}<col style="width: 20ch">{{ end }}
+        <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch"><col>{{ if .MergeEnabled }}<col style="width: 30ch">{{ end }}
       </colgroup>
       <thead>
         <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th><th>id</th><th>session</th>{{ if .MergeEnabled }}<th>actions</th>{{ end }}</tr>
@@ -1304,19 +1785,37 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
-          <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}><span class="sessname">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</span>{{ if and $.PeekEnabled .LiveTmux }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="show this pane's last lines">⤢</button>{{ end }}</td>
-          {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions">
-            <span class="actgroup" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
-              <button type="button" class="pract" data-action="squash" title="merge-pr --squash">squash</button>
-              <button type="button" class="pract" data-action="squash-admin" title="merge-pr --squash --admin (bypasses branch protection)">admin</button>
-              <button type="button" class="pract" data-action="close" title="merge-pr --close">close</button>
-              <button type="button" class="pract" data-action="ready" title="gh pr ready">ready</button>
-              <label class="actforce" title="pass --force: merge even if the worktree has uncommitted changes"><input type="checkbox" class="practforce"> force</label>
-              <span class="actmsg" aria-live="polite"></span>
-            </span>
-          </td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}
+          <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}><div class="sessline"><span class="sessname">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</span>{{ if and $.PeekEnabled .LiveTmux }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="show this pane's last lines">⤢</button>{{ end }}</div></td>
+          {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions"><button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="squash · admin · close · ready · monitor ci"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button></td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}
         </tr>
-        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="9"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
+        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="{{ if $.MergeEnabled }}9{{ else }}8{{ end }}"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
+        {{ if and $.MergeEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="9"><div class="actpanel">
+            {{ if .HasPane }}
+            <div class="actcol" role="group" aria-label="session actions">
+              <span class="acteyebrow">session</span>
+              <span class="actgroup actsession" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
+                <button type="button" class="pract" data-action="monitor-ci" title="/clear then /monitor-ci in the running pane">monitor ci</button>
+                <button type="button" class="pract" data-action="new-monitor" data-noconfirm="true" title="split a new pane running /monitor-ci">+ watcher</button>
+                <span class="actmsg" aria-live="polite"></span>
+              </span>
+            </div>
+            {{ end }}
+            <div class="actcol prcol" role="group" aria-label="pull request actions">
+              <span class="acteyebrow">pull request</span>
+              <span class="actgroup prform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
+                <span class="prchoice" role="radiogroup" aria-label="PR action">
+                  <button type="button" role="radio" class="prmode" data-mode="squash" aria-checked="true" tabindex="0" title="merge-pr --squash">squash</button>
+                  <button type="button" role="radio" class="prmode" data-mode="close" aria-checked="false" tabindex="-1" title="merge-pr --close">close</button>
+                  <button type="button" role="radio" class="prmode" data-mode="ready" aria-checked="false" tabindex="-1" title="gh pr ready">ready</button>
+                </span>
+                <label class="actforce" title="merge-pr --admin: bypass branch protection (squash only)"><input type="checkbox" class="practadmin"> --admin</label>
+                <label class="actforce" title="--force: merge even with uncommitted changes (squash only)"><input type="checkbox" class="practforce"> --force</label>
+                <code class="prcmd" id="prcmd-{{ .SessionID }}" aria-live="polite">merge-pr --squash</code>
+                <button type="button" class="pract prrun" data-action="squash" title="run the selected PR action" aria-describedby="prcmd-{{ .SessionID }}">run</button>
+                <span class="actmsg" aria-live="polite"></span>
+              </span>
+            </div>
+          </div></td></tr>{{ end }}
         {{ end }}
       </tbody>
     </table>
@@ -1326,7 +1825,7 @@
     {{ end }}
   </section>
 
-  {{ if .Activity }}
+  {{ if and .Debug .Activity }}
   <section class="ck-card">
     <div class="ck-cardhead">
       <h2>Activity (last 30 min)</h2>
@@ -1355,6 +1854,7 @@
   </section>
   {{ end }}
 
+  {{ if .Debug }}
   <section class="ck-card">
     <div class="ck-cardhead">
       <h2>Recent events</h2>
@@ -1389,4 +1889,5 @@
     <div class="empty">No events match. Is <code>clodhopper</code> on PATH, are the hooks wired in <code>.claude/settings.json</code>, and is a session active? (Capture is off when <code>CLODHOPPER_DISABLED=1</code>.)</div>
     {{ end }}
   </section>
+  {{ end }}
 {{ end }}
