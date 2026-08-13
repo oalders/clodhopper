@@ -1469,6 +1469,10 @@
       var admin = group.querySelector('.practadmin');
       if (admin) admin.disabled = true;
       window.__ckActionBusy++;
+      // Mark this group as in-flight so __ckDisarm won't tear it down: unlocking
+      // a fired group would drop the "working…" state and re-enable its buttons
+      // mid-request, letting a reopen fire a second concurrent destructive action.
+      group.dataset.ckFiring = '1';
       if (msg) msg.textContent = 'working…';
       fetch('/api/action', {
         method: 'POST',
@@ -1506,7 +1510,7 @@
           if (!d.ok || !clears) { unlock(group, false); restoreFocus(); }
         })
         .catch(function (e) { if (msg) msg.textContent = 'request failed: ' + e; unlock(group, false); restoreFocus(); })
-        .finally(function () { window.__ckActionBusy = Math.max(0, window.__ckActionBusy - 1); });
+        .finally(function () { delete group.dataset.ckFiring; window.__ckActionBusy = Math.max(0, window.__ckActionBusy - 1); });
     }
 
     document.addEventListener('click', function (ev) {
@@ -1581,7 +1585,13 @@
     window.__ckDisarm = function (root) {
       if (!root || !root.querySelectorAll) return;
       var groups = root.querySelectorAll('.actgroup.confirm');
-      for (var i = 0; i < groups.length; i++) unlock(groups[i], true);
+      for (var i = 0; i < groups.length; i++) {
+        // fire() leaves the .confirm class on until the request settles, so an
+        // in-flight group still matches here. Skip those: disarm only cancels an
+        // armed-but-unfired confirm, never one whose action is already running.
+        if (groups[i].dataset.ckFiring === '1') continue;
+        unlock(groups[i], true);
+      }
     };
   })();
   {{ end }}
