@@ -128,6 +128,7 @@
     }
     .ck-btn:hover { background: var(--surface-3); }
     .ck-btn:active { transform: translateY(1px); }
+    .ck-btn[aria-pressed="true"] { background: var(--surface-3); border-color: var(--brand); color: var(--text-1); }
     .ck-btn-primary { background: var(--brand); border-color: transparent; color: var(--text-invert); }
     .ck-btn-primary:hover { background: var(--brand-strong); }
     .ck-fbadge {
@@ -560,6 +561,7 @@
     </div>
     <div class="ck-headright">
       <button type="button" id="ck-filtersbtn" class="ck-btn" aria-controls="ck-filters">filters <span id="ck-fbadge" class="ck-fbadge"></span></button>
+      <button type="button" id="ck-debug" class="ck-btn" aria-pressed="false" title="show the Activity + Recent-events diagnostics">debug</button>
       <button type="button" id="ck-theme" class="ck-btn">☾ dark</button>
     </div>
   </header>
@@ -705,7 +707,9 @@
         openPeeks.push({
           pane: rows[i].getAttribute('data-pane-row'),
           text: cap ? cap.textContent : '',
-          scroll: cap ? cap.scrollTop : 0
+          // undefined (not 0) when there is no capture to measure, so the restore
+          // path can tell "no saved position" apart from "saved at the top".
+          scroll: cap ? cap.scrollTop : undefined
         });
       }
       try { document.dispatchEvent(new CustomEvent('ch:contentswap')); } catch (e) {}
@@ -718,7 +722,15 @@
           if (newRows[r].getAttribute('data-pane-row') !== op.pane) continue;
           newRows[r].hidden = false;
           var c = newRows[r].querySelector('.panecap');
-          if (c) { c.textContent = op.text; c.scrollTop = op.scroll; }
+          if (c) {
+            c.textContent = op.text;
+            // Restore the reader's scroll position when we captured one (even 0,
+            // meaning they were at the top); with no saved position, fall to the
+            // bottom where the freshest output is, matching openPane(). An open
+            // peek always has a .panecap, so this bottom-fall is defensive.
+            if (typeof op.scroll === 'number') c.scrollTop = op.scroll;
+            else c.scrollTop = c.scrollHeight;
+          }
           var btns = document.querySelectorAll('#content .peek');
           for (var b = 0; b < btns.length; b++) {
             if (btns[b].getAttribute('data-pane') === op.pane) {
@@ -808,6 +820,47 @@
       open = !open;
       try { localStorage.setItem('ch-filters-open', open ? 'open' : 'closed'); } catch (e) {}
       apply();
+    });
+  })();
+
+  // Debug toggle: the Activity + Recent-events sections are diagnostics nobody
+  // reads in normal use (and most of the scroll on a phone), so the server only
+  // renders them for ?debug=1. The choice persists in localStorage and drives the
+  // URL; enabling/disabling is a single navigation that preserves other params
+  // (filters, refresh, window) so the poller keeps fetching the right view.
+  (function () {
+    var btn = document.getElementById('ck-debug');
+    if (!btn) return;
+    var params = new URLSearchParams(location.search);
+    var urlOn = params.get('debug') === '1';
+    var storedOn = false;
+    try { storedOn = localStorage.getItem('ch-debug') === 'on'; } catch (e) {}
+
+    // Saved 'on' but the URL lacks the param: reflect it with ONE reload. The
+    // added param makes this loop-safe — after it, urlOn is true and we skip.
+    if (storedOn && !urlOn) {
+      params.set('debug', '1');
+      location.search = params.toString();
+      return;
+    }
+    // The URL enables debug (e.g. a shared link) but storage disagrees: adopt it,
+    // no reload needed since the sections are already rendered.
+    if (urlOn && !storedOn) {
+      try { localStorage.setItem('ch-debug', 'on'); } catch (e) {}
+    }
+
+    btn.setAttribute('aria-pressed', urlOn ? 'true' : 'false');
+    btn.addEventListener('click', function () {
+      var p = new URLSearchParams(location.search);
+      if (urlOn) {
+        p.delete('debug');
+        try { localStorage.setItem('ch-debug', ''); } catch (e) {}
+      } else {
+        p.set('debug', '1');
+        try { localStorage.setItem('ch-debug', 'on'); } catch (e) {}
+      }
+      var qs = p.toString();
+      location.search = qs ? '?' + qs : '';
     });
   })();
 
@@ -1463,7 +1516,7 @@
     {{ end }}
   </section>
 
-  {{ if .Activity }}
+  {{ if and .Debug .Activity }}
   <section class="ck-card">
     <div class="ck-cardhead">
       <h2>Activity (last 30 min)</h2>
@@ -1492,6 +1545,7 @@
   </section>
   {{ end }}
 
+  {{ if .Debug }}
   <section class="ck-card">
     <div class="ck-cardhead">
       <h2>Recent events</h2>
@@ -1526,4 +1580,5 @@
     <div class="empty">No events match. Is <code>clodhopper</code> on PATH, are the hooks wired in <code>.claude/settings.json</code>, and is a session active? (Capture is off when <code>CLODHOPPER_DISABLED=1</code>.)</div>
     {{ end }}
   </section>
+  {{ end }}
 {{ end }}

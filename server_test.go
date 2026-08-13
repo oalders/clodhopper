@@ -57,14 +57,14 @@ func TestHandleDashboard_RendersAndFilters(t *testing.T) {
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "PreToolUse", ToolName: "Bash", Summary: "Bash: git status", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: now, SourceApp: "other", EventType: "SessionStart", Summary: "SessionStart", PayloadJSON: "{}"})
 
-	// No filter: both source apps present.
-	body := getBody(t, db, "/")
+	// No filter: both source apps present. Recent events is a debug-gated section.
+	body := getBody(t, db, "/?debug=1")
 	if !strings.Contains(body, "Bash: git status") || !strings.Contains(body, "SessionStart") {
 		t.Errorf("dashboard missing events:\n%s", body)
 	}
 
 	// Filter by source_app.
-	body = getBody(t, db, "/?source_app=other")
+	body = getBody(t, db, "/?source_app=other&debug=1")
 	if strings.Contains(body, "Bash: git status") {
 		t.Errorf("source filter leaked myapp event:\n%s", body)
 	}
@@ -79,7 +79,8 @@ func TestHandleDashboard_EscapesHTML(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "PreToolUse", ToolName: "Bash", Summary: `<script>alert(1)</script>`, PayloadJSON: "{}"})
 
-	body := getBody(t, db, "/")
+	// The summary is rendered in the debug-gated Recent-events section.
+	body := getBody(t, db, "/?debug=1")
 	if strings.Contains(body, "<script>alert(1)</script>") {
 		t.Errorf("summary was not HTML-escaped:\n%s", body)
 	}
@@ -596,7 +597,7 @@ func TestHandleDashboard_NonRosterBranchCellsHaveNoCopyButton(t *testing.T) {
 	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-71", Cwd: "/home/me/wt/fix-71",
 		EventType: "PreToolUse", ToolName: "Bash", Summary: "Bash: git status", PayloadJSON: "{}"})
 
-	body := getBody(t, db, "/")
+	body := getBody(t, db, "/?debug=1")
 	if !strings.Contains(body, "0 live") {
 		t.Fatalf("session-less event should not reach the roster:\n%s", body)
 	}
@@ -615,9 +616,54 @@ func TestHandleDashboard_RendersActivity(t *testing.T) {
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "fix-2499", EventType: "PreToolUse", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "fix-2499", EventType: "Stop", PayloadJSON: "{}"})
 
-	body := getBody(t, db, "/")
+	// The Activity section is a diagnostics section, gated behind ?debug=1.
+	body := getBody(t, db, "/?debug=1")
 	if !strings.Contains(body, "Activity (last 30 min)") {
 		t.Errorf("activity section missing:\n%s", body)
+	}
+}
+
+func TestBuildDashboardData_DebugFlag(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mk := func(target string) dashboardData {
+		r := httptest.NewRequest(http.MethodGet, target, nil)
+		d, err := buildDashboardData(r, db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	if mk("/").Debug {
+		t.Error("Debug should be false without ?debug=1")
+	}
+	if mk("/?debug=0").Debug {
+		t.Error("Debug should be false for ?debug=0")
+	}
+	if !mk("/?debug=1").Debug {
+		t.Error("Debug should be true for ?debug=1")
+	}
+}
+
+// The two diagnostics sections render only when Debug is set; the roster is the
+// whole page by default.
+func TestHandleDashboard_DiagnosticsGatedOnDebug(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	now := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "b", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "b", EventType: "Stop", PayloadJSON: "{}"})
+
+	off := getBody(t, db, "/")
+	if strings.Contains(off, "Activity (last 30 min)") || strings.Contains(off, "Recent events") {
+		t.Errorf("diagnostics rendered with debug off:\n%s", off)
+	}
+	on := getBody(t, db, "/?debug=1")
+	if !strings.Contains(on, "Activity (last 30 min)") || !strings.Contains(on, "Recent events") {
+		t.Errorf("diagnostics missing with debug on:\n%s", on)
 	}
 }
 
@@ -627,7 +673,7 @@ func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "PreToolUse", ToolName: "Bash", Summary: "Bash: git status", PayloadJSON: "{}"})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/state", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/state?debug=1", nil)
 	rec := httptest.NewRecorder()
 	handleState(rec, req, db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
 	if rec.Code != http.StatusOK {
@@ -867,7 +913,8 @@ func TestHandleDashboard_SessionColors(t *testing.T) {
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "SessionStart",
 		Summary: "SessionStart", PayloadJSON: "{}"})
 
-	body := getBody(t, db, "/")
+	// The Recent-events row tint lives in a debug-gated section.
+	body := getBody(t, db, "/?debug=1")
 	// Only one session is visible, so assignSessColors hits no collision and hands
 	// it its hash-preferred color — i.e. exactly sessColor("sess-abc").
 	want := sessColor("sess-abc")
@@ -1038,7 +1085,8 @@ func TestHandleDashboard_RendersTmuxSession(t *testing.T) {
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "fix-1710", TmuxSession: "roster-colors",
 		SessionID: "sess-a", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
 
-	body := getBody(t, db, "/")
+	// The activity table (<th>events</th>) is debug-gated.
+	body := getBody(t, db, "/?debug=1")
 	for _, want := range []string{
 		"roster-colors",    // the disambiguating name appears
 		"fix-1710",         // branch shown in its own column
