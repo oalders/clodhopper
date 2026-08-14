@@ -480,12 +480,16 @@
     .ck-footer .host { color: var(--brand); }
 
     /* --- Responsive --------------------------------------------------------
-       641–960px: keep the table shape but let it scroll horizontally inside its
-       wrapper. The min-widths (each table's colgroup sum) keep columns readable
-       and push the overflow into the wrapper instead of squeezing the leftover
-       column to a shred. Note: overflow-x makes the wrapper a scroll container,
-       so the sticky <th> no longer pins at this tier — an accepted trade-off. */
-    @media (max-width: 960px) and (min-width: 641px) {
+       ≥641px (tablet + desktop): keep the table shape but let it scroll
+       horizontally inside its wrapper when it can't fit. The min-widths (each
+       table's colgroup sum) keep columns readable and push the overflow into the
+       wrapper instead of clipping the trailing (session) column against the
+       card's `overflow: hidden`. On screens wide enough for the whole table it
+       renders at 100% and the width-less session column absorbs the surplus; on
+       narrower ones the wrapper scrolls so that column stays reachable. Note:
+       overflow-x makes the wrapper a scroll container, so the sticky <th> no
+       longer pins — an accepted trade-off against losing the column entirely. */
+    @media (min-width: 641px) {
       .ck-tablewrap { overflow-x: auto; }
       table.events { min-width: 118ch; }
       table.roster { min-width: 141ch; } /* sum of the fixed cols + 20ch reserved for the flexible session-name column */
