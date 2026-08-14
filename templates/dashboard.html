@@ -216,6 +216,9 @@
     table.roster tbody tr:hover td { background: var(--surface-3); transition: background var(--dur-fast) var(--ease); }
 
     td.time, td.tool, td.idle, td.sess, td.namecell { white-space: nowrap; }
+    /* The flexible session column ellipsizes (th,td already sets overflow:hidden
+       + text-overflow:ellipsis) so a long name never breaks the fixed layout. */
+    td.tmux { white-space: nowrap; color: var(--text-2); }
     /* The roster's shared controls cell (class "actions") holds the live-pane
        peek toggle and the merge "⋯ actions" toggle as inline siblings. The flex
        lives on an inner .ctrlwrap wrapper, NOT the <td>: a display:flex <td> stops
@@ -485,8 +488,8 @@
     @media (max-width: 960px) and (min-width: 641px) {
       .ck-tablewrap { overflow-x: auto; }
       table.events { min-width: 118ch; }
-      table.roster { min-width: 121ch; } /* sum of the fixed cols in the default read-only layout */
-      {{ if .MergeEnabled }}table.roster { min-width: 151ch; } /* + the 30ch actions col that --enable-merge adds */{{ else if .PeekEnabled }}table.roster { min-width: 127ch; } /* + the 6ch actions col that --pane-peek adds */{{ end }}
+      table.roster { min-width: 141ch; } /* sum of the fixed cols + 20ch reserved for the flexible session-name column */
+      {{ if .MergeEnabled }}table.roster { min-width: 171ch; } /* + the 30ch actions col that --enable-merge adds */{{ else if .PeekEnabled }}table.roster { min-width: 147ch; } /* + the 6ch actions col that --pane-peek adds */{{ end }}
       table.counts { min-width: 48ch; }
     }
 
@@ -528,6 +531,10 @@
       /* The footer line is context, not content. */
       table.roster td[data-label="app"],
       table.roster td.sess     { color: var(--text-3); font-size: var(--fs-xs); }
+      /* The desktop session column is redundant on the card — the name already
+         rides along as the .tmuxname suffix in the branch cell. Hide it (its <th>
+         is in the display:none thead) so the name never shows twice. */
+      table.roster td.tmux     { display: none; }
       /* Column names are noise once the layout says what each field is; only
          the idle timer still needs naming. */
       table.roster td::before { content: none; }
@@ -1780,10 +1787,10 @@
     <table class="roster">
       <colgroup>
         <col style="width: 5ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 20ch">
-        <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch">{{ if or .PeekEnabled .MergeEnabled }}<col style="width: {{ if .MergeEnabled }}30ch{{ else }}6ch{{ end }}">{{ end }}
+        <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch">{{ if or .PeekEnabled .MergeEnabled }}<col style="width: {{ if .MergeEnabled }}30ch{{ else }}6ch{{ end }}">{{ end }}<col>
       </colgroup>
       <thead>
-        <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th><th>id</th>{{ if or .PeekEnabled .MergeEnabled }}<th>actions</th>{{ end }}</tr>
+        <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th><th>id</th>{{ if or .PeekEnabled .MergeEnabled }}<th>actions</th>{{ end }}<th>session</th></tr>
       </thead>
       <tbody>
         {{ range .Agents }}
@@ -1796,9 +1803,10 @@
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
           {{ if or $.PeekEnabled $.MergeEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.MergeEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="squash · admin · close · ready · monitor ci"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
-        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="8"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
-        {{ if and $.MergeEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="8"><div class="actpanel">
+        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="9"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
+        {{ if and $.MergeEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="9"><div class="actpanel">
             {{ if .HasPane }}
             <div class="actcol" role="group" aria-label="session actions">
               <span class="acteyebrow">session</span>
