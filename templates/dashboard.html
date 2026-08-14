@@ -492,8 +492,8 @@
     @media (min-width: 641px) {
       .ck-tablewrap { overflow-x: auto; }
       table.events { min-width: 118ch; }
-      table.roster { min-width: 141ch; } /* sum of the fixed cols + 20ch reserved for the flexible session-name column */
-      {{ if .MergeEnabled }}table.roster { min-width: 171ch; } /* + the 30ch actions col that --enable-merge adds */{{ else if .PeekEnabled }}table.roster { min-width: 147ch; } /* + the 6ch actions col that --pane-peek adds */{{ end }}
+      table.roster { min-width: 141ch; } /* sum of the fixed cols (121ch) + 20ch reserved for the flexible session-name column */
+      {{ if or .PeekEnabled .MergeEnabled }}table.roster { min-width: 151ch; } /* + the 10ch actions col (peek/merge share one narrow icon-toggle cell) */{{ end }}
       table.counts { min-width: 48ch; }
     }
 
@@ -1790,7 +1790,7 @@
     <table class="roster">
       <colgroup>
         <col style="width: 5ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 20ch">
-        <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch">{{ if or .PeekEnabled .MergeEnabled }}<col style="width: {{ if .MergeEnabled }}30ch{{ else }}6ch{{ end }}">{{ end }}<col>
+        <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch">{{ if or .PeekEnabled .MergeEnabled }}<col style="width: 10ch">{{ end }}<col>
       </colgroup>
       <thead>
         <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th><th>id</th>{{ if or .PeekEnabled .MergeEnabled }}<th>actions</th>{{ end }}<th>session</th></tr>
