@@ -216,22 +216,17 @@
     table.roster tbody tr:hover td { background: var(--surface-3); transition: background var(--dur-fast) var(--ease); }
 
     td.time, td.tool, td.idle, td.sess, td.namecell { white-space: nowrap; }
-    /* The roster's session cell carries the live-pane peek button after the name.
-       Under table-layout:fixed the session column absorbs leftover width and can
-       get narrow — more so with the actions column present — so a long tmux
-       session name would ellipse AND clip the trailing button out of the
-       overflow:hidden cell, making the peek control silently vanish. Make the
-       name+button a flex row so only the name (.sessname) truncates; the button
-       is a non-shrinking sibling that stays visible.
-       The flex lives on an inner .sessline wrapper, NOT the <td>: a display:flex
-       <td> stops being a table-cell box and drops out of border-collapse, so it
-       paints its own bottom border as an orphaned bar floating above the shared
-       row separator (visible under the session name, worse on hover). Keeping the
-       <td> a real cell lets its border collapse into the row grid like every
-       other column. Scoped to the roster: the activity table's namecell has no
-       button and truncates fine as a plain cell. */
-    table.roster td.namecell .sessline { display: flex; align-items: baseline; gap: 4px; }
-    table.roster td.namecell .sessname { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+    /* The flexible session column ellipsizes (th,td already sets overflow:hidden
+       + text-overflow:ellipsis) so a long name never breaks the fixed layout. */
+    td.tmux { white-space: nowrap; color: var(--text-2); }
+    /* The roster's shared controls cell (class "actions") holds the live-pane
+       peek toggle and the merge "⋯ actions" toggle as inline siblings. The flex
+       lives on an inner .ctrlwrap wrapper, NOT the <td>: a display:flex <td> stops
+       being a table-cell box and drops out of border-collapse, so it paints its
+       own bottom border as an orphaned bar floating above the shared row
+       separator. Keeping the <td> a real cell lets its border collapse into the
+       row grid like every other column. */
+    table.roster td.actions .ctrlwrap { display: flex; align-items: center; gap: 6px; }
     td.idle { font-variant-numeric: tabular-nums; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
     td.summary em { font-style: italic; color: var(--text-3); } /* a completed phase, not one in progress */
@@ -246,6 +241,10 @@
        stands in as a locator. Italic AND muted so it reads as an unconfirmed hint,
        distinct from a real branch name — see branchinnerroster. */
     td.branch .branch-guess { font-style: italic; color: var(--text-3); }
+    /* The tmux session name rode along in a dedicated column until #87 dropped it.
+       Keep the data available on the phone card (where there is no desktop column to
+       consult) as a muted suffix in the branch cell; hidden on the desktop table. */
+    .tmuxname { display: none; }
     /* The roster's branch cell doubles as a click-to-copy control for the
        session's worktree path (see branchcellroster). The button is reset to
        plain text, and the ⧉ is transparent until hover or focus (see .copyicon
@@ -312,8 +311,8 @@
        nothing happen would paste the wrong path. */
     .copycwd.copyfail .copyicon { color: var(--fail); }
 
-    /* Live pane peek: a small toggle in the session cell, and a full-width
-       monospace capture row that expands beneath it on demand. */
+    /* Live pane peek: a small toggle in the shared controls cell, and a
+       full-width monospace capture row that expands beneath it on demand. */
     button.peek {
       all: unset;
       cursor: pointer;
@@ -322,6 +321,9 @@
       color: var(--text-2);
     }
     button.peek:hover, button.peek:focus-visible { opacity: 1; color: var(--brand); }
+    /* all:unset drops the global :focus-visible ring, and colour alone is not a
+       sufficient focus indicator (WCAG 2.4.7); restore a real ring (matches actbtn). */
+    button.peek:focus-visible { box-shadow: var(--shadow-focus); }
     button.peek[aria-expanded="true"] { opacity: 1; color: var(--brand); }
     tr.panerow > td { padding: 0; background: var(--surface-3); }
     pre.panecap {
@@ -478,16 +480,20 @@
     .ck-footer .host { color: var(--brand); }
 
     /* --- Responsive --------------------------------------------------------
-       641–960px: keep the table shape but let it scroll horizontally inside its
-       wrapper. The min-widths (each table's colgroup sum) keep columns readable
-       and push the overflow into the wrapper instead of squeezing the leftover
-       column to a shred. Note: overflow-x makes the wrapper a scroll container,
-       so the sticky <th> no longer pins at this tier — an accepted trade-off. */
-    @media (max-width: 960px) and (min-width: 641px) {
+       ≥641px (tablet + desktop): keep the table shape but let it scroll
+       horizontally inside its wrapper when it can't fit. The min-widths (each
+       table's colgroup sum) keep columns readable and push the overflow into the
+       wrapper instead of clipping the trailing (session) column against the
+       card's `overflow: hidden`. On screens wide enough for the whole table it
+       renders at 100% and the width-less session column absorbs the surplus; on
+       narrower ones the wrapper scrolls so that column stays reachable. Note:
+       overflow-x makes the wrapper a scroll container, so the sticky <th> no
+       longer pins — an accepted trade-off against losing the column entirely. */
+    @media (min-width: 641px) {
       .ck-tablewrap { overflow-x: auto; }
       table.events { min-width: 118ch; }
-      table.roster { min-width: 121ch; } /* sum of the fixed cols in the default read-only layout */
-      {{ if .MergeEnabled }}table.roster { min-width: 151ch; } /* + the 30ch actions col that --enable-merge adds */{{ end }}
+      table.roster { min-width: 141ch; } /* sum of the fixed cols (121ch) + 20ch reserved for the flexible session-name column */
+      {{ if or .PeekEnabled .MergeEnabled }}table.roster { min-width: 151ch; } /* + the 10ch actions col (peek/merge share one narrow icon-toggle cell) */{{ end }}
       table.counts { min-width: 48ch; }
     }
 
@@ -525,13 +531,14 @@
       table.roster td.summary  { grid-area: 3 / 1 / auto / 4; }
       table.roster td[data-label="app"] { grid-area: 4 / 1; }
       table.roster td.sess     { grid-area: 4 / 2; }
-      table.roster td.namecell { grid-area: 4 / 3; }
-      table.roster td.namecell .sessline { justify-content: flex-end; }
       table.roster td.actions  { grid-area: 5 / 1 / auto / 4; }
       /* The footer line is context, not content. */
       table.roster td[data-label="app"],
-      table.roster td.sess,
-      table.roster td.namecell { color: var(--text-3); font-size: var(--fs-xs); }
+      table.roster td.sess     { color: var(--text-3); font-size: var(--fs-xs); }
+      /* The desktop session column is redundant on the card — the name already
+         rides along as the .tmuxname suffix in the branch cell. Hide it (its <th>
+         is in the display:none thead) so the name never shows twice. */
+      table.roster td.tmux     { display: none; }
       /* Column names are noise once the layout says what each field is; only
          the idle timer still needs naming. */
       table.roster td::before { content: none; }
@@ -540,19 +547,32 @@
          a path. Drop the affordance rather than shrink it. */
       table.roster td.branch .copyicon { display: none; }
       table.roster td.branch .copycwd { cursor: default; }
-      /* Peek becomes a real control on touch. */
-      table.roster td.namecell button.peek {
-        min-height: 44px; padding: 0 12px;
-        border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
-        background: var(--surface-2);
+      /* Surface the tmux session name on the card as a muted suffix after the
+         branch — there is no session column here to fall back on. It shrinks and
+         ellipsizes so a long name shows only "some of" itself rather than pushing
+         the branch off the line. */
+      table.roster td.branch .tmuxname {
+        display: inline-block; min-width: 0; max-width: 100%;
+        color: var(--text-3); font-size: var(--fs-xs); font-weight: 400;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       }
-      /* The actions toggle is the only thing in its cell — a full-width 44px
-         control that expands the panel row beneath the card. With no column
+      /* Peek and the actions toggle share one controls cell on the card; the
+         inner wrapper stretches so each is a full-width-eligible 44px target,
+         sitting side by side when both are present. */
+      table.roster td.actions .ctrlwrap { width: 100%; gap: 8px; }
+      /* Peek becomes a real control on touch. */
+      table.roster td.actions button.peek {
+        flex: 1; min-height: 44px; padding: 0 12px;
+        display: flex; align-items: center; justify-content: center;
+        border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+        background: var(--surface-2); opacity: 1;
+      }
+      /* The actions toggle expands the panel row beneath the card. With no column
          header on the card it reads "actions ⌄" (the caret makes it obviously a
          disclosure control, not a text field), flipping to "⌃" when open. */
       table.roster td.actions button.actbtn {
         display: flex; align-items: center; justify-content: center; gap: 4px;
-        width: 100%; min-height: 44px; padding: 0 12px;
+        flex: 1; min-height: 44px; padding: 0 12px;
         border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
         background: var(--surface-2); font-size: var(--fs-sm);
       }
@@ -1752,7 +1772,7 @@
      keep the span, which is the only carrier they have. Never an aria-label on
      the <td>: a cell supports name-from-author, so a label there would REPLACE
      the cell's contents for assistive tech instead of composing with them. */}}
-{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}</td>{{ end }}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}{{ if .TmuxSession }}<span class="tmuxname"><span class="ck-sr">session </span>{{ .TmuxSession }}</span>{{ end }}</td>{{ end }}
 
 {{ define "content" }}
   <div class="ck-meta">
@@ -1770,10 +1790,10 @@
     <table class="roster">
       <colgroup>
         <col style="width: 5ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 20ch">
-        <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch"><col>{{ if .MergeEnabled }}<col style="width: 30ch">{{ end }}
+        <col style="width: 36ch"><col style="width: 8ch"><col style="width: 10ch">{{ if or .PeekEnabled .MergeEnabled }}<col style="width: 10ch">{{ end }}<col>
       </colgroup>
       <thead>
-        <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th><th>id</th><th>session</th>{{ if .MergeEnabled }}<th>actions</th>{{ end }}</tr>
+        <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th><th>id</th>{{ if or .PeekEnabled .MergeEnabled }}<th>actions</th>{{ end }}<th>session</th></tr>
       </thead>
       <tbody>
         {{ range .Agents }}
@@ -1785,10 +1805,10 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
-          <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}><div class="sessline"><span class="sessname">{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</span>{{ if and $.PeekEnabled .LiveTmux }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" title="show this pane's last lines">⤢</button>{{ end }}</div></td>
-          {{ if and $.MergeEnabled .SessionID }}<td class="actions" data-label="actions"><button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="squash · admin · close · ready · monitor ci"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button></td>{{ else if $.MergeEnabled }}<td class="actions" data-label="actions">—</td>{{ end }}
+          {{ if or $.PeekEnabled $.MergeEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.MergeEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="squash · admin · close · ready · monitor ci"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
-        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="{{ if $.MergeEnabled }}9{{ else }}8{{ end }}"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
+        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="9"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
         {{ if and $.MergeEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="9"><div class="actpanel">
             {{ if .HasPane }}
             <div class="actcol" role="group" aria-label="session actions">
