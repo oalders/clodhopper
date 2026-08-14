@@ -1283,8 +1283,19 @@ func TestContentTemplate_TmuxNameRidesAlongInBranchCell(t *testing.T) {
 		t.Fatalf("no branch cell rendered:\n%s", withName)
 	}
 	branchCell := withName[branchStart : branchStart+strings.Index(withName[branchStart:], "</td>")]
-	if !strings.Contains(branchCell, `<span class="tmuxname" data-label="session">clodhopper-fix-85</span>`) {
-		t.Errorf("branch cell must carry the tmux session name as a .tmuxname suffix:\n%s", branchCell)
+	if !strings.Contains(branchCell, `class="tmuxname"`) {
+		t.Errorf("branch cell must carry a .tmuxname suffix span:\n%s", branchCell)
+	}
+	if !strings.Contains(branchCell, "clodhopper-fix-85") {
+		t.Errorf("branch cell must carry the tmux session name:\n%s", branchCell)
+	}
+	// A visually-hidden cue tells screen readers this is a session name.
+	if !strings.Contains(branchCell, `<span class="ck-sr">session </span>`) {
+		t.Errorf("branch cell must carry a ck-sr \"session \" prefix:\n%s", branchCell)
+	}
+	// The inert data-label (only td::before consumes it) must be gone.
+	if strings.Contains(branchCell, `data-label="session"`) {
+		t.Errorf("tmuxname span must not carry an inert data-label:\n%s", branchCell)
 	}
 
 	// No tmux session → no dangling empty span.
