@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"os"
@@ -413,6 +414,7 @@ type Agent struct {
 	CI          string // merge-readiness; filled by the server layer via gh
 	GroupStart  bool   // true on the first roster row of each (SourceApp, Branch) group except the very first row overall; drives the divider between branch groups in the dashboard
 	Grouped     bool   // true when this row's (SourceApp, Branch) group has 2+ live members; drives the left accent bar that binds a multi-session branch cluster (a worktree with several agents). Singleton branches stay false (no bar)
+	GroupKey    string // hex of the internal group key (per (SourceApp, Branch); per-session for branchless rows). Stable across polls and HTML-attribute-safe, so the dashboard's "pin order" toggle can hold each group's rows together while freezing group order. Not displayed
 	firstSeq    int    // arrival order (0-based) within the roster window; drives stable color assignment, not displayed
 }
 
@@ -702,6 +704,10 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 			out[k].GroupStart = true
 		}
 		out[k].Grouped = groupCount[groupKey(out[k])] >= 2
+		// Hex so the raw key's \x00 separator can't emit an invalid NUL into the
+		// data-group attribute; stable across polls since it is a pure function of
+		// (SourceApp, Branch) / SessionID.
+		out[k].GroupKey = hex.EncodeToString([]byte(groupKey(out[k])))
 	}
 	return out, nil
 }

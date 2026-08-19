@@ -670,6 +670,7 @@
     <div class="ck-headright">
       <button type="button" id="ck-filtersbtn" class="ck-btn" aria-controls="ck-filters">filters <span id="ck-fbadge" class="ck-fbadge"></span></button>
       <button type="button" id="ck-debug" class="ck-btn" aria-pressed="false" title="show the Activity + Recent-events diagnostics">debug</button>
+      <button type="button" id="ck-pin" class="ck-btn" aria-pressed="false" title="freeze the roster's group order so a row can't re-sort away while you act on it — data still updates live">pin order</button>
       <button type="button" id="ck-theme" class="ck-btn" aria-pressed="false">☾ dark</button>
     </div>
   </header>
@@ -877,6 +878,12 @@
           break;
         }
       }
+      // Hold the frozen group order across this repaint when "pin order" is on.
+      // After panel carry-over (so each open peek/actions row moves with its
+      // group) and before focus restore (so the restored row is already in its
+      // final place, keeping preventScroll honest). Inside swapContent it also
+      // inherits the __ckActionBusy and unchanged-signature skips for free.
+      try { if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply(); } catch (e) {}
       if (!key) return;
       var btns = document.querySelectorAll('#content .copycwd');
       for (var i = 0; i < btns.length; i++) {
@@ -1001,6 +1008,120 @@
       }
       var qs = p.toString();
       location.search = qs ? '?' + qs : '';
+    });
+  })();
+
+  // Pin order: freeze the roster's GROUP order so a fresh event can't float a
+  // group to the top and slide a row out from under the cursor while you reach
+  // for its merge/peek control. Row DATA still updates live in place — only the
+  // order of the app+branch group-blocks is held. Client-only; the on/off flag
+  // persists in localStorage (ch-pin), but the frozen order itself is always
+  // re-snapshot from the board, never stored, so it can never go stale.
+  //
+  // Group (not per-session) granularity is deliberate: the two sessions of one
+  // worktree cluster together server-side, and moving whole group-blocks keeps
+  // that cluster contiguous — so the `grouped` accent bar stays bound and the
+  // `group-start` dividers stay meaningful (we recompute them below). Pinning
+  // individual sessions could strand a cluster's two rows far apart.
+  (function () {
+    var btn = document.getElementById('ck-pin');
+    var live = document.getElementById('ck-copystatus');
+    var order = [];        // frozen group keys, in first-seen order
+    var enabled = false;
+    try { enabled = localStorage.getItem('ch-pin') === 'on'; } catch (e) {}
+
+    function rosterRows() {
+      return document.querySelectorAll('#content table.roster tbody tr[data-group]');
+    }
+
+    // Capture the current group order as the frozen baseline (first occurrence
+    // of each group wins; the board is already server-sorted when we snapshot).
+    function snapshot() {
+      order = [];
+      var seen = {};
+      var rows = rosterRows();
+      for (var i = 0; i < rows.length; i++) {
+        var g = rows[i].getAttribute('data-group');
+        if (g && !seen[g]) { seen[g] = 1; order.push(g); }
+      }
+    }
+
+    // Reorder the roster's group-blocks into the frozen order and repair the
+    // position-derived group-start divider. Runs after each #content swap.
+    function apply() {
+      var main = rosterRows();
+      if (!main.length) return;
+      var tbody = main[0].parentNode;
+
+      // Partition rows into blocks: each main tr[data-group] plus its trailing
+      // .panerow/.actrow siblings (the peek/actions panels), up to the next main
+      // row. Blocks are keyed by group so we can re-append them in any order.
+      var blocks = {};       // group key -> array of blocks ([]node)
+      var present = [];       // group keys, in server order
+      var seen = {};
+      for (var i = 0; i < main.length; i++) {
+        var g = main[i].getAttribute('data-group');
+        var nodes = [main[i]];
+        var n = main[i].nextElementSibling;
+        while (n && n.tagName === 'TR' && !n.hasAttribute('data-group') &&
+               n.className && (/(^|\s)panerow(\s|$)/.test(n.className) || /(^|\s)actrow(\s|$)/.test(n.className))) {
+          nodes.push(n);
+          n = n.nextElementSibling;
+        }
+        if (!blocks[g]) blocks[g] = [];
+        blocks[g].push(nodes);
+        if (!seen[g]) { seen[g] = 1; present.push(g); }
+      }
+
+      // Desired order: frozen groups still present (in frozen order), then any
+      // new groups in server order. Rebuild `order` from that so gone groups are
+      // pruned and new ones adopted — they stay put on the next poll too.
+      var desired = [], used = {};
+      for (var p = 0; p < order.length; p++) {
+        if (seen[order[p]]) { desired.push(order[p]); used[order[p]] = 1; }
+      }
+      for (var q = 0; q < present.length; q++) {
+        if (!used[present[q]]) desired.push(present[q]);
+      }
+      order = desired;
+
+      // Re-append each group's block(s) in the desired order. Moving a node
+      // keeps its state (an open, carried-over panel row rides along hidden=false).
+      for (var d = 0; d < desired.length; d++) {
+        var bl = blocks[desired[d]];
+        for (var b = 0; b < bl.length; b++) {
+          for (var c = 0; c < bl[b].length; c++) tbody.appendChild(bl[b][c]);
+        }
+      }
+
+      // Repair group-start: it marks the first row of each group EXCEPT the very
+      // first row overall, so it is position-derived and wrong after a reorder.
+      // Recompute exactly from data-group; leave `grouped` (membership) alone.
+      var rows2 = rosterRows(), prev = null;
+      for (var r = 0; r < rows2.length; r++) {
+        var gk = rows2[r].getAttribute('data-group');
+        if (r > 0 && gk !== prev) rows2[r].classList.add('group-start');
+        else rows2[r].classList.remove('group-start');
+        prev = gk;
+      }
+    }
+
+    // swapContent (in the poller IIFE above) calls these across each repaint.
+    window.__ckPin = { isOn: function () { return enabled; }, apply: apply, snapshot: snapshot };
+
+    if (!btn) return;
+    function reflect() { btn.setAttribute('aria-pressed', enabled ? 'true' : 'false'); }
+    reflect();
+    if (enabled) snapshot();   // pin whatever order loaded
+
+    btn.addEventListener('click', function () {
+      enabled = !enabled;
+      try { localStorage.setItem('ch-pin', enabled ? 'on' : ''); } catch (e) {}
+      reflect();
+      if (enabled) snapshot(); else order = [];
+      // Announce via the out-of-#content live region (the poller can't wipe it).
+      // Off just lets the next poll repaint in fresh server order.
+      if (live) live.textContent = enabled ? 'roster order pinned' : 'roster order live';
     });
   })();
 
@@ -1797,7 +1918,7 @@
       </thead>
       <tbody>
         {{ range .Agents }}
-        <tr{{ with rowClass . }} class="{{ . }}"{{ end }}>
+        <tr data-group="{{ .GroupKey }}"{{ with rowClass . }} class="{{ . }}"{{ end }}>
           <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if eq .CI "green" }}<span role="img" aria-label="CI passing">🟢</span>{{ else if eq .CI "pending" }}<span role="img" aria-label="CI pending">🟡</span>{{ else if eq .CI "failing" }}<span role="img" aria-label="CI failing">🔴</span>{{ else }}<span role="img" aria-label="no CI">—</span>{{ end }}</td>
           {{ template "branchcellroster" . }}
           <td data-label="app">{{ .SourceApp }}</td>
