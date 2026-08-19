@@ -1550,11 +1550,12 @@ func TestContentTemplate_SessionNamePreservedInPeekTitle(t *testing.T) {
 }
 
 // The peek panerow and merge actrow span the whole roster width with a colspan.
-// The base roster is 8 unconditional columns (CI, branch, app, status, doing,
-// idle, id, session) plus one shared controls column whenever peek OR merge is on.
-// A panerow only exists when peek is on, so the controls column is always present
-// and the panerow always spans 9 (8 base + controls, never the base 8, never 7).
-// Likewise the actrow (merge-only) spans 9. A stale colspan would mis-span the table.
+// The base roster is 7 always-on columns (CI, branch, app, status, doing, idle,
+// session) plus one shared controls column whenever peek OR merge is on. The id
+// column is debug-gated, so it adds a column only under ?debug=1. A panerow only
+// exists when peek is on, so the controls column is always present: the panerow
+// spans 8 at rest and 9 in debug mode. Likewise the actrow (merge-only). A stale
+// colspan would mis-span the table.
 func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 	render := func(d dashboardData) string {
 		var buf bytes.Buffer
@@ -1571,25 +1572,39 @@ func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 		}},
 	}
 
-	// Peek on, merge off: 8 base cols + controls col (holds the peek button) →
-	// panerow spans 9, not the base 8 nor 7.
+	// wantColspan asserts the panel rows carry exactly `n` and no other colspan.
+	wantColspan := func(t *testing.T, got string, n int, ctx string) {
+		t.Helper()
+		for _, c := range []int{7, 8, 9} {
+			marker := fmt.Sprintf(`colspan="%d"`, c)
+			if c == n {
+				if !strings.Contains(got, marker) {
+					t.Errorf("%s: panel rows must span %d columns:\n%s", ctx, n, got)
+				}
+			} else if strings.Contains(got, marker) {
+				t.Errorf("%s: unexpected colspan %d (want %d):\n%s", ctx, c, n, got)
+			}
+		}
+	}
+
+	// Peek on, merge off: 7 base cols + controls col (holds the peek button) →
+	// panerow spans 8 at rest.
 	off := base
 	off.MergeEnabled = false
-	if got := render(off); !strings.Contains(got, `colspan="9"`) ||
-		strings.Contains(got, `colspan="8"`) || strings.Contains(got, `colspan="7"`) {
-		t.Errorf("peek on, merge off: panerow must span 9 columns:\n%s", got)
-	}
+	wantColspan(t, render(off), 8, "peek on, merge off")
 
-	// Peek on + merge on: both panerow and actrow span 9.
+	// Debug adds the id column, so the same row spans 9.
+	dbg := off
+	dbg.Debug = true
+	wantColspan(t, render(dbg), 9, "peek on, merge off, debug")
+
+	// Peek on + merge on: both panerow and actrow span 8 at rest.
 	on := base
 	on.MergeEnabled = true
-	if got := render(on); !strings.Contains(got, `colspan="9"`) ||
-		strings.Contains(got, `colspan="8"`) || strings.Contains(got, `colspan="7"`) {
-		t.Errorf("peek on + merge on: panel rows must span 9 columns:\n%s", got)
-	}
+	wantColspan(t, render(on), 8, "peek on + merge on")
 
 	// Peek OFF + merge on: no panerow (peek gates it), but the merge actrow still
-	// spans 9 — the controls column is present under merge alone.
+	// spans 8 — the controls column is present under merge alone.
 	mergeOnly := dashboardData{
 		MergeEnabled: true,
 		PeekEnabled:  false,
@@ -1597,10 +1612,7 @@ func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 			SessionID: "s1", SourceApp: "app", Status: statusWaiting, HasPane: true,
 		}},
 	}
-	if got := render(mergeOnly); !strings.Contains(got, `colspan="9"`) ||
-		strings.Contains(got, `colspan="8"`) || strings.Contains(got, `colspan="7"`) {
-		t.Errorf("merge on, peek off: actrow must span 9 columns:\n%s", got)
-	}
+	wantColspan(t, render(mergeOnly), 8, "merge on, peek off")
 }
 
 // The peek button's accessible name must carry the tmux session, not just the
