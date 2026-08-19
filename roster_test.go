@@ -2,9 +2,11 @@ package main
 
 import (
 	"database/sql"
+	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -254,6 +256,60 @@ func TestAgentRoster_GroupsSameBranch(t *testing.T) {
 		if byID[s].Grouped {
 			t.Errorf("branchless singleton %s should not be Grouped", s)
 		}
+	}
+}
+
+// GroupKey identifies each roster row's group for the dashboard "pin order"
+// toggle: same (app, branch) share a key; branchless rows are each their own
+// group (distinct keys); the value is always valid hex. It must track the same
+// grouping GroupStart/Grouped already express, so pinning holds clusters intact.
+func TestAgentRoster_GroupKeyTracksGrouping(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, app, sess, branch string) {
+		insertEvent(db, Event{TS: ts, SourceApp: app, Branch: branch, SessionID: sess, EventType: "Stop", PayloadJSON: "{}"})
+	}
+
+	// fix-A on myapp has two sessions (one group); two branchless sessions share
+	// the same app but must NOT share a group.
+	ins(at(1), "myapp", "a1", "fix-A")
+	ins(at(2), "myapp", "a2", "fix-A")
+	ins(at(3), "myapp", "n1", "")
+	ins(at(4), "myapp", "n2", "")
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := map[string]string{}
+	for _, a := range agents {
+		if a.GroupKey == "" {
+			t.Errorf("%s has empty GroupKey", a.SessionID)
+		}
+		if _, err := hex.DecodeString(a.GroupKey); err != nil {
+			t.Errorf("%s GroupKey %q is not valid hex: %v", a.SessionID, a.GroupKey, err)
+		}
+		key[a.SessionID] = a.GroupKey
+	}
+
+	// Same branch cluster shares one key (so pinning moves the block as a unit).
+	if key["a1"] != key["a2"] {
+		t.Errorf("same-branch sessions must share GroupKey: a1=%q a2=%q", key["a1"], key["a2"])
+	}
+	// Grouped rows share their key.
+	if key["a1"] == key["n1"] {
+		t.Errorf("branched and branchless rows must not share GroupKey")
+	}
+	// Two branchless sessions on the same app are distinct groups, so their keys
+	// differ — else the client would clump them into one block.
+	if key["n1"] == key["n2"] {
+		t.Errorf("branchless sessions must have distinct GroupKeys: n1=%q n2=%q", key["n1"], key["n2"])
 	}
 }
 
@@ -507,6 +563,19 @@ func TestHandleDashboard_GroupClusterClasses(t *testing.T) {
 	// Its idle sibling carries the bar alone.
 	if !strings.Contains(body, `class="grouped"`) {
 		t.Errorf(`expected the idle cluster member to render class="grouped", in:\n%s`, body)
+	}
+	// Each roster row carries data-group (the hex group key) so the "pin order"
+	// toggle can hold each group's rows together. The two cluster members share
+	// one value; the singleton differs; there are three distinct rows total.
+	groups := regexp.MustCompile(`data-group="([0-9a-f]*)"`).FindAllStringSubmatch(body, -1)
+	if len(groups) != 3 {
+		t.Fatalf("expected 3 roster rows carrying data-group, got %d, in:\n%s", len(groups), body)
+	}
+	if groups[0][1] != groups[1][1] {
+		t.Errorf("the two cluster members must share one data-group, got %q and %q", groups[0][1], groups[1][1])
+	}
+	if groups[2][1] == groups[0][1] {
+		t.Errorf("the singleton must have a distinct data-group from the cluster, got %q", groups[2][1])
 	}
 	// Exactly the two cluster members are marked grouped; the singleton is not.
 	// Count the class-attribute terminator `grouped"` rather than the bare word, so
