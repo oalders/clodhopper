@@ -889,10 +889,27 @@
       // final place, keeping preventScroll honest). Inside swapContent it also
       // inherits the __ckActionBusy and unchanged-signature skips for free.
       try { if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply(); } catch (e) {}
-      if (!key) return;
-      var btns = document.querySelectorAll('#content .copycwd');
-      for (var i = 0; i < btns.length; i++) {
-        if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return; }
+      if (key) {
+        var btns = document.querySelectorAll('#content .copycwd');
+        for (var i = 0; i < btns.length; i++) {
+          if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return; }
+        }
+      }
+      // Safety net for every other focused control inside #content. The swap
+      // above replaced the subtree wholesale, so anything the reader was on that
+      // did not come back — a row whose session ended, a button that moved out
+      // of the roster — is now detached, and the browser has silently dropped
+      // focus to <body>, losing both the reader's place and their next Tab
+      // origin. If the pre-swap active element is no longer connected, park
+      // focus on #content itself, which survives every repaint. The tabindex is
+      // set here and left in place so the fallback keeps working on repeat
+      // swaps; -1 makes it programmatically focusable without adding a Tab stop.
+      if (active && active !== document.body && !active.isConnected) {
+        var host = document.getElementById('content');
+        if (host) {
+          host.setAttribute('tabindex', '-1');
+          host.focus({ preventScroll: true });
+        }
       }
     }
 
@@ -1703,21 +1720,12 @@
           if (!d.ok || !clears) {
             unlock(group, false);
             restoreFocus();
-          } else if (action === 'end') {
-            // A successful end leaves the group locked (so nothing flashes back
-            // to life before the poll drops the row), which means the pressed
-            // button stays disabled and focus is stranded on <body>. End is a
-            // repeated triage action, so park focus on this row's actions
-            // toggle; if that is somehow gone, fall back to <main>, which
-            // survives the poll repaint.
-            var toggle = document.querySelector('.actbtn[data-actions="' + sess + '"]');
-            if (toggle && !toggle.disabled) {
-              toggle.focus();
-            } else {
-              var main = document.getElementById('content');
-              if (main) { main.setAttribute('tabindex', '-1'); main.focus(); }
-            }
           }
+          // A successful 'end' deliberately does NOT unlock: the group stays
+          // locked until the next poll drops the row. Focus needs no special
+          // handling here — the pressed button is still on screen (and still
+          // focused) until that poll, and swapContent's safety net catches it
+          // the moment the repaint detaches it.
         })
         .catch(function (e) { if (msg) msg.textContent = 'request failed: ' + e; unlock(group, false); restoreFocus(); })
         .finally(function () { delete group.dataset.ckFiring; window.__ckActionBusy = Math.max(0, window.__ckActionBusy - 1); });

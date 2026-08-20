@@ -827,3 +827,35 @@ func TestHandleActionEndAmbiguousPrefixFails(t *testing.T) {
 		}
 	}
 }
+
+// A lookup failure inside endSessions must reach the client as a fixed, generic
+// message: the raw driver text goes to debugf only. Dropping the events table
+// forces a real (non-ambiguity) error out of endSessions, which is the branch
+// that would otherwise leak SQLite internals if someone reinstated err.Error().
+func TestHandleActionEndGenericErrorHidesDriverDetail(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	insertEvent(db, Event{TS: "2026-08-20T09:00:00Z", SourceApp: "x", SessionID: "live-1", Cwd: t.TempDir(), EventType: "Stop", PayloadJSON: "{}"})
+	if _, err := db.Exec("DROP TABLE events"); err != nil {
+		t.Fatalf("drop events: %v", err)
+	}
+	cfg := newActionCfg("/bin/true", "/bin/true")
+
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("live-1", "end", false, "secret", "127.0.0.1"), db, cfg, now)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	got := decodeActionJSON(t, w)
+	if got.OK {
+		t.Fatalf("resp = %+v, want a non-ok result", got)
+	}
+	if got.Output != "could not end session" {
+		t.Fatalf("output = %q, want the generic message", got.Output)
+	}
+	for _, leak := range []string{"no such table", "events", "sqlite", "SQL"} {
+		if strings.Contains(got.Output, leak) {
+			t.Fatalf("output %q leaks driver detail %q", got.Output, leak)
+		}
+	}
+}

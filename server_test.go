@@ -1751,7 +1751,11 @@ func TestDashboardWiresEndIntoActionScript(t *testing.T) {
 	if !strings.Contains(html, "end: 'dismiss this row from the dashboard") {
 		t.Error("CAVEAT has no entry for the end action")
 	}
-	if !strings.Contains(html, "action === 'end')") {
+	// Anchor on the clears declaration itself, not on a bare "action === 'end'"
+	// substring: that also appears in other branches of the action handler, so a
+	// loose match still passes when end is dropped from the clears set — the very
+	// regression this guards.
+	if !strings.Contains(html, "var clears = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'end');") {
 		t.Error("end is not included in the row-clearing (clears) set")
 	}
 }
