@@ -347,6 +347,7 @@ func runServe(args []string) int {
 		mergePR:      "merge-pr",
 		gh:           "gh",
 		tmux:         "tmux",
+		clearDelay:   monitorCIClearDelay,
 		bindHost:     *host,
 		allowedHosts: allowedHosts(),
 		inflight:     newInflightSet(),

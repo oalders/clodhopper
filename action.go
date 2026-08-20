@@ -161,20 +161,34 @@ func runTmux(tmuxBin, dir string, args []string, timeout time.Duration) (stdout 
 // command strings (/clear, /monitor-ci, nn claude) are FIXED constants; only pane
 // ids vary, and any pane split-window emits is re-validated before reuse.
 //
-//   - monitor-ci: send /clear then /monitor-ci into the agent's own pane (one
-//     send-keys call — /clear and /monitor-ci are literal keys, Enter is tmux's
-//     key name for the return that submits each).
+//   - monitor-ci: send /clear into the agent's own pane, pause, then send
+//     /monitor-ci (/clear and /monitor-ci are literal keys, Enter is tmux's key
+//     name for the return that submits each). This is deliberately TWO send-keys
+//     calls: /clear makes Claude Code tear down and redraw its input UI, and in a
+//     sandboxed session that redraw is slow enough that keys arriving in the same
+//     burst land before the input line can accept them and are swallowed rather
+//     than queued. clearDelay (actionConfig) is the pause between the two; a zero
+//     delay reproduces the old single-burst timing and is what tests use.
 //   - new-monitor: split a NEW pane in the same window running `nn claude`,
 //     capture its pane id, then send /monitor-ci to it. The new pane's TUI must
 //     finish booting before those keys land, so there is an inherent startup race
 //     — we send immediately after the split (no shell sleep is available). It
 //     does NOT tear the session down.
-func runSessionAction(tmuxBin, action, pane, dir string) actionResult {
+func runSessionAction(tmuxBin, action, pane, dir string, clearDelay time.Duration) actionResult {
 	switch action {
 	case "monitor-ci":
 		_, res := runTmux(tmuxBin, dir,
-			[]string{"send-keys", "-t", pane, "/clear", "Enter", "/monitor-ci", "Enter"}, tmuxTimeout)
-		return res
+			[]string{"send-keys", "-t", pane, "/clear", "Enter"}, tmuxTimeout)
+		// If /clear never reached the pane there is no redraw to wait out, and no
+		// point sending a command into a pane we could not talk to.
+		if res.ExitCode != 0 || res.TimedOut {
+			return res
+		}
+		// Sleep(0) is a no-op, so a zero clearDelay simply sends both back to back.
+		time.Sleep(clearDelay)
+		_, res2 := runTmux(tmuxBin, dir,
+			[]string{"send-keys", "-t", pane, "/monitor-ci", "Enter"}, tmuxTimeout)
+		return res2
 	case "new-monitor":
 		out, res := runTmux(tmuxBin, dir,
 			[]string{"split-window", "-t", pane, "-P", "-F", "#{pane_id}", "nn", "claude"}, tmuxTimeout)
@@ -276,16 +290,26 @@ const (
 	// as soon as the pane exists, it does not wait for `nn claude`), so a few
 	// seconds is generous.
 	tmuxTimeout = 10 * time.Second
+	// monitorCIClearDelay is how long the monitor-ci action waits after /clear
+	// before sending /monitor-ci, so the agent's TUI can finish redrawing its
+	// input line first. Long enough to cover a slow (e.g. sandboxed) redraw,
+	// short enough that the dashboard's action request still feels immediate.
+	monitorCIClearDelay = 750 * time.Millisecond
 )
 
 // actionConfig is serve's write-path state. Binary names are injected so tests
 // substitute stubs; token is the per-serve CSRF secret; allowedHosts extends the
 // Host allowlist beyond loopback + bindHost.
 type actionConfig struct {
-	enabled      bool
-	mergePR      string // path/name of the merge-pr binary
-	gh           string // path/name of the gh binary
-	tmux         string // path/name of the tmux binary (session actions); tests stub it
+	enabled bool
+	mergePR string // path/name of the merge-pr binary
+	gh      string // path/name of the gh binary
+	tmux    string // path/name of the tmux binary (session actions); tests stub it
+	// clearDelay is the pause monitor-ci leaves between its /clear and
+	// /monitor-ci send-keys calls (see runSessionAction). serve sets it to
+	// monitorCIClearDelay; the zero value sends both back to back, which is what
+	// tests want so they never sleep.
+	clearDelay   time.Duration
 	token        string
 	bindHost     string
 	allowedHosts []string
@@ -354,7 +378,7 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		// The split runs in the agent's worktree if we know it; tmux inherits the
 		// target pane's cwd regardless, so an empty dir is harmless.
 		cwd, _ := latestCwdForSession(db, sessionID)
-		res := runSessionAction(cfg.tmux, action, pane, cwd)
+		res := runSessionAction(cfg.tmux, action, pane, cwd, cfg.clearDelay)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok":       res.ExitCode == 0 && !res.TimedOut,

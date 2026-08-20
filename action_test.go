@@ -481,13 +481,55 @@ func TestHandleActionMonitorCIBuildsArgv(t *testing.T) {
 		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
 	}
 	got, _ := os.ReadFile(logPath)
-	want := "send-keys -t %12 /clear Enter /monitor-ci Enter\n"
+	// Two separate send-keys calls, not one burst: /clear must be delivered and
+	// the TUI given a chance to redraw before /monitor-ci is submitted.
+	want := "send-keys -t %12 /clear Enter\nsend-keys -t %12 /monitor-ci Enter\n"
 	if string(got) != want {
 		t.Fatalf("argv = %q, want %q", got, want)
 	}
 	// A session action never tears the session down.
 	if queryLatestEventType(t, db, "live-m") == "SessionEnd" {
 		t.Fatal("monitor-ci must not end the session")
+	}
+}
+
+// A failed /clear must abort the action: there is no redraw to wait out and no
+// working channel to the pane, so /monitor-ci is not sent into the dark.
+func TestRunSessionActionMonitorCIStopsWhenClearFails(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "tmux.log")
+	stub := writeStub(t, "tmux", `echo "$@" >> `+logPath+`
+exit 3`)
+
+	res := runSessionAction(stub, "monitor-ci", "%12", t.TempDir(), 0)
+	if res.ExitCode != 3 {
+		t.Fatalf("exit code = %d, want the failing /clear's 3", res.ExitCode)
+	}
+	got, _ := os.ReadFile(logPath)
+	if want := "send-keys -t %12 /clear Enter\n"; string(got) != want {
+		t.Fatalf("argv = %q, want only the /clear call %q", got, want)
+	}
+}
+
+// The pause between the two send-keys calls is what makes the fix work in a
+// sandboxed session, where the post-/clear redraw swallows keys that arrive too
+// soon. Assert it is actually waited out rather than silently skipped.
+func TestRunSessionActionMonitorCIWaitsAfterClear(t *testing.T) {
+	stub, logPath := tmuxLogStub(t)
+	const delay = 150 * time.Millisecond
+
+	start := time.Now()
+	res := runSessionAction(stub, "monitor-ci", "%12", t.TempDir(), delay)
+	elapsed := time.Since(start)
+	if res.ExitCode != 0 || res.TimedOut {
+		t.Fatalf("res = %+v", res)
+	}
+	if elapsed < delay {
+		t.Fatalf("elapsed %v < clearDelay %v: the pause after /clear was skipped", elapsed, delay)
+	}
+	got, _ := os.ReadFile(logPath)
+	want := "send-keys -t %12 /clear Enter\nsend-keys -t %12 /monitor-ci Enter\n"
+	if string(got) != want {
+		t.Fatalf("argv = %q, want %q", got, want)
 	}
 }
 
