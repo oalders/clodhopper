@@ -1735,3 +1735,23 @@ func TestDashboardRendersEndButtonOnlyWhenEnabled(t *testing.T) {
 		t.Fatal("End must not opt out of the confirm step")
 	}
 }
+
+// The End action reuses the PR cluster's already-proven JS, but contributes two
+// new string literals to it: its own CAVEAT entry (the confirm-step warning) and
+// its membership in the "clears" set (which keeps the row locked so the poller
+// can drop it). A typo in either is silent at runtime, so assert both are wired
+// into the rendered dashboard whenever the write surface is on.
+func TestDashboardWiresEndIntoActionScript(t *testing.T) {
+	on := dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	}
+	html := renderDashboard(t, on)
+	if !strings.Contains(html, "end: 'dismiss this row from the dashboard") {
+		t.Error("CAVEAT has no entry for the end action")
+	}
+	if !strings.Contains(html, "action === 'end')") {
+		t.Error("end is not included in the row-clearing (clears) set")
+	}
+}

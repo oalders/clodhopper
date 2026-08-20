@@ -380,13 +380,7 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		// target pane's cwd regardless, so an empty dir is harmless.
 		cwd, _ := latestCwdForSession(db, sessionID)
 		res := runSessionAction(cfg.tmux, action, pane, cwd, cfg.clearDelay)
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ok":       res.ExitCode == 0 && !res.TimedOut,
-			"exitCode": res.ExitCode,
-			"timedOut": res.TimedOut,
-			"output":   scrubString(res.Output),
-		})
+		writeActionResult(w, res)
 		return
 	}
 
@@ -407,7 +401,7 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 			return
 		}
 		defer cfg.inflight.release(sessionID)
-		writeEndResult(w, endSession(db, sessionID, now))
+		writeActionResult(w, endSession(db, sessionID, now))
 		return
 	}
 
@@ -451,13 +445,7 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"ok":       res.ExitCode == 0 && !res.TimedOut,
-		"exitCode": res.ExitCode,
-		"timedOut": res.TimedOut,
-		"output":   scrubString(res.Output),
-	})
+	writeActionResult(w, res)
 }
 
 // endSession marks one dashboard session ended and returns the actionResult the
@@ -469,13 +457,14 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 func endSession(db *sql.DB, sessionID string, now time.Time) actionResult {
 	n, err := endSessions(db, EndSelector{SessionID: sessionID}, now)
 	if err != nil {
-		var amb *AmbiguousSessionError
-		if errors.As(err, &amb) {
+		if amb, ok := errors.AsType[*AmbiguousSessionError](err); ok {
 			return actionResult{ExitCode: -1, Output: "session id matches " +
 				strconv.Itoa(len(amb.IDs)) + " live sessions; ended nothing"}
 		}
+		// The raw driver error stays server-side (debugf); the client gets a
+		// generic message rather than SQLite detail.
 		debugf("action: end %s: %v", sessionID, err)
-		return actionResult{ExitCode: -1, Output: "could not end session: " + err.Error()}
+		return actionResult{ExitCode: -1, Output: "could not end session"}
 	}
 	if n == 0 {
 		return actionResult{ExitCode: -1, Output: "no live session matched (already ended?)"}
@@ -483,9 +472,10 @@ func endSession(db *sql.DB, sessionID string, now time.Time) actionResult {
 	return actionResult{ExitCode: 0}
 }
 
-// writeEndResult emits the same JSON envelope every action returns, so the
-// dashboard's fire() handles End exactly like the other actions.
-func writeEndResult(w http.ResponseWriter, res actionResult) {
+// writeActionResult emits the JSON envelope every action returns, so the
+// dashboard's fire() handles each of them — subprocess-backed or not —
+// identically.
+func writeActionResult(w http.ResponseWriter, res actionResult) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ok":       res.ExitCode == 0 && !res.TimedOut,
