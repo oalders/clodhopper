@@ -176,7 +176,10 @@ When a row's Claude session is in a live tmux pane, it also gains two **session
 actions** that drive that pane directly (they do not touch a PR):
 
 - **monitor ci** sends `/clear` then `/monitor-ci` into the agent's own pane.
-  This is **destructive**: `/clear` drops the agent's current context.
+  This is **destructive**: `/clear` drops the agent's current context. The two
+  are sent as separate keystroke batches with a short pause in between, because
+  `/clear` makes the agent's TUI redraw its input line and keys arriving during
+  that redraw are swallowed (notably in sandboxed sessions).
 - **+ watcher** is additive: it opens a **new** pane in the existing tmux
   session running `nn claude`, then sends `/monitor-ci` to it, leaving the
   original agent untouched.
