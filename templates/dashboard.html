@@ -610,6 +610,9 @@
       .actpanel button.prmode { min-height: 44px; font-size: var(--fs-sm); }
       .actpanel .prcmd { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; font-size: var(--fs-sm); }
       .actpanel .prrun { grid-column: 1 / -1; }
+      /* The row cluster's lone End button would otherwise strand at half width in
+         the two-track grid. */
+      .actpanel .rowform button.pract { grid-column: 1 / -1; }
       /* Only the long free-text doing/summary field claims its own full-width
          line; branch now flows inline with ci / app / status, wrapping within
          its own cell when a name is genuinely too long. */
@@ -1521,7 +1524,8 @@
       'squash-admin': 'merges (bypassing branch protection) + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
       close: 'closes the PR + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
       ready: 'mark PR ready?',
-      'monitor-ci': '/clear then /monitor-ci — drops the agent\'s current context'
+      'monitor-ci': '/clear then /monitor-ci — drops the agent\'s current context',
+      end: 'dismiss this row from the dashboard — the agent is NOT stopped, and the row returns if it emits another event'
     };
 
     function forceOn(group) {
@@ -1672,12 +1676,15 @@
         .then(function (d) {
           // A merge/close hard-kills the session, so its row clears on the next
           // poll; ready and the session actions leave the row in place.
-          var clears = (action === 'squash' || action === 'squash-admin' || action === 'close');
+          // 'end' clears the row the same way: it writes a synthetic SessionEnd,
+          // so the next /api/state poll no longer lists the session.
+          var clears = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'end');
           // IMPORTANT: assign result via textContent, never innerHTML — output is
           // raw git/gh text; scrubString removed secrets but not HTML.
           if (msg) {
             msg.textContent = d.ok
-              ? (clears ? 'done — row will clear'
+              ? (action === 'end' ? 'dismissed — row will clear'
+                 : clears ? 'done — row will clear'
                  : action === 'ready' ? 'PR marked ready'
                  : action === 'monitor-ci' ? 'sent /monitor-ci'
                  : action === 'new-monitor' ? 'watcher started'
@@ -1926,7 +1933,7 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>{{ end }}
-          {{ if or $.PeekEnabled $.MergeEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.MergeEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="squash · admin · close · ready · monitor ci"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          {{ if or $.PeekEnabled $.MergeEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.MergeEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="squash · admin · close · ready · monitor ci · end"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
@@ -1953,6 +1960,13 @@
                 <label class="actforce" title="--force: merge even with uncommitted changes (squash only)"><input type="checkbox" class="practforce"> --force</label>
                 <code class="prcmd" id="prcmd-{{ .SessionID }}" aria-live="polite">merge-pr --squash</code>
                 <button type="button" class="pract prrun" data-action="squash" title="run the selected PR action" aria-describedby="prcmd-{{ .SessionID }}">run</button>
+                <span class="actmsg" aria-live="polite"></span>
+              </span>
+            </div>
+            <div class="actcol rowcol" role="group" aria-label="row actions">
+              <span class="acteyebrow">row</span>
+              <span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
+                <button type="button" class="pract" data-action="end" title="dismiss this row from the dashboard (does not touch the agent)">end</button>
                 <span class="actmsg" aria-live="polite"></span>
               </span>
             </div>

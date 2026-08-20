@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -389,6 +390,27 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		return
 	}
 
+	// "end" dismisses a roster row from the dashboard: it writes the same
+	// synthetic SessionEnd that `clodhopper end --session` does, so agentRoster
+	// drops the session and a genuinely-live agent reappears on its next event.
+	// It runs NO subprocess, so it deliberately never reaches actionArgv (the
+	// argv allowlist stays the boundary for things that do exec). It also must
+	// NOT require a live tmux pane — stale rows with no pane are exactly the ones
+	// worth dismissing. session_id only ever travels as a bound SQL parameter.
+	if action == "end" {
+		if sessionID == "" {
+			http.Error(w, "unknown session", http.StatusNotFound)
+			return
+		}
+		if !cfg.inflight.acquire(sessionID) {
+			http.Error(w, "action already running for this session", http.StatusConflict)
+			return
+		}
+		defer cfg.inflight.release(sessionID)
+		writeEndResult(w, endSession(db, sessionID, now))
+		return
+	}
+
 	binary, args, teardown, ok := actionArgv(action, force)
 	if !ok {
 		http.Error(w, "unknown action", http.StatusBadRequest)
@@ -429,6 +451,41 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		}
 	}
 
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":       res.ExitCode == 0 && !res.TimedOut,
+		"exitCode": res.ExitCode,
+		"timedOut": res.TimedOut,
+		"output":   scrubString(res.Output),
+	})
+}
+
+// endSession marks one dashboard session ended and returns the actionResult the
+// End action reports. Every failure mode is reported as a visible, non-ok
+// result rather than a silent no-op: an ambiguous prefix (session ids reach us
+// in full, but endSessions matches by prefix, so a shorter id that prefixes a
+// longer one is still possible), a lookup error, and a zero count (the session
+// is unknown or was already ended) each get their own message.
+func endSession(db *sql.DB, sessionID string, now time.Time) actionResult {
+	n, err := endSessions(db, EndSelector{SessionID: sessionID}, now)
+	if err != nil {
+		var amb *AmbiguousSessionError
+		if errors.As(err, &amb) {
+			return actionResult{ExitCode: -1, Output: "session id matches " +
+				strconv.Itoa(len(amb.IDs)) + " live sessions; ended nothing"}
+		}
+		debugf("action: end %s: %v", sessionID, err)
+		return actionResult{ExitCode: -1, Output: "could not end session: " + err.Error()}
+	}
+	if n == 0 {
+		return actionResult{ExitCode: -1, Output: "no live session matched (already ended?)"}
+	}
+	return actionResult{ExitCode: 0}
+}
+
+// writeEndResult emits the same JSON envelope every action returns, so the
+// dashboard's fire() handles End exactly like the other actions.
+func writeEndResult(w http.ResponseWriter, res actionResult) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ok":       res.ExitCode == 0 && !res.TimedOut,

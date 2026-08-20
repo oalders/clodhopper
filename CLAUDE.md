@@ -40,7 +40,8 @@ Three subcommands, dispatched in `main.go`:
   writes one row, exits. This is what project hooks call on every tool use.
 - **`serve`** (`server.go`) — HTTP dashboard, renders `templates/dashboard.html`; read-only
   by default, plus an **opt-in** write path (`--enable-merge`) that runs allowlisted
-  `merge-pr`/`gh pr ready` actions per roster row. `ingest` never gains write-to-repo
+  `merge-pr`/`gh pr ready` actions per roster row, plus an `end` action that runs
+  no subprocess at all and just calls `endSessions` to drop the row. `ingest` never gains write-to-repo
   capability — the capture path stays read-only.
 - **`prune`** (`main.go`) — deletes events older than the retention window.
 
@@ -72,7 +73,9 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
    invariant or the ingest/capture path. It's off by default, and when on is
    POST-only, CSRF-protected (custom `X-Clodhopper-Token` header, constant-time
    compare), Host-header-allowlisted against DNS rebinding, and restricted to a
-   closed argv allowlist — no user-supplied string ever reaches a command line.)
+   closed argv allowlist — no user-supplied string ever reaches a command line.
+  The `end` action never reaches `actionArgv`: it execs nothing, and its
+  `session_id` travels only as a bound SQL parameter.)
 
 ### Other conventions
 
