@@ -610,6 +610,11 @@
       .actpanel button.prmode { min-height: 44px; font-size: var(--fs-sm); }
       .actpanel .prcmd { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; font-size: var(--fs-sm); }
       .actpanel .prrun { grid-column: 1 / -1; }
+      /* The row cluster's lone End button would otherwise strand at half width in
+         the two-track grid. Scope this to the primary (idle/confirm) button the
+         way .prrun is in the PR form, so the cancel button armConfirm() injects
+         free-flows beside it instead of stacking as its own full-width row. */
+      .actpanel .rowform button.pract:not(.actcancel) { grid-column: 1 / -1; }
       /* Only the long free-text doing/summary field claims its own full-width
          line; branch now flows inline with ci / app / status, wrapping within
          its own cell when a name is genuinely too long. */
@@ -884,10 +889,27 @@
       // final place, keeping preventScroll honest). Inside swapContent it also
       // inherits the __ckActionBusy and unchanged-signature skips for free.
       try { if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply(); } catch (e) {}
-      if (!key) return;
-      var btns = document.querySelectorAll('#content .copycwd');
-      for (var i = 0; i < btns.length; i++) {
-        if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return; }
+      if (key) {
+        var btns = document.querySelectorAll('#content .copycwd');
+        for (var i = 0; i < btns.length; i++) {
+          if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return; }
+        }
+      }
+      // Safety net for every other focused control inside #content. The swap
+      // above replaced the subtree wholesale, so anything the reader was on that
+      // did not come back — a row whose session ended, a button that moved out
+      // of the roster — is now detached, and the browser has silently dropped
+      // focus to <body>, losing both the reader's place and their next Tab
+      // origin. If the pre-swap active element is no longer connected, park
+      // focus on #content itself, which survives every repaint. The tabindex is
+      // set here and left in place so the fallback keeps working on repeat
+      // swaps; -1 makes it programmatically focusable without adding a Tab stop.
+      if (active && active !== document.body && !active.isConnected) {
+        var host = document.getElementById('content');
+        if (host) {
+          host.setAttribute('tabindex', '-1');
+          host.focus({ preventScroll: true });
+        }
       }
     }
 
@@ -1521,7 +1543,8 @@
       'squash-admin': 'merges (bypassing branch protection) + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
       close: 'closes the PR + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
       ready: 'mark PR ready?',
-      'monitor-ci': '/clear then /monitor-ci — drops the agent\'s current context'
+      'monitor-ci': '/clear then /monitor-ci — drops the agent\'s current context',
+      end: 'dismiss this row from the dashboard — the agent is NOT stopped, and the row returns if it emits another event'
     };
 
     function forceOn(group) {
@@ -1672,12 +1695,15 @@
         .then(function (d) {
           // A merge/close hard-kills the session, so its row clears on the next
           // poll; ready and the session actions leave the row in place.
-          var clears = (action === 'squash' || action === 'squash-admin' || action === 'close');
+          // 'end' clears the row the same way: it writes a synthetic SessionEnd,
+          // so the next /api/state poll no longer lists the session.
+          var clears = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'end');
           // IMPORTANT: assign result via textContent, never innerHTML — output is
           // raw git/gh text; scrubString removed secrets but not HTML.
           if (msg) {
             msg.textContent = d.ok
-              ? (clears ? 'done — row will clear'
+              ? (action === 'end' ? 'dismissed — row will clear'
+                 : clears ? 'done — row will clear'
                  : action === 'ready' ? 'PR marked ready'
                  : action === 'monitor-ci' ? 'sent /monitor-ci'
                  : action === 'new-monitor' ? 'watcher started'
@@ -1691,7 +1717,15 @@
           // on the next poll (session/worktree gone); leave it locked so nothing
           // flashes back to life first. Anything else — failure, or an action that
           // leaves the row in place — unlocks the buttons for a retry.
-          if (!d.ok || !clears) { unlock(group, false); restoreFocus(); }
+          if (!d.ok || !clears) {
+            unlock(group, false);
+            restoreFocus();
+          }
+          // A successful 'end' deliberately does NOT unlock: the group stays
+          // locked until the next poll drops the row. Focus needs no special
+          // handling here — the pressed button is still on screen (and still
+          // focused) until that poll, and swapContent's safety net catches it
+          // the moment the repaint detaches it.
         })
         .catch(function (e) { if (msg) msg.textContent = 'request failed: ' + e; unlock(group, false); restoreFocus(); })
         .finally(function () { delete group.dataset.ckFiring; window.__ckActionBusy = Math.max(0, window.__ckActionBusy - 1); });
@@ -1926,7 +1960,7 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>{{ end }}
-          {{ if or $.PeekEnabled $.MergeEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.MergeEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="squash · admin · close · ready · monitor ci"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          {{ if or $.PeekEnabled $.MergeEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.MergeEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · squash · admin · close · ready · end"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
@@ -1953,6 +1987,13 @@
                 <label class="actforce" title="--force: merge even with uncommitted changes (squash only)"><input type="checkbox" class="practforce"> --force</label>
                 <code class="prcmd" id="prcmd-{{ .SessionID }}" aria-live="polite">merge-pr --squash</code>
                 <button type="button" class="pract prrun" data-action="squash" title="run the selected PR action" aria-describedby="prcmd-{{ .SessionID }}">run</button>
+                <span class="actmsg" aria-live="polite"></span>
+              </span>
+            </div>
+            <div class="actcol rowcol" role="group" aria-label="row actions">
+              <span class="acteyebrow">row</span>
+              <span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
+                <button type="button" class="pract" data-action="end" aria-label="end {{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button>
                 <span class="actmsg" aria-live="polite"></span>
               </span>
             </div>

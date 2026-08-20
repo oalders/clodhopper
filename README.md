@@ -154,7 +154,8 @@ board used to expose.
 
 - `--enable-merge` (default off): turn on the roster's **PR-action buttons**.
   When set, each roster row gains squash / squash + admin / close / ready
-  buttons behind a two-step confirm. Clicking one runs your local `merge-pr` or
+  buttons — plus an **end** button that just dismisses the row — behind a
+  two-step confirm. Clicking one runs your local `merge-pr` or
   `gh pr ready` in that row's worktree — merging or closing the real PR,
   removing the worktree, and killing the row's tmux session, same as if you'd
   typed the command yourself. `--squash --admin` bypasses branch protection
@@ -184,13 +185,21 @@ actions** that drive that pane directly (they do not touch a PR):
   session running `nn claude`, then sends `/monitor-ci` to it, leaving the
   original agent untouched.
 
+Every row — pane or no pane — also gains an **end** button. It is the dashboard
+equivalent of `clodhopper end --session <id>`: it writes the synthetic
+`SessionEnd` that drops the row from the roster, and does nothing else. No
+process is killed and no repo is touched, so it is the way to clear a stale row
+left behind by a hard-killed agent. The row comes back if that session ever
+emits another event.
+
 > **Exposure:** this is a **write** capability, not just a read one. It is
 > gated behind CSRF (a custom header token, checked in constant time), a
 > Host-header allowlist (`CLODHOPPER_ALLOWED_HOSTS`) that defends against DNS
 > rebinding, and a closed argv allowlist — no free-form string from the
 > request ever reaches a command line. None of that changes who it acts as: it
 > runs with **your** credentials against **your** repos. The session actions
-> additionally send **keystrokes into live tmux panes**. Everything here is
+> additionally send **keystrokes into live tmux panes**. (**end** is the mild
+> one: it only writes a row to clodhopper's own database.) Everything here is
 > gated behind `--enable-merge`, so enable it only on a **trusted,
 > single-operator network** (loopback, or your tailnet via `--tailscale`),
 > never on a public bind.

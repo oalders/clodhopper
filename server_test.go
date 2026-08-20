@@ -1705,3 +1705,57 @@ func TestDashboardRendersForceToggleWhenEnabled(t *testing.T) {
 		t.Fatal("force toggle missing while merge enabled")
 	}
 }
+
+// The per-row End button (dismiss this roster row) is part of the opt-in write
+// surface, so it must be absent unless --enable-merge is on — and, unlike the
+// tmux session actions, it must render even for a row with no live pane, since
+// those stale rows are what End exists to clear.
+func TestDashboardRendersEndButtonOnlyWhenEnabled(t *testing.T) {
+	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}}
+	off := base // MergeEnabled false
+	if strings.Contains(renderDashboard(t, off), `data-action="end"`) {
+		t.Fatal("End button rendered while merge disabled")
+	}
+	on := base
+	on.MergeEnabled = true
+	on.CSRFToken = "tok"
+	html := renderDashboard(t, on)
+	if !strings.Contains(html, `data-action="end"`) {
+		t.Fatal("End button missing while merge enabled")
+	}
+	// Not gated on HasPane: this agent has none.
+	if on.Agents[0].HasPane {
+		t.Fatal("fixture unexpectedly has a pane")
+	}
+	if !strings.Contains(html, `class="actgroup rowform"`) {
+		t.Fatal("End button must sit in its own ungated row cluster")
+	}
+	// End keeps the two-step arm/confirm flow.
+	if strings.Contains(html, `data-action="end" data-noconfirm`) {
+		t.Fatal("End must not opt out of the confirm step")
+	}
+}
+
+// The End action reuses the PR cluster's already-proven JS, but contributes two
+// new string literals to it: its own CAVEAT entry (the confirm-step warning) and
+// its membership in the "clears" set (which keeps the row locked so the poller
+// can drop it). A typo in either is silent at runtime, so assert both are wired
+// into the rendered dashboard whenever the write surface is on.
+func TestDashboardWiresEndIntoActionScript(t *testing.T) {
+	on := dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	}
+	html := renderDashboard(t, on)
+	if !strings.Contains(html, "end: 'dismiss this row from the dashboard") {
+		t.Error("CAVEAT has no entry for the end action")
+	}
+	// Anchor on the clears declaration itself, not on a bare "action === 'end'"
+	// substring: that also appears in other branches of the action handler, so a
+	// loose match still passes when end is dropped from the clears set — the very
+	// regression this guards.
+	if !strings.Contains(html, "var clears = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'end');") {
+		t.Error("end is not included in the row-clearing (clears) set")
+	}
+}

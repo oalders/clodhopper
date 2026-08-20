@@ -629,3 +629,233 @@ func TestHandleActionSessionActionRejectsBadPane(t *testing.T) {
 		t.Fatal("tmux ran for a session with no valid pane")
 	}
 }
+
+// decodeActionJSON unpacks the JSON envelope every action handler writes.
+func decodeActionJSON(t *testing.T, w *httptest.ResponseRecorder) struct {
+	OK       bool   `json:"ok"`
+	ExitCode int    `json:"exitCode"`
+	TimedOut bool   `json:"timedOut"`
+	Output   string `json:"output"`
+} {
+	t.Helper()
+	var got struct {
+		OK       bool   `json:"ok"`
+		ExitCode int    `json:"exitCode"`
+		TimedOut bool   `json:"timedOut"`
+		Output   string `json:"output"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode %q: %v", w.Body.String(), err)
+	}
+	return got
+}
+
+// The End action reuses handleAction's whole guard chain: disabled, wrong
+// method, unknown Host, and a bad CSRF token must all be rejected before
+// anything is written to the db.
+func TestHandleActionEndRejectedByGuards(t *testing.T) {
+	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	seed := func() (*sql.DB, *actionConfig) {
+		db := openTestDB(t)
+		insertEvent(db, Event{TS: "2026-08-20T09:00:00Z", SourceApp: "x", SessionID: "live-1", Cwd: t.TempDir(), EventType: "Stop", PayloadJSON: "{}"})
+		return db, newActionCfg("/bin/true", "/bin/true")
+	}
+
+	// disabled
+	db, cfg := seed()
+	cfg.enabled = false
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("live-1", "end", false, "secret", "127.0.0.1"), db, cfg, now)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("disabled: %d, want 403", w.Code)
+	}
+	if et := queryLatestEventType(t, db, "live-1"); et == "SessionEnd" {
+		t.Fatal("disabled request ended the session")
+	}
+
+	// wrong method
+	db, cfg = seed()
+	w = httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/action?session_id=live-1&action=end", nil)
+	r.Host = "127.0.0.1"
+	r.Header.Set("X-Clodhopper-Token", "secret")
+	handleAction(w, r, db, cfg, now)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET: %d, want 405", w.Code)
+	}
+
+	// bad host
+	db, cfg = seed()
+	w = httptest.NewRecorder()
+	handleAction(w, actionReq("live-1", "end", false, "secret", "evil.example.com"), db, cfg, now)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("host: %d, want 403", w.Code)
+	}
+
+	// bad token
+	db, cfg = seed()
+	w = httptest.NewRecorder()
+	handleAction(w, actionReq("live-1", "end", false, "wrong", "127.0.0.1"), db, cfg, now)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("token: %d, want 403", w.Code)
+	}
+	if et := queryLatestEventType(t, db, "live-1"); et == "SessionEnd" {
+		t.Fatal("bad token ended the session")
+	}
+}
+
+// A successful End writes a synthetic SessionEnd and the row leaves the roster,
+// even though the session has no tmux pane — stale, pane-less rows are exactly
+// what End exists for. No subprocess runs, so the binaries are unusable stubs.
+func TestHandleActionEndDismissesPanelessRow(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	insertEvent(db, Event{TS: "2026-08-20T09:00:00Z", SourceApp: "x", Branch: "feature", SessionID: "live-1", Cwd: t.TempDir(), EventType: "Stop", PayloadJSON: "{}"})
+	// No TmuxPane on the row at all.
+	if pane, _ := latestPaneForSession(db, "live-1"); pane != "" {
+		t.Fatalf("fixture has a pane: %q", pane)
+	}
+	if roster, err := agentRoster(db, 16*time.Hour, now); err != nil || len(roster) != 1 {
+		t.Fatalf("roster before = %v (err %v), want 1 row", roster, err)
+	}
+
+	cfg := newActionCfg("/nonexistent/merge-pr", "/nonexistent/gh")
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("live-1", "end", false, "secret", "127.0.0.1"), db, cfg, now)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	got := decodeActionJSON(t, w)
+	if !got.OK || got.ExitCode != 0 || got.TimedOut {
+		t.Fatalf("resp = %+v, want ok", got)
+	}
+	if et := queryLatestEventType(t, db, "live-1"); et != "SessionEnd" {
+		t.Fatalf("latest event = %q, want SessionEnd", et)
+	}
+	roster, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatalf("agentRoster: %v", err)
+	}
+	if len(roster) != 0 {
+		t.Fatalf("roster after = %+v, want empty", roster)
+	}
+}
+
+// An unknown or already-ended session must report a visible failure, never a
+// false OK (which would leave the row on screen with a "dismissed" message).
+func TestHandleActionEndUnknownSessionReportsFailure(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	insertEvent(db, Event{TS: "2026-08-20T09:00:00Z", SourceApp: "x", SessionID: "live-1", Cwd: t.TempDir(), EventType: "Stop", PayloadJSON: "{}"})
+	cfg := newActionCfg("/bin/true", "/bin/true")
+
+	// never seen
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("ghost", "end", false, "secret", "127.0.0.1"), db, cfg, now)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	if got := decodeActionJSON(t, w); got.OK || got.Output == "" {
+		t.Fatalf("unknown session resp = %+v, want a non-ok result with a message", got)
+	}
+
+	// already ended: the first End succeeds, a second must not claim success
+	w = httptest.NewRecorder()
+	handleAction(w, actionReq("live-1", "end", false, "secret", "127.0.0.1"), db, cfg, now)
+	if got := decodeActionJSON(t, w); !got.OK {
+		t.Fatalf("first end resp = %+v, want ok", got)
+	}
+	w = httptest.NewRecorder()
+	handleAction(w, actionReq("live-1", "end", false, "secret", "127.0.0.1"), db, cfg, now)
+	if got := decodeActionJSON(t, w); got.OK || got.Output == "" {
+		t.Fatalf("repeat end resp = %+v, want a non-ok result with a message", got)
+	}
+	// A blank session id targets nothing rather than every live session.
+	w = httptest.NewRecorder()
+	handleAction(w, actionReq("", "end", false, "secret", "127.0.0.1"), db, cfg, now)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("blank session: %d, want 404", w.Code)
+	}
+}
+
+// A second End for the same session while one is in flight is refused by the
+// shared inflight set, exactly as the merge actions are.
+func TestHandleActionEndConcurrentIsConflict(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	insertEvent(db, Event{TS: "2026-08-20T09:00:00Z", SourceApp: "x", SessionID: "live-1", Cwd: t.TempDir(), EventType: "Stop", PayloadJSON: "{}"})
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	if !cfg.inflight.acquire("live-1") {
+		t.Fatal("acquire failed")
+	}
+	defer cfg.inflight.release("live-1")
+
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("live-1", "end", false, "secret", "127.0.0.1"), db, cfg, now)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("code = %d, want 409", w.Code)
+	}
+	if et := queryLatestEventType(t, db, "live-1"); et == "SessionEnd" {
+		t.Fatal("conflicting request ended the session anyway")
+	}
+}
+
+// An ambiguous session prefix must surface as a visible failure, not a silent
+// no-op and not the wrong agent being dismissed. The dashboard sends full
+// session ids, but endSessions matches by prefix, so one id that prefixes
+// another is still reachable.
+func TestHandleActionEndAmbiguousPrefixFails(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	insertEvent(db, Event{TS: "2026-08-20T09:00:00Z", SourceApp: "x", SessionID: "abc", Cwd: t.TempDir(), EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: "2026-08-20T09:00:01Z", SourceApp: "x", SessionID: "abcdef", Cwd: t.TempDir(), EventType: "Stop", PayloadJSON: "{}"})
+	cfg := newActionCfg("/bin/true", "/bin/true")
+
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("abc", "end", false, "secret", "127.0.0.1"), db, cfg, now)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	got := decodeActionJSON(t, w)
+	if got.OK || !strings.Contains(got.Output, "2 live sessions") {
+		t.Fatalf("resp = %+v, want a non-ok ambiguity message", got)
+	}
+	// Nothing may have been ended.
+	for _, id := range []string{"abc", "abcdef"} {
+		if et := queryLatestEventType(t, db, id); et == "SessionEnd" {
+			t.Fatalf("%s was ended despite the ambiguity", id)
+		}
+	}
+}
+
+// A lookup failure inside endSessions must reach the client as a fixed, generic
+// message: the raw driver text goes to debugf only. Dropping the events table
+// forces a real (non-ambiguity) error out of endSessions, which is the branch
+// that would otherwise leak SQLite internals if someone reinstated err.Error().
+func TestHandleActionEndGenericErrorHidesDriverDetail(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	insertEvent(db, Event{TS: "2026-08-20T09:00:00Z", SourceApp: "x", SessionID: "live-1", Cwd: t.TempDir(), EventType: "Stop", PayloadJSON: "{}"})
+	if _, err := db.Exec("DROP TABLE events"); err != nil {
+		t.Fatalf("drop events: %v", err)
+	}
+	cfg := newActionCfg("/bin/true", "/bin/true")
+
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("live-1", "end", false, "secret", "127.0.0.1"), db, cfg, now)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	got := decodeActionJSON(t, w)
+	if got.OK {
+		t.Fatalf("resp = %+v, want a non-ok result", got)
+	}
+	if got.Output != "could not end session" {
+		t.Fatalf("output = %q, want the generic message", got.Output)
+	}
+	for _, leak := range []string{"no such table", "events", "sqlite", "SQL"} {
+		if strings.Contains(got.Output, leak) {
+			t.Fatalf("output %q leaks driver detail %q", got.Output, leak)
+		}
+	}
+}
