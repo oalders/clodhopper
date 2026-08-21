@@ -1759,3 +1759,36 @@ func TestDashboardWiresEndIntoActionScript(t *testing.T) {
 		t.Error("end is not included in the row-clearing (clears) set")
 	}
 }
+
+// "Pin order" reorders the roster by re-appending group blocks, and moving a
+// <tr> detaches and reinserts it — which costs a descendant scroll container its
+// offset. An open peek scrolled to the bottom therefore snapped back to the top
+// on every poll, undoing the restore swapContent had just done a few lines
+// earlier. apply() saves each visible capsule's scrollTop and writes it back
+// after the whole re-append pass, so the compensation stays with the loop that
+// causes it and survives any future caller.
+func TestDashboardPinReorderPreservesPeekScroll(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	body := getBody(t, db, "/")
+	// One contiguous fragment: it pins the save, the re-append it compensates
+	// for, and — crucially — that the restore runs after that loop, not before.
+	frag := `      var caps = [];
+      var prows = document.querySelectorAll('#content .panerow');
+      for (var k = 0; k < prows.length; k++) {
+        if (prows[k].hidden) continue;
+        var pc = prows[k].querySelector('.panecap');
+        if (pc) caps.push({ el: pc, top: pc.scrollTop });
+      }
+`
+	if !strings.Contains(body, frag) {
+		t.Errorf("pin reorder no longer saves open peek scroll offsets before re-appending:\n%s", frag)
+	}
+	restore := `          for (var c = 0; c < bl[b].length; c++) tbody.appendChild(bl[b][c]);
+        }
+      }
+      for (var s = 0; s < caps.length; s++) caps[s].el.scrollTop = caps[s].top;`
+	if !strings.Contains(body, restore) {
+		t.Errorf("pin reorder no longer restores peek scroll offsets after the re-append loop:\n%s", restore)
+	}
+}
