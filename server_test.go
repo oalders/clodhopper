@@ -1913,11 +1913,12 @@ func TestContentTemplate_PeekIdentityIsSessionAcrossSharedPane(t *testing.T) {
 
 // A failed PR-action result used to survive only until the next poll repainted
 // #content with a fresh, empty .actmsg — anywhere from ~0s to the whole refresh
-// interval (issue #98). swapContent now re-applies remembered failure text, and
-// the ordering is load-bearing: it must run AFTER the actions-panel carry-over
-// un-hides the .actrow (an invisible message is no message) and BEFORE
-// __ckPin.apply() moves rows around. Assert contiguous fragments so the
-// ordering, not merely the presence of the call, is pinned.
+// interval (issue #98). swapContent now re-applies remembered failure text. The
+// restore is order-INdependent (the carry-over's hidden attribute does not hide
+// groups from querySelectorAll, and the pin reorder re-appends existing nodes
+// rather than re-rendering them), so what is pinned here is placement, not an
+// invariant: the guarded call must stay inside swapContent's repaint fix-ups,
+// adjacent to the pin-apply call.
 func TestDashboardActionMessageSurvivesContentSwap(t *testing.T) {
 	on := dashboardData{
 		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
@@ -1927,22 +1928,12 @@ func TestDashboardActionMessageSurvivesContentSwap(t *testing.T) {
 	html := renderDashboard(t, on)
 
 	// One contiguous fragment (html/template strips JS comments, so these are the
-	// two adjacent statements as shipped): the restore runs guarded, and it runs
-	// immediately before the pin reorder.
+	// two adjacent statements as shipped): the restore runs guarded, and it sits
+	// with the other repaint fix-up rather than drifting elsewhere in the file.
 	call := `      try { if (window.__ckActMsgs) window.__ckActMsgs.restore(); } catch (e) {}
       try { if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply(); } catch (e) {}`
 	if !strings.Contains(html, call) {
 		t.Errorf("action-message restore no longer runs (guarded) immediately before the pin reorder:\n%s", call)
-	}
-	// ...and both of those run after the actions-panel carry-over loop that
-	// un-hides the .actrow, without which a restored message is invisible.
-	carry := `          if (newActs[ar].getAttribute('data-actions-row') !== asess) continue;
-          newActs[ar].hidden = false;`
-	if !strings.Contains(html, carry) {
-		t.Fatalf("actions-panel carry-over loop not found; the ordering check below is meaningless:\n%s", carry)
-	}
-	if strings.Index(html, carry) > strings.Index(html, call) {
-		t.Error("action-message restore must run after the actions-panel carry-over un-hides the row")
 	}
 
 	// The holder itself, and the 5s floor the fix exists to guarantee.
@@ -1969,12 +1960,12 @@ func TestDashboardActionMessagePersistsOnlyFailures(t *testing.T) {
 
 	// Failure + timeout share one note() call, placed after both writes.
 	fail := `              : 'timed out — verify before retrying';
-            if (!d.ok || d.timedOut) noteMsg(group, msg.textContent, ACTMSG_MIN_MS);`
+            if (!d.ok || d.timedOut) noteMsg(group, msg.textContent);`
 	if !strings.Contains(html, fail) {
 		t.Errorf("failure/timeout results are no longer remembered across repaints:\n%s", fail)
 	}
 	// The rejected-fetch branch.
-	catchFrag := `          if (msg) { msg.textContent = 'request failed: ' + e; noteMsg(group, msg.textContent, ACTMSG_MIN_MS); }`
+	catchFrag := `          if (msg) { msg.textContent = 'request failed: ' + e; noteMsg(group, msg.textContent); }`
 	if !strings.Contains(html, catchFrag) {
 		t.Errorf("a rejected /api/action fetch no longer remembers its message:\n%s", catchFrag)
 	}
@@ -1982,13 +1973,69 @@ func TestDashboardActionMessagePersistsOnlyFailures(t *testing.T) {
 	if !strings.Contains(html, `      if (msg) { clearMsgNote(group); msg.textContent = 'working…'; }`) {
 		t.Error("firing an action no longer drops the previously remembered message")
 	}
-	// The success text is written in the same expression as the failure text, so
-	// guard the negative directly: no note() may hang off the ok branch.
-	if strings.Contains(html, `'done — row will clear'`) && strings.Contains(html, "noteMsg(group, 'done") {
-		t.Error("a successful result must not be remembered across repaints")
+	// The success text is written in the same expression as the failure text, so a
+	// literal negative ("no note() next to 'done'") could never fail. Count the
+	// call sites instead: exactly two may exist — the guarded failure/timeout one
+	// asserted above and the .catch one — so ANY new noteMsg call, including one
+	// added to the ok branch, trips this.
+	// 3 = the one declaration plus exactly those two call sites.
+	const wantNoteMentions = 3
+	if got := strings.Count(html, "noteMsg("); got != wantNoteMentions {
+		t.Errorf("noteMsg( appears %d time(s), want %d (its declaration, the failure/timeout guard and the .catch branch); a new call site — e.g. on the success branch — must not remember its result across repaints", got, wantNoteMentions)
 	}
 	// Keyed by group class as well as session: three .actgroups share a session.
 	if !strings.Contains(html, "var ACTMSG_GROUPS = ['actsession', 'prform', 'rowform'];") {
 		t.Error("remembered messages are no longer keyed by group class")
+	}
+}
+
+// Collapsing a row's actions panel is a deliberate dismissal of whatever result
+// it was showing. unlock(group, false) leaves the remembered failure text in
+// place on purpose (the reader may not have read it yet), so without an explicit
+// clear here a repaint inside the 5s window would re-paint the dismissed text.
+func TestDashboardClosingActionsPanelClearsRememberedMessages(t *testing.T) {
+	on := dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	}
+	html := renderDashboard(t, on)
+
+	// Contiguous through row.hidden, so the clear is pinned to the close path
+	// itself (html/template blanks the comment lines above it).
+	frag := `      if (window.__ckActMsgs) {
+        var gs = row.querySelectorAll('.actgroup');
+        for (var i = 0; i < gs.length; i++) window.__ckActMsgs.clear(gs[i]);
+      }
+      row.hidden = true;`
+	if !strings.Contains(html, frag) {
+		t.Errorf("collapsing the actions panel no longer drops that row's remembered messages, so a dismissed failure can be re-painted:\n%s", frag)
+	}
+}
+
+// Structural backstop for the exact-literal assertions elsewhere: the restore
+// path re-applies raw git/gh subprocess output, which scrubString strips secrets
+// from but does not HTML-escape. It must never re-enter the HTML parser, so no
+// innerHTML assignment may appear anywhere in restoreMsgs.
+func TestDashboardActionMessageRestoreNeverUsesInnerHTML(t *testing.T) {
+	on := dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	}
+	html := renderDashboard(t, on)
+
+	start := strings.Index(html, "function restoreMsgs() {")
+	if start < 0 {
+		t.Fatal("restoreMsgs not found; the innerHTML invariant below is meaningless")
+	}
+	rest := html[start:]
+	end := strings.Index(rest, "\n    }")
+	if end < 0 {
+		t.Fatal("could not find the end of restoreMsgs; the innerHTML invariant below is meaningless")
+	}
+	body := rest[:end]
+	if regexp.MustCompile(`(?i)innerHTML|insertAdjacentHTML|outerHTML`).MatchString(body) {
+		t.Errorf("restoreMsgs must assign remembered text with textContent only — it re-applies raw subprocess output, which must never re-enter the HTML parser:\n%s", body)
 	}
 }

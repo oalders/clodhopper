@@ -891,10 +891,14 @@
       //
       // First: a failed / timed-out action result would otherwise live only until
       // this repaint (issue #98), because the fresh markup ships an empty .actmsg.
-      // Re-write any still-unexpired message onto its group — which needs the
-      // .actrow already un-hidden by the carry-over, or the message is invisible.
-      // Guarded because the merge IIFE, and so window.__ckActMsgs, only exists
-      // when --enable-merge is on.
+      // Re-write any still-unexpired message onto its group. This is grouped with
+      // the other repaint fix-ups for readability, NOT because the order matters:
+      // querySelectorAll('#content .actgroup') matches a group whether or not its
+      // .actrow ancestor is still hidden (hidden only sets display:none, it does
+      // not detach the node), and the pin reorder below re-appends those same
+      // existing nodes rather than re-rendering them, so text written into an
+      // .actmsg survives it either way. Guarded because the merge IIFE, and so
+      // window.__ckActMsgs, only exists when --enable-merge is on.
       //
       // Second: hold the frozen group order when "pin order" is on — after panel
       // carry-over (so each open peek/actions row moves with its group) and before
@@ -1438,6 +1442,15 @@
       if (!row || row.hidden) return false;
       // Never leave an armed destructive confirm inside a panel we are hiding.
       if (window.__ckDisarm) window.__ckDisarm(row);
+      // Collapsing the panel is how a reader dismisses a result they have read.
+      // Remembered failure text outlives its group's .confirm class, so drop the
+      // notes too — otherwise a repaint inside the 5s window would re-paint the
+      // very message the reader deliberately dismissed. Feature-guarded:
+      // __ckActMsgs only exists under --enable-merge.
+      if (window.__ckActMsgs) {
+        var gs = row.querySelectorAll('.actgroup');
+        for (var i = 0; i < gs.length; i++) window.__ckActMsgs.clear(gs[i]);
+      }
       row.hidden = true;
       var btn = actButton(sess);
       if (btn) {
@@ -1611,10 +1624,10 @@
       return '';
     }
 
-    function noteMsg(group, text, ttlMs) {
+    function noteMsg(group, text) {
       var key = actMsgKey(group);
       if (!key) return;
-      actMsgs[key] = { text: text, expiresAt: Date.now() + (ttlMs || ACTMSG_MIN_MS) };
+      actMsgs[key] = { text: text, expiresAt: Date.now() + ACTMSG_MIN_MS };
     }
 
     // clearMsgNote drops a remembered message that has been deliberately
@@ -1825,7 +1838,7 @@
             if (d.timedOut) msg.textContent = clears
               ? 'timed out — teardown may be incomplete; verify before retrying'
               : 'timed out — verify before retrying';
-            if (!d.ok || d.timedOut) noteMsg(group, msg.textContent, ACTMSG_MIN_MS);
+            if (!d.ok || d.timedOut) noteMsg(group, msg.textContent);
           }
           // A successful row-clearing action is followed by the row disappearing
           // on the next poll (session/worktree gone); leave it locked so nothing
@@ -1842,7 +1855,7 @@
           // the moment the repaint detaches it.
         })
         .catch(function (e) {
-          if (msg) { msg.textContent = 'request failed: ' + e; noteMsg(group, msg.textContent, ACTMSG_MIN_MS); }
+          if (msg) { msg.textContent = 'request failed: ' + e; noteMsg(group, msg.textContent); }
           unlock(group, false);
           restoreFocus();
         })
@@ -1968,14 +1981,17 @@
     var forms = document.querySelectorAll('.actgroup.prform');
     for (var fi = 0; fi < forms.length; fi++) syncForm(forms[fi]);
 
+    // The remembered-message store (issue #98). swapContent (in the poller IIFE
+    // above) calls restore() across each repaint, and the disclosure logic calls
+    // clear() when a panel is collapsed. Merge-gated: this whole IIFE, and so the
+    // export, only exists when --enable-merge is on.
+    window.__ckActMsgs = { note: noteMsg, clear: clearMsgNote, restore: restoreMsgs };
+
     // Collapsing the actions panel (Escape, the toggle, or opening the peek on the
     // same row) reads as "cancel" to a user. An armed two-step confirm must NOT
     // survive out of sight — otherwise reopening the panel and clicking once would
     // fire a destructive merge/close with no fresh confirmation. Exposed so the
     // disclosure logic (in the peek IIFE) can disarm a row before hiding it.
-    // swapContent (in the poller IIFE above) calls restore() across each repaint.
-    window.__ckActMsgs = { note: noteMsg, clear: clearMsgNote, restore: restoreMsgs };
-
     window.__ckDisarm = function (root) {
       if (!root || !root.querySelectorAll) return;
       var groups = root.querySelectorAll('.actgroup.confirm');
