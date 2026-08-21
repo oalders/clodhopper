@@ -154,12 +154,46 @@ board used to expose.
 
 - `--enable-merge` (default off): turn on the roster's **PR-action buttons**.
   When set, each roster row gains squash / squash + admin / close / ready
-  buttons — plus an **end** button that just dismisses the row — behind a
-  two-step confirm. Clicking one runs your local `merge-pr` or
-  `gh pr ready` in that row's worktree — merging or closing the real PR,
+  buttons — plus a **rebase** button and an **end** button that just dismisses
+  the row — behind a two-step confirm. Clicking one runs your local `merge-pr`,
+  `gh pr ready`, or `git` in that row's worktree — merging or closing the real PR,
   removing the worktree, and killing the row's tmux session, same as if you'd
   typed the command yourself. `--squash --admin` bypasses branch protection
   using your own `gh` authentication.
+
+  Whatever address the server is bound to, every action that runs a command
+  (the PR actions, the session actions, and **rebase**) is accepted only from a
+  **loopback or Tailscale peer** — `127.0.0.0/8`, `::1`, `100.64.0.0/10`, or
+  `fd7a:115c:a1e0::/48`. A LAN peer reaching a `--host 0.0.0.0` dashboard gets
+  the read-only board and a `403` for anything else: no action buttons are
+  rendered for it, and the CSRF token is not emitted into its page either, so
+  even the exec-free **end** action is out of reach. The peer address is taken
+  from the connection only — forwarding headers such as `X-Forwarded-For` are
+  never consulted — and there is no override flag.
+
+  A request that *carries* a forwarding header (`X-Forwarded-For`, `X-Real-IP`,
+  `Forwarded`, `X-Forwarded-Host`) is refused outright, whether or not it would
+  run a command: behind a proxy the peer cannot be attributed at all, so even the
+  exec-free **end** is refused. A `Host` header that does not name this dashboard
+  is refused too (the DNS-rebinding defence).
+
+  The same gate — proxy refusal, `Host` allowlist, peer network — covers
+  `--pane-peek`'s `/api/pane`, which execs `tmux` and streams a live pane's text.
+
+  > **Do not run `serve --enable-merge` behind a reverse proxy, `tailscale
+  > serve`, nginx/Caddy, a container port forward, or `ssh -L`.** The peer gate
+  > assumes a direct socket: through a proxy every request arrives from
+  > `127.0.0.1` and *any* peer that can reach the proxy passes it. A request
+  > carrying a forwarding header is refused for that reason, but a proxy that
+  > strips those headers — and `ssh -L`, which never adds one — is invisible to
+  > us. Bind the dashboard directly instead (loopback, or `--tailscale`).
+
+  > **`--host 0.0.0.0` on a CGNAT uplink weakens the gate.** `100.64.0.0/10` is
+  > the carrier-grade NAT range generally, not Tailscale's private property:
+  > mobile hotspots, Starlink, some WISPs and consumer routers hand out
+  > addresses in it, and a neighbouring device that lands in that range passes
+  > the peer check. Binding the tailnet address directly (`--tailscale`)
+  > sidesteps this — nothing off the tailnet can then even connect.
 
 The PR-action form on each row is a three-way radio (squash / close / ready)
 plus two modifiers and a single **run** button:
@@ -172,6 +206,34 @@ plus two modifiers and a single **run** button:
 - The exact command it will run is shown inline, and **run** is a two-step
   confirm: the first click states the consequence, the second fires it — so a
   stray click can never trigger a merge or close.
+
+The row cluster adds two more buttons, each with the same two-step confirm:
+
+- **rebase** runs `git fetch origin BASE`, `git pull --rebase origin BASE`, then
+  `git push --force-with-lease=BRANCH:SHA origin BRANCH` in that row's worktree —
+  so the PR is actually updated. `BASE` is the repo's default branch, resolved
+  server-side from `origin/HEAD`, falling back to `origin/main` / `origin/master`
+  **only when exactly one of them exists** (both, with no `origin/HEAD`, is
+  ambiguous and refuses); it is never supplied by the browser. The push names its
+  refspec explicitly, so a `push.default = matching` config cannot widen it, and
+  the lease is pinned to the `origin/BRANCH` SHA captured *before* the fetch, so
+  a concurrent fetch cannot quietly defeat it. A branch with no remote-tracking
+  ref is pushed without any force. **This rewrites the branch's history and
+  force-pushes it.** If the rebase hits a conflict it is aborted (`git rebase
+  --abort`, so the worktree is left clean), nothing is pushed, and the row reports
+  that the branch needs a manual rebase — or, if the abort itself failed, that
+  the worktree may be left mid-rebase. That warning is only raised when git
+  confirms a rebase really is in progress, so a `pull --rebase` that refused
+  *before* starting never sends you off to clean up a healthy worktree.
+  clodhopper refuses to run at all when the
+  default branch cannot be resolved or is ambiguous, when the worktree is
+  detached or mid-rebase, when it has uncommitted changes (`git pull --rebase`
+  would refuse anyway — commit or stash first), when it is sitting *on* the
+  default branch, or when its branch is `main`/`master` whatever the default
+  resolved to. The whole sequence
+  is bounded by an overall deadline as well as a per-step one, and every attempt
+  (including a refusal) writes one audit line to serve's stderr.
+- **end** just dismisses the roster row; it never touches the repo or the agent.
 
 When a row's Claude session is in a live tmux pane, it also gains two **session
 actions** that drive that pane directly (they do not touch a PR):
@@ -200,9 +262,9 @@ emits another event.
 > runs with **your** credentials against **your** repos. The session actions
 > additionally send **keystrokes into live tmux panes**. (**end** is the mild
 > one: it only writes a row to clodhopper's own database.) Everything here is
-> gated behind `--enable-merge`, so enable it only on a **trusted,
-> single-operator network** (loopback, or your tailnet via `--tailscale`),
-> never on a public bind.
+> gated behind `--enable-merge` **and** restricted to loopback/Tailscale
+> peers, so enable it only on a **trusted, single-operator network**
+> (loopback, or your tailnet via `--tailscale`), never on a public bind.
 
 ### The debug view
 
@@ -253,7 +315,7 @@ pane's `SIGHUP` usually kills it before cleanup runs.
 | `CLODHOPPER_PORT` | `4555` | Dashboard port. |
 | `CLODHOPPER_HOST` | `127.0.0.1` | Dashboard bind address. Set `0.0.0.0` for container/LAN access. |
 | `CLODHOPPER_ALLOW_PUBLIC` | unset | Set to `1` to allow `serve` to bind a public IP (refused by default; the dashboard has no auth or TLS). Also settable per-run with `--allow-public`. |
-| `CLODHOPPER_ALLOWED_HOSTS` | unset | Comma-separated extra `Host:` header values accepted by the PR-action endpoint (e.g. a Tailscale MagicDNS name), beyond loopback and the bind host, which are always allowed. Only consulted when `--enable-merge` is set. |
+| `CLODHOPPER_ALLOWED_HOSTS` | unset | Comma-separated extra `Host:` header values accepted by the PR-action endpoint (e.g. a Tailscale MagicDNS name), beyond loopback and the bind host, which are always allowed. Only consulted when `--enable-merge` is set. It widens the accepted `Host:` header, NOT the accepted peer: actions that run commands still require a loopback or Tailscale peer address. |
 | `CLODHOPPER_WAITING_RETAIN_HOURS` | `720` (30 days) | How long a session with no `SessionEnd` stays on the roster. The default is generous on purpose so a long-idle but still-alive agent (overnight, a weekend, a multi-day pause) stays visible. In practice this window is also bounded by `CLODHOPPER_RETAIN_DAYS` (default 14): pruned events leave the roster regardless, so raise both to keep a session visible beyond two weeks. Reap finished or hard-killed sessions explicitly with `clodhopper end` rather than relying on this timeout. The dashboard's **roster window** dropdown narrows the board per-view (e.g. to the last day) without changing this configured cap. |
 | `CLODHOPPER_DEBUG` | unset | If set, `ingest` writes errors to stderr. |
 

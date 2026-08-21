@@ -31,6 +31,11 @@ type peekConfig struct {
 	enabled bool
 	lines   int
 	cache   *paneCache
+	// bindHost/allowedHosts mirror actionConfig's: /api/pane execs tmux and
+	// streams live transcript text, so it runs the SAME gate the exec-backed
+	// actions do (execPeerAllowed), which needs the Host allowlist too.
+	bindHost     string
+	allowedHosts []string
 }
 
 // clampPaneLines bounds the --pane-lines value; anything out of [1, paneLinesMax]
@@ -111,6 +116,17 @@ func handlePane(w http.ResponseWriter, r *http.Request, peek *peekConfig, now ti
 	setSecurityHeaders(w)
 	if !peek.enabled {
 		http.Error(w, "pane peek disabled", http.StatusForbidden)
+		return
+	}
+	// capturePane execs tmux and streams LIVE pane text — the very content the
+	// storage invariant keeps out of the database — so it runs the SAME gate the
+	// exec-backed dashboard actions run: proxy refusal, Host allowlist, peer
+	// network. The Host half matters especially here because this is a GET and
+	// therefore carries no CSRF token: without it an attacker page that rebinds
+	// its name to the dashboard's address could walk the (trivially enumerable)
+	// pane ids and read transcripts same-origin.
+	if ok, why := execPeerAllowed(r, peek.bindHost, peek.allowedHosts, true); !ok {
+		http.Error(w, why, http.StatusForbidden)
 		return
 	}
 	pane := r.URL.Query().Get("pane")

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -576,10 +577,10 @@ func TestHandleDashboard_CopyButtonSurvivesKeyboardUseAndRefresh(t *testing.T) {
 		`function swapContent(html) {`,
 		`active.closest('#content .copycwd')`,
 		`var key = keep ? keep.getAttribute('data-session') : null;`,
-		`if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return; }`,
+		`if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return true; }`,
 		`document.dispatchEvent(new CustomEvent('ch:contentswap'))`,
 		`document.addEventListener('ch:contentswap', unflash);`,
-		`swapContent(d.html);`,
+		`if (swapContent(d.html)) {`,
 	} {
 		if !strings.Contains(body, frag) {
 			t.Errorf("copy-button a11y fragment missing from the page: %s", frag)
@@ -714,12 +715,58 @@ func TestBuildDashboardDataMergeFlags(t *testing.T) {
 	peek := &peekConfig{}
 	cfg := &actionConfig{enabled: true, token: "tok"}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	// httptest's defaults fail the render gate (RemoteAddr 192.0.2.1 is not an
+	// allowed peer, Host "example.com" is not an allowed host); this test is about
+	// the flag plumbing, so ask as a loopback peer on an allowed Host.
+	r.RemoteAddr = "127.0.0.1:5555"
+	r.Host = "127.0.0.1:4555"
 	data, err := buildDashboardData(r, db, ci, peek, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !data.MergeEnabled || data.CSRFToken != "tok" {
-		t.Fatalf("MergeEnabled=%v CSRFToken=%q", data.MergeEnabled, data.CSRFToken)
+	if !data.ExecEnabled || data.CSRFToken != "tok" {
+		t.Fatalf("ExecEnabled=%v CSRFToken=%q", data.ExecEnabled, data.CSRFToken)
+	}
+}
+
+// Both peer-gated view flags collapse for a peer that fails remoteAllowed: the
+// LAN caller gets a read-only board with no action buttons, no CSRF token to
+// drive even the exec-free "end" by hand, and no ⤢ peek control — /api/pane
+// execs tmux and would 403 that peer anyway, so offering the button would only
+// be a dead control.
+func TestBuildDashboardDataPeerGatesExecAndPeek(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ci := newCICache()
+	peek := &peekConfig{enabled: true}
+	cfg := &actionConfig{enabled: true, token: "tok"}
+
+	loop := httptest.NewRequest(http.MethodGet, "/", nil)
+	loop.RemoteAddr = "127.0.0.1:5555"
+	loop.Host = "127.0.0.1:4555"
+	got, err := buildDashboardData(loop, db, ci, peek, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.ExecEnabled || !got.PeekEnabled {
+		t.Fatalf("loopback peer: ExecEnabled=%v PeekEnabled=%v, want both true", got.ExecEnabled, got.PeekEnabled)
+	}
+
+	lan := httptest.NewRequest(http.MethodGet, "/", nil)
+	lan.RemoteAddr = "192.168.1.5:5555"
+	lan.Host = "127.0.0.1:4555"
+	got, err = buildDashboardData(lan, db, ci, peek, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExecEnabled {
+		t.Error("LAN peer: ExecEnabled = true, want false")
+	}
+	if got.PeekEnabled {
+		t.Error("LAN peer: PeekEnabled = true, want false (/api/pane execs tmux and is peer-gated)")
 	}
 }
 
@@ -1187,8 +1234,8 @@ func TestContentTemplate_PeekControlGated(t *testing.T) {
 // the cell renders and holds the ⤢ peek button (and no merge toggle).
 func TestContentTemplate_ControlsCellRendersUnderPeekAlone(t *testing.T) {
 	d := dashboardData{
-		PeekEnabled:  true,
-		MergeEnabled: false,
+		PeekEnabled: true,
+		ExecEnabled: false,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
 			TmuxSession: "sess", TmuxPane: "%3", LiveTmux: true,
@@ -1229,8 +1276,8 @@ func TestContentTemplate_ControlsCellRendersUnderPeekAlone(t *testing.T) {
 // both cases are covered elsewhere.
 func TestContentTemplate_ControlsColumnAbsentWhenNeitherEnabled(t *testing.T) {
 	d := dashboardData{
-		PeekEnabled:  false,
-		MergeEnabled: false,
+		PeekEnabled: false,
+		ExecEnabled: false,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
 			TmuxSession: "sess", TmuxPane: "%3", LiveTmux: true,
@@ -1387,8 +1434,8 @@ func TestContentTemplate_SessionActionsGatedOnPaneNotPeek(t *testing.T) {
 	// Merge on, peek OFF, a row that has a pane but LiveTmux false (as it would be
 	// when the peek liveness cache never ran because peek is disabled).
 	withPane := dashboardData{
-		MergeEnabled: true,
-		PeekEnabled:  false,
+		ExecEnabled: true,
+		PeekEnabled: false,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
 			TmuxSession: "sess", TmuxPane: "%3", HasPane: true, LiveTmux: false,
@@ -1428,7 +1475,7 @@ func TestContentTemplate_SessionActionsGatedOnPaneNotPeek(t *testing.T) {
 // (Roster.jsx), where the always-visible form would otherwise multiply row height.
 func TestContentTemplate_ActionsHiddenBehindDisclosure(t *testing.T) {
 	d := dashboardData{
-		MergeEnabled: true,
+		ExecEnabled: true,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
 			TmuxSession: "sess", TmuxPane: "%3", HasPane: true,
@@ -1482,7 +1529,7 @@ func TestContentTemplate_ActionsHiddenBehindDisclosure(t *testing.T) {
 // mutual exclusion silently, with no other test rendering peek + merge together.
 func TestContentTemplate_PanelRowsAdjacentToMainRow(t *testing.T) {
 	d := dashboardData{
-		MergeEnabled: true, PeekEnabled: true,
+		ExecEnabled: true, PeekEnabled: true,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
 			TmuxSession: "sess", TmuxPane: "%3", HasPane: true, LiveTmux: true,
@@ -1590,7 +1637,7 @@ func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 	// Peek on, merge off: 7 base cols + controls col (holds the peek button) →
 	// panerow spans 8 at rest.
 	off := base
-	off.MergeEnabled = false
+	off.ExecEnabled = false
 	wantColspan(t, render(off), 8, "peek on, merge off")
 
 	// Debug adds the id column, so the same row spans 9.
@@ -1600,14 +1647,14 @@ func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 
 	// Peek on + merge on: both panerow and actrow span 8 at rest.
 	on := base
-	on.MergeEnabled = true
+	on.ExecEnabled = true
 	wantColspan(t, render(on), 8, "peek on + merge on")
 
 	// Peek OFF + merge on: no panerow (peek gates it), but the merge actrow still
 	// spans 8 — the controls column is present under merge alone.
 	mergeOnly := dashboardData{
-		MergeEnabled: true,
-		PeekEnabled:  false,
+		ExecEnabled: true,
+		PeekEnabled: false,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Status: statusWaiting, HasPane: true,
 		}},
@@ -1678,13 +1725,13 @@ func TestDashboardRendersActionButtonsOnlyWhenEnabled(t *testing.T) {
 	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}}
 	// disabled
 	off := base
-	off.MergeEnabled = false
+	off.ExecEnabled = false
 	if strings.Contains(renderDashboard(t, off), "data-action=") {
 		t.Fatal("action buttons rendered while disabled")
 	}
 	// enabled
 	on := base
-	on.MergeEnabled = true
+	on.ExecEnabled = true
 	on.CSRFToken = "tok"
 	html := renderDashboard(t, on)
 	if !strings.Contains(html, "data-action=") || !strings.Contains(html, `data-csrf="tok"`) {
@@ -1694,12 +1741,12 @@ func TestDashboardRendersActionButtonsOnlyWhenEnabled(t *testing.T) {
 
 func TestDashboardRendersForceToggleWhenEnabled(t *testing.T) {
 	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}}
-	off := base // MergeEnabled false
+	off := base // ExecEnabled false
 	if strings.Contains(renderDashboard(t, off), "practforce") {
 		t.Fatal("force toggle rendered while merge disabled")
 	}
 	on := base
-	on.MergeEnabled = true
+	on.ExecEnabled = true
 	on.CSRFToken = "tok"
 	if !strings.Contains(renderDashboard(t, on), "practforce") {
 		t.Fatal("force toggle missing while merge enabled")
@@ -1712,12 +1759,12 @@ func TestDashboardRendersForceToggleWhenEnabled(t *testing.T) {
 // those stale rows are what End exists to clear.
 func TestDashboardRendersEndButtonOnlyWhenEnabled(t *testing.T) {
 	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}}
-	off := base // MergeEnabled false
+	off := base // ExecEnabled false
 	if strings.Contains(renderDashboard(t, off), `data-action="end"`) {
 		t.Fatal("End button rendered while merge disabled")
 	}
 	on := base
-	on.MergeEnabled = true
+	on.ExecEnabled = true
 	on.CSRFToken = "tok"
 	html := renderDashboard(t, on)
 	if !strings.Contains(html, `data-action="end"`) {
@@ -1743,9 +1790,9 @@ func TestDashboardRendersEndButtonOnlyWhenEnabled(t *testing.T) {
 // into the rendered dashboard whenever the write surface is on.
 func TestDashboardWiresEndIntoActionScript(t *testing.T) {
 	on := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	}
 	html := renderDashboard(t, on)
 	if !strings.Contains(html, "end: 'dismiss this row from the dashboard") {
@@ -2090,9 +2137,9 @@ func TestContentTemplate_PeekIdentityIsSessionAcrossSharedPane(t *testing.T) {
 // adjacent to the pin-apply call.
 func TestDashboardActionMessageSurvivesContentSwap(t *testing.T) {
 	on := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	}
 	html := renderDashboard(t, on)
 
@@ -2121,9 +2168,9 @@ func TestDashboardActionMessageSurvivesContentSwap(t *testing.T) {
 // failure cannot resurrect.
 func TestDashboardActionMessagePersistsOnlyFailures(t *testing.T) {
 	on := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	}
 	html := renderDashboard(t, on)
 
@@ -2164,9 +2211,9 @@ func TestDashboardActionMessagePersistsOnlyFailures(t *testing.T) {
 // clear here a repaint inside the 5s window would re-paint the dismissed text.
 func TestDashboardClosingActionsPanelClearsRememberedMessages(t *testing.T) {
 	on := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	}
 	html := renderDashboard(t, on)
 
@@ -2191,9 +2238,9 @@ func TestDashboardClosingActionsPanelClearsRememberedMessages(t *testing.T) {
 // would show a blank .actmsg — the very bug this work exists to fix.
 func TestDashboardPeekSwitchKeepsRememberedMessages(t *testing.T) {
 	on := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	}
 	html := renderDashboard(t, on)
 
@@ -2236,9 +2283,9 @@ func TestDashboardPeekSwitchKeepsRememberedMessages(t *testing.T) {
 // innerHTML assignment may appear anywhere in restoreMsgs.
 func TestDashboardActionMessageRestoreNeverUsesInnerHTML(t *testing.T) {
 	on := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	}
 	html := renderDashboard(t, on)
 
@@ -2272,14 +2319,851 @@ const wantInnerHTML = 1
 // template needs a deliberate security look before the count is bumped.
 func TestDashboardInnerHTMLOccurrencesAreAccountedFor(t *testing.T) {
 	on := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	}
 	html := renderDashboard(t, on)
 
 	got := len(regexp.MustCompile(`(?i)innerHTML`).FindAllString(html, -1))
 	if got != wantInnerHTML {
 		t.Errorf("dashboard renders %d innerHTML occurrences, want %d: the dashboard paints raw git/gh subprocess output, so any new innerHTML needs a deliberate security look (does the assigned string come from a subprocess or any other untrusted source?) before wantInnerHTML is changed", got, wantInnerHTML)
+	}
+}
+
+// The per-row rebase button is part of the opt-in write surface (it rewrites and
+// force-pushes a branch), so it must be absent unless --enable-merge is on. Like
+// End it lives in the ungated row cluster — a row with no live tmux pane is
+// still a branch worth rebasing.
+func TestDashboardRendersRebaseButtonOnlyWhenEnabled(t *testing.T) {
+	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}}
+	off := base // ExecEnabled false
+	if strings.Contains(renderDashboard(t, off), `data-action="rebase"`) {
+		t.Fatal("rebase button rendered while merge disabled")
+	}
+	on := base
+	on.ExecEnabled = true
+	on.CSRFToken = "tok"
+	html := renderDashboard(t, on)
+	if !strings.Contains(html, `data-action="rebase"`) {
+		t.Fatal("rebase button missing while merge enabled")
+	}
+	if on.Agents[0].HasPane {
+		t.Fatal("fixture unexpectedly has a pane")
+	}
+	// Destructive: it must keep the two-step arm/confirm flow.
+	if strings.Contains(html, `data-action="rebase" data-noconfirm`) {
+		t.Fatal("rebase must not opt out of the confirm step")
+	}
+}
+
+// Like End, rebase contributes string literals to the shared action JS: its
+// CAVEAT entry (the confirm-step warning) and its success wording. It must also
+// stay OUT of the row-clearing set — a rebase leaves the row in place.
+func TestDashboardWiresRebaseIntoActionScript(t *testing.T) {
+	on := dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	}
+	html := renderDashboard(t, on)
+	// caveatFor already prepends "<branch>: ", so the caveat itself must not
+	// re-name the branch — pin the exact literal that renders after that prefix.
+	const caveat = "rebase: 'REWRITTEN — rebased onto the default branch, then force-pushed " +
+		"(--force-with-lease), replacing the PR\\'s commits. On a conflict the rebase is aborted " +
+		"and nothing is pushed'"
+	if !strings.Contains(html, caveat) {
+		t.Errorf("CAVEAT.rebase literal changed; want %s", caveat)
+	}
+	if strings.Contains(html, "rebase: 'REWRITES THIS BRANCH") {
+		t.Error("caveat still restates the branch that caveatFor already prepends")
+	}
+	// A timed-out force-push may or may not have landed, so rebase needs wording
+	// that says WHAT to check rather than the generic "verify before retrying".
+	if !strings.Contains(html, "action === 'rebase'\n                ? 'timed out — the rebase/push may have partially completed; check the branch on GitHub before retrying'") {
+		t.Error("rebase has no timeout-specific wording")
+	}
+	if !strings.Contains(html, "action === 'rebase' ? 'rebased onto the default branch and force-pushed'") {
+		t.Error("rebase has no success wording")
+	}
+	// Assert the whole declaration: rebase must NOT have been added to it, and a
+	// substring match on 'rebase' alone would not prove that.
+	if !strings.Contains(html, "var clears = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'end');") {
+		t.Error("clears set changed; rebase must not clear the row")
+	}
+}
+
+// An ARMED two-step confirm lives in #content, and window.__ckActionBusy only
+// covers a request that is already in flight — not the gap between the arm click
+// and the confirm click. A poll landing in that gap must neither discard the
+// armed state nor (as it once did) skip the repaint board-wide, freezing every
+// OTHER row's status and CI while one reader decides. swapContent therefore
+// carries the armed group across the swap by session id and re-arms it, and
+// reports whether it painted so the poller only advances the signature when it
+// did — recording a signature for a paint that never happened would leave the
+// board stale until something else changed it.
+func TestDashboardSwapContentCarriesArmedConfirm(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	fn := strings.Index(html, "function swapContent(")
+	if fn < 0 {
+		t.Fatal("swapContent not found")
+	}
+	// The board-wide bail-out is gone: an armed row must not stop other rows
+	// repainting.
+	if strings.Contains(html, "if (document.querySelector('#content .actgroup.confirm')) return;") {
+		t.Error("swapContent still skips the whole repaint while a row is armed")
+	}
+	for _, frag := range []string{
+		"if (window.__ckArmSnapshot) armedState = window.__ckArmSnapshot();",
+		"armRefocused = !!window.__ckArmRestore(armedState);",
+		"window.__ckArmSnapshot = function () {",
+		"window.__ckArmRestore = function (list) {",
+	} {
+		at := strings.Index(html, frag)
+		if at < 0 {
+			t.Errorf("armed carry-over fragment missing: %s", frag)
+		}
+	}
+	// Both carry-over calls sit inside swapContent, and the restore runs AFTER
+	// the innerHTML replacement it is restoring into.
+	snap := strings.Index(html, "if (window.__ckArmSnapshot) armedState = window.__ckArmSnapshot();")
+	swap := strings.Index(html, "document.getElementById('content').innerHTML = html;")
+	rest := strings.Index(html, "armRefocused = !!window.__ckArmRestore(armedState);")
+	if snap < fn || snap >= swap || swap >= rest {
+		t.Fatalf("carry-over ordering wrong: swapContent=%d snapshot=%d swap=%d restore=%d", fn, snap, swap, rest)
+	}
+	// The busy-count guard it complements must still be there, and declining now
+	// reports false rather than silently letting the poller advance sig.
+	if !strings.Contains(html, "if (window.__ckActionBusy) return false;") {
+		t.Error("the in-flight busy guard disappeared (or no longer reports a declined paint)")
+	}
+	if !strings.Contains(html, "if (swapContent(d.html)) {") {
+		t.Error("the poller advances sig without checking that swapContent painted")
+	}
+}
+
+// The action JS must read the CSRF token that the server actually rendered:
+// asserting only the header NAME would pass even if CSRF were bound to nothing.
+func TestDashboardBindsCSRFTokenValueIntoActionScript(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	if !strings.Contains(html, `data-csrf="tok"`) {
+		t.Fatal("CSRF token not rendered onto <body>")
+	}
+	if !strings.Contains(html, "var CSRF = document.body.dataset.csrf;") {
+		t.Fatal("action script does not initialize CSRF from the rendered token")
+	}
+	if !strings.Contains(html, "'X-Clodhopper-Token': CSRF,") {
+		t.Fatal("the request does not send the bound token in the CSRF header")
+	}
+}
+
+// A peer that fails remoteAllowed (a LAN host on a --host 0.0.0.0 serve) would
+// get a 403 from handleAction for anything that execs, so the dashboard does not
+// offer it those buttons — and, since data-csrf rides on the same flag, it gets
+// no CSRF token either, so it cannot drive even the exec-free End action by
+// hand. The board itself stays fully readable. handleAction remains the real
+// gate; this is defence in depth and UX.
+func TestDashboardHidesExecActionsForNonAllowedPeer(t *testing.T) {
+	base := dashboardData{
+		Agents:    []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting, HasPane: true}},
+		CSRFToken: "tok",
+	}
+	gated := base // ExecEnabled false: peer is not on an allowed network
+	html := renderDashboard(t, gated)
+	for _, a := range []string{"squash", "close", "ready", "rebase", "monitor-ci", "new-monitor", "end"} {
+		if strings.Contains(html, `data-action="`+a+`"`) {
+			t.Errorf("%s button rendered for a peer that cannot run commands", a)
+		}
+	}
+	if strings.Contains(html, `data-mode="squash"`) {
+		t.Error("the PR action radiogroup rendered for a peer that cannot run commands")
+	}
+	if strings.Contains(html, "data-csrf") {
+		t.Error("the CSRF token was handed to a peer that fails the network gate")
+	}
+	// The read-only board is unaffected.
+	if !strings.Contains(html, "feature") {
+		t.Error("the roster row itself did not render")
+	}
+
+	allowed := base
+	allowed.ExecEnabled = true
+	html = renderDashboard(t, allowed)
+	for _, a := range []string{"squash", "rebase", "monitor-ci", "end"} {
+		if !strings.Contains(html, `data-action="`+a+`"`) {
+			t.Errorf("%s button missing for an allowed peer", a)
+		}
+	}
+	if !strings.Contains(html, `data-csrf="tok"`) {
+		t.Error("the CSRF token is missing for an allowed peer")
+	}
+}
+
+// buildDashboardData derives ExecEnabled from the REQUEST's peer, not from
+// --enable-merge alone: the flag being on is necessary but not sufficient.
+func TestBuildDashboardDataExecEnabledFollowsPeer(t *testing.T) {
+	db := openTestDB(t)
+	cfg := &actionConfig{enabled: true, token: "tok"}
+	for _, c := range []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:5555", true},
+		{"100.64.0.7:5555", true},
+		{"192.168.1.5:5555", false},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = c.addr
+		r.Host = "127.0.0.1:4555"
+		d, err := buildDashboardData(r, db, newCICache(), &peekConfig{cache: newPaneCache()}, cfg)
+		if err != nil {
+			t.Fatalf("buildDashboardData: %v", err)
+		}
+		if d.ExecEnabled != c.want {
+			t.Errorf("%s: ExecEnabled = %v, want %v", c.addr, d.ExecEnabled, c.want)
+		}
+	}
+}
+
+// An armed confirm on a destructive action must not stay live unattended: it
+// disarms itself when the page is hidden and after an idle timeout, both through
+// the shared window.__ckDisarm path (never a second hand-rolled teardown) and
+// both leaving the same "expired" message behind. The timeout is an INACTIVITY
+// timer — interacting with the armed group restarts it — so a reader working
+// through a long caveat is never timed out mid-decision.
+func TestDashboardArmedConfirmAutoDisarms(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	for _, want := range []string{
+		// Hidden page: disarm the whole board, with the same message the timer uses.
+		"document.addEventListener('visibilitychange', function () {",
+		"if (document.hidden) window.__ckDisarm(document, ARM_EXPIRED_MSG);",
+		"var ARM_EXPIRED_MSG = 'confirmation expired — press again';",
+		// Idle timer, armed in armConfirm and routed through the shared path.
+		"var ARM_IDLE_MS = 60000;",
+		"group.__ckArmTimer = setTimeout(function () {",
+		"window.__ckDisarm(group, ARM_EXPIRED_MSG);",
+		// Interaction inside the armed group restarts the timer (WCAG 2.2.1).
+		"function resetArmTimer(ev) {",
+		"if (g && g.__ckArmTimer) startArmTimer(g);",
+		"document.addEventListener('keydown', resetArmTimer, true);",
+		"document.addEventListener('pointerdown', resetArmTimer, true);",
+		"document.addEventListener('focusin', resetArmTimer, true);",
+		// One teardown path, cancelled from unlock (cancel/re-arm) and fire (confirm).
+		"function clearArmTimer(group) {",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("auto-disarm piece missing from the action script: %s", want)
+		}
+	}
+	// unlock() is the shared teardown; the timer must be cancelled there so a
+	// cancel or a re-arm cannot leave a stale timer running.
+	unlockAt := strings.Index(html, "function unlock(group, clearMsg) {")
+	if unlockAt < 0 {
+		t.Fatal("unlock not found")
+	}
+	if !strings.Contains(html[unlockAt:unlockAt+200], "clearArmTimer(group);") {
+		t.Error("unlock does not cancel the idle disarm timer")
+	}
+	// And on confirm: fire() locks the group and owns it from there on.
+	fireAt := strings.Index(html, "function fire(group, btn) {")
+	if fireAt < 0 {
+		t.Fatal("fire not found")
+	}
+	if !strings.Contains(html[fireAt:fireAt+900], "clearArmTimer(group);") {
+		t.Error("fire does not cancel the idle disarm timer on confirm")
+	}
+	// The row-clearing action list must still exclude rebase (it leaves the row up).
+	if !strings.Contains(html, "var clears = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'end');") {
+		t.Error("the row-clearing action list changed (rebase must stay out of it)")
+	}
+}
+
+// Every disarm path — explicit cancel, idle timeout, hidden tab — removes the
+// injected ✕ the reader may be sitting on, which drops keyboard focus to <body>
+// with no interaction of the user's own (WCAG 2.4.3). The restore therefore
+// lives in unlock, the single teardown path, rather than only on the explicit
+// cancel branch.
+func TestDashboardDisarmRestoresFocus(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	unlockAt := strings.Index(html, "function unlock(group, clearMsg) {")
+	armAt := strings.Index(html, "function armConfirm(group, btn, resumeMs) {")
+	if unlockAt < 0 || armAt < unlockAt {
+		t.Fatal("unlock/armConfirm not found in the expected order")
+	}
+	body := html[unlockAt:armAt]
+	for _, want := range []string{
+		"var hadFocus = document.activeElement && group.contains(document.activeElement)",
+		"var armedBtn = group.querySelector('.pract.confirm');",
+		"if (hadFocus && (!hadFocus.isConnected || hadFocus.disabled) &&",
+		"armedBtn.focus({ preventScroll: true });",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("unlock is missing the focus restore piece: %s", want)
+		}
+	}
+	// The cancel branch must not hand-roll its own restore any more.
+	if strings.Contains(html, "if (armedBtn && armedBtn.isConnected && !armedBtn.disabled) armedBtn.focus();") {
+		t.Error("the explicit-cancel branch still hand-rolls a focus restore")
+	}
+}
+
+// With no branch at all the rebase button used to announce "rebase (unknown)
+// onto the default branch and force-push". Naming a placeholder is worse than
+// naming nothing, so the branch clause is simply omitted.
+func TestDashboardRebaseLabelOmitsUnknownBranch(t *testing.T) {
+	withBranch := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true, CSRFToken: "tok",
+	})
+	if !strings.Contains(withBranch, `aria-label="rebase feature onto the default branch and force-push"`) {
+		t.Error("a known branch is no longer named in the rebase label")
+	}
+	none := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Status: statusWaiting}},
+		ExecEnabled: true, CSRFToken: "tok",
+	})
+	if strings.Contains(none, "rebase (unknown) onto") {
+		t.Error("the rebase label still announces a placeholder branch")
+	}
+	if !strings.Contains(none, `aria-label="rebase onto the default branch and force-push"`) {
+		t.Error("the branch clause was not omitted cleanly")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// review round 5
+// ---------------------------------------------------------------------------
+
+// /api/pane and /api/action share one gate, which means both configs must be
+// handed the same Host-allowlist inputs. Pinning the CONSTRUCTION, not just the
+// gate: dropping the wiring fails closed, so nothing would 500 — every
+// Tailscale/magicDNS peer would just silently lose peek and every action.
+func TestNewServeConfigsWiresTheHostAllowlist(t *testing.T) {
+	t.Setenv("CLODHOPPER_ALLOWED_HOSTS", "board.tailnet.ts.net, extra.example")
+	// Deliberately asymmetric arguments: panePeek true / enableMerge false so the
+	// two booleans cannot be swapped unnoticed, and a paneLines value far outside
+	// the accepted range so dropping clampPaneLines cannot pass either.
+	peek, act := newServeConfigs("100.64.0.2", true, 999999, false)
+	if !peek.enabled {
+		t.Error("peekConfig.enabled is not wired from panePeek")
+	}
+	if act.enabled {
+		t.Error("actionConfig.enabled is not wired from enableMerge")
+	}
+	if peek.lines != clampPaneLines(999999) || peek.lines == 999999 {
+		t.Errorf("peekConfig.lines = %d, want the clamped %d", peek.lines, clampPaneLines(999999))
+	}
+
+	want := []string{"board.tailnet.ts.net", "extra.example"}
+	for _, c := range []struct {
+		name     string
+		bindHost string
+		allowed  []string
+	}{
+		{"peekConfig", peek.bindHost, peek.allowedHosts},
+		{"actionConfig", act.bindHost, act.allowedHosts},
+	} {
+		if c.bindHost != "100.64.0.2" {
+			t.Errorf("%s.bindHost = %q, want the bound host", c.name, c.bindHost)
+		}
+		if !slices.Equal(c.allowed, want) {
+			t.Errorf("%s.allowedHosts = %v, want %v", c.name, c.allowed, want)
+		}
+	}
+
+	// What that wiring buys, end to end: a magicDNS peer passes the shared gate.
+	r := httptest.NewRequest(http.MethodGet, "/api/pane?pane=%253", nil)
+	r.RemoteAddr = "100.64.0.9:5555"
+	r.Host = "board.tailnet.ts.net"
+	if ok, why := execPeerAllowed(r, peek.bindHost, peek.allowedHosts, true); !ok {
+		t.Fatalf("a declared magicDNS host was refused for peek: %s", why)
+	}
+}
+
+// The dashboard RENDER runs the same gate the endpoints run, not bare
+// remoteAllowed. A DNS-rebinding page arrives on a loopback socket, so without
+// the Host allowlist here the page would be handed data-csrf — and a token, once
+// scraped, can be replayed by a peer that sets Host itself. A proxied request is
+// unattributable for the same reason and gets a read-only board too.
+func TestBuildDashboardDataRenderRunsTheFullGate(t *testing.T) {
+	db := openTestDB(t)
+	peek := &peekConfig{enabled: true, cache: newPaneCache()}
+	cfg := &actionConfig{enabled: true, token: "tok"}
+	req := func() *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = "127.0.0.1:5555"
+		r.Host = "127.0.0.1:4555"
+		return r
+	}
+
+	ok, err := buildDashboardData(req(), db, newCICache(), peek, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok.ExecEnabled || !ok.PeekEnabled {
+		t.Fatalf("a plain loopback request lost its controls: Exec=%v Peek=%v",
+			ok.ExecEnabled, ok.PeekEnabled)
+	}
+
+	rebound := req()
+	rebound.Host = "evil.example.com"
+	proxied := req()
+	proxied.Header.Set("X-Forwarded-For", "203.0.113.9")
+	for _, c := range []struct {
+		name string
+		r    *http.Request
+	}{
+		{"rebound Host", rebound},
+		{"proxied request", proxied},
+	} {
+		got, err := buildDashboardData(c.r, db, newCICache(), peek, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ExecEnabled {
+			t.Errorf("%s: ExecEnabled = true, want false (it would be handed the CSRF token)", c.name)
+		}
+		if got.PeekEnabled {
+			t.Errorf("%s: PeekEnabled = true, want false", c.name)
+		}
+		html := renderDashboard(t, got)
+		if strings.Contains(html, "data-csrf=") {
+			t.Errorf("%s: the CSRF token was emitted into the page", c.name)
+		}
+	}
+}
+
+// A row with a live pane renders THREE .actgroup elements sharing one
+// data-session (session / prform / rowform). The armed-confirm carry-over must
+// therefore key on something that tells them apart, or a rebase/end arm matches
+// the session group first (DOM order), finds no button for its action, and is
+// dropped — which is every row with a pane, i.e. the common case.
+func TestDashboardArmRestoreDiscriminatesActionGroups(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents: []Agent{{
+			SessionID: "s1", Branch: "feature", Status: statusWaiting,
+			TmuxPane: "%12", HasPane: true,
+		}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	// The premise: three groups, one session id, distinguished only by class.
+	for _, cls := range []string{"actgroup actsession", "actgroup prform", "actgroup rowform"} {
+		if !strings.Contains(html, `class="`+cls+`" data-session="s1"`) {
+			t.Fatalf("expected a %q group for the session: the discriminator test needs all three", cls)
+		}
+	}
+	// Only rowform holds rebase/end, so a snapshot that cannot name its group
+	// kind cannot find them again.
+	for _, frag := range []string{
+		"function armGroupKind(g) {",
+		"if (g.classList.contains('prform')) return 'prform';",
+		"if (g.classList.contains('rowform')) return 'rowform';",
+		"if (g.classList.contains('actsession')) return 'actsession';",
+		"kind: armGroupKind(g),",
+		"if (armGroupKind(g) !== st.kind) continue;",
+		// And when the matched group somehow lacks the button, keep scanning
+		// instead of abandoning the entry.
+		"if (!btn) continue;",
+	} {
+		if !strings.Contains(html, frag) {
+			t.Errorf("arm carry-over lost its group discriminator: %s", frag)
+		}
+	}
+	if strings.Contains(html, "if (!btn) break;") {
+		t.Error("__ckArmRestore still abandons the snapshot entry on the first non-matching group")
+	}
+	// The fail-closed half: an .actgroup carrying none of the three classes must
+	// name NO kind, so it can never be matched by a snapshot entry.
+	kindAt := strings.Index(html, "function armGroupKind(g) {")
+	kindEnd := strings.Index(html[kindAt:], "\n    }")
+	if kindAt < 0 || kindEnd < 0 {
+		t.Fatal("armGroupKind not found")
+	}
+	if !strings.Contains(html[kindAt:kindAt+kindEnd], "return '';") {
+		t.Error("armGroupKind no longer falls back to the empty (unmatchable) kind")
+	}
+	if strings.Contains(html, "g.classList.contains('prform') !== st.form") {
+		t.Error("__ckArmRestore still discriminates on the prform boolean alone")
+	}
+}
+
+// The idle disarm is an INACTIVITY timer with a real deadline. __ckArmRestore
+// runs on every repaint whose signature changed, so re-arming with a fresh 60s
+// would mean an armed destructive confirm never expires on a busy board. It must
+// resume what is left instead — and it must drop the pre-swap timeout, or every
+// repaint orphans one that later fires on a detached node.
+func TestDashboardArmRestoreResumesTheIdleDeadline(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	for _, frag := range []string{
+		"function startArmTimer(group, ms) {",
+		"var wait = (typeof ms === 'number' && ms > 0) ? ms : ARM_IDLE_MS;",
+		"group.__ckArmDeadline = Date.now() + wait;",
+		"left: Math.max(0, (g.__ckArmDeadline || 0) - Date.now()),",
+		"armConfirm(g, btn, st.left);",
+		"function armConfirm(group, btn, resumeMs) {",
+		"startArmTimer(group, resumeMs);",
+	} {
+		if !strings.Contains(html, frag) {
+			t.Errorf("the resumable arm deadline is missing a piece: %s", frag)
+		}
+	}
+	// An already-lapsed deadline must EXPIRE, not be rounded up to a fresh minute:
+	// `left` clamps at 0, and a backgrounded tab can hand the restore a 0.
+	for _, frag := range []string{
+		"if (typeof ms === 'number' && ms <= 0) {",
+		"window.__ckDisarm(group, ARM_EXPIRED_MSG);",
+		"var stillArmed = g.classList.contains('confirm');",
+		// stillArmed is a GUARD, not a variable: both consumers must be gated on
+		// it, or the restore overwrites the expiry message and — worse —
+		// refocuses and re-arms the group armConfirm just tore down.
+		"if (stillArmed && st.msg && slot && slot.textContent !== st.msg) slot.textContent = st.msg;",
+		"if (stillArmed && st.focused) {",
+	} {
+		if !strings.Contains(html, frag) {
+			t.Errorf("a lapsed deadline is still re-armed for a full ARM_IDLE_MS: %s", frag)
+		}
+	}
+	// ...and it must be declared before the branches that read it.
+	declAt := strings.Index(html, "var stillArmed = g.classList.contains('confirm');")
+	msgAt := strings.Index(html, "if (stillArmed && st.msg && slot && slot.textContent !== st.msg) slot.textContent = st.msg;")
+	focAt := strings.Index(html, "if (stillArmed && st.focused) {")
+	if declAt < 0 || msgAt < declAt || focAt < msgAt {
+		t.Error("the stillArmed guard is not declared ahead of both branches that consume it")
+	}
+	// The lapsed branch must RETURN. Without it both pinned lines above survive
+	// while execution falls through to `wait = ARM_IDLE_MS`, re-arming the group
+	// the disarm just tore down — an expired confirmation granted a fresh minute.
+	lapseAt := strings.Index(html, "if (typeof ms === 'number' && ms <= 0) {")
+	waitAt := strings.Index(html, "var wait = (typeof ms === 'number' && ms > 0) ? ms : ARM_IDLE_MS;")
+	if lapseAt < 0 || waitAt < lapseAt {
+		t.Fatal("startArmTimer's lapsed-deadline branch not found ahead of the fresh-wait fallback")
+	}
+	if !strings.Contains(html[lapseAt:waitAt], "return;") {
+		t.Error("the lapsed-deadline branch falls through to a fresh ARM_IDLE_MS instead of returning")
+	}
+
+	// The snapshot clears the doomed group's timer before the swap.
+	snapAt := strings.Index(html, "window.__ckArmSnapshot = function () {")
+	restAt := strings.Index(html, "window.__ckArmRestore = function (list) {")
+	if snapAt < 0 || restAt < snapAt {
+		t.Fatal("snapshot/restore not found in the expected order")
+	}
+	snapBody := html[snapAt:restAt]
+	clearAt := strings.Index(snapBody, "clearArmTimer(g);")
+	if clearAt < 0 {
+		t.Fatal("__ckArmSnapshot leaves the pre-swap group's timeout pending, orphaning it")
+	}
+	// ORDER: the deadline must be READ into the snapshot before clearArmTimer
+	// zeroes it. Reversed, `left` is 0 on every snapshot and the restore hands
+	// out a fresh full minute each repaint.
+	leftAt := strings.Index(snapBody, "left: Math.max(0, (g.__ckArmDeadline || 0) - Date.now()),")
+	if leftAt < 0 || leftAt > clearAt {
+		t.Error("__ckArmSnapshot clears the arm deadline before recording what is left of it")
+	}
+
+	// ORDER: the resumed deadline is re-asserted AFTER the refocus. focus()
+	// dispatches focusin synchronously, and the capture-phase resetArmTimer sees
+	// the now-armed group and restarts it at a fresh full ARM_IDLE_MS.
+	restBody := html[restAt:]
+	armAt := strings.Index(restBody, "armConfirm(g, btn, st.left);")
+	focusAt := strings.Index(restBody, "if (!tgt.disabled) { tgt.focus({ preventScroll: true }); refocused = true; }")
+	reAssertAt := strings.Index(restBody, "startArmTimer(g, st.left);")
+	if armAt < 0 || focusAt < 0 || reAssertAt < 0 {
+		t.Fatal("__ckArmRestore is missing the arm / refocus / re-assert sequence")
+	}
+	if armAt >= focusAt || focusAt >= reAssertAt {
+		t.Error("__ckArmRestore does not re-assert the resumed deadline after its refocus; " +
+			"the synchronous focusin resurrects a full ARM_IDLE_MS")
+	}
+}
+
+// A keyboard user who armed a destructive confirm has focus on the ✓ confirm
+// button. The swap detaches it, and the generic fallback parks focus on
+// #content — dumping them out of the group holding a LIVE destructive
+// confirmation and making them Tab back through the roster (WCAG 2.4.3). The
+// restore therefore re-homes focus itself, and the fallback must stand down.
+func TestDashboardArmRestoreKeepsFocusOnTheArmedButton(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	for _, frag := range []string{
+		"focused: !!(active && g.contains(active))",
+		"var tgt = armFocusTarget(g, st.focusKind) || btn;",
+		"if (!tgt.disabled) { tgt.focus({ preventScroll: true }); refocused = true; }",
+		"focusKind: armFocusKind(g, active)",
+		"return refocused;",
+		"if (!armRefocused && active && active !== document.body && !active.isConnected) {",
+	} {
+		if !strings.Contains(html, frag) {
+			t.Errorf("the armed-button focus restore is missing a piece: %s", frag)
+		}
+	}
+	rest := strings.Index(html, "armRefocused = !!window.__ckArmRestore(armedState);")
+	fallback := strings.Index(html, "if (!armRefocused && active && active !== document.body && !active.isConnected) {")
+	if rest < 0 || fallback < rest {
+		t.Fatal("the arm restore must run BEFORE the #content focus fallback")
+	}
+}
+
+// armFocusKind / armFocusTarget are a MAPPING, not a pair of call sites: the
+// kind a control records must resolve back to that same control after the swap.
+// A swapped selector or an off-by-one prefix slice silently parks a reader on
+// the wrong checkbox (or on nothing), which is precisely the WCAG 2.4.3 failure
+// the focus restore exists to prevent — so assert each kind against its
+// selector, in both directions.
+func TestDashboardArmFocusKindMapsEachControlToItsSelector(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	kindAt := strings.Index(html, "function armFocusKind(g, el) {")
+	tgtAt := strings.Index(html, "function armFocusTarget(g, kind) {")
+	snapAt := strings.Index(html, "window.__ckArmSnapshot = function () {")
+	if kindAt < 0 || tgtAt < kindAt || snapAt < tgtAt {
+		t.Fatal("armFocusKind / armFocusTarget not found in the expected order")
+	}
+	kindBody, tgtBody := html[kindAt:tgtAt], html[tgtAt:snapAt]
+
+	// A focused element OUTSIDE the group must never be attributed to it: the
+	// snapshot walks every armed group, so without this the first group would
+	// claim whatever the document happens to have focused.
+	if !strings.Contains(kindBody, "if (!el || !g.contains(el) || !el.classList) return '';") {
+		t.Error("armFocusKind no longer rejects an element outside the group")
+	}
+
+	// Each kind string, the class that produces it, and the selector that finds
+	// it again. Swapping any two selectors breaks a pair here.
+	for _, c := range []struct{ kind, class string }{
+		{"cancel", "actcancel"},
+		{"admin", "practadmin"},
+		{"force", "practforce"},
+	} {
+		record := "if (el.classList.contains('" + c.class + "')) return '" + c.kind + "';"
+		resolve := "if (kind === '" + c.kind + "') return g.querySelector('." + c.class + "');"
+		if !strings.Contains(kindBody, record) {
+			t.Errorf("armFocusKind does not record %q for .%s: %s", c.kind, c.class, record)
+		}
+		if !strings.Contains(tgtBody, resolve) {
+			t.Errorf("armFocusTarget does not resolve %q back to .%s: %s", c.kind, c.class, resolve)
+		}
+	}
+
+	// The two attribute-keyed kinds carry a value after a prefix, and the
+	// resolver strips exactly that prefix — the offsets are derived from the
+	// prefixes here so an off-by-one slice cannot pass.
+	for _, c := range []struct{ prefix, class, attr, loopVar string }{
+		{"mode:", "prmode", "data-mode", "want"},
+		{"act:", "pract", "data-action", "wantAct"},
+	} {
+		record := "if (el.classList.contains('" + c.class + "')) return '" + c.prefix +
+			"' + (el.getAttribute('" + c.attr + "') || '');"
+		if !strings.Contains(kindBody, record) {
+			t.Errorf("armFocusKind does not record the %q value: %s", c.prefix, record)
+		}
+		guard := "if (kind && kind.indexOf('" + c.prefix + "') === 0) {"
+		gAt := strings.Index(tgtBody, guard)
+		if gAt < 0 {
+			t.Errorf("armFocusTarget has no %q arm: %s", c.prefix, guard)
+			continue
+		}
+		arm := tgtBody[gAt:]
+		if end := strings.Index(arm[1:], "\n      if ("); end > 0 {
+			arm = arm[:end]
+		}
+		slice := "var " + c.loopVar + " = kind.slice(" + strconv.Itoa(len(c.prefix)) + ");"
+		if !strings.Contains(arm, slice) {
+			t.Errorf("armFocusTarget's %q arm does not strip exactly the prefix: %s", c.prefix, slice)
+		}
+		match := "getAttribute('" + c.attr + "') === " + c.loopVar
+		if !strings.Contains(arm, match) {
+			t.Errorf("armFocusTarget's %q arm does not match on %s: %s", c.prefix, c.attr, match)
+		}
+	}
+}
+
+// The expired-on-restore path is the ONE place the round-6 expiry actually
+// fires, and it writes its message into .actmsg while that region is muted for
+// the carry-over rewrite — so the un-mute lands with the text already present
+// and no screen reader ever announces it. The message must be blanked and
+// re-written after the un-mute, as a change to a live region.
+func TestDashboardArmRestoreAnnouncesTheExpiry(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	for _, frag := range []string{
+		"if (!stillArmed && slot) {",
+		"var expiredMsg = slot.textContent;",
+		"slot.textContent = '';",
+		"setTimeout(function (el, m) { return function () { el.textContent = m; }; }(slot, expiredMsg), 0);",
+	} {
+		if !strings.Contains(html, frag) {
+			t.Errorf("the expiry announcement is missing a piece: %s", frag)
+		}
+	}
+	// ORDER: the un-mute must already be QUEUED when the re-write is queued, so
+	// the region is polite again by the time the text goes back in.
+	unmuteAt := strings.Index(html, "setTimeout(function (el) { return function () { el.setAttribute('aria-live', 'polite'); }; }(slot), 0);")
+	rewriteAt := strings.Index(html, "setTimeout(function (el, m) { return function () { el.textContent = m; }; }(slot, expiredMsg), 0);")
+	if unmuteAt < 0 || rewriteAt < unmuteAt {
+		t.Error("the expiry re-write is queued before the aria-live un-mute; it would still land muted")
+	}
+}
+
+// __ckDisarm leaves an explanatory message behind so the reader is told WHY the
+// confirmation went away rather than finding a silently blank row. The branch
+// that writes it — not just the constant and its call sites — is what matters.
+func TestDashboardDisarmWritesTheExpiryMessage(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	at := strings.Index(html, "window.__ckDisarm = function (root, msg) {")
+	if at < 0 {
+		t.Fatal("__ckDisarm not found")
+	}
+	body := html[at:]
+	if end := strings.Index(body, "window.__ckArmSnapshot"); end > 0 {
+		body = body[:end]
+	}
+	for _, frag := range []string{
+		"if (msg && !groups[i].classList.contains('confirm')) {",
+		"var slot = groups[i].querySelector('.actmsg');",
+		"if (slot) slot.textContent = msg;",
+	} {
+		if !strings.Contains(body, frag) {
+			t.Errorf("__ckDisarm no longer writes the message into .actmsg: %s", frag)
+		}
+	}
+}
+
+// The "(unknown)" placeholder never reaches a reader: not as an accessible name
+// on the end button, and not as the subject of a confirm caveat.
+func TestDashboardNoUnknownBranchPlaceholder(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents: []Agent{{
+			SessionID: "s1", Status: statusWaiting, TmuxPane: "%12", HasPane: true,
+		}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	if strings.Contains(html, "(unknown)") {
+		t.Error("a branchless row still renders the \"(unknown)\" placeholder")
+	}
+	if !strings.Contains(html, `aria-label="end — dismiss this row from the dashboard"`) {
+		t.Error("the end button's accessible name still carries a branch placeholder")
+	}
+	if !strings.Contains(html, "var base = (branch ? branch : 'this worktree') + ': ' + CAVEAT[action];") {
+		t.Error("caveatFor still leads with an empty/placeholder branch")
+	}
+}
+
+// When the roster has no confirmed branch for a row it can still have a GUESS
+// (derived from the worktree path). The action groups fall back to it for both
+// data-branch — which is what caveatFor reads to name what is about to be
+// rewritten — and the rebase/end accessible names. Nothing else renders the
+// guess, so without this the whole fallback arm is unexercised.
+func TestDashboardActionGroupsFallBackToTheBranchGuess(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents: []Agent{{
+			SessionID: "s1", BranchGuess: "guessed", Status: statusWaiting,
+			TmuxPane: "%12", HasPane: true,
+		}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	// One per action group: session, pull request, row.
+	if got := strings.Count(html, `data-branch="guessed"`); got != 3 {
+		t.Errorf(`data-branch="guessed" appears %d times, want 3 (session, PR, row groups)`, got)
+	}
+	if strings.Contains(html, `data-branch=""`) {
+		t.Error("an action group left data-branch empty despite a branch guess")
+	}
+	for _, want := range []string{
+		`aria-label="rebase guessed onto the default branch and force-push"`,
+		`aria-label="end guessed — dismiss this row from the dashboard"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing accessible name using the branch guess: %s", want)
+		}
+	}
+}
+
+// Two smaller consequences of the focus restore living in unlock: collapsing an
+// actions panel disarms it first, which can move focus ONTO a button inside the
+// row we are about to hide, and the restored caveat must not make an AT re-read
+// the whole thing on every repaint.
+func TestDashboardArmedConfirmFocusAndLiveRegionHousekeeping(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true, PeekEnabled: true,
+		CSRFToken: "tok",
+	})
+	for _, frag := range []string{
+		// closeAct: focus is sampled AFTER the disarm and re-homed regardless of
+		// what the caller asked for.
+		"var hadFocus = !!(document.activeElement && row.contains(document.activeElement));",
+		"if (focusBtn || hadFocus) btn.focus({ preventScroll: true });",
+		// .actmsg is aria-live; mute it while the carried-over caveat goes back in.
+		"slot.setAttribute('aria-live', 'off');",
+		"el.setAttribute('aria-live', 'polite');",
+		"if (msg.textContent !== caveat) msg.textContent = caveat;",
+	} {
+		if !strings.Contains(html, frag) {
+			t.Errorf("missing: %s", frag)
+		}
+	}
+	disarm := strings.Index(html, "if (window.__ckDisarm) window.__ckDisarm(row);")
+	sample := strings.Index(html, "var hadFocus = !!(document.activeElement && row.contains(document.activeElement));")
+	if disarm < 0 || sample < disarm {
+		t.Error("closeAct samples focus before the disarm that can move it")
+	}
+	// The re-home has to be TOTAL: with no toggle button to go back to, focus
+	// must still leave the row we just hid.
+	if !strings.Contains(html, "} else if (hadFocus) {") ||
+		!strings.Contains(html, "content.focus({ preventScroll: true });") {
+		t.Error("closeAct can leave focus inside a hidden row when the toggle button is missing")
+	}
+	// #content is a <div>: without the programmatic tabindex the focus() above is
+	// a NO-OP and focus stays inside the row that was just hidden — the exact
+	// failure this fallback exists for. Pin the tabindex, and its order.
+	tabAt := strings.Index(html, "content.setAttribute('tabindex', '-1');")
+	focusAt := strings.Index(html, "content.focus({ preventScroll: true });")
+	if tabAt < 0 || focusAt < tabAt {
+		t.Error("closeAct focuses #content without first making the <div> focusable; the focus() is a no-op")
+	}
+	// The live region's re-enable is scheduled BEFORE the work that could throw,
+	// so a mid-restore failure cannot mute the row permanently.
+	muteAt := strings.Index(html, "slot.setAttribute('aria-live', 'off');")
+	reEnableAt := strings.Index(html, "el.setAttribute('aria-live', 'polite');")
+	armAt := strings.Index(html, "armConfirm(g, btn, st.left);")
+	if muteAt < 0 || reEnableAt < muteAt || armAt < reEnableAt {
+		t.Error("the aria-live re-enable is not scheduled immediately after the mute; a throw would strand it")
 	}
 }

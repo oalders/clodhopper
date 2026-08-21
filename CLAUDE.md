@@ -40,8 +40,27 @@ Three subcommands, dispatched in `main.go`:
   writes one row, exits. This is what project hooks call on every tool use.
 - **`serve`** (`server.go`) — HTTP dashboard, renders `templates/dashboard.html`; read-only
   by default, plus an **opt-in** write path (`--enable-merge`) that runs allowlisted
-  `merge-pr`/`gh pr ready` actions per roster row, plus an `end` action that runs
-  no subprocess at all and just calls `endSessions` to drop the row. `ingest` never gains write-to-repo
+  `merge-pr`/`gh pr ready` actions per roster row, plus a `rebase` action that
+  runs a fixed `git` sequence (fetch / pull --rebase / push --force-with-lease,
+  explicit refspec, lease pinned to a pre-fetch SHA) onto the server-derived
+  default branch, plus an `end` action that runs
+  no subprocess at all and just calls `endSessions` to drop the row. Every action
+  that DOES exec is additionally gated on the peer's address (`remoteAllowed`):
+  loopback or Tailscale only, whatever `--host` binds to, with no override — and
+  the request is refused outright when a forwarding header (`X-Forwarded-For`,
+  `X-Real-IP`, `Forwarded`, `X-Forwarded-Host`) is *present* — for EVERY action,
+  including the exec-free `end`, because behind a proxy every peer looks like
+  loopback and no peer can be attributed at all. All three checks (proxy
+  refusal, Host allowlist, peer network) live in ONE helper, `execPeerAllowed`,
+  shared by handleAction and handlePane so they cannot drift. **Never run
+  `serve --enable-merge` behind a reverse proxy, `tailscale serve`, or a port
+  forward**: the peer gate assumes a direct socket, and `ssh -L` or a
+  header-stripping proxy defeats it silently. `/api/pane` (`--pane-peek`) runs the SAME gate — it execs `tmux` and
+  streams live transcript text, and being a GET it carries no CSRF token, so the
+  Host allowlist is what stops a DNS-rebinding page from walking pane ids.
+  The CSRF token is emitted into the page only for a peer that passes the gate,
+  so a peer that fails it gets a genuinely read-only board (no `end` either).
+  `ingest` never gains write-to-repo
   capability — the capture path stays read-only.
 - **`prune`** (`main.go`) — deletes events older than the retention window.
 
@@ -72,10 +91,16 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
    (The `--enable-merge` write path added to `serve` doesn't touch either
    invariant or the ingest/capture path. It's off by default, and when on is
    POST-only, CSRF-protected (custom `X-Clodhopper-Token` header, constant-time
-   compare), Host-header-allowlisted against DNS rebinding, and restricted to a
+   compare), Host-header-allowlisted against DNS rebinding, peer-address-gated to
+   loopback/Tailscale for anything that execs (`remoteAllowed`, which never reads
+   a forwarding header — the Host allowlist alone cannot stop a LAN peer that
+   sends `Host: 127.0.0.1`), and restricted to a
    closed argv allowlist — no user-supplied string ever reaches a command line.
   The `end` action never reaches `actionArgv`: it execs nothing, and its
-  `session_id` travels only as a bound SQL parameter.)
+  `session_id` travels only as a bound SQL parameter. `rebase` DOES exec, so it
+  goes through `actionArgv`; its one varying argv element is the default branch,
+  derived server-side from git refs and validated against `branchNameRe` before
+  it can reach a command line.)
 
 ### Other conventions
 
