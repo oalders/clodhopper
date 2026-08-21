@@ -40,7 +40,9 @@ Three subcommands, dispatched in `main.go`:
   writes one row, exits. This is what project hooks call on every tool use.
 - **`serve`** (`server.go`) — HTTP dashboard, renders `templates/dashboard.html`; read-only
   by default, plus an **opt-in** write path (`--enable-merge`) that runs allowlisted
-  `merge-pr`/`gh pr ready` actions per roster row, plus an `end` action that runs
+  `merge-pr`/`gh pr ready` actions per roster row, plus a `rebase` action that
+  runs a fixed `git` sequence (fetch / pull --rebase / push --force-with-lease)
+  onto the server-derived default branch, plus an `end` action that runs
   no subprocess at all and just calls `endSessions` to drop the row. `ingest` never gains write-to-repo
   capability — the capture path stays read-only.
 - **`prune`** (`main.go`) — deletes events older than the retention window.
@@ -75,7 +77,10 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
    compare), Host-header-allowlisted against DNS rebinding, and restricted to a
    closed argv allowlist — no user-supplied string ever reaches a command line.
   The `end` action never reaches `actionArgv`: it execs nothing, and its
-  `session_id` travels only as a bound SQL parameter.)
+  `session_id` travels only as a bound SQL parameter. `rebase` DOES exec, so it
+  goes through `actionArgv`; its one varying argv element is the default branch,
+  derived server-side from git refs and validated against `branchNameRe` before
+  it can reach a command line.)
 
 ### Other conventions
 

@@ -90,7 +90,7 @@ func usage() {
 
 USAGE
   clodhopper ingest --source-app NAME   read one hook event (JSON on stdin), store it
-  clodhopper serve [--port N] [--host H | --tailscale] [--enable-merge]   serve the dashboard (default 127.0.0.1; --host 0.0.0.0 for container/LAN; --tailscale binds the Tailscale IPv4; --enable-merge turns on the roster's PR-action buttons)
+  clodhopper serve [--port N] [--host H | --tailscale] [--enable-merge]   serve the dashboard (default 127.0.0.1; --host 0.0.0.0 for container/LAN; --tailscale binds the Tailscale IPv4; --enable-merge turns on the roster's PR-action buttons, incl. rebase onto the default branch + force-push)
   clodhopper prune [--days N]           delete events older than N days
   clodhopper init [--project|--local]   wire clodhopper hooks into .claude/settings(.local).json
   clodhopper end --branch B | --cwd D | --session PREFIX   mark matching live sessions ended (--session takes the roster id fragment)

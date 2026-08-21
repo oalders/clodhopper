@@ -154,9 +154,9 @@ board used to expose.
 
 - `--enable-merge` (default off): turn on the roster's **PR-action buttons**.
   When set, each roster row gains squash / squash + admin / close / ready
-  buttons — plus an **end** button that just dismisses the row — behind a
-  two-step confirm. Clicking one runs your local `merge-pr` or
-  `gh pr ready` in that row's worktree — merging or closing the real PR,
+  buttons — plus a **rebase** button and an **end** button that just dismisses
+  the row — behind a two-step confirm. Clicking one runs your local `merge-pr`,
+  `gh pr ready`, or `git` in that row's worktree — merging or closing the real PR,
   removing the worktree, and killing the row's tmux session, same as if you'd
   typed the command yourself. `--squash --admin` bypasses branch protection
   using your own `gh` authentication.
@@ -172,6 +172,20 @@ plus two modifiers and a single **run** button:
 - The exact command it will run is shown inline, and **run** is a two-step
   confirm: the first click states the consequence, the second fires it — so a
   stray click can never trigger a merge or close.
+
+The row cluster adds two more buttons, each with the same two-step confirm:
+
+- **rebase** runs `git fetch origin BASE`, `git pull --rebase origin BASE`, then
+  `git push --force-with-lease` in that row's worktree — so the PR is actually
+  updated. `BASE` is the repo's default branch, resolved server-side from
+  `origin/HEAD` (falling back to `origin/main` / `origin/master`); it is never
+  supplied by the browser. **This rewrites the branch's history and force-pushes
+  it.** If the rebase hits a conflict it is aborted (`git rebase --abort`, so the
+  worktree is left clean), nothing is pushed, and the row reports that the branch
+  needs a manual rebase. clodhopper refuses to run at all when the default branch
+  cannot be resolved, when the worktree is detached or mid-rebase, or when the
+  worktree is sitting *on* the default branch.
+- **end** just dismisses the roster row; it never touches the repo or the agent.
 
 When a row's Claude session is in a live tmux pane, it also gains two **session
 actions** that drive that pane directly (they do not touch a PR):

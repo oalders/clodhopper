@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,8 +24,8 @@ import (
 // actionArgv maps a validated dashboard action to the binary and exact argument
 // vector to run. This is the security boundary: only these fixed vectors are
 // ever executed, and no request string reaches the command line. binary is a
-// logical name ("merge-pr" or "gh") that handleAction resolves to an injected
-// path. teardown is true for the merge-pr actions, whose success hard-kills the
+// logical name ("merge-pr", "gh" or "git") that handleAction resolves to an
+// injected path. teardown is true for the merge-pr actions, whose success hard-kills the
 // session and therefore must be followed by a synthetic SessionEnd. ok is false
 // for any unknown action, which the caller rejects with 400.
 func actionArgv(action string, force bool) (binary string, args []string, teardown bool, ok bool) {
@@ -34,6 +36,16 @@ func actionArgv(action string, force bool) (binary string, args []string, teardo
 		binary, args, teardown = "merge-pr", []string{"--squash", "--admin"}, true
 	case "close":
 		binary, args, teardown = "merge-pr", []string{"--close"}, true
+	case "rebase":
+		// rebase is a SEQUENCE of git invocations, not one argv, so the vector is
+		// built by rebaseSteps from a server-derived, regex-validated base branch
+		// (see runRebase). It still passes through this allowlist — the boundary
+		// for anything that execs — which is what makes "git" a legal binary at
+		// all; the argv itself is assembled below the line, never from a request
+		// string. Non-destructive to the row (no teardown) and --force is
+		// meaningless here (ignored): the push safety comes from
+		// --force-with-lease.
+		return "git", nil, false, true
 	case "ready":
 		// gh pr ready is non-destructive: the session keeps running, so no
 		// teardown, and --force is meaningless here (ignored).
@@ -296,7 +308,140 @@ const (
 	// input line first. Long enough to cover a slow (e.g. sandboxed) redraw,
 	// short enough that the dashboard's action request still feels immediate.
 	monitorCIClearDelay = 750 * time.Millisecond
+	// rebaseTimeout bounds EACH step of the rebase sequence (fetch, pull
+	// --rebase, push). A fetch or a force-push against a slow remote is the same
+	// order of work as a teardown, so it gets the same generous ceiling.
+	rebaseTimeout = 120 * time.Second
+	// gitProbeTimeout bounds the read-only ref lookups that resolve the default
+	// and current branch. Local ref reads, so a couple of seconds is plenty —
+	// same tight, best-effort budget as gitBranch in the capture path.
+	gitProbeTimeout = 5 * time.Second
 )
+
+// branchNameRe is the strict shape a branch name must have before it may become
+// an argv element. Nothing user-supplied ever reaches here — the base is derived
+// server-side from git refs — but the rebase argv is the one place a *derived*
+// string joins a command line, so it is validated anyway: defence in depth
+// against a repo whose refs were crafted to look like git options or paths.
+// Leading "-" (an option), ".." (a range/traversal) and anything outside
+// [A-Za-z0-9._/-] fail closed.
+var branchNameRe = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._/-]*$`)
+
+// validBranchName reports whether name is safe to place in an argv.
+func validBranchName(name string) bool {
+	return name != "" && !strings.Contains(name, "..") && branchNameRe.MatchString(name)
+}
+
+// gitProbe runs a READ-ONLY git command in dir and returns its trimmed stdout.
+// Best-effort with a tight timeout, mirroring gitBranch in the capture path: any
+// failure (no git, not a repo, timeout, non-zero exit) yields ("", false) and the
+// caller fails closed rather than guessing.
+func gitProbe(gitBin, dir string, args ...string) (string, bool) {
+	if gitBin == "" || dir == "" {
+		return "", false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), gitProbeTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, gitBin, append([]string{"-C", dir}, args...)...).Output()
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(out)), true
+}
+
+// defaultBranch resolves the repo's default branch for the work tree at dir:
+// origin/HEAD when the remote HEAD ref is present locally, else whichever of
+// origin/main / origin/master exists. Returns "" when none resolve (or on any
+// error), which callers treat as "refuse, run nothing".
+func defaultBranch(gitBin, dir string) string {
+	if out, ok := gitProbe(gitBin, dir, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); ok {
+		if b, found := strings.CutPrefix(out, "origin/"); found && b != "" {
+			return b
+		}
+	}
+	// origin/HEAD is only created by clone (or an explicit set-head), so plenty
+	// of worktrees lack it. Fall back to the two conventional names.
+	for _, b := range []string{"main", "master"} {
+		if _, ok := gitProbe(gitBin, dir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+b); ok {
+			return b
+		}
+	}
+	return ""
+}
+
+// worktreeBranch returns the branch currently checked out in dir, or "" if HEAD
+// is detached (including mid-rebase) or dir is not a repo. Unlike gitBranch it
+// takes the git binary by name so tests can inject a stub, and it deliberately
+// does NOT recover a mid-rebase branch: a work tree in that state must not be
+// rebased again.
+func worktreeBranch(gitBin, dir string) string {
+	out, _ := gitProbe(gitBin, dir, "symbolic-ref", "--quiet", "--short", "HEAD")
+	return out
+}
+
+// rebaseSteps is the fixed argument-vector sequence the rebase action runs, in
+// order. Every element is a literal except base, which runAction never sees
+// until validBranchName has accepted it. Kept separate from the run loop so a
+// test can assert the exact vectors.
+func rebaseSteps(base string) [][]string {
+	return [][]string{
+		{"fetch", "origin", base},
+		{"pull", "--rebase", "origin", base},
+		{"push", "--force-with-lease"},
+	}
+}
+
+// rebaseAbortArgv undoes a rebase that stopped on a conflict, so the work tree
+// is never left mid-rebase for the user to discover.
+func rebaseAbortArgv() []string { return []string{"rebase", "--abort"} }
+
+// runRebase rebases the work tree at dir onto the repo's default branch and
+// force-pushes (with lease) so the PR is actually updated. Everything it needs
+// is derived server-side; the caller passes no request data at all.
+//
+// Refuses, running nothing, when the default branch cannot be resolved, when the
+// work tree is not on a branch (detached / mid-rebase), or when it is sitting ON
+// the default branch — force-pushing main is exactly the accident this guard
+// exists to prevent. A rebase that fails or times out is aborted (best-effort)
+// and reported as "needs manual rebase"; the push is never reached.
+func runRebase(gitBin, dir string, timeout time.Duration) actionResult {
+	base := defaultBranch(gitBin, dir)
+	if !validBranchName(base) {
+		return actionResult{ExitCode: -1, Output: "could not resolve the default branch " +
+			"(tried origin/HEAD, origin/main, origin/master); nothing was run"}
+	}
+	cur := worktreeBranch(gitBin, dir)
+	if !validBranchName(cur) {
+		return actionResult{ExitCode: -1,
+			Output: "worktree is not on a named branch (detached HEAD or mid-rebase); nothing was run"}
+	}
+	if cur == base {
+		return actionResult{ExitCode: -1, Output: "worktree is on the default branch (" + base +
+			"); refusing to rebase and force-push it"}
+	}
+
+	var out strings.Builder
+	steps := rebaseSteps(base)
+	for i, args := range steps {
+		out.WriteString("$ git " + strings.Join(args, " ") + "\n")
+		res := runAction(gitBin, dir, args, timeout)
+		out.WriteString(res.Output)
+		if res.ExitCode == 0 && !res.TimedOut {
+			continue
+		}
+		// The pull --rebase step is the one that can leave a conflicted, half-applied
+		// rebase behind. Abort it so the worktree is clean, then report — never push.
+		if i == 1 {
+			abort := runAction(gitBin, dir, rebaseAbortArgv(), timeout)
+			out.WriteString("$ git " + strings.Join(rebaseAbortArgv(), " ") + "\n")
+			out.WriteString(abort.Output)
+			out.WriteString("\nrebase stopped and was aborted — needs manual rebase\n")
+		}
+		res.Output = out.String()
+		return res
+	}
+	return actionResult{ExitCode: 0, Output: out.String()}
+}
 
 // actionConfig is serve's write-path state. Binary names are injected so tests
 // substitute stubs; token is the per-serve CSRF secret; allowedHosts extends the
@@ -306,6 +451,7 @@ type actionConfig struct {
 	mergePR string // path/name of the merge-pr binary
 	gh      string // path/name of the gh binary
 	tmux    string // path/name of the tmux binary (session actions); tests stub it
+	git     string // path/name of the git binary (rebase action); tests stub it
 	// clearDelay is the pause monitor-ci leaves between its /clear and
 	// /monitor-ci send-keys calls (see runSessionAction). serve sets it to
 	// monitorCIClearDelay; the zero value sends both back to back, which is what
@@ -429,10 +575,21 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 
 	bin := cfg.mergePR
 	timeout := actionTimeout
-	if binary == "gh" {
+	switch binary {
+	case "gh":
 		bin, timeout = cfg.gh, readyTimeout
+	case "git":
+		bin, timeout = cfg.git, rebaseTimeout
 	}
-	res := runAction(bin, cwd, args, timeout)
+	// The git binary drives a multi-step sequence rather than one argv (see
+	// runRebase); actionArgv returned no args for it precisely because they are
+	// assembled server-side from a validated base branch.
+	var res actionResult
+	if binary == "git" {
+		res = runRebase(bin, cwd, timeout)
+	} else {
+		res = runAction(bin, cwd, args, timeout)
+	}
 
 	// A clean teardown hard-kills the session, so it never emits its own
 	// SessionEnd; write a synthetic one so the row drops. Best-effort: a failure

@@ -2283,3 +2283,55 @@ func TestDashboardInnerHTMLOccurrencesAreAccountedFor(t *testing.T) {
 		t.Errorf("dashboard renders %d innerHTML occurrences, want %d: the dashboard paints raw git/gh subprocess output, so any new innerHTML needs a deliberate security look (does the assigned string come from a subprocess or any other untrusted source?) before wantInnerHTML is changed", got, wantInnerHTML)
 	}
 }
+
+// The per-row rebase button is part of the opt-in write surface (it rewrites and
+// force-pushes a branch), so it must be absent unless --enable-merge is on. Like
+// End it lives in the ungated row cluster — a row with no live tmux pane is
+// still a branch worth rebasing.
+func TestDashboardRendersRebaseButtonOnlyWhenEnabled(t *testing.T) {
+	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}}
+	off := base // MergeEnabled false
+	if strings.Contains(renderDashboard(t, off), `data-action="rebase"`) {
+		t.Fatal("rebase button rendered while merge disabled")
+	}
+	on := base
+	on.MergeEnabled = true
+	on.CSRFToken = "tok"
+	html := renderDashboard(t, on)
+	if !strings.Contains(html, `data-action="rebase"`) {
+		t.Fatal("rebase button missing while merge enabled")
+	}
+	if on.Agents[0].HasPane {
+		t.Fatal("fixture unexpectedly has a pane")
+	}
+	// Destructive: it must keep the two-step arm/confirm flow.
+	if strings.Contains(html, `data-action="rebase" data-noconfirm`) {
+		t.Fatal("rebase must not opt out of the confirm step")
+	}
+}
+
+// Like End, rebase contributes string literals to the shared action JS: its
+// CAVEAT entry (the confirm-step warning) and its success wording. It must also
+// stay OUT of the row-clearing set — a rebase leaves the row in place.
+func TestDashboardWiresRebaseIntoActionScript(t *testing.T) {
+	on := dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	}
+	html := renderDashboard(t, on)
+	if !strings.Contains(html, "rebase: 'REWRITES THIS BRANCH") {
+		t.Error("CAVEAT has no entry for the rebase action")
+	}
+	if !strings.Contains(html, "force-push") && !strings.Contains(html, "force-with-lease") {
+		t.Error("rebase caveat does not warn about the force-push")
+	}
+	if !strings.Contains(html, "action === 'rebase' ? 'rebased onto the default branch and force-pushed'") {
+		t.Error("rebase has no success wording")
+	}
+	// Assert the whole declaration: rebase must NOT have been added to it, and a
+	// substring match on 'rebase' alone would not prove that.
+	if !strings.Contains(html, "var clears = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'end');") {
+		t.Error("clears set changed; rebase must not clear the row")
+	}
+}
