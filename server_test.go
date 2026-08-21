@@ -1838,7 +1838,9 @@ func TestHandleDashboard_PeekKeysOnSessionNotPane(t *testing.T) {
 	for _, frag := range []string{
 		// actions opening closes an open peek …
 		`if (n.classList.contains('panerow')) closePane(n.getAttribute('data-peek-row'), false);`,
-		`else closeAct(n.getAttribute('data-actions-row'), false);`,
+		// The third argument keeps remembered action messages: this collapse is a
+		// panel switch, not a dismissal (see TestDashboardPeekSwitchKeepsRememberedMessages).
+		`else closeAct(n.getAttribute('data-actions-row'), false, true);`,
 		// … and both openers route through the shared collapse.
 		"function openPane(sess) {\n      var row = paneRow(sess);",
 	} {
@@ -1908,5 +1910,209 @@ func TestContentTemplate_PeekIdentityIsSessionAcrossSharedPane(t *testing.T) {
 	}
 	if strings.Contains(html, "data-pane-row") {
 		t.Errorf("panerow must no longer be keyed on the tmux pane id:\n%s", html)
+	}
+}
+
+// A failed PR-action result used to survive only until the next poll repainted
+// #content with a fresh, empty .actmsg — anywhere from ~0s to the whole refresh
+// interval (issue #98). swapContent now re-applies remembered failure text. The
+// restore is order-INdependent (the carry-over's hidden attribute does not hide
+// groups from querySelectorAll, and the pin reorder re-appends existing nodes
+// rather than re-rendering them), so what is pinned here is placement, not an
+// invariant: the guarded call must stay inside swapContent's repaint fix-ups,
+// adjacent to the pin-apply call.
+func TestDashboardActionMessageSurvivesContentSwap(t *testing.T) {
+	on := dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	}
+	html := renderDashboard(t, on)
+
+	// One contiguous fragment (html/template strips JS comments, so these are the
+	// two adjacent statements as shipped): the restore runs guarded, and it sits
+	// with the other repaint fix-up rather than drifting elsewhere in the file.
+	call := `      try { if (window.__ckActMsgs) window.__ckActMsgs.restore(); } catch (e) {}
+      try { if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply(); } catch (e) {}`
+	if !strings.Contains(html, call) {
+		t.Errorf("action-message restore no longer runs (guarded) immediately before the pin reorder:\n%s", call)
+	}
+
+	// The holder itself, and the 5s floor the fix exists to guarantee.
+	if !strings.Contains(html, "var ACTMSG_MIN_MS = 5000;") {
+		t.Error("the 5000ms minimum-visibility constant is not shipped")
+	}
+	if !strings.Contains(html, "window.__ckActMsgs = { note: noteMsg, clear: clearMsgNote, restore: restoreMsgs };") {
+		t.Error("__ckActMsgs holder not exported from the merge IIFE")
+	}
+}
+
+// Only results the reader must not miss are remembered: the failure, timeout and
+// network-error branches. A success either clears its row or needs no second
+// look, and remembering it would re-paint stale text over a live row. Equally,
+// a superseded message ('working…' on a retry) must drop its note so a stale
+// failure cannot resurrect.
+func TestDashboardActionMessagePersistsOnlyFailures(t *testing.T) {
+	on := dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	}
+	html := renderDashboard(t, on)
+
+	// Failure + timeout share one note() call, placed after both writes.
+	fail := `              : 'timed out — verify before retrying';
+            if (!d.ok || d.timedOut) noteMsg(group, msg.textContent);`
+	if !strings.Contains(html, fail) {
+		t.Errorf("failure/timeout results are no longer remembered across repaints:\n%s", fail)
+	}
+	// The rejected-fetch branch.
+	catchFrag := `          if (msg) { msg.textContent = 'request failed: ' + e; noteMsg(group, msg.textContent); }`
+	if !strings.Contains(html, catchFrag) {
+		t.Errorf("a rejected /api/action fetch no longer remembers its message:\n%s", catchFrag)
+	}
+	// Firing again supersedes whatever was there.
+	if !strings.Contains(html, `      if (msg) { clearMsgNote(group); msg.textContent = 'working…'; }`) {
+		t.Error("firing an action no longer drops the previously remembered message")
+	}
+	// The success text is written in the same expression as the failure text, so a
+	// literal negative ("no note() next to 'done'") could never fail. Count the
+	// call sites instead: exactly two may exist — the guarded failure/timeout one
+	// asserted above and the .catch one — so ANY new noteMsg call, including one
+	// added to the ok branch, trips this.
+	// 3 = the one declaration plus exactly those two call sites.
+	const wantNoteMentions = 3
+	if got := strings.Count(html, "noteMsg("); got != wantNoteMentions {
+		t.Errorf("noteMsg( appears %d time(s), want %d (its declaration, the failure/timeout guard and the .catch branch); a new call site — e.g. on the success branch — must not remember its result across repaints", got, wantNoteMentions)
+	}
+	// Keyed by group class as well as session: three .actgroups share a session.
+	if !strings.Contains(html, "var ACTMSG_GROUPS = ['actsession', 'prform', 'rowform'];") {
+		t.Error("remembered messages are no longer keyed by group class")
+	}
+}
+
+// Collapsing a row's actions panel is a deliberate dismissal of whatever result
+// it was showing. unlock(group, false) leaves the remembered failure text in
+// place on purpose (the reader may not have read it yet), so without an explicit
+// clear here a repaint inside the 5s window would re-paint the dismissed text.
+func TestDashboardClosingActionsPanelClearsRememberedMessages(t *testing.T) {
+	on := dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	}
+	html := renderDashboard(t, on)
+
+	// Contiguous through row.hidden, so the clear is pinned to the close path
+	// itself (html/template blanks the comment lines above it). The !keepMsgs
+	// guard is part of the fragment: the clear must stay opt-out, not
+	// unconditional (see the peek-switch test below).
+	frag := `      if (!keepMsgs && window.__ckActMsgs) {
+        var gs = row.querySelectorAll('.actgroup');
+        for (var i = 0; i < gs.length; i++) window.__ckActMsgs.clear(gs[i]);
+      }
+      row.hidden = true;`
+	if !strings.Contains(html, frag) {
+		t.Errorf("collapsing the actions panel no longer drops that row's remembered messages, so a dismissed failure can be re-painted:\n%s", frag)
+	}
+}
+
+// The peek-switch path is NOT a dismissal. closeOtherPanels fires when the user
+// opens the sibling peek on the same row to investigate a failure they just saw;
+// clearing the note there would delete the message from actMsgs so restoreMsgs
+// has nothing to restore, and re-opening the actions panel after the next repaint
+// would show a blank .actmsg — the very bug this work exists to fix.
+func TestDashboardPeekSwitchKeepsRememberedMessages(t *testing.T) {
+	on := dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	}
+	html := renderDashboard(t, on)
+
+	// Only closeOtherPanels may pass keepMsgs.
+	keep := `          else closeAct(n.getAttribute('data-actions-row'), false, true);`
+	if !strings.Contains(html, keep) {
+		t.Errorf("closeOtherPanels must close the actions panel WITHOUT clearing its notes — the user is switching to peek, not dismissing:\n%s", keep)
+	}
+	// The deliberate-dismissal call sites must NOT pass it, or every close would
+	// keep the notes and the dismissal fix above would be undone.
+	dismiss := []string{
+		`if (actBtn.getAttribute('aria-expanded') === 'true') { closeAct(sess, false); return; }`,
+		`if (sess) closed = closeAct(sess, true);`,
+		`if (!arows[k].hidden && closeAct(arows[k].getAttribute('data-actions-row'), false)) closed = true;`,
+	}
+	for _, frag := range dismiss {
+		if !strings.Contains(html, frag) {
+			t.Errorf("this deliberate-dismissal closeAct call site must clear notes (no keepMsgs argument):\n%s", frag)
+		}
+	}
+	// Disarming stays unconditional: an armed destructive confirm must never
+	// survive out of sight, whatever the reason the panel is closing.
+	disarm := `      if (window.__ckDisarm) window.__ckDisarm(row);`
+	if !strings.Contains(html, disarm) {
+		t.Errorf("closeAct must disarm on every path, including the peek switch:\n%s", disarm)
+	}
+	// The literals above enumerate the call sites we know about; they stay green
+	// if a NEW call site appears and forgets to decide keepMsgs. Pin the total so
+	// adding one forces a conscious choice here. 5 = the declaration plus the four
+	// calls (one keep, three dismiss).
+	const wantCloseAct = 5
+	if got := strings.Count(html, "closeAct("); got != wantCloseAct {
+		t.Errorf("dashboard renders %d closeAct( occurrences, want %d: a new call site must decide whether it is a dismissal (clear notes) or an incidental panel swap (keepMsgs), and be enumerated above", got, wantCloseAct)
+	}
+}
+
+// Structural backstop for the exact-literal assertions elsewhere: the restore
+// path re-applies raw git/gh subprocess output, which scrubString strips secrets
+// from but does not HTML-escape. It must never re-enter the HTML parser, so no
+// innerHTML assignment may appear anywhere in restoreMsgs.
+func TestDashboardActionMessageRestoreNeverUsesInnerHTML(t *testing.T) {
+	on := dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	}
+	html := renderDashboard(t, on)
+
+	start := strings.Index(html, "function restoreMsgs() {")
+	if start < 0 {
+		t.Fatal("restoreMsgs not found; the innerHTML invariant below is meaningless")
+	}
+	rest := html[start:]
+	// Assumes restoreMsgs is indented four spaces, so its closing brace is the
+	// first "\n    }" after the opening line. If the file's indentation changes,
+	// update this delimiter — otherwise the slice truncates early and the check
+	// silently passes on a shortened body.
+	end := strings.Index(rest, "\n    }")
+	if end < 0 {
+		t.Fatal("could not find the end of restoreMsgs; the innerHTML invariant below is meaningless")
+	}
+	body := rest[:end]
+	if regexp.MustCompile(`(?i)innerHTML|insertAdjacentHTML|outerHTML`).MatchString(body) {
+		t.Errorf("restoreMsgs must assign remembered text with textContent only — it re-applies raw subprocess output, which must never re-enter the HTML parser:\n%s", body)
+	}
+}
+
+// wantInnerHTML is the number of innerHTML occurrences the dashboard template is
+// allowed to render: exactly one, the #content.innerHTML assignment in
+// swapContent, which predates this work and paints server-rendered,
+// html/template-escaped markup. Complements the restoreMsgs slice above, which a
+// helper indirection (paintMsg(el, t) { el.innerHTML = t; }) could route around.
+const wantInnerHTML = 1
+
+// The dashboard paints raw git/gh subprocess output, so any NEW innerHTML in this
+// template needs a deliberate security look before the count is bumped.
+func TestDashboardInnerHTMLOccurrencesAreAccountedFor(t *testing.T) {
+	on := dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	}
+	html := renderDashboard(t, on)
+
+	got := len(regexp.MustCompile(`(?i)innerHTML`).FindAllString(html, -1))
+	if got != wantInnerHTML {
+		t.Errorf("dashboard renders %d innerHTML occurrences, want %d: the dashboard paints raw git/gh subprocess output, so any new innerHTML needs a deliberate security look (does the assigned string come from a subprocess or any other untrusted source?) before wantInnerHTML is changed", got, wantInnerHTML)
 	}
 }
