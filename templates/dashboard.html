@@ -860,6 +860,17 @@
           newRows[r].hidden = false;
           var c = newRows[r].querySelector('.panecap');
           if (c) {
+            // Silence this restore. The text is the SAME capture the reader
+            // already heard; re-announcing it every 5s is noise. Dropping
+            // aria-live from the server markup is not enough on its own, because
+            // .panecap sits inside <main id="content" aria-live="polite">: per
+            // the live-region model a descendant belongs to its nearest live
+            // ancestor whether or not it carries the attribute itself. The only
+            // way out of an ancestor region is to opt out explicitly, so set
+            // aria-live="off" here — before the text lands, since the value in
+            // force at mutation time is what decides. openPane sets it back to
+            // "polite" when the reader genuinely opens the row.
+            c.setAttribute('aria-live', 'off');
             c.textContent = op.text;
             // Restore the reader's scroll position when we captured one (even 0,
             // meaning they were at the top); with no saved position, fall to the
@@ -915,8 +926,12 @@
       // is absent on older engines and a session id is free-form payload text.
       // Runs after the pin apply (the row is already in its final position) and
       // after the carry-over set c.scrollTop, so preventScroll has nothing left
-      // to fight. Mutually exclusive with the .copycwd branch above — the
-      // active element cannot be inside both — but each returns on its own.
+      // to fight. Mutually exclusive with the .copycwd branch above — the active
+      // element cannot be inside both. Each returns only when its post-swap scan
+      // actually finds its target; if the row or button is gone (the session
+      // ended between polls) the branch deliberately falls through to the
+      // #content safety net below, which is the right landing place for a
+      // control that no longer exists.
       if (pkey) {
         var prows2 = document.querySelectorAll('#content .panerow');
         for (var pr = 0; pr < prows2.length; pr++) {
@@ -1143,14 +1158,15 @@
       // scrolled to the bottom snaps back to the top, undoing the restore
       // swapContent just did. Remember each visible capsule's offset and put it
       // back once the shuffling is over. Hidden rows have no offset worth saving.
-      // Focus rides along with the offsets. Moving a node with appendChild is
-      // also a detach + reinsert, and some engines drop focus to <body> on the
-      // way, stranding a reader whose keyboard was inside a capsule. Unlike
-      // swapContent, the nodes here are MOVED and not recreated, so holding the
-      // element itself is enough — no key lookup needed — and it is re-focused
-      // only after the offsets are back, so preventScroll stays honest.
-      var pfocus = document.activeElement;
-      if (!pfocus || !pfocus.closest || !pfocus.closest('#content .panecap')) pfocus = null;
+      // Offsets are all this needs to save. Focus is deliberately NOT restored
+      // here: the sole caller is swapContent, which reaches apply() only after
+      // it has already replaced #content wholesale, so the node the reader was
+      // on is long detached and document.activeElement has fallen to <body> by
+      // the time we run — there is nothing left to hold. swapContent does the
+      // focus restore itself, re-finding the row by data-peek-row after apply()
+      // returns, which is exactly why the pin apply is sequenced BEFORE those
+      // focus branches: the row must already sit in its final reordered position
+      // for their preventScroll to be honest.
       var caps = [];
       var prows = document.querySelectorAll('#content .panerow');
       for (var k = 0; k < prows.length; k++) {
@@ -1168,7 +1184,6 @@
         }
       }
       for (var s = 0; s < caps.length; s++) caps[s].el.scrollTop = caps[s].top;
-      if (pfocus && pfocus.isConnected && document.activeElement !== pfocus) pfocus.focus({ preventScroll: true });
 
       // Repair group-start: it marks the first row of each group EXCEPT the very
       // first row overall, so it is position-derived and wrong after a reorder.
@@ -1531,14 +1546,19 @@
       var btn = paneButton(sess);
       if (btn) btn.setAttribute('aria-expanded', 'true');
       row.hidden = false;
-      // aria-live is armed here rather than baked into the server markup. The
-      // capsule is a one-shot snapshot, but the 5s poll replaces #content and
+      // Arm the live region here rather than baking it into the server markup.
+      // The capsule is a one-shot snapshot, but the 5s poll replaces #content and
       // swapContent writes the carried-over, UNCHANGED text onto a fresh node —
-      // and a node that is already a live region when its content lands gets
-      // announced, so a permanently live capsule re-reads the same capture on
-      // every refresh. Setting it at open time, synchronously and before the
-      // fetch below resolves, keeps the region live when the text it should
-      // announce arrives, and leaves every poll-rebuilt copy a plain <pre>.
+      // a node that is live when its content lands gets announced, so a
+      // permanently live capsule re-reads the same capture on every refresh.
+      // Note the attribute alone never governs: .panecap is a descendant of
+      // <main id="content" aria-live="polite">, so it inherits that region
+      // regardless. That is why the two directions are BOTH explicit — the poll
+      // restore in swapContent sets aria-live="off" to opt the subtree out, and
+      // this line sets "polite" to opt it back in for a real user-initiated
+      // open, also clearing any stale "off" a previous swap left on a reopened
+      // row. Set synchronously, before the fetch below resolves, so the region
+      // is live when the text it should announce arrives.
       pre.setAttribute('aria-live', 'polite');
       // The pane id rides on the button, not the row: it is the capture target,
       // not the row's identity.
@@ -2044,7 +2064,7 @@
           {{ if or $.PeekEnabled $.MergeEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.MergeEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" data-peek="{{ .SessionID }}" aria-expanded="false" aria-controls="panerow-{{ .SessionID }}" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · squash · admin · close · ready · end"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
-        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><pre class="panecap" tabindex="0"></pre></td></tr>{{ end }}
+        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
         {{ if and $.MergeEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><div class="actpanel">
             {{ if .HasPane }}
             <div class="actcol" role="group" aria-label="session actions">

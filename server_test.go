@@ -1851,32 +1851,47 @@ func TestDashboardRestoresFocusToOpenPeekAcrossSwap(t *testing.T) {
 	}
 }
 
-// The pin-order reorder re-appends rows, and appendChild is a detach + reinsert
-// that can drop focus to <body>. It already re-saved scroll offsets for exactly
-// that reason; now it holds the focused capsule too. The nodes are MOVED here,
-// not recreated, so the element reference stays valid and no key lookup is
-// needed — but the refocus must land after the offsets are back so preventScroll
-// stays honest.
+// A peek capsule the reader has focus on survives the poll even when "pin
+// order" reshuffles the roster — but NOT because the pin apply() restores focus.
+// It cannot: its only caller is swapContent, which reaches it after replacing
+// #content wholesale, so the pre-swap focused node is already detached and
+// document.activeElement has fallen to <body>. The behaviour comes from
+// swapContent's own data-peek-row refocus, which is why the pin apply must run
+// BEFORE that branch (the row lands in its final position first, so preventScroll
+// is honest) and the scroll restore must run before both. This pins that
+// ordering, and pins the dead activeElement capture out of apply() for good.
 func TestDashboardPinReorderRestoresPeekFocus(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
 	body := getBody(t, db, "/")
 
-	capture := `      var pfocus = document.activeElement;
-      if (!pfocus || !pfocus.closest || !pfocus.closest('#content .panecap')) pfocus = null;
-      var caps = [];`
-	if !strings.Contains(body, capture) {
-		t.Errorf("pin reorder no longer captures the focused capsule before re-appending:\n%s", capture)
+	// The unreachable idiom must not creep back into the pin apply().
+	for _, gone := range []string{
+		`var pfocus = document.activeElement;`,
+		`pfocus.closest('#content .panecap')`,
+		`pfocus.focus({ preventScroll: true })`,
+	} {
+		if strings.Contains(body, gone) {
+			t.Errorf("pin apply() runs after the innerHTML swap, so this focus restore can never fire: %s", gone)
+		}
 	}
-	// Contiguous with the scroll restore, which pins the ordering between them.
-	refocus := `      for (var s = 0; s < caps.length; s++) caps[s].el.scrollTop = caps[s].top;
-      if (pfocus && pfocus.isConnected && document.activeElement !== pfocus) pfocus.focus({ preventScroll: true });`
-	if !strings.Contains(body, refocus) {
-		t.Errorf("pin reorder must re-focus the moved capsule after restoring scroll:\n%s", refocus)
+
+	// Source order inside swapContent is execution order: carry-over scroll
+	// restore, then the pin apply, then the .panecap refocus branch.
+	iScroll := strings.Index(body, `if (typeof op.scroll === 'number') c.scrollTop = op.scroll;`)
+	iPin := strings.Index(body, `if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply();`)
+	iRefocus := strings.Index(body, `          var pcap = prows2[pr].querySelector('.panecap');`)
+	if iScroll < 0 || iPin < 0 || iRefocus < 0 {
+		t.Fatalf("landmarks missing: scroll=%d pin=%d refocus=%d", iScroll, iPin, iRefocus)
 	}
-	// The comment that deferred this to #101 must not outlive the fix.
-	if strings.Contains(body, "Scroll only, not focus") {
-		t.Error("stale comment: the pin reorder now restores focus as well as scroll")
+	if iScroll > iPin || iPin > iRefocus {
+		t.Errorf("swapContent must run the pin apply after the scroll restore and before the peek refocus: scroll=%d pin=%d refocus=%d",
+			iScroll, iPin, iRefocus)
+	}
+	// And inside apply() itself the capsule offsets are still saved and put back
+	// around the re-append loop — that half IS load-bearing and stays.
+	if !strings.Contains(body, `      for (var s = 0; s < caps.length; s++) caps[s].el.scrollTop = caps[s].top;`) {
+		t.Error("pin apply() must still restore capsule scroll offsets after re-appending")
 	}
 }
 
@@ -1886,8 +1901,14 @@ func TestDashboardPinReorderRestoresPeekFocus(t *testing.T) {
 // already a live region when its content lands, so screen readers re-announce
 // the same capture every refresh cycle. openPane arms the attribute at open
 // time instead: synchronously, before the pane fetch resolves, so the region is
-// live when the text it should announce arrives, and every poll-rebuilt copy is
-// a plain <pre> that stays silent.
+// live when the text it should announce arrives.
+//
+// Removing the attribute from the markup is necessary but NOT sufficient:
+// .panecap is a descendant of <main id="content" aria-live="polite">, and a
+// descendant belongs to its nearest live ancestor whether or not it carries
+// aria-live itself. The subtree has to opt out explicitly, so the poll restore
+// stamps aria-live="off" on the rebuilt capsule and openPane stamps "polite"
+// back on for a genuine user-initiated open. Both halves are pinned here.
 func TestDashboardPeekLiveRegionArmedAtOpenNotInMarkup(t *testing.T) {
 	d := dashboardData{
 		PeekEnabled: true,
@@ -1898,8 +1919,8 @@ func TestDashboardPeekLiveRegionArmedAtOpenNotInMarkup(t *testing.T) {
 	}
 	body := renderDashboard(t, d)
 
-	if !strings.Contains(body, `<pre class="panecap" tabindex="0"></pre>`) {
-		t.Error(`the capsule must render as <pre class="panecap" tabindex="0"></pre> — class and tabindex kept, aria-live dropped`)
+	if !strings.Contains(body, `<pre class="panecap" tabindex="0" aria-label="pane capture"></pre>`) {
+		t.Error(`the capsule must render as <pre class="panecap" tabindex="0" aria-label="pane capture"></pre> — class, tabindex and a static name kept, aria-live dropped`)
 	}
 	if strings.Contains(body, `aria-live="polite" tabindex="0"`) {
 		t.Error("the capsule must not be a live region in the server markup — that is what re-announces on every poll")
@@ -1908,10 +1929,18 @@ func TestDashboardPeekLiveRegionArmedAtOpenNotInMarkup(t *testing.T) {
 	if !strings.Contains(body, arm) {
 		t.Errorf("openPane must arm the live region when the row is opened: %s", arm)
 	}
-	// Exactly once, and only in openPane: swapContent's carry-over must leave
-	// the rebuilt capsule a plain <pre> so it does not re-announce.
-	if n := strings.Count(body, `setAttribute('aria-live'`); n != 1 {
-		t.Errorf("aria-live must be set at exactly one site (openPane), got %d", n)
+	// Dropping the attribute from the markup does NOT silence the capsule on its
+	// own: .panecap is a descendant of <main id="content" aria-live="polite">, so
+	// it inherits that region. Both directions must therefore be explicit — "off"
+	// where swapContent restores the carried-over text, "polite" in openPane —
+	// which is exactly two call sites, no more.
+	mute := `            c.setAttribute('aria-live', 'off');
+            c.textContent = op.text;`
+	if !strings.Contains(body, mute) {
+		t.Errorf("swapContent must opt the rebuilt capsule out of #content's live region before writing the carried text:\n%s", mute)
+	}
+	if n := strings.Count(body, `setAttribute('aria-live'`); n != 2 {
+		t.Errorf("aria-live must be set at exactly two sites (openPane arms polite, swapContent restores off), got %d", n)
 	}
 	i := strings.Index(body, "function openPane(sess) {")
 	if i < 0 {
