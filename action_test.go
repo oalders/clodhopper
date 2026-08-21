@@ -2386,8 +2386,12 @@ func TestHandleActionWorktreeLockReleasedAfterWorktreeRemoved(t *testing.T) {
 	if err := os.Symlink(realDir, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
-	if cwdKey(link) == cwdKey(realDir+"-gone") {
-		t.Fatal("fixture is not exercising symlink resolution")
+	// The point of the fixture is that the link and its target key DIFFERENTLY
+	// until EvalSymlinks resolves them; if they already agreed, the release path
+	// could not leak and the test would prove nothing.
+	if cwdKey(link) != cwdKey(realDir) {
+		t.Fatalf("fixture is not exercising symlink resolution: cwdKey(%q) = %q, cwdKey(%q) = %q",
+			link, cwdKey(link), realDir, cwdKey(realDir))
 	}
 
 	db := openTestDB(t)

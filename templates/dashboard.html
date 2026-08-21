@@ -1538,6 +1538,15 @@
       if (btn) {
         btn.setAttribute('aria-expanded', 'false');
         if (focusBtn || hadFocus) btn.focus({ preventScroll: true });
+      } else if (hadFocus) {
+        // No toggle to go back to (a rendered actrow implies one, so this is
+        // practically unreachable) — but the re-home has to be total, or focus
+        // stays on a control inside the row we just hid.
+        var content = document.getElementById('content');
+        if (content) {
+          content.setAttribute('tabindex', '-1');
+          content.focus({ preventScroll: true });
+        }
       }
       return true;
     }
@@ -1856,6 +1865,15 @@
     // on the group so the snapshot can read what is left of it.
     function startArmTimer(group, ms) {
       clearArmTimer(group);
+      // A RESUMING caller (ms is a number) with nothing left is resuming a
+      // deadline that has ALREADY lapsed — a throttled/backgrounded tab whose
+      // timeout never ran, say. Falling through to ARM_IDLE_MS there would grant
+      // an expired confirmation another full minute, so tear it down instead and
+      // leave the same message the timer itself would have left.
+      if (typeof ms === 'number' && ms <= 0) {
+        window.__ckDisarm(group, ARM_EXPIRED_MSG);
+        return;
+      }
       var wait = (typeof ms === 'number' && ms > 0) ? ms : ARM_IDLE_MS;
       group.__ckArmDeadline = Date.now() + wait;
       group.__ckArmTimer = setTimeout(function () {
@@ -2227,6 +2245,33 @@
       return '';
     }
 
+    // armFocusKind / armFocusTarget name the ONE control inside an armed group
+    // that held focus, so the restore puts the reader back on it rather than
+    // defaulting everyone to the run button. '' means "the armed button".
+    function armFocusKind(g, el) {
+      if (!el || !g.contains(el) || !el.classList) return '';
+      if (el.classList.contains('actcancel')) return 'cancel';
+      if (el.classList.contains('practadmin')) return 'admin';
+      if (el.classList.contains('practforce')) return 'force';
+      if (el.classList.contains('prmode')) return 'mode:' + (el.getAttribute('data-mode') || '');
+      return '';
+    }
+    function armFocusTarget(g, kind) {
+      if (kind === 'cancel') return g.querySelector('.actcancel');
+      if (kind === 'admin') return g.querySelector('.practadmin');
+      if (kind === 'force') return g.querySelector('.practforce');
+      if (kind && kind.indexOf('mode:') === 0) {
+        // Match by attribute in a loop rather than interpolating the recorded
+        // value into a selector string.
+        var want = kind.slice(5);
+        var segs = g.querySelectorAll('.prmode');
+        for (var i = 0; i < segs.length; i++) {
+          if (segs[i].getAttribute('data-mode') === want) return segs[i];
+        }
+      }
+      return null;
+    }
+
     window.__ckArmSnapshot = function () {
       var out = [];
       var groups = document.querySelectorAll('#content .actgroup.confirm');
@@ -2251,12 +2296,21 @@
           // landed: the swap detaches whatever they were on, and for an armed
           // destructive confirm the generic "park on #content" fallback would
           // dump them out of the group holding a live confirmation.
-          focused: !!(active && g.contains(active))
+          focused: !!(active && g.contains(active)),
+          // WHICH control they were on. "Somewhere in this group" would silently
+          // move a reader sitting on the ✕, a checkbox or a mode segment onto the
+          // run button, which is still a lost place (WCAG 2.4.3).
+          focusKind: armFocusKind(g, active)
         });
         // The group itself is about to be replaced by the innerHTML swap; drop
         // its pending timeout now, or every repaint orphans one that later fires
         // __ckDisarm on a detached node. The restore starts a fresh timeout for
         // whatever deadline is left.
+        //
+        // ORDER MATTERS: this must stay AFTER the push above. clearArmTimer
+        // zeroes __ckArmDeadline, so hoisting it would make `left` compute as 0
+        // on every snapshot and the restore would hand out a fresh full minute
+        // each repaint — the unattended-confirm-never-expires bug again.
         clearArmTimer(g);
       }
       return out;
@@ -2303,13 +2357,32 @@
           // whole thing on every repaint, so mute the region for the rewrite and
           // let it go live again on the next task.
           var slot = g.querySelector('.actmsg');
-          if (slot) slot.setAttribute('aria-live', 'off');
+          if (slot) {
+            slot.setAttribute('aria-live', 'off');
+            // Schedule the re-enable IMMEDIATELY, before the work that could
+            // throw: a failure in armConfirm/syncForm between the two would
+            // otherwise leave this row's status permanently non-live.
+            setTimeout(function (el) { return function () { el.setAttribute('aria-live', 'polite'); }; }(slot), 0);
+          }
           armConfirm(g, btn, st.left);
+          // armConfirm disarms outright when the resumed deadline had already
+          // lapsed; leave that expiry message (and the idle group) alone.
+          var stillArmed = g.classList.contains('confirm');
           // armConfirm writes a freshly derived caveat; keep whatever the reader
           // was actually part-way through reading when the poll landed.
-          if (st.msg && slot && slot.textContent !== st.msg) slot.textContent = st.msg;
-          if (slot) setTimeout(function (el) { return function () { el.setAttribute('aria-live', 'polite'); }; }(slot), 0);
-          if (st.focused && !btn.disabled) { btn.focus({ preventScroll: true }); refocused = true; }
+          if (stillArmed && st.msg && slot && slot.textContent !== st.msg) slot.textContent = st.msg;
+          if (stillArmed && st.focused) {
+            var tgt = armFocusTarget(g, st.focusKind) || btn;
+            if (!tgt.disabled) { tgt.focus({ preventScroll: true }); refocused = true; }
+            // Re-assert the RESUMED deadline after the focus above. focus()
+            // dispatches focusin synchronously, and the capture-phase
+            // resetArmTimer sees an already-armed group and restarts it at a
+            // fresh full ARM_IDLE_MS — so without this a keyboard reader sitting
+            // inside an armed confirm would never time out on a board that keeps
+            // repainting. (isTrusted cannot tell this apart: UA-generated focus
+            // events are trusted even when focus() came from script.)
+            startArmTimer(g, st.left);
+          }
           break;
         }
       }

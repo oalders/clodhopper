@@ -2655,7 +2655,19 @@ func TestDashboardRebaseLabelOmitsUnknownBranch(t *testing.T) {
 // Tailscale/magicDNS peer would just silently lose peek and every action.
 func TestNewServeConfigsWiresTheHostAllowlist(t *testing.T) {
 	t.Setenv("CLODHOPPER_ALLOWED_HOSTS", "board.tailnet.ts.net, extra.example")
-	peek, act := newServeConfigs("100.64.0.2", true, 200, true)
+	// Deliberately asymmetric arguments: panePeek true / enableMerge false so the
+	// two booleans cannot be swapped unnoticed, and a paneLines value far outside
+	// the accepted range so dropping clampPaneLines cannot pass either.
+	peek, act := newServeConfigs("100.64.0.2", true, 999999, false)
+	if !peek.enabled {
+		t.Error("peekConfig.enabled is not wired from panePeek")
+	}
+	if act.enabled {
+		t.Error("actionConfig.enabled is not wired from enableMerge")
+	}
+	if peek.lines != clampPaneLines(999999) || peek.lines == 999999 {
+		t.Errorf("peekConfig.lines = %d, want the clamped %d", peek.lines, clampPaneLines(999999))
+	}
 
 	want := []string{"board.tailnet.ts.net", "extra.example"}
 	for _, c := range []struct {
@@ -2776,6 +2788,16 @@ func TestDashboardArmRestoreDiscriminatesActionGroups(t *testing.T) {
 	if strings.Contains(html, "if (!btn) break;") {
 		t.Error("__ckArmRestore still abandons the snapshot entry on the first non-matching group")
 	}
+	// The fail-closed half: an .actgroup carrying none of the three classes must
+	// name NO kind, so it can never be matched by a snapshot entry.
+	kindAt := strings.Index(html, "function armGroupKind(g) {")
+	kindEnd := strings.Index(html[kindAt:], "\n    }")
+	if kindAt < 0 || kindEnd < 0 {
+		t.Fatal("armGroupKind not found")
+	}
+	if !strings.Contains(html[kindAt:kindAt+kindEnd], "return '';") {
+		t.Error("armGroupKind no longer falls back to the empty (unmatchable) kind")
+	}
 	if strings.Contains(html, "g.classList.contains('prform') !== st.form") {
 		t.Error("__ckArmRestore still discriminates on the prform boolean alone")
 	}
@@ -2805,14 +2827,50 @@ func TestDashboardArmRestoreResumesTheIdleDeadline(t *testing.T) {
 			t.Errorf("the resumable arm deadline is missing a piece: %s", frag)
 		}
 	}
+	// An already-lapsed deadline must EXPIRE, not be rounded up to a fresh minute:
+	// `left` clamps at 0, and a backgrounded tab can hand the restore a 0.
+	for _, frag := range []string{
+		"if (typeof ms === 'number' && ms <= 0) {",
+		"window.__ckDisarm(group, ARM_EXPIRED_MSG);",
+		"var stillArmed = g.classList.contains('confirm');",
+	} {
+		if !strings.Contains(html, frag) {
+			t.Errorf("a lapsed deadline is still re-armed for a full ARM_IDLE_MS: %s", frag)
+		}
+	}
+
 	// The snapshot clears the doomed group's timer before the swap.
 	snapAt := strings.Index(html, "window.__ckArmSnapshot = function () {")
 	restAt := strings.Index(html, "window.__ckArmRestore = function (list) {")
 	if snapAt < 0 || restAt < snapAt {
 		t.Fatal("snapshot/restore not found in the expected order")
 	}
-	if !strings.Contains(html[snapAt:restAt], "clearArmTimer(g);") {
-		t.Error("__ckArmSnapshot leaves the pre-swap group's timeout pending, orphaning it")
+	snapBody := html[snapAt:restAt]
+	clearAt := strings.Index(snapBody, "clearArmTimer(g);")
+	if clearAt < 0 {
+		t.Fatal("__ckArmSnapshot leaves the pre-swap group's timeout pending, orphaning it")
+	}
+	// ORDER: the deadline must be READ into the snapshot before clearArmTimer
+	// zeroes it. Reversed, `left` is 0 on every snapshot and the restore hands
+	// out a fresh full minute each repaint.
+	leftAt := strings.Index(snapBody, "left: Math.max(0, (g.__ckArmDeadline || 0) - Date.now()),")
+	if leftAt < 0 || leftAt > clearAt {
+		t.Error("__ckArmSnapshot clears the arm deadline before recording what is left of it")
+	}
+
+	// ORDER: the resumed deadline is re-asserted AFTER the refocus. focus()
+	// dispatches focusin synchronously, and the capture-phase resetArmTimer sees
+	// the now-armed group and restarts it at a fresh full ARM_IDLE_MS.
+	restBody := html[restAt:]
+	armAt := strings.Index(restBody, "armConfirm(g, btn, st.left);")
+	focusAt := strings.Index(restBody, "if (!tgt.disabled) { tgt.focus({ preventScroll: true }); refocused = true; }")
+	reAssertAt := strings.Index(restBody, "startArmTimer(g, st.left);")
+	if armAt < 0 || focusAt < 0 || reAssertAt < 0 {
+		t.Fatal("__ckArmRestore is missing the arm / refocus / re-assert sequence")
+	}
+	if armAt >= focusAt || focusAt >= reAssertAt {
+		t.Error("__ckArmRestore does not re-assert the resumed deadline after its refocus; " +
+			"the synchronous focusin resurrects a full ARM_IDLE_MS")
 	}
 }
 
@@ -2829,7 +2887,9 @@ func TestDashboardArmRestoreKeepsFocusOnTheArmedButton(t *testing.T) {
 	})
 	for _, frag := range []string{
 		"focused: !!(active && g.contains(active))",
-		"if (st.focused && !btn.disabled) { btn.focus({ preventScroll: true }); refocused = true; }",
+		"var tgt = armFocusTarget(g, st.focusKind) || btn;",
+		"if (!tgt.disabled) { tgt.focus({ preventScroll: true }); refocused = true; }",
+		"focusKind: armFocusKind(g, active)",
 		"return refocused;",
 		"if (!armRefocused && active && active !== document.body && !active.isConnected) {",
 	} {
@@ -2893,6 +2953,37 @@ func TestDashboardNoUnknownBranchPlaceholder(t *testing.T) {
 	}
 }
 
+// When the roster has no confirmed branch for a row it can still have a GUESS
+// (derived from the worktree path). The action groups fall back to it for both
+// data-branch — which is what caveatFor reads to name what is about to be
+// rewritten — and the rebase/end accessible names. Nothing else renders the
+// guess, so without this the whole fallback arm is unexercised.
+func TestDashboardActionGroupsFallBackToTheBranchGuess(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents: []Agent{{
+			SessionID: "s1", BranchGuess: "guessed", Status: statusWaiting,
+			TmuxPane: "%12", HasPane: true,
+		}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	// One per action group: session, pull request, row.
+	if got := strings.Count(html, `data-branch="guessed"`); got != 3 {
+		t.Errorf(`data-branch="guessed" appears %d times, want 3 (session, PR, row groups)`, got)
+	}
+	if strings.Contains(html, `data-branch=""`) {
+		t.Error("an action group left data-branch empty despite a branch guess")
+	}
+	for _, want := range []string{
+		`aria-label="rebase guessed onto the default branch and force-push"`,
+		`aria-label="end guessed — dismiss this row from the dashboard"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing accessible name using the branch guess: %s", want)
+		}
+	}
+}
+
 // Two smaller consequences of the focus restore living in unlock: collapsing an
 // actions panel disarms it first, which can move focus ONTO a button inside the
 // row we are about to hide, and the restored caveat must not make an AT re-read
@@ -2909,7 +3000,7 @@ func TestDashboardArmedConfirmFocusAndLiveRegionHousekeeping(t *testing.T) {
 		"var hadFocus = !!(document.activeElement && row.contains(document.activeElement));",
 		"if (focusBtn || hadFocus) btn.focus({ preventScroll: true });",
 		// .actmsg is aria-live; mute it while the carried-over caveat goes back in.
-		"if (slot) slot.setAttribute('aria-live', 'off');",
+		"slot.setAttribute('aria-live', 'off');",
 		"el.setAttribute('aria-live', 'polite');",
 		"if (msg.textContent !== caveat) msg.textContent = caveat;",
 	} {
@@ -2921,5 +3012,19 @@ func TestDashboardArmedConfirmFocusAndLiveRegionHousekeeping(t *testing.T) {
 	sample := strings.Index(html, "var hadFocus = !!(document.activeElement && row.contains(document.activeElement));")
 	if disarm < 0 || sample < disarm {
 		t.Error("closeAct samples focus before the disarm that can move it")
+	}
+	// The re-home has to be TOTAL: with no toggle button to go back to, focus
+	// must still leave the row we just hid.
+	if !strings.Contains(html, "} else if (hadFocus) {") ||
+		!strings.Contains(html, "content.focus({ preventScroll: true });") {
+		t.Error("closeAct can leave focus inside a hidden row when the toggle button is missing")
+	}
+	// The live region's re-enable is scheduled BEFORE the work that could throw,
+	// so a mid-restore failure cannot mute the row permanently.
+	muteAt := strings.Index(html, "slot.setAttribute('aria-live', 'off');")
+	reEnableAt := strings.Index(html, "el.setAttribute('aria-live', 'polite');")
+	armAt := strings.Index(html, "armConfirm(g, btn, st.left);")
+	if muteAt < 0 || reEnableAt < muteAt || armAt < reEnableAt {
+		t.Error("the aria-live re-enable is not scheduled immediately after the mute; a throw would strand it")
 	}
 }

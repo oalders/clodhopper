@@ -945,11 +945,12 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 			http.Error(w, "unknown session", http.StatusNotFound)
 			return
 		}
-		if !cfg.inflight.acquire(sidKey(sessionID)) {
+		sessionLock := sidKey(sessionID)
+		if !cfg.inflight.acquire(sessionLock) {
 			http.Error(w, "action already running for this session", http.StatusConflict)
 			return
 		}
-		defer cfg.inflight.release(sidKey(sessionID))
+		defer cfg.inflight.release(sessionLock)
 		// The split runs in the agent's worktree if we know it; tmux inherits the
 		// target pane's cwd regardless, so an empty dir is harmless.
 		cwd, _ := latestCwdForSession(db, sessionID)
@@ -970,11 +971,12 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 			http.Error(w, "unknown session", http.StatusNotFound)
 			return
 		}
-		if !cfg.inflight.acquire(sidKey(sessionID)) {
+		sessionLock := sidKey(sessionID)
+		if !cfg.inflight.acquire(sessionLock) {
 			http.Error(w, "action already running for this session", http.StatusConflict)
 			return
 		}
-		defer cfg.inflight.release(sidKey(sessionID))
+		defer cfg.inflight.release(sessionLock)
 		writeActionResult(w, endSession(db, sessionID, now))
 		return
 	}
@@ -1014,8 +1016,9 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 	// arguments are evaluated where the defer is written, i.e. before the
 	// subprocess runs), but that safety is invisible at the call site and one
 	// refactor into a closure away from a permanent lock leak. Naming the key
-	// states the invariant instead of relying on it. sidKey is stable; it takes
-	// the same treatment so the pattern is uniform.
+	// states the invariant instead of relying on it. sidKey is stable, but every
+	// acquire/release pair in this handler — including the tmux-session and `end`
+	// branches above — is spelled the same way, so the pattern is uniform.
 	sessionLock := sidKey(sessionID)
 	if !cfg.inflight.acquire(sessionLock) {
 		http.Error(w, "action already running for this session", http.StatusConflict)
