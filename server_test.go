@@ -1841,16 +1841,19 @@ func TestHandleDashboard_PeekKeysOnSessionNotPane(t *testing.T) {
 		`else closeAct(n.getAttribute('data-actions-row'), false);`,
 		// … and both openers route through the shared collapse.
 		"function openPane(sess) {\n      var row = paneRow(sess);",
-		"function openAct(sess) {\n      var row = actRow(sess);\n      if (!row) return;\n      closeOtherPanels(row);",
 	} {
 		if !strings.Contains(body, frag) {
 			t.Errorf("peek/actions must close each other — fragment missing: %s", frag)
 		}
 	}
-	// openPane reaches closeOtherPanels too (after its .panecap guard).
-	if i := strings.Index(body, "function openPane(sess) {"); i < 0 ||
-		!strings.Contains(body[i:min(i+400, len(body))], "closeOtherPanels(row);") {
-		t.Error("openPane must call closeOtherPanels so a peek collapses an open actions panel")
+	// Both openers must reach closeOtherPanels, each checked over a window after
+	// its own definition rather than as one long literal: the exact guard lines
+	// in between are free to be reflowed, the call is not.
+	for _, fn := range []string{"function openPane(sess) {", "function openAct(sess) {"} {
+		i := strings.Index(body, fn)
+		if i < 0 || !strings.Contains(body[i:min(i+400, len(body))], "closeOtherPanels(row);") {
+			t.Errorf("%s must call closeOtherPanels so the sibling panel collapses", fn)
+		}
 	}
 
 	// No lookup may key a row's identity on the pane id any more.
@@ -1885,17 +1888,18 @@ func TestContentTemplate_PeekIdentityIsSessionAcrossSharedPane(t *testing.T) {
 	html := buf.String()
 
 	for _, sess := range []string{"sess-a", "sess-b"} {
-		// The button carries the session identity AND the pane id for the fetch.
-		if !strings.Contains(html, `class="peek" data-pane="%7" data-peek="`+sess+`"`) {
-			t.Errorf("peek button for %s must carry both data-pane and data-peek:\n%s", sess, html)
+		// One combined fragment, not three independent ones: each attribute has to
+		// sit on THIS session's button, not merely somewhere on the page. Checked
+		// separately, two buttons with their aria-controls swapped would pass —
+		// and pointing a toggle at another row's panel is the very bug class this
+		// whole fix is about. Now that the key is unique, the toggle can name its
+		// panel the way the sibling actions toggle does: aria-controls matching
+		// the row's id.
+		if !strings.Contains(html, `class="peek" data-pane="%7" data-peek="`+sess+`" aria-expanded="false" aria-controls="panerow-`+sess+`"`) {
+			t.Errorf("peek button for %s must carry data-pane, data-peek and its own aria-controls:\n%s", sess, html)
 		}
 		if !strings.Contains(html, `<tr class="panerow" hidden id="panerow-`+sess+`" data-peek-row="`+sess+`">`) {
 			t.Errorf("panerow for %s must be keyed by session id:\n%s", sess, html)
-		}
-		// Now that the key is unique, the toggle can point at its panel the way
-		// the sibling actions toggle does: aria-controls matching the row's id.
-		if !strings.Contains(html, `aria-controls="panerow-`+sess+`"`) {
-			t.Errorf("peek button for %s must reference its panel via aria-controls:\n%s", sess, html)
 		}
 	}
 	// Two rows, one pane, two distinct identities — nothing keyed on the pane.
