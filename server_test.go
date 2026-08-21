@@ -1388,6 +1388,7 @@ func TestContentTemplate_SessionActionsGatedOnPaneNotPeek(t *testing.T) {
 	// when the peek liveness cache never ran because peek is disabled).
 	withPane := dashboardData{
 		MergeEnabled: true,
+		ExecEnabled:  true,
 		PeekEnabled:  false,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
@@ -1429,6 +1430,7 @@ func TestContentTemplate_SessionActionsGatedOnPaneNotPeek(t *testing.T) {
 func TestContentTemplate_ActionsHiddenBehindDisclosure(t *testing.T) {
 	d := dashboardData{
 		MergeEnabled: true,
+		ExecEnabled:  true,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
 			TmuxSession: "sess", TmuxPane: "%3", HasPane: true,
@@ -1482,7 +1484,8 @@ func TestContentTemplate_ActionsHiddenBehindDisclosure(t *testing.T) {
 // mutual exclusion silently, with no other test rendering peek + merge together.
 func TestContentTemplate_PanelRowsAdjacentToMainRow(t *testing.T) {
 	d := dashboardData{
-		MergeEnabled: true, PeekEnabled: true,
+		MergeEnabled: true,
+		ExecEnabled:  true, PeekEnabled: true,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
 			TmuxSession: "sess", TmuxPane: "%3", HasPane: true, LiveTmux: true,
@@ -1601,12 +1604,14 @@ func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 	// Peek on + merge on: both panerow and actrow span 8 at rest.
 	on := base
 	on.MergeEnabled = true
+	on.ExecEnabled = true
 	wantColspan(t, render(on), 8, "peek on + merge on")
 
 	// Peek OFF + merge on: no panerow (peek gates it), but the merge actrow still
 	// spans 8 — the controls column is present under merge alone.
 	mergeOnly := dashboardData{
 		MergeEnabled: true,
+		ExecEnabled:  true,
 		PeekEnabled:  false,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Status: statusWaiting, HasPane: true,
@@ -1685,6 +1690,7 @@ func TestDashboardRendersActionButtonsOnlyWhenEnabled(t *testing.T) {
 	// enabled
 	on := base
 	on.MergeEnabled = true
+	on.ExecEnabled = true
 	on.CSRFToken = "tok"
 	html := renderDashboard(t, on)
 	if !strings.Contains(html, "data-action=") || !strings.Contains(html, `data-csrf="tok"`) {
@@ -1700,6 +1706,7 @@ func TestDashboardRendersForceToggleWhenEnabled(t *testing.T) {
 	}
 	on := base
 	on.MergeEnabled = true
+	on.ExecEnabled = true
 	on.CSRFToken = "tok"
 	if !strings.Contains(renderDashboard(t, on), "practforce") {
 		t.Fatal("force toggle missing while merge enabled")
@@ -1718,6 +1725,7 @@ func TestDashboardRendersEndButtonOnlyWhenEnabled(t *testing.T) {
 	}
 	on := base
 	on.MergeEnabled = true
+	on.ExecEnabled = true
 	on.CSRFToken = "tok"
 	html := renderDashboard(t, on)
 	if !strings.Contains(html, `data-action="end"`) {
@@ -1745,6 +1753,7 @@ func TestDashboardWiresEndIntoActionScript(t *testing.T) {
 	on := dashboardData{
 		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
 		MergeEnabled: true,
+		ExecEnabled:  true,
 		CSRFToken:    "tok",
 	}
 	html := renderDashboard(t, on)
@@ -2296,6 +2305,7 @@ func TestDashboardRendersRebaseButtonOnlyWhenEnabled(t *testing.T) {
 	}
 	on := base
 	on.MergeEnabled = true
+	on.ExecEnabled = true
 	on.CSRFToken = "tok"
 	html := renderDashboard(t, on)
 	if !strings.Contains(html, `data-action="rebase"`) {
@@ -2317,6 +2327,7 @@ func TestDashboardWiresRebaseIntoActionScript(t *testing.T) {
 	on := dashboardData{
 		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
 		MergeEnabled: true,
+		ExecEnabled:  true,
 		CSRFToken:    "tok",
 	}
 	html := renderDashboard(t, on)
@@ -2357,6 +2368,7 @@ func TestDashboardSwapContentSkipsRepaintWhileConfirmArmed(t *testing.T) {
 	html := renderDashboard(t, dashboardData{
 		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
 		MergeEnabled: true,
+		ExecEnabled:  true,
 		CSRFToken:    "tok",
 	})
 	const guard = "if (document.querySelector('#content .actgroup.confirm')) return;"
@@ -2382,6 +2394,7 @@ func TestDashboardBindsCSRFTokenValueIntoActionScript(t *testing.T) {
 	html := renderDashboard(t, dashboardData{
 		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
 		MergeEnabled: true,
+		ExecEnabled:  true,
 		CSRFToken:    "tok",
 	})
 	if !strings.Contains(html, `data-csrf="tok"`) {
@@ -2392,5 +2405,71 @@ func TestDashboardBindsCSRFTokenValueIntoActionScript(t *testing.T) {
 	}
 	if !strings.Contains(html, "'X-Clodhopper-Token': CSRF,") {
 		t.Fatal("the request does not send the bound token in the CSRF header")
+	}
+}
+
+// A peer that fails remoteAllowed (a LAN host on a --host 0.0.0.0 serve) would
+// get a 403 from handleAction for anything that execs, so the dashboard does not
+// offer it those buttons. The exec-free End action, and the read-only board,
+// still work for it. handleAction remains the real gate; this is defence in
+// depth and UX.
+func TestDashboardHidesExecActionsForNonAllowedPeer(t *testing.T) {
+	base := dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting, HasPane: true}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	}
+	gated := base // ExecEnabled false: peer is not on an allowed network
+	html := renderDashboard(t, gated)
+	for _, a := range []string{"squash", "close", "ready", "rebase", "monitor-ci", "new-monitor"} {
+		if strings.Contains(html, `data-action="`+a+`"`) {
+			t.Errorf("%s button rendered for a peer that cannot run commands", a)
+		}
+	}
+	if strings.Contains(html, `data-mode="squash"`) {
+		t.Error("the PR action radiogroup rendered for a peer that cannot run commands")
+	}
+	if !strings.Contains(html, `data-action="end"`) {
+		t.Error("the exec-free end button should still render")
+	}
+	if !strings.Contains(html, `data-csrf="tok"`) {
+		t.Error("the CSRF token is still needed for the end action")
+	}
+
+	allowed := base
+	allowed.ExecEnabled = true
+	html = renderDashboard(t, allowed)
+	for _, a := range []string{"squash", "rebase", "monitor-ci"} {
+		if !strings.Contains(html, `data-action="`+a+`"`) {
+			t.Errorf("%s button missing for an allowed peer", a)
+		}
+	}
+}
+
+// buildDashboardData derives ExecEnabled from the REQUEST's peer, not from
+// --enable-merge alone.
+func TestBuildDashboardDataExecEnabledFollowsPeer(t *testing.T) {
+	db := openTestDB(t)
+	cfg := &actionConfig{enabled: true, token: "tok"}
+	for _, c := range []struct {
+		addr string
+		want bool
+	}{
+		{"127.0.0.1:5555", true},
+		{"100.64.0.7:5555", true},
+		{"192.168.1.5:5555", false},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = c.addr
+		d, err := buildDashboardData(r, db, newCICache(), &peekConfig{cache: newPaneCache()}, cfg)
+		if err != nil {
+			t.Fatalf("buildDashboardData: %v", err)
+		}
+		if !d.MergeEnabled {
+			t.Fatalf("%s: MergeEnabled = false, want true (the read-only board and End stay available)", c.addr)
+		}
+		if d.ExecEnabled != c.want {
+			t.Errorf("%s: ExecEnabled = %v, want %v", c.addr, d.ExecEnabled, c.want)
+		}
 	}
 }

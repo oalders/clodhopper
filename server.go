@@ -214,7 +214,14 @@ type dashboardData struct {
 	PeekEnabled    bool              // true when serve --pane-peek is set; gates the roster's live-pane peek control
 	MergeEnabled   bool              // true when serve --enable-merge is set; gates the roster's PR-action buttons
 	CSRFToken      string            // per-serve secret echoed into the page for the action fetch; "" when MergeEnabled is false
-	Debug          bool              // true when ?debug=1; renders the Activity + Recent-events diagnostics sections (off by default: the roster is the whole board)
+	// ExecEnabled narrows MergeEnabled to the actions that run a command on the
+	// host: it is true only when this REQUEST's peer also passes remoteAllowed
+	// (loopback or Tailscale). A LAN peer on a `--host 0.0.0.0` serve still gets
+	// the full read-only board and the exec-free "end" button, but is not shown
+	// buttons that handleAction would 403. This is UX and defence in depth; the
+	// gate that matters is the one in handleAction.
+	ExecEnabled bool
+	Debug       bool // true when ?debug=1; renders the Activity + Recent-events diagnostics sections (off by default: the roster is the whole board)
 }
 
 // refreshOption is one entry in the auto-refresh interval dropdown.
@@ -306,7 +313,7 @@ func runServe(args []string) int {
 	allowPub := fs.Bool("allow-public", allowPublic(), "allow binding to a public IP (UNSAFE: dashboard has no auth or TLS)")
 	panePeek := fs.Bool("pane-peek", false, "enable the live tmux pane peek (streams pane content to the dashboard; use only on a trusted network such as your tailnet)")
 	paneLines := fs.Int("pane-lines", paneLinesDefault, "lines shown in a pane peek (1..2000)")
-	enableMerge := fs.Bool("enable-merge", false, "enable PR-action buttons on the roster (merge-pr --squash/--admin/--close, gh pr ready, git rebase onto the default branch + push --force-with-lease); writes to your repos — use only on a trusted network")
+	enableMerge := fs.Bool("enable-merge", false, "enable PR-action buttons on the roster (merge-pr --squash/--admin/--close, gh pr ready, git rebase onto the default branch + push --force-with-lease); writes to your repos — use only on a trusted network. Whatever the server is bound to, the actions that run commands are accepted only from loopback and Tailscale peers")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -643,6 +650,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConf
 		SessColors:     assignSessColors(agents, events),
 		PeekEnabled:    peek.enabled,
 		MergeEnabled:   act.enabled,
+		ExecEnabled:    act.enabled && remoteAllowed(r.RemoteAddr),
 		CSRFToken:      act.token,
 		Debug:          debug,
 	}

@@ -266,7 +266,17 @@ func newActionCfg(mergePR, gh string) *actionConfig {
 	}
 }
 
+// actionReq builds a well-formed action POST from a LOOPBACK peer, which is
+// what remoteAllowed requires for every action that execs. httptest's default
+// RemoteAddr (192.0.2.1) is a public TEST-NET address, so it has to be set
+// explicitly or every exec-backed action would 403 here. Use actionReqFrom for
+// a test that wants a different peer.
 func actionReq(sessionID, action string, force bool, token, host string) *http.Request {
+	return actionReqFrom("127.0.0.1:54321", sessionID, action, force, token, host)
+}
+
+// actionReqFrom is actionReq with the peer address spelled out.
+func actionReqFrom(remoteAddr, sessionID, action string, force bool, token, host string) *http.Request {
 	form := url.Values{"session_id": {sessionID}, "action": {action}}
 	if force {
 		form.Set("force", "true")
@@ -279,6 +289,7 @@ func actionReq(sessionID, action string, force bool, token, host string) *http.R
 	if host != "" {
 		r.Host = host
 	}
+	r.RemoteAddr = remoteAddr
 	return r
 }
 
@@ -1632,5 +1643,154 @@ func TestWorktreeBranchRealRepo(t *testing.T) {
 	}
 	if got := worktreeBranch("git", nonRepoDir(t)); got != "" {
 		t.Fatalf("non-repo: worktreeBranch = %q", got)
+	}
+}
+
+// --- network gate: remoteAllowed -------------------------------------------
+
+func TestRemoteAllowed(t *testing.T) {
+	cases := []struct {
+		addr string
+		want bool
+	}{
+		// loopback and tailnet peers may drive host commands
+		{"127.0.0.1:1234", true},
+		{"127.9.9.9:1234", true}, // all of 127.0.0.0/8
+		{"[::1]:1234", true},
+		{"100.64.0.1:1234", true},       // Tailscale CGNAT
+		{"100.127.255.254:1", true},     // top of 100.64.0.0/10
+		{"[fd7a:115c:a1e0::1]:1", true}, // Tailscale IPv6 ULA
+		// IPv4-mapped IPv6 is classified by the IPv4 address it wraps
+		{"[::ffff:127.0.0.1]:1234", true},
+		{"[::ffff:192.168.1.5]:1234", false},
+		// everything else is denied, LAN included
+		{"192.168.1.5:1234", false},
+		{"10.0.0.5:1234", false},
+		{"172.16.0.5:1234", false},
+		{"8.8.8.8:1234", false},
+		{"[2001:db8::1]:1234", false},
+		{"[fd00::1]:1234", false},   // a non-Tailscale ULA is still not the tailnet
+		{"100.128.0.1:1234", false}, // just past the CGNAT block
+		// a RemoteAddr with no port at all
+		{"127.0.0.1", true},
+		{"::1", true},
+		{"192.168.1.5", false},
+		// fail closed on anything unparseable
+		{"", false},
+		{"garbage", false},
+		{"not-an-ip:1234", false},
+		{"localhost:1234", false},
+	}
+	for _, c := range cases {
+		if got := remoteAllowed(c.addr); got != c.want {
+			t.Errorf("remoteAllowed(%q) = %v, want %v", c.addr, got, c.want)
+		}
+	}
+}
+
+// The gate keys off "does this action exec", so an action added later is
+// network-gated by default rather than silently exempt.
+func TestActionExecs(t *testing.T) {
+	for _, a := range []string{"squash", "squash-admin", "close", "ready", "rebase", "monitor-ci", "new-monitor", "brand-new-action", ""} {
+		if !actionExecs(a) {
+			t.Errorf("actionExecs(%q) = false, want true", a)
+		}
+	}
+	if actionExecs("end") {
+		t.Error(`actionExecs("end") = true, want false (end runs no subprocess)`)
+	}
+}
+
+// logStub is a stub binary that appends its first argument to logPath, so a
+// test can assert whether it was invoked at all. It answers the two probes the
+// session and rebase paths make so those paths get far enough to exec.
+func logStub(t *testing.T, name, logPath string) string {
+	t.Helper()
+	return writeStub(t, name, `echo "$1" >> `+logPath+`
+if [ "$1" = "split-window" ]; then echo "%77"; fi
+if [ "$1" = "symbolic-ref" ]; then echo "feature-x"; fi
+exit 0`)
+}
+
+// gatedCfg wires every action binary to the same log file and seeds one session
+// with a cwd and a live pane, so any exec-backed action has everything it needs
+// except an allowed peer.
+func gatedCfg(t *testing.T) (*sql.DB, *actionConfig, string) {
+	t.Helper()
+	db := openTestDB(t)
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-1",
+		Cwd: t.TempDir(), TmuxPane: "%12", EventType: "Stop", PayloadJSON: "{}"})
+	logPath := filepath.Join(t.TempDir(), "ran.log")
+	cfg := newActionCfg(logStub(t, "merge-pr", logPath), logStub(t, "gh", logPath))
+	cfg.tmux = logStub(t, "tmux", logPath)
+	cfg.git = logStub(t, "git", logPath)
+	return db, cfg, logPath
+}
+
+// The exact hole this closes: hostAllowed validates the Host HEADER, which the
+// peer controls, so a LAN host on a `--host 0.0.0.0` serve could GET the page,
+// scrape the CSRF token out of the HTML, and POST with `Host: 127.0.0.1`. Only
+// the peer address stops it — and nothing may exec on the way to the 403.
+func TestHandleActionLANPeerBypassIsRefused(t *testing.T) {
+	db, cfg, logPath := gatedCfg(t)
+	w := httptest.NewRecorder()
+	handleAction(w, actionReqFrom("192.168.1.5:1234", "live-1", "squash", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("code = %d, want 403", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "allowed network") {
+		t.Fatalf("body = %q, want the peer-network reason (not the Host-header one)", w.Body.String())
+	}
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatal("a subprocess ran for a denied peer")
+	}
+}
+
+// Every action that can run a command on the host is refused from a LAN peer
+// and reaches its subprocess from loopback.
+func TestHandleActionExecActionsGatedOnPeer(t *testing.T) {
+	for _, action := range []string{"squash", "close", "ready", "monitor-ci", "new-monitor", "rebase"} {
+		t.Run(action, func(t *testing.T) {
+			db, cfg, logPath := gatedCfg(t)
+
+			w := httptest.NewRecorder()
+			handleAction(w, actionReqFrom("192.168.1.5:1234", "live-1", action, false, "secret", "127.0.0.1"), db, cfg, time.Now())
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("LAN peer: code = %d, want 403", w.Code)
+			}
+			if _, err := os.Stat(logPath); err == nil {
+				t.Fatal("LAN peer: a subprocess ran")
+			}
+
+			w = httptest.NewRecorder()
+			handleAction(w, actionReqFrom("127.0.0.1:54321", "live-1", action, false, "secret", "127.0.0.1"), db, cfg, time.Now())
+			if w.Code == http.StatusForbidden {
+				t.Fatalf("loopback peer: code = 403, want the action to run")
+			}
+			if _, err := os.Stat(logPath); err != nil {
+				t.Fatalf("loopback peer: no subprocess ran (%v)", err)
+			}
+		})
+	}
+}
+
+// end is exempt: it execs nothing, it only writes a synthetic SessionEnd, so a
+// peer that may not run commands can still dismiss a stale row.
+func TestHandleActionEndAllowedFromLANPeer(t *testing.T) {
+	db, cfg, logPath := gatedCfg(t)
+	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	w := httptest.NewRecorder()
+	handleAction(w, actionReqFrom("192.168.1.5:1234", "live-1", "end", false, "secret", "127.0.0.1"), db, cfg, now)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", w.Code)
+	}
+	if got := decodeActionJSON(t, w); !got.OK {
+		t.Fatalf("got %+v, want ok", got)
+	}
+	if et := queryLatestEventType(t, db, "live-1"); et != "SessionEnd" {
+		t.Fatalf("latest event = %q, want SessionEnd", et)
+	}
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatal("end ran a subprocess")
 	}
 }

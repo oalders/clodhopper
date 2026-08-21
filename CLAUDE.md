@@ -44,7 +44,10 @@ Three subcommands, dispatched in `main.go`:
   runs a fixed `git` sequence (fetch / pull --rebase / push --force-with-lease,
   explicit refspec, lease pinned to a pre-fetch SHA) onto the server-derived
   default branch, plus an `end` action that runs
-  no subprocess at all and just calls `endSessions` to drop the row. `ingest` never gains write-to-repo
+  no subprocess at all and just calls `endSessions` to drop the row. Every action
+  that DOES exec is additionally gated on the peer's address (`remoteAllowed`):
+  loopback or Tailscale only, whatever `--host` binds to, with no override.
+  `ingest` never gains write-to-repo
   capability — the capture path stays read-only.
 - **`prune`** (`main.go`) — deletes events older than the retention window.
 
@@ -75,7 +78,10 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
    (The `--enable-merge` write path added to `serve` doesn't touch either
    invariant or the ingest/capture path. It's off by default, and when on is
    POST-only, CSRF-protected (custom `X-Clodhopper-Token` header, constant-time
-   compare), Host-header-allowlisted against DNS rebinding, and restricted to a
+   compare), Host-header-allowlisted against DNS rebinding, peer-address-gated to
+   loopback/Tailscale for anything that execs (`remoteAllowed`, which never reads
+   a forwarding header — the Host allowlist alone cannot stop a LAN peer that
+   sends `Host: 127.0.0.1`), and restricted to a
    closed argv allowlist — no user-supplied string ever reaches a command line.
   The `end` action never reaches `actionArgv`: it execs nothing, and its
   `session_id` travels only as a bound SQL parameter. `rebase` DOES exec, so it

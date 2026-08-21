@@ -161,6 +161,15 @@ board used to expose.
   typed the command yourself. `--squash --admin` bypasses branch protection
   using your own `gh` authentication.
 
+  Whatever address the server is bound to, every action that runs a command
+  (the PR actions, the session actions, and **rebase**) is accepted only from a
+  **loopback or Tailscale peer** — `127.0.0.0/8`, `::1`, `100.64.0.0/10`, or
+  `fd7a:115c:a1e0::/48`. A LAN peer reaching a `--host 0.0.0.0` dashboard gets
+  the read-only board and the **end** button (which execs nothing) and a `403`
+  for anything else; the buttons it cannot use are not rendered for it. The
+  peer address is taken from the connection only — forwarding headers such as
+  `X-Forwarded-For` are never consulted — and there is no override flag.
+
 The PR-action form on each row is a three-way radio (squash / close / ready)
 plus two modifiers and a single **run** button:
 
@@ -223,9 +232,9 @@ emits another event.
 > runs with **your** credentials against **your** repos. The session actions
 > additionally send **keystrokes into live tmux panes**. (**end** is the mild
 > one: it only writes a row to clodhopper's own database.) Everything here is
-> gated behind `--enable-merge`, so enable it only on a **trusted,
-> single-operator network** (loopback, or your tailnet via `--tailscale`),
-> never on a public bind.
+> gated behind `--enable-merge` **and** restricted to loopback/Tailscale
+> peers, so enable it only on a **trusted, single-operator network**
+> (loopback, or your tailnet via `--tailscale`), never on a public bind.
 
 ### The debug view
 
@@ -276,7 +285,7 @@ pane's `SIGHUP` usually kills it before cleanup runs.
 | `CLODHOPPER_PORT` | `4555` | Dashboard port. |
 | `CLODHOPPER_HOST` | `127.0.0.1` | Dashboard bind address. Set `0.0.0.0` for container/LAN access. |
 | `CLODHOPPER_ALLOW_PUBLIC` | unset | Set to `1` to allow `serve` to bind a public IP (refused by default; the dashboard has no auth or TLS). Also settable per-run with `--allow-public`. |
-| `CLODHOPPER_ALLOWED_HOSTS` | unset | Comma-separated extra `Host:` header values accepted by the PR-action endpoint (e.g. a Tailscale MagicDNS name), beyond loopback and the bind host, which are always allowed. Only consulted when `--enable-merge` is set. |
+| `CLODHOPPER_ALLOWED_HOSTS` | unset | Comma-separated extra `Host:` header values accepted by the PR-action endpoint (e.g. a Tailscale MagicDNS name), beyond loopback and the bind host, which are always allowed. Only consulted when `--enable-merge` is set. It widens the accepted `Host:` header, NOT the accepted peer: actions that run commands still require a loopback or Tailscale peer address. |
 | `CLODHOPPER_WAITING_RETAIN_HOURS` | `720` (30 days) | How long a session with no `SessionEnd` stays on the roster. The default is generous on purpose so a long-idle but still-alive agent (overnight, a weekend, a multi-day pause) stays visible. In practice this window is also bounded by `CLODHOPPER_RETAIN_DAYS` (default 14): pruned events leave the roster regardless, so raise both to keep a session visible beyond two weeks. Reap finished or hard-killed sessions explicitly with `clodhopper end` rather than relying on this timeout. The dashboard's **roster window** dropdown narrows the board per-view (e.g. to the last day) without changing this configured cap. |
 | `CLODHOPPER_DEBUG` | unset | If set, `ingest` writes errors to stderr. |
 

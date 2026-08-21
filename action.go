@@ -248,8 +248,7 @@ func exitCode(err error) int {
 	if err == nil {
 		return 0
 	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
+	if ee, ok := errors.AsType[*exec.ExitError](err); ok {
 		return ee.ExitCode()
 	}
 	return -1
@@ -284,6 +283,57 @@ func hostAllowed(hostHeader, bindHost string, extra []string) bool {
 	}
 	return false
 }
+
+// tsULARange is Tailscale's IPv6 ULA prefix (fd7a:115c:a1e0::/48). Like
+// cgnatRange (its IPv4 counterpart, reused from bind.go) it is not
+// internet-routable: a peer with an address in it reached us over the tailnet.
+var tsULARange = mustCIDR("fd7a:115c:a1e0::/48")
+
+// remoteAllowed reports whether the request's PEER is on a network we let drive
+// commands on this host: loopback (127.0.0.0/8, ::1) or Tailscale (100.64.0.0/10
+// CGNAT, fd7a:115c:a1e0::/48 ULA). Everything else is denied.
+//
+// This is a different job from hostAllowed. hostAllowed inspects the Host
+// HEADER to stop DNS rebinding, and it allowlists loopback names - so with
+// `serve --host 0.0.0.0` any peer on the LAN could connect, GET the page to
+// read the CSRF token out of the HTML, and send `Host: 127.0.0.1` to satisfy
+// that check. Only the peer address closes that hole, so both guards run.
+//
+// Deliberately NEVER consults X-Forwarded-For, X-Real-IP, or any other header:
+// those are peer-supplied, so trusting them would hand the bypass straight back.
+// Do not "improve" this by adding proxy-header support. Fails closed: an
+// address we cannot parse is denied.
+func remoteAllowed(remoteAddr string) bool {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	// A RemoteAddr without a port reaches SplitHostPort's error path and is used
+	// whole; brackets around a bare IPv6 literal are stripped either way.
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil {
+		return false
+	}
+	// Unwrap IPv4-mapped IPv6 (::ffff:127.0.0.1) so it classifies as the IPv4
+	// address it actually is.
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	return ip.IsLoopback() || cgnatRange.Contains(ip) || tsULARange.Contains(ip)
+}
+
+// actionExecs reports whether an action can run a command on the host, which is
+// what remoteAllowed gates. Only "end" is exempt: it execs nothing at all, it
+// just writes a synthetic SessionEnd to drop a roster row (the same reason it
+// deliberately never reaches actionArgv, the allowlist boundary for things that
+// do exec). Everything else - the merge-pr/gh PR actions, the tmux session
+// actions, rebase - spawns a subprocess.
+//
+// Phrased as "is this the one exec-free action" rather than as a list of the
+// exec-backed ones so the gate fails CLOSED: an action added later is
+// network-gated automatically instead of quietly skipping the check. An unknown
+// action is likewise gated, and still 400s afterwards.
+func actionExecs(action string) bool { return action != "end" }
 
 // tokenOK compares a presented CSRF token against the per-serve secret in
 // constant time. An empty secret (feature misconfigured) always fails.
@@ -559,7 +609,7 @@ func runRebase(gitBin, dir, sessionID string, stepTimeout, totalTimeout time.Dur
 				" exhausted); the remaining steps were not run\n")
 			return actionResult{ExitCode: -1, TimedOut: true, Output: out.String()}
 		}
-		out.WriteString("$ git " + strings.Join(st.args, " ") + "\n")
+		fmt.Fprintf(&out, "$ git %s\n", strings.Join(st.args, " "))
 		res := runAction(gitBin, dir, st.args, min(stepTimeout, remaining))
 		out.WriteString(res.Output)
 		if res.ExitCode == 0 && !res.TimedOut {
@@ -582,7 +632,7 @@ func runRebase(gitBin, dir, sessionID string, stepTimeout, totalTimeout time.Dur
 // the user only discovers later.
 func rebaseAbort(gitBin, dir string, st rebaseStep, out *strings.Builder, res actionResult, outcome *string) actionResult {
 	if st.abortOnFail {
-		out.WriteString("$ git " + strings.Join(rebaseAbortArgv(), " ") + "\n")
+		fmt.Fprintf(out, "$ git %s\n", strings.Join(rebaseAbortArgv(), " "))
 		abort := runAction(gitBin, dir, rebaseAbortArgv(), rebaseAbortTimeout)
 		out.WriteString(abort.Output)
 		if abort.ExitCode == 0 && !abort.TimedOut {
@@ -653,6 +703,17 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 	sessionID := r.FormValue("session_id")
 	action := r.FormValue("action")
 	force := r.FormValue("force") == "true"
+
+	// Network gate for everything that can run a command on this host. It sits
+	// in the SHARED guard chain, before any lookup or subprocess, and keys off
+	// actionExecs rather than repeating a list of action names, so no action
+	// added below can quietly skip it. Distinct message from the Host-header 403
+	// above so the two are debuggable apart.
+	if actionExecs(action) && !remoteAllowed(r.RemoteAddr) {
+		http.Error(w, "peer not on an allowed network: actions that run commands "+
+			"are restricted to loopback and Tailscale peers", http.StatusForbidden)
+		return
+	}
 
 	// Session actions (monitor-ci / new-monitor) act on the agent's LIVE tmux
 	// pane rather than merging a PR, so they take a separate path: the pane is
