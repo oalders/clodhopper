@@ -886,11 +886,22 @@
           break;
         }
       }
-      // Hold the frozen group order across this repaint when "pin order" is on.
-      // After panel carry-over (so each open peek/actions row moves with its
-      // group) and before focus restore (so the restored row is already in its
-      // final place, keeping preventScroll honest). Inside swapContent it also
-      // inherits the __ckActionBusy and unchanged-signature skips for free.
+      // Two repaint fix-ups, in this order, both after the panel carry-over above
+      // and before focus restore below.
+      //
+      // First: a failed / timed-out action result would otherwise live only until
+      // this repaint (issue #98), because the fresh markup ships an empty .actmsg.
+      // Re-write any still-unexpired message onto its group — which needs the
+      // .actrow already un-hidden by the carry-over, or the message is invisible.
+      // Guarded because the merge IIFE, and so window.__ckActMsgs, only exists
+      // when --enable-merge is on.
+      //
+      // Second: hold the frozen group order when "pin order" is on — after panel
+      // carry-over (so each open peek/actions row moves with its group) and before
+      // focus restore (so the restored row is already in its final place, keeping
+      // preventScroll honest). Inside swapContent both also inherit the
+      // __ckActionBusy and unchanged-signature skips for free.
+      try { if (window.__ckActMsgs) window.__ckActMsgs.restore(); } catch (e) {}
       try { if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply(); } catch (e) {}
       if (key) {
         var btns = document.querySelectorAll('#content .copycwd');
@@ -1577,6 +1588,64 @@
     // reaches 0 when the last action settles.
     window.__ckActionBusy = window.__ckActionBusy || 0;
 
+    // A destructive action's FAILURE text is the one message the reader must
+    // actually get to read, and __ckActionBusy only holds the poller off until
+    // the fetch settles — the very next repaint would blank it (issue #98).
+    // So remember failure/timeout results here and re-apply them across each
+    // swapContent for at least this long.
+    var ACTMSG_MIN_MS = 5000;
+    // Keyed by session id AND group class: a session renders THREE .actgroups
+    // (actsession / prform / rowform), each with its own .actmsg.
+    var ACTMSG_GROUPS = ['actsession', 'prform', 'rowform'];
+    var actMsgs = {};
+
+    // actMsgKey returns '' for anything that is not one of the three keyable
+    // clusters, so note/clear/restore simply no-op on it.
+    function actMsgKey(group) {
+      if (!group) return '';
+      var sess = group.getAttribute('data-session');
+      if (!sess) return '';
+      for (var i = 0; i < ACTMSG_GROUPS.length; i++) {
+        if (group.classList.contains(ACTMSG_GROUPS[i])) return ACTMSG_GROUPS[i] + '\n' + sess;
+      }
+      return '';
+    }
+
+    function noteMsg(group, text, ttlMs) {
+      var key = actMsgKey(group);
+      if (!key) return;
+      actMsgs[key] = { text: text, expiresAt: Date.now() + (ttlMs || ACTMSG_MIN_MS) };
+    }
+
+    // clearMsgNote drops a remembered message that has been deliberately
+    // superseded (cancel, re-arm, a new request), so a stale failure can never
+    // resurrect over the text that replaced it.
+    function clearMsgNote(group) {
+      var key = actMsgKey(group);
+      if (key) delete actMsgs[key];
+    }
+
+    // restoreMsgs re-applies every unexpired message to the freshly rendered
+    // markup and prunes the rest. Groups are matched by scanning rather than by
+    // an interpolated attribute selector (CSS.escape is absent on older engines,
+    // and the roster is a handful of rows); a session that went away simply is
+    // not restored.
+    function restoreMsgs() {
+      var groups = document.querySelectorAll('#content .actgroup');
+      var now = Date.now();
+      for (var key in actMsgs) {
+        if (!Object.prototype.hasOwnProperty.call(actMsgs, key)) continue;
+        if (actMsgs[key].expiresAt <= now) { delete actMsgs[key]; continue; }
+        for (var i = 0; i < groups.length; i++) {
+          if (actMsgKey(groups[i]) !== key) continue;
+          var m = groups[i].querySelector('.actmsg');
+          // textContent, never innerHTML: this is raw git/gh output.
+          if (m) m.textContent = actMsgs[key].text;
+          break;
+        }
+      }
+    }
+
     var CAVEAT = {
       squash: 'merges + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
       'squash-admin': 'merges (bypassing branch protection) + removes worktree & tmux session (or deletes the branch if this row is your main checkout)',
@@ -1660,6 +1729,7 @@
       // re-enabled everything unconditionally).
       if (group.classList.contains('prform')) syncForm(group);
       if (clearMsg) {
+        clearMsgNote(group);
         var msg = group.querySelector('.actmsg');
         if (msg) msg.textContent = '';
       }
@@ -1682,6 +1752,7 @@
       cancel.setAttribute('aria-label', 'cancel');
       btn.insertAdjacentElement('afterend', cancel);
       if (msg) {
+        clearMsgNote(group);
         msg.textContent = caveatFor(group, action);
       }
     }
@@ -1719,7 +1790,7 @@
       // a fired group would drop the "working…" state and re-enable its buttons
       // mid-request, letting a reopen fire a second concurrent destructive action.
       group.dataset.ckFiring = '1';
-      if (msg) msg.textContent = 'working…';
+      if (msg) { clearMsgNote(group); msg.textContent = 'working…'; }
       fetch('/api/action', {
         method: 'POST',
         headers: {
@@ -1739,6 +1810,9 @@
           var clears = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'end');
           // IMPORTANT: assign result via textContent, never innerHTML — output is
           // raw git/gh text; scrubString removed secrets but not HTML.
+          // Only the results the reader must not miss — failure, timeout — are
+          // handed to noteMsg for re-application across repaints (issue #98); a
+          // success either clears its row or needs no second look.
           if (msg) {
             msg.textContent = d.ok
               ? (action === 'end' ? 'dismissed — row will clear'
@@ -1751,6 +1825,7 @@
             if (d.timedOut) msg.textContent = clears
               ? 'timed out — teardown may be incomplete; verify before retrying'
               : 'timed out — verify before retrying';
+            if (!d.ok || d.timedOut) noteMsg(group, msg.textContent, ACTMSG_MIN_MS);
           }
           // A successful row-clearing action is followed by the row disappearing
           // on the next poll (session/worktree gone); leave it locked so nothing
@@ -1766,7 +1841,11 @@
           // focused) until that poll, and swapContent's safety net catches it
           // the moment the repaint detaches it.
         })
-        .catch(function (e) { if (msg) msg.textContent = 'request failed: ' + e; unlock(group, false); restoreFocus(); })
+        .catch(function (e) {
+          if (msg) { msg.textContent = 'request failed: ' + e; noteMsg(group, msg.textContent, ACTMSG_MIN_MS); }
+          unlock(group, false);
+          restoreFocus();
+        })
         .finally(function () { delete group.dataset.ckFiring; window.__ckActionBusy = Math.max(0, window.__ckActionBusy - 1); });
     }
 
@@ -1790,7 +1869,7 @@
           // The mapped action may have changed (e.g. squash → close), so
           // re-derive the caveat for whatever the run button now targets.
           var mMsg = mgroup.querySelector('.actmsg');
-          if (mMsg) mMsg.textContent = caveatFor(mgroup, mArmed.getAttribute('data-action'));
+          if (mMsg) { clearMsgNote(mgroup); mMsg.textContent = caveatFor(mgroup, mArmed.getAttribute('data-action')); }
         }
       }
     }
@@ -1880,7 +1959,7 @@
         // re-derive the caveat for whatever the run button now targets.
         var action = armed.getAttribute('data-action');
         var msg = group.querySelector('.actmsg');
-        if (msg) msg.textContent = caveatFor(group, action);
+        if (msg) { clearMsgNote(group); msg.textContent = caveatFor(group, action); }
       }
     });
 
@@ -1894,6 +1973,9 @@
     // survive out of sight — otherwise reopening the panel and clicking once would
     // fire a destructive merge/close with no fresh confirmation. Exposed so the
     // disclosure logic (in the peek IIFE) can disarm a row before hiding it.
+    // swapContent (in the poller IIFE above) calls restore() across each repaint.
+    window.__ckActMsgs = { note: noteMsg, clear: clearMsgNote, restore: restoreMsgs };
+
     window.__ckDisarm = function (root) {
       if (!root || !root.querySelectorAll) return;
       var groups = root.querySelectorAll('.actgroup.confirm');

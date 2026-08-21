@@ -1910,3 +1910,85 @@ func TestContentTemplate_PeekIdentityIsSessionAcrossSharedPane(t *testing.T) {
 		t.Errorf("panerow must no longer be keyed on the tmux pane id:\n%s", html)
 	}
 }
+
+// A failed PR-action result used to survive only until the next poll repainted
+// #content with a fresh, empty .actmsg — anywhere from ~0s to the whole refresh
+// interval (issue #98). swapContent now re-applies remembered failure text, and
+// the ordering is load-bearing: it must run AFTER the actions-panel carry-over
+// un-hides the .actrow (an invisible message is no message) and BEFORE
+// __ckPin.apply() moves rows around. Assert contiguous fragments so the
+// ordering, not merely the presence of the call, is pinned.
+func TestDashboardActionMessageSurvivesContentSwap(t *testing.T) {
+	on := dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	}
+	html := renderDashboard(t, on)
+
+	// One contiguous fragment (html/template strips JS comments, so these are the
+	// two adjacent statements as shipped): the restore runs guarded, and it runs
+	// immediately before the pin reorder.
+	call := `      try { if (window.__ckActMsgs) window.__ckActMsgs.restore(); } catch (e) {}
+      try { if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply(); } catch (e) {}`
+	if !strings.Contains(html, call) {
+		t.Errorf("action-message restore no longer runs (guarded) immediately before the pin reorder:\n%s", call)
+	}
+	// ...and both of those run after the actions-panel carry-over loop that
+	// un-hides the .actrow, without which a restored message is invisible.
+	carry := `          if (newActs[ar].getAttribute('data-actions-row') !== asess) continue;
+          newActs[ar].hidden = false;`
+	if !strings.Contains(html, carry) {
+		t.Fatalf("actions-panel carry-over loop not found; the ordering check below is meaningless:\n%s", carry)
+	}
+	if strings.Index(html, carry) > strings.Index(html, call) {
+		t.Error("action-message restore must run after the actions-panel carry-over un-hides the row")
+	}
+
+	// The holder itself, and the 5s floor the fix exists to guarantee.
+	if !strings.Contains(html, "var ACTMSG_MIN_MS = 5000;") {
+		t.Error("the 5000ms minimum-visibility constant is not shipped")
+	}
+	if !strings.Contains(html, "window.__ckActMsgs = { note: noteMsg, clear: clearMsgNote, restore: restoreMsgs };") {
+		t.Error("__ckActMsgs holder not exported from the merge IIFE")
+	}
+}
+
+// Only results the reader must not miss are remembered: the failure, timeout and
+// network-error branches. A success either clears its row or needs no second
+// look, and remembering it would re-paint stale text over a live row. Equally,
+// a superseded message ('working…' on a retry) must drop its note so a stale
+// failure cannot resurrect.
+func TestDashboardActionMessagePersistsOnlyFailures(t *testing.T) {
+	on := dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	}
+	html := renderDashboard(t, on)
+
+	// Failure + timeout share one note() call, placed after both writes.
+	fail := `              : 'timed out — verify before retrying';
+            if (!d.ok || d.timedOut) noteMsg(group, msg.textContent, ACTMSG_MIN_MS);`
+	if !strings.Contains(html, fail) {
+		t.Errorf("failure/timeout results are no longer remembered across repaints:\n%s", fail)
+	}
+	// The rejected-fetch branch.
+	catchFrag := `          if (msg) { msg.textContent = 'request failed: ' + e; noteMsg(group, msg.textContent, ACTMSG_MIN_MS); }`
+	if !strings.Contains(html, catchFrag) {
+		t.Errorf("a rejected /api/action fetch no longer remembers its message:\n%s", catchFrag)
+	}
+	// Firing again supersedes whatever was there.
+	if !strings.Contains(html, `      if (msg) { clearMsgNote(group); msg.textContent = 'working…'; }`) {
+		t.Error("firing an action no longer drops the previously remembered message")
+	}
+	// The success text is written in the same expression as the failure text, so
+	// guard the negative directly: no note() may hang off the ok branch.
+	if strings.Contains(html, `'done — row will clear'`) && strings.Contains(html, "noteMsg(group, 'done") {
+		t.Error("a successful result must not be remembered across repaints")
+	}
+	// Keyed by group class as well as session: three .actgroups share a session.
+	if !strings.Contains(html, "var ACTMSG_GROUPS = ['actsession', 'prform', 'rowform'];") {
+		t.Error("remembered messages are no longer keyed by group class")
+	}
+}
