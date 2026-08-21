@@ -2254,12 +2254,27 @@
       if (el.classList.contains('practadmin')) return 'admin';
       if (el.classList.contains('practforce')) return 'force';
       if (el.classList.contains('prmode')) return 'mode:' + (el.getAttribute('data-mode') || '');
+      // A group can hold MORE than the armed run button: rowform renders rebase
+      // + end and actsession renders monitor-ci + new-monitor, and arming
+      // disables neither. Naming the button by its action keeps a reader who
+      // Tabbed to the sibling on that sibling, instead of being yanked back onto
+      // the armed one. (The armed button itself round-trips through this arm too.)
+      if (el.classList.contains('pract')) return 'act:' + (el.getAttribute('data-action') || '');
       return '';
     }
     function armFocusTarget(g, kind) {
       if (kind === 'cancel') return g.querySelector('.actcancel');
       if (kind === 'admin') return g.querySelector('.practadmin');
       if (kind === 'force') return g.querySelector('.practforce');
+      if (kind && kind.indexOf('act:') === 0) {
+        // Same attribute-loop shape as the mode arm below: never interpolate the
+        // recorded value into a selector string.
+        var wantAct = kind.slice(4);
+        var acts = g.querySelectorAll('.pract');
+        for (var a = 0; a < acts.length; a++) {
+          if (acts[a].getAttribute('data-action') === wantAct) return acts[a];
+        }
+      }
       if (kind && kind.indexOf('mode:') === 0) {
         // Match by attribute in a loop rather than interpolating the recorded
         // value into a selector string.
@@ -2368,6 +2383,17 @@
           // armConfirm disarms outright when the resumed deadline had already
           // lapsed; leave that expiry message (and the idle group) alone.
           var stillArmed = g.classList.contains('confirm');
+          // The disarm above wrote ARM_EXPIRED_MSG into .actmsg while the region
+          // was MUTED, and the un-mute scheduled before it lands a tick later
+          // with that text already in place — so an AT would never announce the
+          // one path where the expiry actually fires. Blank it now and re-write
+          // it after the un-mute (that timeout was queued first, so it runs
+          // first), making the text appear as a change to a LIVE region.
+          if (!stillArmed && slot) {
+            var expiredMsg = slot.textContent;
+            slot.textContent = '';
+            setTimeout(function (el, m) { return function () { el.textContent = m; }; }(slot, expiredMsg), 0);
+          }
           // armConfirm writes a freshly derived caveat; keep whatever the reader
           // was actually part-way through reading when the poll landed.
           if (stillArmed && st.msg && slot && slot.textContent !== st.msg) slot.textContent = st.msg;

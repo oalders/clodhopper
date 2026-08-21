@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2833,10 +2834,33 @@ func TestDashboardArmRestoreResumesTheIdleDeadline(t *testing.T) {
 		"if (typeof ms === 'number' && ms <= 0) {",
 		"window.__ckDisarm(group, ARM_EXPIRED_MSG);",
 		"var stillArmed = g.classList.contains('confirm');",
+		// stillArmed is a GUARD, not a variable: both consumers must be gated on
+		// it, or the restore overwrites the expiry message and — worse —
+		// refocuses and re-arms the group armConfirm just tore down.
+		"if (stillArmed && st.msg && slot && slot.textContent !== st.msg) slot.textContent = st.msg;",
+		"if (stillArmed && st.focused) {",
 	} {
 		if !strings.Contains(html, frag) {
 			t.Errorf("a lapsed deadline is still re-armed for a full ARM_IDLE_MS: %s", frag)
 		}
+	}
+	// ...and it must be declared before the branches that read it.
+	declAt := strings.Index(html, "var stillArmed = g.classList.contains('confirm');")
+	msgAt := strings.Index(html, "if (stillArmed && st.msg && slot && slot.textContent !== st.msg) slot.textContent = st.msg;")
+	focAt := strings.Index(html, "if (stillArmed && st.focused) {")
+	if declAt < 0 || msgAt < declAt || focAt < msgAt {
+		t.Error("the stillArmed guard is not declared ahead of both branches that consume it")
+	}
+	// The lapsed branch must RETURN. Without it both pinned lines above survive
+	// while execution falls through to `wait = ARM_IDLE_MS`, re-arming the group
+	// the disarm just tore down — an expired confirmation granted a fresh minute.
+	lapseAt := strings.Index(html, "if (typeof ms === 'number' && ms <= 0) {")
+	waitAt := strings.Index(html, "var wait = (typeof ms === 'number' && ms > 0) ? ms : ARM_IDLE_MS;")
+	if lapseAt < 0 || waitAt < lapseAt {
+		t.Fatal("startArmTimer's lapsed-deadline branch not found ahead of the fresh-wait fallback")
+	}
+	if !strings.Contains(html[lapseAt:waitAt], "return;") {
+		t.Error("the lapsed-deadline branch falls through to a fresh ARM_IDLE_MS instead of returning")
 	}
 
 	// The snapshot clears the doomed group's timer before the swap.
@@ -2901,6 +2925,113 @@ func TestDashboardArmRestoreKeepsFocusOnTheArmedButton(t *testing.T) {
 	fallback := strings.Index(html, "if (!armRefocused && active && active !== document.body && !active.isConnected) {")
 	if rest < 0 || fallback < rest {
 		t.Fatal("the arm restore must run BEFORE the #content focus fallback")
+	}
+}
+
+// armFocusKind / armFocusTarget are a MAPPING, not a pair of call sites: the
+// kind a control records must resolve back to that same control after the swap.
+// A swapped selector or an off-by-one prefix slice silently parks a reader on
+// the wrong checkbox (or on nothing), which is precisely the WCAG 2.4.3 failure
+// the focus restore exists to prevent — so assert each kind against its
+// selector, in both directions.
+func TestDashboardArmFocusKindMapsEachControlToItsSelector(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	kindAt := strings.Index(html, "function armFocusKind(g, el) {")
+	tgtAt := strings.Index(html, "function armFocusTarget(g, kind) {")
+	snapAt := strings.Index(html, "window.__ckArmSnapshot = function () {")
+	if kindAt < 0 || tgtAt < kindAt || snapAt < tgtAt {
+		t.Fatal("armFocusKind / armFocusTarget not found in the expected order")
+	}
+	kindBody, tgtBody := html[kindAt:tgtAt], html[tgtAt:snapAt]
+
+	// A focused element OUTSIDE the group must never be attributed to it: the
+	// snapshot walks every armed group, so without this the first group would
+	// claim whatever the document happens to have focused.
+	if !strings.Contains(kindBody, "if (!el || !g.contains(el) || !el.classList) return '';") {
+		t.Error("armFocusKind no longer rejects an element outside the group")
+	}
+
+	// Each kind string, the class that produces it, and the selector that finds
+	// it again. Swapping any two selectors breaks a pair here.
+	for _, c := range []struct{ kind, class string }{
+		{"cancel", "actcancel"},
+		{"admin", "practadmin"},
+		{"force", "practforce"},
+	} {
+		record := "if (el.classList.contains('" + c.class + "')) return '" + c.kind + "';"
+		resolve := "if (kind === '" + c.kind + "') return g.querySelector('." + c.class + "');"
+		if !strings.Contains(kindBody, record) {
+			t.Errorf("armFocusKind does not record %q for .%s: %s", c.kind, c.class, record)
+		}
+		if !strings.Contains(tgtBody, resolve) {
+			t.Errorf("armFocusTarget does not resolve %q back to .%s: %s", c.kind, c.class, resolve)
+		}
+	}
+
+	// The two attribute-keyed kinds carry a value after a prefix, and the
+	// resolver strips exactly that prefix — the offsets are derived from the
+	// prefixes here so an off-by-one slice cannot pass.
+	for _, c := range []struct{ prefix, class, attr, loopVar string }{
+		{"mode:", "prmode", "data-mode", "want"},
+		{"act:", "pract", "data-action", "wantAct"},
+	} {
+		record := "if (el.classList.contains('" + c.class + "')) return '" + c.prefix +
+			"' + (el.getAttribute('" + c.attr + "') || '');"
+		if !strings.Contains(kindBody, record) {
+			t.Errorf("armFocusKind does not record the %q value: %s", c.prefix, record)
+		}
+		guard := "if (kind && kind.indexOf('" + c.prefix + "') === 0) {"
+		gAt := strings.Index(tgtBody, guard)
+		if gAt < 0 {
+			t.Errorf("armFocusTarget has no %q arm: %s", c.prefix, guard)
+			continue
+		}
+		arm := tgtBody[gAt:]
+		if end := strings.Index(arm[1:], "\n      if ("); end > 0 {
+			arm = arm[:end]
+		}
+		slice := "var " + c.loopVar + " = kind.slice(" + strconv.Itoa(len(c.prefix)) + ");"
+		if !strings.Contains(arm, slice) {
+			t.Errorf("armFocusTarget's %q arm does not strip exactly the prefix: %s", c.prefix, slice)
+		}
+		match := "getAttribute('" + c.attr + "') === " + c.loopVar
+		if !strings.Contains(arm, match) {
+			t.Errorf("armFocusTarget's %q arm does not match on %s: %s", c.prefix, c.attr, match)
+		}
+	}
+}
+
+// The expired-on-restore path is the ONE place the round-6 expiry actually
+// fires, and it writes its message into .actmsg while that region is muted for
+// the carry-over rewrite — so the un-mute lands with the text already present
+// and no screen reader ever announces it. The message must be blanked and
+// re-written after the un-mute, as a change to a live region.
+func TestDashboardArmRestoreAnnouncesTheExpiry(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	for _, frag := range []string{
+		"if (!stillArmed && slot) {",
+		"var expiredMsg = slot.textContent;",
+		"slot.textContent = '';",
+		"setTimeout(function (el, m) { return function () { el.textContent = m; }; }(slot, expiredMsg), 0);",
+	} {
+		if !strings.Contains(html, frag) {
+			t.Errorf("the expiry announcement is missing a piece: %s", frag)
+		}
+	}
+	// ORDER: the un-mute must already be QUEUED when the re-write is queued, so
+	// the region is polite again by the time the text goes back in.
+	unmuteAt := strings.Index(html, "setTimeout(function (el) { return function () { el.setAttribute('aria-live', 'polite'); }; }(slot), 0);")
+	rewriteAt := strings.Index(html, "setTimeout(function (el, m) { return function () { el.textContent = m; }; }(slot, expiredMsg), 0);")
+	if unmuteAt < 0 || rewriteAt < unmuteAt {
+		t.Error("the expiry re-write is queued before the aria-live un-mute; it would still land muted")
 	}
 }
 
@@ -3018,6 +3149,14 @@ func TestDashboardArmedConfirmFocusAndLiveRegionHousekeeping(t *testing.T) {
 	if !strings.Contains(html, "} else if (hadFocus) {") ||
 		!strings.Contains(html, "content.focus({ preventScroll: true });") {
 		t.Error("closeAct can leave focus inside a hidden row when the toggle button is missing")
+	}
+	// #content is a <div>: without the programmatic tabindex the focus() above is
+	// a NO-OP and focus stays inside the row that was just hidden — the exact
+	// failure this fallback exists for. Pin the tabindex, and its order.
+	tabAt := strings.Index(html, "content.setAttribute('tabindex', '-1');")
+	focusAt := strings.Index(html, "content.focus({ preventScroll: true });")
+	if tabAt < 0 || focusAt < tabAt {
+		t.Error("closeAct focuses #content without first making the <div> focusable; the focus() is a no-op")
 	}
 	// The live region's re-enable is scheduled BEFORE the work that could throw,
 	// so a mid-restore failure cannot mute the row permanently.

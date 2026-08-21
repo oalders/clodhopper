@@ -820,6 +820,44 @@ func TestHandleActionEndConcurrentIsConflict(t *testing.T) {
 	}
 }
 
+// The tmux branch takes the SAME per-session inflight lock as `end`, and the
+// pattern is only as good as its weakest branch: a second monitor-ci for a
+// session already running one must 409 without touching tmux, and a completed
+// one must RELEASE the key it took (a mismatched release would leave the
+// session wedged for the life of the process).
+func TestHandleActionMonitorCIConcurrentIsConflict(t *testing.T) {
+	db := openTestDB(t)
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-m", Cwd: t.TempDir(), TmuxPane: "%12", EventType: "Stop", PayloadJSON: "{}"})
+	stub, logPath := tmuxLogStub(t)
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	cfg.tmux = stub
+
+	if !cfg.inflight.acquire(sidKey("live-m")) {
+		t.Fatal("acquire failed")
+	}
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("live-m", "monitor-ci", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusConflict {
+		t.Fatalf("code = %d, want 409", w.Code)
+	}
+	if b, err := os.ReadFile(logPath); err == nil && len(b) > 0 {
+		t.Fatalf("the conflicting request still ran tmux: %q", b)
+	}
+	cfg.inflight.release(sidKey("live-m"))
+
+	// ...and the handler's own acquire/release pair must balance: the same
+	// session has to be actionable again once the first run finishes.
+	w = httptest.NewRecorder()
+	handleAction(w, actionReq("live-m", "monitor-ci", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	if !cfg.inflight.acquire(sidKey("live-m")) {
+		t.Fatal("the tmux branch leaked its inflight key; the session is wedged")
+	}
+	cfg.inflight.release(sidKey("live-m"))
+}
+
 // An ambiguous session prefix must surface as a visible failure, not a silent
 // no-op and not the wrong agent being dismissed. The dashboard sends full
 // session ids, but endSessions matches by prefix, so one id that prefixes
