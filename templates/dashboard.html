@@ -1437,17 +1437,22 @@
       }
       return null;
     }
-    function closeAct(sess, focusBtn) {
+    // keepMsgs separates an incidental panel swap from a deliberate dismissal.
+    // Only closeOtherPanels passes it: there the user is opening the sibling peek
+    // to investigate, so the remembered failure text must survive for when they
+    // come back. Disarming is unconditional — an armed destructive confirm must
+    // never survive out of sight, whatever the reason the panel is closing.
+    function closeAct(sess, focusBtn, keepMsgs) {
       var row = actRow(sess);
       if (!row || row.hidden) return false;
       // Never leave an armed destructive confirm inside a panel we are hiding.
       if (window.__ckDisarm) window.__ckDisarm(row);
-      // Collapsing the panel is how a reader dismisses a result they have read.
-      // Remembered failure text outlives its group's .confirm class, so drop the
-      // notes too — otherwise a repaint inside the 5s window would re-paint the
-      // very message the reader deliberately dismissed. Feature-guarded:
+      // The toggle-click and Escape paths ARE how a reader dismisses a result they
+      // have read. Remembered failure text outlives its group's .confirm class, so
+      // drop the notes too — otherwise a repaint inside the 5s window would re-paint
+      // the very message the reader deliberately dismissed. Feature-guarded:
       // __ckActMsgs only exists under --enable-merge.
-      if (window.__ckActMsgs) {
+      if (!keepMsgs && window.__ckActMsgs) {
         var gs = row.querySelectorAll('.actgroup');
         for (var i = 0; i < gs.length; i++) window.__ckActMsgs.clear(gs[i]);
       }
@@ -1476,7 +1481,7 @@
       while (n && (n.classList.contains('panerow') || n.classList.contains('actrow'))) {
         if (n !== openingRow && !n.hidden) {
           if (n.classList.contains('panerow')) closePane(n.getAttribute('data-peek-row'), false);
-          else closeAct(n.getAttribute('data-actions-row'), false);
+          else closeAct(n.getAttribute('data-actions-row'), false, true);
         }
         n = n.nextElementSibling;
       }
