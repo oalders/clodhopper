@@ -1373,9 +1373,26 @@
     // and every lookup below would land on whichever rendered first. The pane id
     // stays what it always was — the payload openPane sends to /api/pane — and is
     // read off the button when the fetch needs it. Same key the actions panel uses.
+    // Compare loop rather than the '[data-peek-row="' + CSS.escape(sess) + '"]'
+    // selector idiom the rest of this file uses: the peek key is a free-form
+    // session id straight off the hook payload, never format-validated the way
+    // the old pane-id key was, so on an engine without CSS.escape a quote in it
+    // would break out of the selector. Comparing attribute values interpolates
+    // nothing. (actRow below still uses the selector idiom on the same kind of
+    // value.) Document-wide and first-match-or-null, exactly like querySelector.
+    // Compare loop rather than the '[data-peek-row="' + CSS.escape(sess) + '"]'
+    // selector idiom the rest of this file uses: the peek key is a free-form
+    // session id straight off the hook payload, never format-validated the way
+    // the old pane-id key was, so on an engine without CSS.escape a quote in it
+    // would break out of the selector. Comparing attribute values interpolates
+    // nothing. (actRow below still uses the selector idiom on the same kind of
+    // value.) Document-wide and first-match-or-null, exactly like querySelector.
     function paneRow(sess) {
-      var sel = '.panerow[data-peek-row="' + (window.CSS && CSS.escape ? CSS.escape(sess) : sess) + '"]';
-      return document.querySelector(sel);
+      var rows = document.querySelectorAll('.panerow');
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].getAttribute('data-peek-row') === sess) return rows[i];
+      }
+      return null;
     }
     function paneButton(sess) {
       var btns = document.querySelectorAll('#content .peek');
@@ -1989,10 +2006,10 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>{{ end }}
-          {{ if or $.PeekEnabled $.MergeEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.MergeEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" data-peek="{{ .SessionID }}" aria-expanded="false" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · squash · admin · close · ready · end"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          {{ if or $.PeekEnabled $.MergeEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.MergeEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" data-peek="{{ .SessionID }}" aria-expanded="false" aria-controls="panerow-{{ .SessionID }}" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · squash · admin · close · ready · end"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
-        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
+        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
         {{ if and $.MergeEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><div class="actpanel">
             {{ if .HasPane }}
             <div class="actcol" role="group" aria-label="session actions">

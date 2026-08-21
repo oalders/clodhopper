@@ -1539,7 +1539,7 @@ func TestContentTemplate_SessionNamePreservedInPeekTitle(t *testing.T) {
 	html := buf.String()
 
 	// The session name lives in the peek button's title, ahead of the peek hint.
-	want := `class="peek" data-pane="%2310" data-peek="s1" aria-expanded="false" aria-label="show pane for nono redirect buildx state to the worktree" title="nono redirect buildx state to the worktree — show this pane's last lines"`
+	want := `class="peek" data-pane="%2310" data-peek="s1" aria-expanded="false" aria-controls="panerow-s1" aria-label="show pane for nono redirect buildx state to the worktree" title="nono redirect buildx state to the worktree — show this pane's last lines"`
 	if !strings.Contains(html, want) {
 		t.Fatalf("session name must be preserved in the peek button title:\n%s", html)
 	}
@@ -1812,7 +1812,7 @@ func TestHandleDashboard_PeekKeysOnSessionNotPane(t *testing.T) {
 		`if (newRows[r].getAttribute('data-peek-row') !== op.sess) continue;`,
 		`if (btns[b].getAttribute('data-peek') === op.sess) {`,
 		// Row/button lookup and the toggle + Esc paths.
-		`var sel = '.panerow[data-peek-row="' + (window.CSS && CSS.escape ? CSS.escape(sess) : sess) + '"]';`,
+		`if (rows[i].getAttribute('data-peek-row') === sess) return rows[i];`,
 		`if (btns[i].getAttribute('data-peek') === sess) return btns[i];`,
 		`if (n.classList.contains('panerow')) closePane(n.getAttribute('data-peek-row'), false);`,
 		`var psess = peekBtn.getAttribute('data-peek');`,
@@ -1825,6 +1825,32 @@ func TestHandleDashboard_PeekKeysOnSessionNotPane(t *testing.T) {
 		if !strings.Contains(body, frag) {
 			t.Errorf("peek must key on the session id — fragment missing: %s", frag)
 		}
+	}
+
+	// The peek key is an unvalidated session id, so it must never be interpolated
+	// into a CSS selector — not even behind the CSS.escape fallback.
+	if strings.Contains(body, `'.panerow[data-peek-row="'`) {
+		t.Error("peek row lookup must not build a selector from the session id")
+	}
+
+	// Opening either panel must collapse the other one on the same roster row,
+	// in BOTH directions, and the peek half of that must still be session-keyed.
+	for _, frag := range []string{
+		// actions opening closes an open peek …
+		`if (n.classList.contains('panerow')) closePane(n.getAttribute('data-peek-row'), false);`,
+		`else closeAct(n.getAttribute('data-actions-row'), false);`,
+		// … and both openers route through the shared collapse.
+		"function openPane(sess) {\n      var row = paneRow(sess);",
+		"function openAct(sess) {\n      var row = actRow(sess);\n      if (!row) return;\n      closeOtherPanels(row);",
+	} {
+		if !strings.Contains(body, frag) {
+			t.Errorf("peek/actions must close each other — fragment missing: %s", frag)
+		}
+	}
+	// openPane reaches closeOtherPanels too (after its .panecap guard).
+	if i := strings.Index(body, "function openPane(sess) {"); i < 0 ||
+		!strings.Contains(body[i:min(i+400, len(body))], "closeOtherPanels(row);") {
+		t.Error("openPane must call closeOtherPanels so a peek collapses an open actions panel")
 	}
 
 	// No lookup may key a row's identity on the pane id any more.
@@ -1863,8 +1889,13 @@ func TestContentTemplate_PeekIdentityIsSessionAcrossSharedPane(t *testing.T) {
 		if !strings.Contains(html, `class="peek" data-pane="%7" data-peek="`+sess+`"`) {
 			t.Errorf("peek button for %s must carry both data-pane and data-peek:\n%s", sess, html)
 		}
-		if !strings.Contains(html, `<tr class="panerow" hidden data-peek-row="`+sess+`">`) {
+		if !strings.Contains(html, `<tr class="panerow" hidden id="panerow-`+sess+`" data-peek-row="`+sess+`">`) {
 			t.Errorf("panerow for %s must be keyed by session id:\n%s", sess, html)
+		}
+		// Now that the key is unique, the toggle can point at its panel the way
+		// the sibling actions toggle does: aria-controls matching the row's id.
+		if !strings.Contains(html, `aria-controls="panerow-`+sess+`"`) {
+			t.Errorf("peek button for %s must reference its panel via aria-controls:\n%s", sess, html)
 		}
 	}
 	// Two rows, one pane, two distinct identities — nothing keyed on the pane.
