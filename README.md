@@ -165,10 +165,29 @@ board used to expose.
   (the PR actions, the session actions, and **rebase**) is accepted only from a
   **loopback or Tailscale peer** — `127.0.0.0/8`, `::1`, `100.64.0.0/10`, or
   `fd7a:115c:a1e0::/48`. A LAN peer reaching a `--host 0.0.0.0` dashboard gets
-  the read-only board and the **end** button (which execs nothing) and a `403`
-  for anything else; the buttons it cannot use are not rendered for it. The
-  peer address is taken from the connection only — forwarding headers such as
-  `X-Forwarded-For` are never consulted — and there is no override flag.
+  the read-only board and a `403` for anything else: no action buttons are
+  rendered for it, and the CSRF token is not emitted into its page either, so
+  even the exec-free **end** action is out of reach. The peer address is taken
+  from the connection only — forwarding headers such as `X-Forwarded-For` are
+  never consulted — and there is no override flag.
+
+  The same gate covers `--pane-peek`'s `/api/pane`, which execs `tmux` and
+  streams a live pane's text.
+
+  > **Do not run `serve --enable-merge` behind a reverse proxy, `tailscale
+  > serve`, nginx/Caddy, a container port forward, or `ssh -L`.** The peer gate
+  > assumes a direct socket: through a proxy every request arrives from
+  > `127.0.0.1` and *any* peer that can reach the proxy passes it. A request
+  > carrying a forwarding header is refused for that reason, but a proxy that
+  > strips those headers — and `ssh -L`, which never adds one — is invisible to
+  > us. Bind the dashboard directly instead (loopback, or `--tailscale`).
+
+  > **`--host 0.0.0.0` on a CGNAT uplink weakens the gate.** `100.64.0.0/10` is
+  > the carrier-grade NAT range generally, not Tailscale's private property:
+  > mobile hotspots, Starlink, some WISPs and consumer routers hand out
+  > addresses in it, and a neighbouring device that lands in that range passes
+  > the peer check. Binding the tailnet address directly (`--tailscale`)
+  > sidesteps this — nothing off the tailnet can then even connect.
 
 The PR-action form on each row is a three-way radio (squash / close / ready)
 plus two modifiers and a single **run** button:

@@ -212,14 +212,14 @@ type dashboardData struct {
 	SessColors     map[string]string // session id -> chip/tint color; see assignSessColors
 	Signature      string            // fingerprint of the report-worthy view; see viewSignature
 	PeekEnabled    bool              // true when serve --pane-peek is set; gates the roster's live-pane peek control
-	MergeEnabled   bool              // true when serve --enable-merge is set; gates the roster's PR-action buttons
-	CSRFToken      string            // per-serve secret echoed into the page for the action fetch; "" when MergeEnabled is false
-	// ExecEnabled narrows MergeEnabled to the actions that run a command on the
-	// host: it is true only when this REQUEST's peer also passes remoteAllowed
-	// (loopback or Tailscale). A LAN peer on a `--host 0.0.0.0` serve still gets
-	// the full read-only board and the exec-free "end" button, but is not shown
-	// buttons that handleAction would 403. This is UX and defence in depth; the
-	// gate that matters is the one in handleAction.
+	CSRFToken      string            // per-serve secret; emitted into the page only when ExecEnabled
+	// ExecEnabled gates the whole write path in the UI: it is true only when
+	// serve --enable-merge is set AND this REQUEST's peer passes remoteAllowed
+	// (loopback or Tailscale). A peer that fails it gets a genuinely read-only
+	// board: no action buttons at all, and — because data-csrf is emitted under
+	// the same condition — no token with which to drive even the exec-free "end"
+	// action by hand. This is UX and defence in depth; the gate that matters is
+	// the one in handleAction.
 	ExecEnabled bool
 	Debug       bool // true when ?debug=1; renders the Activity + Recent-events diagnostics sections (off by default: the roster is the whole board)
 }
@@ -649,7 +649,6 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConf
 		Now:            now,
 		SessColors:     assignSessColors(agents, events),
 		PeekEnabled:    peek.enabled,
-		MergeEnabled:   act.enabled,
 		ExecEnabled:    act.enabled && remoteAllowed(r.RemoteAddr),
 		CSRFToken:      act.token,
 		Debug:          debug,

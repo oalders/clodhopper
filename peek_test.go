@@ -3,7 +3,10 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -53,6 +56,7 @@ func TestHandlePane_RejectsBadPane(t *testing.T) {
 	for _, bad := range []string{"", "3", "-S", "%", "%3;rm", "abc"} {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/api/pane?pane="+bad, nil)
+		req.RemoteAddr = "127.0.0.1:5555" // past the peer gate; the pane id is what's under test
 		handlePane(rec, req, peek, time.Unix(0, 0))
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("pane=%q = %d, want 404", bad, rec.Code)
@@ -68,9 +72,64 @@ func TestHandlePane_UnknownPaneNotFound(t *testing.T) {
 	peek.cache.at = time.Unix(1_700_000_000, 0)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/api/pane?pane=%2599", nil) // %99 encoded
+	req.RemoteAddr = "127.0.0.1:5555"                                       // past the peer gate
 	handlePane(rec, req, peek, time.Unix(1_700_000_000, 0))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("unknown live pane = %d, want 404", rec.Code)
+	}
+}
+
+// /api/pane execs tmux and streams live pane text, so it is peer-gated like the
+// exec-backed actions: a LAN peer is refused before tmux is invoked at all, and
+// a loopback peer reaches capture-pane.
+func TestHandlePane_GatedOnPeer(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "tmux.log")
+	stub := filepath.Join(dir, "tmux")
+	// #!/bin/sh, not /usr/bin/env: PATH below is replaced wholesale with dir, so
+	// the stub must not need PATH to find its own interpreter.
+	script := "#!/bin/sh\necho \"$@\" >> " + log + "\necho pane text\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// PATH is REPLACED, not prefixed, so a real tmux on the host cannot be
+	// reached and "the log file does not exist" means tmux truly was not run.
+	t.Setenv("PATH", dir)
+
+	newPeek := func() *peekConfig {
+		p := &peekConfig{enabled: true, lines: 40, cache: newPaneCache()}
+		p.cache.set = map[string]bool{"%3": true}
+		p.cache.at = time.Unix(1_700_000_000, 0)
+		return p
+	}
+	now := time.Unix(1_700_000_000, 0)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/pane?pane=%253", nil)
+	req.RemoteAddr = "192.168.1.5:1234"
+	handlePane(rec, req, newPeek(), now)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("LAN peer = %d, want 403", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "allowed network") {
+		t.Errorf("body = %q, want the peer-network reason", rec.Body.String())
+	}
+	if _, err := os.Stat(log); err == nil {
+		t.Error("tmux was invoked for a denied peer")
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/pane?pane=%253", nil)
+	req.RemoteAddr = "127.0.0.1:5555"
+	handlePane(rec, req, newPeek(), now)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("loopback peer = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "pane text") {
+		t.Errorf("body = %q, want the captured pane text", rec.Body.String())
+	}
+	if _, err := os.Stat(log); err != nil {
+		t.Errorf("tmux was not invoked for a loopback peer: %v", err)
 	}
 }
 

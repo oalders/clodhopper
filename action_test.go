@@ -449,7 +449,7 @@ func TestHandleActionConcurrent409(t *testing.T) {
 	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-4", Cwd: dir, EventType: "Stop", PayloadJSON: "{}"})
 	cfg := newActionCfg("/bin/true", "/bin/true")
 	// Pre-acquire to simulate an in-flight action for this session.
-	cfg.inflight.acquire("live-4")
+	cfg.inflight.acquire(sidKey("live-4"))
 	w := httptest.NewRecorder()
 	handleAction(w, actionReq("live-4", "squash", false, "secret", "127.0.0.1"), db, cfg, time.Now())
 	if w.Code != http.StatusConflict {
@@ -805,7 +805,7 @@ func TestHandleActionEndConcurrentIsConflict(t *testing.T) {
 	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
 	insertEvent(db, Event{TS: "2026-08-20T09:00:00Z", SourceApp: "x", SessionID: "live-1", Cwd: t.TempDir(), EventType: "Stop", PayloadJSON: "{}"})
 	cfg := newActionCfg("/bin/true", "/bin/true")
-	if !cfg.inflight.acquire("live-1") {
+	if !cfg.inflight.acquire(sidKey("live-1")) {
 		t.Fatal("acquire failed")
 	}
 	defer cfg.inflight.release("live-1")
@@ -1396,7 +1396,7 @@ func TestRunRebaseStepTimeoutStillAborts(t *testing.T) {
 func TestHandleActionRebaseConcurrent409(t *testing.T) {
 	db := openTestDB(t)
 	_, logPath, cfg := rebaseFixture(t, db, "reb-7", gitStubOpts{head: "feature", originHead: "origin/main"})
-	cfg.inflight.acquire("reb-7")
+	cfg.inflight.acquire(sidKey("reb-7"))
 	w := httptest.NewRecorder()
 	handleAction(w, actionReq("reb-7", "rebase", false, "secret", "127.0.0.1"), db, cfg, time.Now())
 	if w.Code != http.StatusConflict {
@@ -1417,8 +1417,8 @@ func TestHandleActionConcurrentSameCwd409(t *testing.T) {
 	insertEvent(db, Event{TS: "2026-08-12T10:01:00Z", SourceApp: "x", SessionID: "sess-b", Cwd: dir, EventType: "Stop", PayloadJSON: "{}"})
 
 	// sess-a's rebase is in flight: its session key AND its worktree key are held.
-	cfg.inflight.acquire("sess-a")
-	cfg.inflight.acquire("cwd:" + dir)
+	cfg.inflight.acquire(sidKey("sess-a"))
+	cfg.inflight.acquire(cwdKey(dir))
 
 	w := httptest.NewRecorder()
 	handleAction(w, actionReq("sess-b", "rebase", false, "secret", "127.0.0.1"), db, cfg, time.Now())
@@ -1430,7 +1430,7 @@ func TestHandleActionConcurrentSameCwd409(t *testing.T) {
 	}
 	// The session lock taken on the way to the cwd check must not leak.
 	cfg.inflight.release("cwd:" + dir)
-	if !cfg.inflight.acquire("sess-b") {
+	if !cfg.inflight.acquire(sidKey("sess-b")) {
 		t.Fatal("sess-b's session lock leaked after the 409")
 	}
 }
@@ -1792,5 +1792,180 @@ func TestHandleActionEndAllowedFromLANPeer(t *testing.T) {
 	}
 	if _, err := os.Stat(logPath); err == nil {
 		t.Fatal("end ran a subprocess")
+	}
+}
+
+// escapedGrandchildStub writes a stub that spawns a `setsid` grandchild which
+// INHERITS the stub's stdout/stderr (the os/exec pipe) and outlives the parent.
+// setsid puts it in a new session, so it is NOT in the child's process group and
+// survives the timeout's `kill -pgid`; it then holds the pipe's write end open.
+// Without Cmd.WaitDelay, cmd.Wait() blocks on the copier goroutine for as long as
+// that grandchild lives and the handler goroutine never returns its inflight locks.
+func escapedGrandchildStub(t *testing.T, name string) string {
+	t.Helper()
+	if _, err := exec.LookPath("setsid"); err != nil {
+		t.Skipf("setsid unavailable: %v", err)
+	}
+	return writeStub(t, name, "setsid sleep 30 &\nsleep 30\n")
+}
+
+func TestRunActionTimeoutEscapedGrandchildDoesNotHang(t *testing.T) {
+	stub := escapedGrandchildStub(t, "escape")
+	start := time.Now()
+	done := make(chan actionResult, 1)
+	go func() { done <- runAction(stub, t.TempDir(), nil, time.Second) }()
+	select {
+	case r := <-done:
+		if elapsed := time.Since(start); elapsed > 6*time.Second {
+			t.Fatalf("runAction took %s; the timeout is not enforceable", elapsed)
+		}
+		if !r.TimedOut || r.ExitCode != -1 {
+			t.Fatalf("got %+v, want TimedOut with ExitCode -1", r)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("runAction still blocked 6s after a 1s timeout: " +
+			"a grandchild that escaped the process group is holding the output pipe open")
+	}
+}
+
+func TestRunTmuxTimeoutEscapedGrandchildDoesNotHang(t *testing.T) {
+	stub := escapedGrandchildStub(t, "escapetmux")
+	start := time.Now()
+	done := make(chan actionResult, 1)
+	go func() {
+		_, r := runTmux(stub, t.TempDir(), []string{"send-keys"}, time.Second)
+		done <- r
+	}()
+	select {
+	case r := <-done:
+		if elapsed := time.Since(start); elapsed > 6*time.Second {
+			t.Fatalf("runTmux took %s; the timeout is not enforceable", elapsed)
+		}
+		if !r.TimedOut || r.ExitCode != -1 {
+			t.Fatalf("got %+v, want TimedOut with ExitCode -1", r)
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("runTmux still blocked 6s after a 1s timeout")
+	}
+}
+
+// Behind a reverse proxy every request arrives on a loopback socket, so the peer
+// gate would pass for anyone who can reach the proxy. handleAction therefore
+// refuses on the mere PRESENCE of a forwarding header for anything that execs.
+func TestHandleActionForwardingHeaderRefused(t *testing.T) {
+	for _, hdr := range []string{"X-Forwarded-For", "X-Real-IP", "Forwarded", "X-Forwarded-Host"} {
+		t.Run(hdr, func(t *testing.T) {
+			db, cfg, logPath := gatedCfg(t)
+			r := actionReq("live-1", "squash", false, "secret", "127.0.0.1")
+			r.Header.Set(hdr, "203.0.113.9")
+			w := httptest.NewRecorder()
+			handleAction(w, r, db, cfg, time.Now())
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("code = %d, want 403", w.Code)
+			}
+			if !strings.Contains(w.Body.String(), "through a proxy") {
+				t.Fatalf("body = %q, want the proxy reason (distinct from the other 403s)", w.Body.String())
+			}
+			if _, err := os.Stat(logPath); err == nil {
+				t.Fatal("a subprocess ran for a proxied request")
+			}
+		})
+	}
+	t.Run("absent", func(t *testing.T) {
+		db, cfg, logPath := gatedCfg(t)
+		w := httptest.NewRecorder()
+		handleAction(w, actionReq("live-1", "squash", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200 without any forwarding header", w.Code)
+		}
+		if _, err := os.Stat(logPath); err != nil {
+			t.Fatalf("no subprocess ran (%v)", err)
+		}
+	})
+	// An EMPTY header is not a proxy marker; only a non-empty one is.
+	t.Run("empty header value is ignored", func(t *testing.T) {
+		db, cfg, _ := gatedCfg(t)
+		r := actionReq("live-1", "squash", false, "secret", "127.0.0.1")
+		r.Header.Set("X-Forwarded-For", "")
+		w := httptest.NewRecorder()
+		handleAction(w, r, db, cfg, time.Now())
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200", w.Code)
+		}
+	})
+}
+
+// cwd is read from a stored hook payload and becomes exec.Command.Dir. A
+// relative one would run the action against serve's own working directory, so it
+// is refused before anything spawns.
+func TestHandleActionRelativeCwdRefused(t *testing.T) {
+	db := openTestDB(t)
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "rel-1",
+		Cwd: "relative/path", EventType: "Stop", PayloadJSON: "{}"})
+	logPath := filepath.Join(t.TempDir(), "ran.log")
+	cfg := newActionCfg(logStub(t, "merge-pr", logPath), logStub(t, "gh", logPath))
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("rel-1", "squash", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("code = %d, want 404", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), "absolute") {
+		t.Fatalf("body = %q, want the absolute-path reason", w.Body.String())
+	}
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatal("a subprocess ran with a relative working directory")
+	}
+}
+
+// The form body is bounded before it is parsed, so a client cannot make the
+// handler buffer an unbounded request. An oversized body fails to parse, which
+// leaves no action to dispatch and nothing execs.
+func TestHandleActionOversizedBodyRejected(t *testing.T) {
+	db, cfg, logPath := gatedCfg(t)
+	form := url.Values{"session_id": {"live-1"}, "action": {"squash"},
+		"pad": {strings.Repeat("x", 128<<10)}}
+	r := httptest.NewRequest(http.MethodPost, "/api/action", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("X-Clodhopper-Token", "secret")
+	r.Host = "127.0.0.1"
+	r.RemoteAddr = "127.0.0.1:54321"
+	w := httptest.NewRecorder()
+	handleAction(w, r, db, cfg, time.Now())
+	if w.Code == http.StatusOK {
+		t.Fatalf("code = 200, want a refusal for an oversized body")
+	}
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatal("a subprocess ran for an oversized body")
+	}
+}
+
+// The sequence budget is measured from the INJECTED now (the convention every
+// other time-dependent function here follows), not from the wall clock at the
+// moment runRebase happens to be called.
+func TestRunRebaseBudgetUsesInjectedNow(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "git.log")
+	git := gitStub(t, logPath, gitStubOpts{head: "feature", originHead: "origin/main"})
+	// An hour-old now with a 30s budget: already exhausted, so no step starts.
+	res := runRebase(git, t.TempDir(), "s1", 30*time.Second, 30*time.Second,
+		time.Now().Add(-time.Hour))
+	if !res.TimedOut || !strings.Contains(res.Output, "overall budget") {
+		t.Fatalf("res = %+v, want a spent-budget timeout", res)
+	}
+	for _, l := range gitLog(t, logPath) {
+		if strings.HasPrefix(l, "fetch") || strings.HasPrefix(l, "pull") || strings.HasPrefix(l, "push") {
+			t.Fatalf("ran %q with a budget that the injected now had already spent", l)
+		}
+	}
+}
+
+// The two inflight key spaces are namespaced, so a session id that literally
+// reads like a worktree key cannot contend with one.
+func TestInflightKeyNamespaces(t *testing.T) {
+	s := newInflightSet()
+	if !s.acquire(cwdKey("/w/one")) {
+		t.Fatal("first worktree acquire failed")
+	}
+	if !s.acquire(sidKey("cwd:/w/one")) {
+		t.Fatal("a session id shaped like a worktree key contended with the worktree lock")
 	}
 }

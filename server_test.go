@@ -714,12 +714,15 @@ func TestBuildDashboardDataMergeFlags(t *testing.T) {
 	peek := &peekConfig{}
 	cfg := &actionConfig{enabled: true, token: "tok"}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	// httptest's default RemoteAddr (192.0.2.1) fails the peer gate; this test is
+	// about the flag plumbing, so ask as a loopback peer.
+	r.RemoteAddr = "127.0.0.1:5555"
 	data, err := buildDashboardData(r, db, ci, peek, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !data.MergeEnabled || data.CSRFToken != "tok" {
-		t.Fatalf("MergeEnabled=%v CSRFToken=%q", data.MergeEnabled, data.CSRFToken)
+	if !data.ExecEnabled || data.CSRFToken != "tok" {
+		t.Fatalf("ExecEnabled=%v CSRFToken=%q", data.ExecEnabled, data.CSRFToken)
 	}
 }
 
@@ -1187,8 +1190,8 @@ func TestContentTemplate_PeekControlGated(t *testing.T) {
 // the cell renders and holds the ⤢ peek button (and no merge toggle).
 func TestContentTemplate_ControlsCellRendersUnderPeekAlone(t *testing.T) {
 	d := dashboardData{
-		PeekEnabled:  true,
-		MergeEnabled: false,
+		PeekEnabled: true,
+		ExecEnabled: false,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
 			TmuxSession: "sess", TmuxPane: "%3", LiveTmux: true,
@@ -1229,8 +1232,8 @@ func TestContentTemplate_ControlsCellRendersUnderPeekAlone(t *testing.T) {
 // both cases are covered elsewhere.
 func TestContentTemplate_ControlsColumnAbsentWhenNeitherEnabled(t *testing.T) {
 	d := dashboardData{
-		PeekEnabled:  false,
-		MergeEnabled: false,
+		PeekEnabled: false,
+		ExecEnabled: false,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
 			TmuxSession: "sess", TmuxPane: "%3", LiveTmux: true,
@@ -1387,9 +1390,8 @@ func TestContentTemplate_SessionActionsGatedOnPaneNotPeek(t *testing.T) {
 	// Merge on, peek OFF, a row that has a pane but LiveTmux false (as it would be
 	// when the peek liveness cache never ran because peek is disabled).
 	withPane := dashboardData{
-		MergeEnabled: true,
-		ExecEnabled:  true,
-		PeekEnabled:  false,
+		ExecEnabled: true,
+		PeekEnabled: false,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
 			TmuxSession: "sess", TmuxPane: "%3", HasPane: true, LiveTmux: false,
@@ -1429,8 +1431,7 @@ func TestContentTemplate_SessionActionsGatedOnPaneNotPeek(t *testing.T) {
 // (Roster.jsx), where the always-visible form would otherwise multiply row height.
 func TestContentTemplate_ActionsHiddenBehindDisclosure(t *testing.T) {
 	d := dashboardData{
-		MergeEnabled: true,
-		ExecEnabled:  true,
+		ExecEnabled: true,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
 			TmuxSession: "sess", TmuxPane: "%3", HasPane: true,
@@ -1484,8 +1485,7 @@ func TestContentTemplate_ActionsHiddenBehindDisclosure(t *testing.T) {
 // mutual exclusion silently, with no other test rendering peek + merge together.
 func TestContentTemplate_PanelRowsAdjacentToMainRow(t *testing.T) {
 	d := dashboardData{
-		MergeEnabled: true,
-		ExecEnabled:  true, PeekEnabled: true,
+		ExecEnabled: true, PeekEnabled: true,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
 			TmuxSession: "sess", TmuxPane: "%3", HasPane: true, LiveTmux: true,
@@ -1593,7 +1593,7 @@ func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 	// Peek on, merge off: 7 base cols + controls col (holds the peek button) →
 	// panerow spans 8 at rest.
 	off := base
-	off.MergeEnabled = false
+	off.ExecEnabled = false
 	wantColspan(t, render(off), 8, "peek on, merge off")
 
 	// Debug adds the id column, so the same row spans 9.
@@ -1603,16 +1603,14 @@ func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 
 	// Peek on + merge on: both panerow and actrow span 8 at rest.
 	on := base
-	on.MergeEnabled = true
 	on.ExecEnabled = true
 	wantColspan(t, render(on), 8, "peek on + merge on")
 
 	// Peek OFF + merge on: no panerow (peek gates it), but the merge actrow still
 	// spans 8 — the controls column is present under merge alone.
 	mergeOnly := dashboardData{
-		MergeEnabled: true,
-		ExecEnabled:  true,
-		PeekEnabled:  false,
+		ExecEnabled: true,
+		PeekEnabled: false,
 		Agents: []Agent{{
 			SessionID: "s1", SourceApp: "app", Status: statusWaiting, HasPane: true,
 		}},
@@ -1683,13 +1681,12 @@ func TestDashboardRendersActionButtonsOnlyWhenEnabled(t *testing.T) {
 	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}}
 	// disabled
 	off := base
-	off.MergeEnabled = false
+	off.ExecEnabled = false
 	if strings.Contains(renderDashboard(t, off), "data-action=") {
 		t.Fatal("action buttons rendered while disabled")
 	}
 	// enabled
 	on := base
-	on.MergeEnabled = true
 	on.ExecEnabled = true
 	on.CSRFToken = "tok"
 	html := renderDashboard(t, on)
@@ -1700,12 +1697,11 @@ func TestDashboardRendersActionButtonsOnlyWhenEnabled(t *testing.T) {
 
 func TestDashboardRendersForceToggleWhenEnabled(t *testing.T) {
 	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}}
-	off := base // MergeEnabled false
+	off := base // ExecEnabled false
 	if strings.Contains(renderDashboard(t, off), "practforce") {
 		t.Fatal("force toggle rendered while merge disabled")
 	}
 	on := base
-	on.MergeEnabled = true
 	on.ExecEnabled = true
 	on.CSRFToken = "tok"
 	if !strings.Contains(renderDashboard(t, on), "practforce") {
@@ -1719,12 +1715,11 @@ func TestDashboardRendersForceToggleWhenEnabled(t *testing.T) {
 // those stale rows are what End exists to clear.
 func TestDashboardRendersEndButtonOnlyWhenEnabled(t *testing.T) {
 	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}}
-	off := base // MergeEnabled false
+	off := base // ExecEnabled false
 	if strings.Contains(renderDashboard(t, off), `data-action="end"`) {
 		t.Fatal("End button rendered while merge disabled")
 	}
 	on := base
-	on.MergeEnabled = true
 	on.ExecEnabled = true
 	on.CSRFToken = "tok"
 	html := renderDashboard(t, on)
@@ -1751,10 +1746,9 @@ func TestDashboardRendersEndButtonOnlyWhenEnabled(t *testing.T) {
 // into the rendered dashboard whenever the write surface is on.
 func TestDashboardWiresEndIntoActionScript(t *testing.T) {
 	on := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		ExecEnabled:  true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	}
 	html := renderDashboard(t, on)
 	if !strings.Contains(html, "end: 'dismiss this row from the dashboard") {
@@ -2099,9 +2093,9 @@ func TestContentTemplate_PeekIdentityIsSessionAcrossSharedPane(t *testing.T) {
 // adjacent to the pin-apply call.
 func TestDashboardActionMessageSurvivesContentSwap(t *testing.T) {
 	on := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	}
 	html := renderDashboard(t, on)
 
@@ -2130,9 +2124,9 @@ func TestDashboardActionMessageSurvivesContentSwap(t *testing.T) {
 // failure cannot resurrect.
 func TestDashboardActionMessagePersistsOnlyFailures(t *testing.T) {
 	on := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	}
 	html := renderDashboard(t, on)
 
@@ -2173,9 +2167,9 @@ func TestDashboardActionMessagePersistsOnlyFailures(t *testing.T) {
 // clear here a repaint inside the 5s window would re-paint the dismissed text.
 func TestDashboardClosingActionsPanelClearsRememberedMessages(t *testing.T) {
 	on := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	}
 	html := renderDashboard(t, on)
 
@@ -2200,9 +2194,9 @@ func TestDashboardClosingActionsPanelClearsRememberedMessages(t *testing.T) {
 // would show a blank .actmsg — the very bug this work exists to fix.
 func TestDashboardPeekSwitchKeepsRememberedMessages(t *testing.T) {
 	on := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	}
 	html := renderDashboard(t, on)
 
@@ -2245,9 +2239,9 @@ func TestDashboardPeekSwitchKeepsRememberedMessages(t *testing.T) {
 // innerHTML assignment may appear anywhere in restoreMsgs.
 func TestDashboardActionMessageRestoreNeverUsesInnerHTML(t *testing.T) {
 	on := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	}
 	html := renderDashboard(t, on)
 
@@ -2281,9 +2275,9 @@ const wantInnerHTML = 1
 // template needs a deliberate security look before the count is bumped.
 func TestDashboardInnerHTMLOccurrencesAreAccountedFor(t *testing.T) {
 	on := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	}
 	html := renderDashboard(t, on)
 
@@ -2299,12 +2293,11 @@ func TestDashboardInnerHTMLOccurrencesAreAccountedFor(t *testing.T) {
 // still a branch worth rebasing.
 func TestDashboardRendersRebaseButtonOnlyWhenEnabled(t *testing.T) {
 	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}}
-	off := base // MergeEnabled false
+	off := base // ExecEnabled false
 	if strings.Contains(renderDashboard(t, off), `data-action="rebase"`) {
 		t.Fatal("rebase button rendered while merge disabled")
 	}
 	on := base
-	on.MergeEnabled = true
 	on.ExecEnabled = true
 	on.CSRFToken = "tok"
 	html := renderDashboard(t, on)
@@ -2325,10 +2318,9 @@ func TestDashboardRendersRebaseButtonOnlyWhenEnabled(t *testing.T) {
 // stay OUT of the row-clearing set — a rebase leaves the row in place.
 func TestDashboardWiresRebaseIntoActionScript(t *testing.T) {
 	on := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		ExecEnabled:  true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	}
 	html := renderDashboard(t, on)
 	// caveatFor already prepends "<branch>: ", so the caveat itself must not
@@ -2366,10 +2358,9 @@ func TestDashboardWiresRebaseIntoActionScript(t *testing.T) {
 // no such group can exist), and it must sit inside swapContent.
 func TestDashboardSwapContentSkipsRepaintWhileConfirmArmed(t *testing.T) {
 	html := renderDashboard(t, dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		ExecEnabled:  true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	})
 	const guard = "if (document.querySelector('#content .actgroup.confirm')) return;"
 	if !strings.Contains(html, guard) {
@@ -2392,10 +2383,9 @@ func TestDashboardSwapContentSkipsRepaintWhileConfirmArmed(t *testing.T) {
 // asserting only the header NAME would pass even if CSRF were bound to nothing.
 func TestDashboardBindsCSRFTokenValueIntoActionScript(t *testing.T) {
 	html := renderDashboard(t, dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		MergeEnabled: true,
-		ExecEnabled:  true,
-		CSRFToken:    "tok",
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
 	})
 	if !strings.Contains(html, `data-csrf="tok"`) {
 		t.Fatal("CSRF token not rendered onto <body>")
@@ -2410,18 +2400,18 @@ func TestDashboardBindsCSRFTokenValueIntoActionScript(t *testing.T) {
 
 // A peer that fails remoteAllowed (a LAN host on a --host 0.0.0.0 serve) would
 // get a 403 from handleAction for anything that execs, so the dashboard does not
-// offer it those buttons. The exec-free End action, and the read-only board,
-// still work for it. handleAction remains the real gate; this is defence in
-// depth and UX.
+// offer it those buttons — and, since data-csrf rides on the same flag, it gets
+// no CSRF token either, so it cannot drive even the exec-free End action by
+// hand. The board itself stays fully readable. handleAction remains the real
+// gate; this is defence in depth and UX.
 func TestDashboardHidesExecActionsForNonAllowedPeer(t *testing.T) {
 	base := dashboardData{
-		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting, HasPane: true}},
-		MergeEnabled: true,
-		CSRFToken:    "tok",
+		Agents:    []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting, HasPane: true}},
+		CSRFToken: "tok",
 	}
 	gated := base // ExecEnabled false: peer is not on an allowed network
 	html := renderDashboard(t, gated)
-	for _, a := range []string{"squash", "close", "ready", "rebase", "monitor-ci", "new-monitor"} {
+	for _, a := range []string{"squash", "close", "ready", "rebase", "monitor-ci", "new-monitor", "end"} {
 		if strings.Contains(html, `data-action="`+a+`"`) {
 			t.Errorf("%s button rendered for a peer that cannot run commands", a)
 		}
@@ -2429,25 +2419,29 @@ func TestDashboardHidesExecActionsForNonAllowedPeer(t *testing.T) {
 	if strings.Contains(html, `data-mode="squash"`) {
 		t.Error("the PR action radiogroup rendered for a peer that cannot run commands")
 	}
-	if !strings.Contains(html, `data-action="end"`) {
-		t.Error("the exec-free end button should still render")
+	if strings.Contains(html, "data-csrf") {
+		t.Error("the CSRF token was handed to a peer that fails the network gate")
 	}
-	if !strings.Contains(html, `data-csrf="tok"`) {
-		t.Error("the CSRF token is still needed for the end action")
+	// The read-only board is unaffected.
+	if !strings.Contains(html, "feature") {
+		t.Error("the roster row itself did not render")
 	}
 
 	allowed := base
 	allowed.ExecEnabled = true
 	html = renderDashboard(t, allowed)
-	for _, a := range []string{"squash", "rebase", "monitor-ci"} {
+	for _, a := range []string{"squash", "rebase", "monitor-ci", "end"} {
 		if !strings.Contains(html, `data-action="`+a+`"`) {
 			t.Errorf("%s button missing for an allowed peer", a)
 		}
 	}
+	if !strings.Contains(html, `data-csrf="tok"`) {
+		t.Error("the CSRF token is missing for an allowed peer")
+	}
 }
 
 // buildDashboardData derives ExecEnabled from the REQUEST's peer, not from
-// --enable-merge alone.
+// --enable-merge alone: the flag being on is necessary but not sufficient.
 func TestBuildDashboardDataExecEnabledFollowsPeer(t *testing.T) {
 	db := openTestDB(t)
 	cfg := &actionConfig{enabled: true, token: "tok"}
@@ -2465,11 +2459,61 @@ func TestBuildDashboardDataExecEnabledFollowsPeer(t *testing.T) {
 		if err != nil {
 			t.Fatalf("buildDashboardData: %v", err)
 		}
-		if !d.MergeEnabled {
-			t.Fatalf("%s: MergeEnabled = false, want true (the read-only board and End stay available)", c.addr)
-		}
 		if d.ExecEnabled != c.want {
 			t.Errorf("%s: ExecEnabled = %v, want %v", c.addr, d.ExecEnabled, c.want)
 		}
+	}
+}
+
+// The armed-confirm repaint guard in swapContent is board-wide: while ANY row is
+// armed, no row repaints. An arm the reader wandered away from therefore must not
+// be able to stall the board forever, so an armed group disarms itself when the
+// page is hidden and after an idle timeout — both through the shared
+// window.__ckDisarm path, never a second hand-rolled teardown.
+func TestDashboardArmedConfirmAutoDisarms(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	for _, want := range []string{
+		// Hidden page: disarm the whole board.
+		"document.addEventListener('visibilitychange', function () {",
+		"if (document.hidden) window.__ckDisarm(document);",
+		// Idle timer, armed in armConfirm and routed through the shared path.
+		"var ARM_IDLE_MS = 60000;",
+		"group.__ckArmTimer = setTimeout(function () {",
+		"window.__ckDisarm(group);",
+		// One teardown path, cancelled from unlock (cancel/re-arm) and fire (confirm).
+		"function clearArmTimer(group) {",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("auto-disarm piece missing from the action script: %s", want)
+		}
+	}
+	// unlock() is the shared teardown; the timer must be cancelled there so a
+	// cancel or a re-arm cannot leave a stale timer running.
+	unlockAt := strings.Index(html, "function unlock(group, clearMsg) {")
+	if unlockAt < 0 {
+		t.Fatal("unlock not found")
+	}
+	if !strings.Contains(html[unlockAt:unlockAt+200], "clearArmTimer(group);") {
+		t.Error("unlock does not cancel the idle disarm timer")
+	}
+	// And on confirm: fire() locks the group and owns it from there on.
+	fireAt := strings.Index(html, "function fire(group, btn) {")
+	if fireAt < 0 {
+		t.Fatal("fire not found")
+	}
+	if !strings.Contains(html[fireAt:fireAt+900], "clearArmTimer(group);") {
+		t.Error("fire does not cancel the idle disarm timer on confirm")
+	}
+	// The guard the auto-disarm exists to bound must still be there, and the
+	// row-clearing action list must still exclude rebase (it leaves the row up).
+	if !strings.Contains(html, "if (document.querySelector('#content .actgroup.confirm')) return;") {
+		t.Error("the armed-confirm repaint guard disappeared")
+	}
+	if !strings.Contains(html, "var clears = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'end');") {
+		t.Error("the row-clearing action list changed (rebase must stay out of it)")
 	}
 }

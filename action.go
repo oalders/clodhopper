@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -71,6 +72,14 @@ type inflightSet struct {
 
 func newInflightSet() *inflightSet { return &inflightSet{m: map[string]bool{}} }
 
+// sidKey and cwdKey namespace the two kinds of lock that share one inflightSet,
+// so a session id that literally reads "cwd:/some/path" cannot contend with a
+// worktree lock (or vice versa). Cosmetic today — acquisition order is fixed
+// (session, then worktree) so no deadlock is reachable either way — but it keeps
+// the two key spaces provably disjoint.
+func sidKey(sessionID string) string { return "sid:" + sessionID }
+func cwdKey(cwd string) string       { return "cwd:" + cwd }
+
 // acquire marks key as in-flight, returning false if it already is.
 func (s *inflightSet) acquire(key string) bool {
 	s.mu.Lock()
@@ -100,37 +109,37 @@ type actionResult struct {
 // nil (closed): merge-pr's one interactive prompt then hits EOF and fails closed
 // instead of hanging a serve goroutine. The child gets its own process group so a
 // timeout can SIGKILL the whole tree (an in-flight `gh`/`git` child reparents and
-// survives if only the bash parent is signalled). Best-effort by construction: a
-// binary that cannot start returns ExitCode -1, never a panic.
+// survives if only the bash parent is signalled). The timeout is enforced by
+// context + Cmd.WaitDelay rather than by waiting on Wait(), so a grandchild that
+// escaped the process group cannot keep this call (and the caller's inflight
+// locks) alive by holding the output pipe open — see waitDelay. Best-effort by
+// construction: a binary that cannot start returns ExitCode -1, never a panic.
 func runAction(bin, dir string, args []string, timeout time.Duration) actionResult {
-	cmd := exec.Command(bin, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
 	cmd.Stdin = nil
 	cmd.Env = actionEnv(os.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Setpgid makes the child's pgid equal its pid, so -pid targets the whole
+	// group (the default Cancel would signal the direct child only).
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = waitDelay
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 
-	if err := cmd.Start(); err != nil {
+	err := cmd.Run()
+	if ctx.Err() != nil || errors.Is(err, exec.ErrWaitDelay) {
+		return actionResult{ExitCode: -1, TimedOut: true, Output: buf.String()}
+	}
+	// A binary that could not start never produced a ProcessState; report its
+	// error text rather than the (empty) captured output.
+	if err != nil && cmd.ProcessState == nil {
 		return actionResult{ExitCode: -1, Output: err.Error()}
 	}
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		// Setpgid makes the child's pgid equal its pid, so -pid targets the
-		// whole group.
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done
-		return actionResult{ExitCode: -1, TimedOut: true, Output: buf.String()}
-	case err := <-done:
-		return actionResult{ExitCode: exitCode(err), Output: buf.String()}
-	}
+	return actionResult{ExitCode: exitCode(err), Output: buf.String()}
 }
 
 // runTmux runs the tmux binary with a FIXED argument vector (no shell, no
@@ -139,36 +148,33 @@ func runAction(bin, dir string, args []string, timeout time.Duration) actionResu
 // $TMUX/$TMUX_PANE: targeting is by the explicit -t pane id the caller resolved
 // server-side, and the command must reach the SAME tmux server whose pane ids the
 // peek feature enumerated — which is the server named by serve's inherited $TMUX.
-// Best-effort by construction: a tmux that cannot start returns ExitCode -1.
+// Best-effort by construction: a tmux that cannot start returns ExitCode -1. Its
+// timeout is enforced exactly as runAction's (context + Cmd.WaitDelay).
 func runTmux(tmuxBin, dir string, args []string, timeout time.Duration) (stdout string, res actionResult) {
-	cmd := exec.Command(tmuxBin, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, tmuxBin, args...)
 	cmd.Dir = dir
 	cmd.Stdin = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = waitDelay
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 
-	if err := cmd.Start(); err != nil {
+	err := cmd.Run()
+	if ctx.Err() != nil || errors.Is(err, exec.ErrWaitDelay) {
+		return outBuf.String(), actionResult{ExitCode: -1, TimedOut: true, Output: errBuf.String()}
+	}
+	if err != nil && cmd.ProcessState == nil {
 		return "", actionResult{ExitCode: -1, Output: err.Error()}
 	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		<-done
-		return outBuf.String(), actionResult{ExitCode: -1, TimedOut: true, Output: errBuf.String()}
-	case err := <-done:
-		out := errBuf.String()
-		if out == "" {
-			out = outBuf.String()
-		}
-		return outBuf.String(), actionResult{ExitCode: exitCode(err), Output: out}
+	out := errBuf.String()
+	if out == "" {
+		out = outBuf.String()
 	}
+	return outBuf.String(), actionResult{ExitCode: exitCode(err), Output: out}
 }
 
 // runSessionAction executes one of the tmux session actions against a pane the
@@ -319,6 +325,12 @@ func remoteAllowed(remoteAddr string) bool {
 	if v4 := ip.To4(); v4 != nil {
 		ip = v4
 	}
+	// cgnatRange is RFC 6598 CGNAT, which Tailscale uses but does not own:
+	// mobile hotspots, Starlink, some WISPs and consumer routers also hand out
+	// addresses in 100.64.0.0/10. On a `--host 0.0.0.0` serve behind such an
+	// uplink a neighbouring device can land in that range and pass this check.
+	// Documented in README; binding the tailnet address directly (--tailscale)
+	// sidesteps it, since nothing off the tailnet can connect at all.
 	return ip.IsLoopback() || cgnatRange.Contains(ip) || tsULARange.Contains(ip)
 }
 
@@ -335,6 +347,21 @@ func remoteAllowed(remoteAddr string) bool {
 // action is likewise gated, and still 400s afterwards.
 func actionExecs(action string) bool { return action != "end" }
 
+// forwardingHeaders are the headers a reverse proxy adds when it relays a
+// request. Their presence — never their value — is what handleAction refuses on.
+var forwardingHeaders = []string{"X-Forwarded-For", "X-Real-Ip", "Forwarded", "X-Forwarded-Host"}
+
+// forwardingHeader returns the name of the first forwarding header present and
+// non-empty in h, or "" when none is.
+func forwardingHeader(h http.Header) string {
+	for _, name := range forwardingHeaders {
+		if strings.TrimSpace(h.Get(name)) != "" {
+			return name
+		}
+	}
+	return ""
+}
+
 // tokenOK compares a presented CSRF token against the per-serve secret in
 // constant time. An empty secret (feature misconfigured) always fails.
 func tokenOK(got, want string) bool {
@@ -349,7 +376,16 @@ func tokenOK(got, want string) bool {
 // session kill), so it gets a generous ceiling; gh pr ready is a single API call.
 const (
 	actionTimeout = 120 * time.Second
-	readyTimeout  = 20 * time.Second
+	// waitDelay is the hard stop applied after a timeout kills the process
+	// group. cmd.Stdout is a *bytes.Buffer, so os/exec inserts an os.Pipe plus a
+	// copier goroutine, and Wait() blocks until EVERY writer of that pipe closes.
+	// A grandchild that called setsid (ssh ControlMaster, git-credential-cache--daemon,
+	// anything that daemonises) is in a different process group, survives the
+	// kill, and holds the write end open — which used to block the handler
+	// goroutine forever and leak its inflight locks. WaitDelay makes os/exec close
+	// the pipe and return exec.ErrWaitDelay instead of waiting on such a process.
+	waitDelay    = 2 * time.Second
+	readyTimeout = 20 * time.Second
 	// tmuxTimeout bounds a session action's tmux invocations. send-keys and
 	// split-window are quick local RPCs to the tmux server (split-window returns
 	// as soon as the pane exists, it does not wait for `nn claude`), so a few
@@ -598,7 +634,9 @@ func runRebase(gitBin, dir, sessionID string, stepTimeout, totalTimeout time.Dur
 	}
 
 	var out strings.Builder
-	deadline := time.Now().Add(totalTimeout)
+	// Injected now, per the codebase convention (handleAction passes the
+	// request's timestamp) — not time.Now(), so the budget is testable.
+	deadline := now.Add(totalTimeout)
 	for _, st := range rebaseSteps(base, cur, lease) {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
@@ -700,6 +738,11 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		return
 	}
 
+	// Bound the body before parsing it: every field this endpoint reads is a
+	// short identifier, so 64 KiB is generous, and a client cannot make the
+	// handler buffer an unbounded form in memory.
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+
 	sessionID := r.FormValue("session_id")
 	action := r.FormValue("action")
 	force := r.FormValue("force") == "true"
@@ -713,6 +756,25 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		http.Error(w, "peer not on an allowed network: actions that run commands "+
 			"are restricted to loopback and Tailscale peers", http.StatusForbidden)
 		return
+	}
+	// Behind a reverse proxy (nginx, Caddy, `tailscale serve`, a container port
+	// forward) every request arrives on a loopback socket, so remoteAllowed above
+	// says yes for ANY peer that can reach the proxy and the gate is void. We
+	// therefore refuse on the mere PRESENCE of a forwarding header.
+	//
+	// This is NOT trusting the header, and must never be "fixed" into parsing one
+	// — a parsed value is peer-supplied and would hand the bypass straight back.
+	// Presence is the safe direction: a direct peer never sends these, a proxy
+	// always does, so the failure mode is a refusal rather than an admission.
+	// It honestly does NOT catch `ssh -L` or a proxy that strips the header,
+	// which is why README/CLAUDE.md say never to run --enable-merge behind one.
+	if actionExecs(action) {
+		if h := forwardingHeader(r.Header); h != "" {
+			http.Error(w, "request arrived through a proxy ("+h+" present) and cannot be "+
+				"attributed to a peer; actions that run commands need a direct connection",
+				http.StatusForbidden)
+			return
+		}
 	}
 
 	// Session actions (monitor-ci / new-monitor) act on the agent's LIVE tmux
@@ -733,11 +795,11 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 			http.Error(w, "unknown session", http.StatusNotFound)
 			return
 		}
-		if !cfg.inflight.acquire(sessionID) {
+		if !cfg.inflight.acquire(sidKey(sessionID)) {
 			http.Error(w, "action already running for this session", http.StatusConflict)
 			return
 		}
-		defer cfg.inflight.release(sessionID)
+		defer cfg.inflight.release(sidKey(sessionID))
 		// The split runs in the agent's worktree if we know it; tmux inherits the
 		// target pane's cwd regardless, so an empty dir is harmless.
 		cwd, _ := latestCwdForSession(db, sessionID)
@@ -758,11 +820,11 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 			http.Error(w, "unknown session", http.StatusNotFound)
 			return
 		}
-		if !cfg.inflight.acquire(sessionID) {
+		if !cfg.inflight.acquire(sidKey(sessionID)) {
 			http.Error(w, "action already running for this session", http.StatusConflict)
 			return
 		}
-		defer cfg.inflight.release(sessionID)
+		defer cfg.inflight.release(sidKey(sessionID))
 		writeActionResult(w, endSession(db, sessionID, now))
 		return
 	}
@@ -782,12 +844,20 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		http.Error(w, "unknown session", http.StatusNotFound)
 		return
 	}
+	// cwd comes from a stored hook payload and becomes exec.Command.Dir below. A
+	// relative path would be resolved against serve's OWN working directory,
+	// running the action somewhere other than the roster row's worktree; refuse
+	// rather than guess.
+	if !filepath.IsAbs(cwd) {
+		http.Error(w, "session has no absolute working directory", http.StatusNotFound)
+		return
+	}
 
-	if !cfg.inflight.acquire(sessionID) {
+	if !cfg.inflight.acquire(sidKey(sessionID)) {
 		http.Error(w, "action already running for this session", http.StatusConflict)
 		return
 	}
-	defer cfg.inflight.release(sessionID)
+	defer cfg.inflight.release(sidKey(sessionID))
 
 	// Dedupe on the WORK TREE as well as the session. Two roster rows can resolve
 	// to the same cwd (a resumed or restarted agent, a shared checkout), and two
@@ -797,11 +867,11 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 	// The key is namespaced ("cwd:") so it cannot collide with a session id, and
 	// acquisition order is fixed (session, then cwd) so two requests can never
 	// deadlock against each other. The session lock is released by its defer.
-	if !cfg.inflight.acquire("cwd:" + cwd) {
+	if !cfg.inflight.acquire(cwdKey(cwd)) {
 		http.Error(w, "action already running for this worktree", http.StatusConflict)
 		return
 	}
-	defer cfg.inflight.release("cwd:" + cwd)
+	defer cfg.inflight.release(cwdKey(cwd))
 
 	bin := cfg.mergePR
 	timeout := actionTimeout

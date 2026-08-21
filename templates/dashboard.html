@@ -493,7 +493,7 @@
       .ck-tablewrap { overflow-x: auto; }
       table.events { min-width: 118ch; }
       table.roster { min-width: 141ch; } /* sum of the fixed cols (121ch) + 20ch reserved for the flexible session-name column */
-      {{ if or .PeekEnabled .MergeEnabled }}table.roster { min-width: 151ch; } /* + the 10ch actions col (peek/merge share one narrow icon-toggle cell) */{{ end }}
+      {{ if or .PeekEnabled .ExecEnabled }}table.roster { min-width: 151ch; } /* + the 10ch actions col (peek/merge share one narrow icon-toggle cell) */{{ end }}
       table.counts { min-width: 48ch; }
     }
 
@@ -664,7 +664,7 @@
     }
   </style>
 </head>
-<body data-refresh="{{ .RefreshSecs }}" data-signature="{{ .Signature }}"{{ if .MergeEnabled }} data-csrf="{{ .CSRFToken }}"{{ end }}>
+<body data-refresh="{{ .RefreshSecs }}" data-signature="{{ .Signature }}"{{ if .ExecEnabled }} data-csrf="{{ .CSRFToken }}"{{ end }}>
   <header class="ck-header">
     <div class="ck-brand">
       <span class="ck-prompt">$</span>
@@ -1662,10 +1662,10 @@
   // the request — so a stray click can never trigger a destructive merge/close.
   // window.__ckActionBusy blocks the poller (see swapContent above) from
   // wiping the confirm/spinner state out from under an in-flight request.
-  // Gated server-side on MergeEnabled: no action markup exists to wire up when
+  // Gated server-side on ExecEnabled: no action markup exists to wire up when
   // disabled, and keeping the force-toggle class name out of the emitted page
   // entirely (rather than just unused) is what the render test asserts.
-  {{ if .MergeEnabled }}
+  {{ if .ExecEnabled }}
   (function () {
     var CSRF = document.body.dataset.csrf;
     // A COUNT of in-flight actions, not a boolean: the roster can have many
@@ -1792,10 +1792,29 @@
         : base;
     }
 
+    // ARM_IDLE_MS is how long an armed-but-unconfirmed group may sit before it
+    // disarms itself. The armed-confirm repaint guard in swapContent is
+    // board-wide — ONE armed row freezes every other row's status, idle counter
+    // and CI state — so an absent-minded arm must not be able to stall the board
+    // indefinitely. Long enough that a reader deciding whether to squash is never
+    // rushed, short enough that a forgotten one clears itself.
+    var ARM_IDLE_MS = 60000;
+
+    // Every armed group carries its own idle timer (two different rows can be
+    // armed at once). clearArmTimer is called from unlock — the single teardown
+    // path — and from fire, so confirming or cancelling both cancel it.
+    function clearArmTimer(group) {
+      if (group.__ckArmTimer) {
+        clearTimeout(group.__ckArmTimer);
+        group.__ckArmTimer = null;
+      }
+    }
+
     // unlock restores the group to its idle, clickable shape (re-enabled
     // buttons, cancel button gone, labels restored) without touching .actmsg —
     // callers that want the message cleared too pass clearMsg.
     function unlock(group, clearMsg) {
+      clearArmTimer(group);
       var btns = group.querySelectorAll('.pract');
       for (var i = 0; i < btns.length; i++) {
         btns[i].disabled = false;
@@ -1843,6 +1862,17 @@
         clearMsgNote(group);
         msg.textContent = caveatFor(group, action);
       }
+      clearArmTimer(group);
+      group.__ckArmTimer = setTimeout(function () {
+        // Route through the shared disarm path so the cancel-button teardown and
+        // focus handling stay identical to an explicit cancel; __ckDisarm skips a
+        // group whose action is already in flight.
+        window.__ckDisarm(group);
+        if (!group.classList.contains('confirm')) {
+          var expired = group.querySelector('.actmsg');
+          if (expired) expired.textContent = 'confirmation expired — press again';
+        }
+      }, ARM_IDLE_MS);
     }
 
     function fire(group, btn) {
@@ -1857,6 +1887,7 @@
       // (On Safari a mouse click doesn't focus a <button>, so for mouse users
       // this may be a prior control or nothing — the enabled-.pract fallback in
       // restoreFocus covers that; it matters for keyboard users, who this helps.)
+      clearArmTimer(group);
       var focused = document.activeElement;
       function restoreFocus() {
         if (focused && focused.isConnected && !focused.disabled && typeof focused.focus === 'function') {
@@ -2075,7 +2106,13 @@
     // disclosure logic (in the peek IIFE) can disarm a row before hiding it.
     window.__ckDisarm = function (root) {
       if (!root || !root.querySelectorAll) return;
-      var groups = root.querySelectorAll('.actgroup.confirm');
+      var groups = [].slice.call(root.querySelectorAll('.actgroup.confirm'));
+      // A caller can hand us the armed group ITSELF (the idle timer does), and
+      // querySelectorAll only searches descendants — so include the root when it
+      // is the armed group. document has no matches().
+      if (typeof root.matches === 'function' && root.matches('.actgroup.confirm')) {
+        groups.push(root);
+      }
       for (var i = 0; i < groups.length; i++) {
         // fire() leaves the .confirm class on until the request settles, so an
         // in-flight group still matches here. Skip those: disarm only cancels an
@@ -2084,6 +2121,13 @@
         unlock(groups[i], true);
       }
     };
+
+    // A tab the reader has left is a tab whose armed confirm is stale, and while
+    // it stays armed the board-wide repaint guard keeps every row frozen. Disarm
+    // the whole board the moment the page is hidden, through the same path.
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) window.__ckDisarm(document);
+    });
   })();
   {{ end }}
 
@@ -2163,10 +2207,10 @@
     <table class="roster">
       <colgroup>
         <col style="width: 5ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 20ch">
-        <col style="width: 36ch"><col style="width: 8ch">{{ if .Debug }}<col style="width: 10ch">{{ end }}{{ if or .PeekEnabled .MergeEnabled }}<col style="width: 10ch">{{ end }}<col>
+        <col style="width: 36ch"><col style="width: 8ch">{{ if .Debug }}<col style="width: 10ch">{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<col style="width: 10ch">{{ end }}<col>
       </colgroup>
       <thead>
-        <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th>{{ if .Debug }}<th>id</th>{{ end }}{{ if or .PeekEnabled .MergeEnabled }}<th>actions</th>{{ end }}<th>session</th></tr>
+        <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th>{{ if .Debug }}<th>id</th>{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<th>actions</th>{{ end }}<th>session</th></tr>
       </thead>
       <tbody>
         {{ range .Agents }}
@@ -2178,12 +2222,12 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>{{ end }}
-          {{ if or $.PeekEnabled $.MergeEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.MergeEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" data-peek="{{ .SessionID }}" aria-expanded="false" aria-controls="panerow-{{ .SessionID }}" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="{{ if $.ExecEnabled }}monitor ci · + watcher · squash · admin · close · ready · rebase · {{ end }}end"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" data-peek="{{ .SessionID }}" aria-expanded="false" aria-controls="panerow-{{ .SessionID }}" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · squash · admin · close · ready · rebase · end"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
-        {{ if and $.MergeEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><div class="actpanel">
-            {{ if and .HasPane $.ExecEnabled }}
+        {{ if and $.ExecEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><div class="actpanel">
+            {{ if .HasPane }}
             <div class="actcol" role="group" aria-label="session actions">
               <span class="acteyebrow">session</span>
               <span class="actgroup actsession" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
@@ -2193,7 +2237,7 @@
               </span>
             </div>
             {{ end }}
-            {{ if $.ExecEnabled }}<div class="actcol prcol" role="group" aria-label="pull request actions">
+            <div class="actcol prcol" role="group" aria-label="pull request actions">
               <span class="acteyebrow">pull request</span>
               <span class="actgroup prform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
                 <span class="prchoice" role="radiogroup" aria-label="PR action">
@@ -2207,11 +2251,11 @@
                 <button type="button" class="pract prrun" data-action="squash" title="run the selected PR action" aria-describedby="prcmd-{{ .SessionID }}">run</button>
                 <span class="actmsg" aria-live="polite"></span>
               </span>
-            </div>{{ end }}
+            </div>
             <div class="actcol rowcol" role="group" aria-label="row actions">
               <span class="acteyebrow">row</span>
               <span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
-                {{ if $.ExecEnabled }}<button type="button" class="pract" data-action="rebase" aria-label="rebase {{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }} onto the default branch and force-push" title="git pull --rebase onto the default branch, then git push --force-with-lease">rebase</button>{{ end }}
+                <button type="button" class="pract" data-action="rebase" aria-label="rebase {{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }} onto the default branch and force-push" title="git pull --rebase onto the default branch, then git push --force-with-lease">rebase</button>
                 <button type="button" class="pract" data-action="end" aria-label="end {{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button>
                 <span class="actmsg" aria-live="polite"></span>
               </span>

@@ -113,6 +113,15 @@ func handlePane(w http.ResponseWriter, r *http.Request, peek *peekConfig, now ti
 		http.Error(w, "pane peek disabled", http.StatusForbidden)
 		return
 	}
+	// capturePane execs tmux and streams LIVE pane text — the very content the
+	// storage invariant keeps out of the database — so it is peer-gated exactly
+	// like the exec-backed dashboard actions. Without this, any peer that could
+	// reach a `--host 0.0.0.0` serve and guess a pane id could read a transcript.
+	if !remoteAllowed(r.RemoteAddr) {
+		http.Error(w, "peer not on an allowed network: reading a live pane "+
+			"is restricted to loopback and Tailscale peers", http.StatusForbidden)
+		return
+	}
 	pane := r.URL.Query().Get("pane")
 	if !paneIDRe.MatchString(pane) || !peek.cache.live(pane, now) {
 		http.NotFound(w, r)

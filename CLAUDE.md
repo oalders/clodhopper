@@ -46,7 +46,16 @@ Three subcommands, dispatched in `main.go`:
   default branch, plus an `end` action that runs
   no subprocess at all and just calls `endSessions` to drop the row. Every action
   that DOES exec is additionally gated on the peer's address (`remoteAllowed`):
-  loopback or Tailscale only, whatever `--host` binds to, with no override.
+  loopback or Tailscale only, whatever `--host` binds to, with no override — and
+  handleAction refuses outright when a forwarding header (`X-Forwarded-For`,
+  `X-Real-IP`, `Forwarded`, `X-Forwarded-Host`) is *present*, because behind a
+  proxy every peer looks like loopback and the gate would be void. **Never run
+  `serve --enable-merge` behind a reverse proxy, `tailscale serve`, or a port
+  forward**: the peer gate assumes a direct socket, and `ssh -L` or a
+  header-stripping proxy defeats it silently. `/api/pane` (`--pane-peek`) is
+  peer-gated the same way — it execs `tmux` and streams live transcript text.
+  The CSRF token is emitted into the page only for a peer that passes the gate,
+  so a peer that fails it gets a genuinely read-only board (no `end` either).
   `ingest` never gains write-to-repo
   capability — the capture path stays read-only.
 - **`prune`** (`main.go`) — deletes events older than the retention window.
