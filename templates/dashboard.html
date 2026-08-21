@@ -809,9 +809,12 @@
       // the expanded panerow, so without this a poll that repaints the board
       // collapses a peek the reader is still scrolling through — and the lost
       // height yanks the viewport, which reads as "it closes when I reach the
-      // bottom". Re-open the same pane by its stable pane id and restore both the
+      // bottom". Re-open the same row by its stable session id and restore both the
       // captured text and the scroll position; we do NOT re-fetch, so it stays
-      // the one-shot snapshot it was. Keyed by data-pane-row so a row that went
+      // the one-shot snapshot it was. Keyed by data-peek-row (the session id) —
+      // NOT the tmux pane id, which two sessions attached to the same pane share,
+      // so a pane-keyed restore would re-open the peek on whichever row rendered
+      // first and collapse the one the reader was actually in. A row that went
       // away (session ended, pane died) simply is not restored.
       var openPeeks = [];
       var rows = document.querySelectorAll('#content .panerow');
@@ -819,7 +822,7 @@
         if (rows[i].hidden) continue;
         var cap = rows[i].querySelector('.panecap');
         openPeeks.push({
-          pane: rows[i].getAttribute('data-pane-row'),
+          sess: rows[i].getAttribute('data-peek-row'),
           text: cap ? cap.textContent : '',
           // undefined (not 0) when there is no capture to measure, so the restore
           // path can tell "no saved position" apart from "saved at the top".
@@ -841,10 +844,10 @@
       document.getElementById('content').innerHTML = html;
       for (var p = 0; p < openPeeks.length; p++) {
         var op = openPeeks[p];
-        if (!op.pane) continue;
+        if (!op.sess) continue;
         var newRows = document.querySelectorAll('#content .panerow');
         for (var r = 0; r < newRows.length; r++) {
-          if (newRows[r].getAttribute('data-pane-row') !== op.pane) continue;
+          if (newRows[r].getAttribute('data-peek-row') !== op.sess) continue;
           newRows[r].hidden = false;
           var c = newRows[r].querySelector('.panecap');
           if (c) {
@@ -858,7 +861,7 @@
           }
           var btns = document.querySelectorAll('#content .peek');
           for (var b = 0; b < btns.length; b++) {
-            if (btns[b].getAttribute('data-pane') === op.pane) {
+            if (btns[b].getAttribute('data-peek') === op.sess) {
               btns[b].setAttribute('aria-expanded', 'true');
               break;
             }
@@ -1365,22 +1368,27 @@
   // only — the row is a deliberate snapshot of "now" and does not auto-refresh.
   // Click the ⤢ to open/close; Esc closes an open peek without the mouse.
   (function () {
-    function paneRow(pane) {
-      var sel = '.panerow[data-pane-row="' + (window.CSS && CSS.escape ? CSS.escape(pane) : pane) + '"]';
+    // Row identity here is the SESSION id, never the tmux pane id: two sessions
+    // can be attached to one pane, so a pane id addresses more than one roster row
+    // and every lookup below would land on whichever rendered first. The pane id
+    // stays what it always was — the payload openPane sends to /api/pane — and is
+    // read off the button when the fetch needs it. Same key the actions panel uses.
+    function paneRow(sess) {
+      var sel = '.panerow[data-peek-row="' + (window.CSS && CSS.escape ? CSS.escape(sess) : sess) + '"]';
       return document.querySelector(sel);
     }
-    function paneButton(pane) {
+    function paneButton(sess) {
       var btns = document.querySelectorAll('#content .peek');
       for (var i = 0; i < btns.length; i++) {
-        if (btns[i].getAttribute('data-pane') === pane) return btns[i];
+        if (btns[i].getAttribute('data-peek') === sess) return btns[i];
       }
       return null;
     }
-    function closePane(pane, focusBtn) {
-      var row = paneRow(pane);
+    function closePane(sess, focusBtn) {
+      var row = paneRow(sess);
       if (!row || row.hidden) return false;
       row.hidden = true;
-      var btn = paneButton(pane);
+      var btn = paneButton(sess);
       if (btn) {
         btn.setAttribute('aria-expanded', 'false');
         // Returning focus to the trigger keeps a keyboard user anchored instead of
@@ -1433,7 +1441,7 @@
       var n = main.nextElementSibling;
       while (n && (n.classList.contains('panerow') || n.classList.contains('actrow'))) {
         if (n !== openingRow && !n.hidden) {
-          if (n.classList.contains('panerow')) closePane(n.getAttribute('data-pane-row'), false);
+          if (n.classList.contains('panerow')) closePane(n.getAttribute('data-peek-row'), false);
           else closeAct(n.getAttribute('data-actions-row'), false);
         }
         n = n.nextElementSibling;
@@ -1471,15 +1479,18 @@
       }
       return lines.join('\n');
     }
-    function openPane(pane) {
-      var row = paneRow(pane);
+    function openPane(sess) {
+      var row = paneRow(sess);
       if (!row) return;
       var pre = row.querySelector('.panecap');
       if (!pre) return;
       closeOtherPanels(row);
-      var btn = paneButton(pane);
+      var btn = paneButton(sess);
       if (btn) btn.setAttribute('aria-expanded', 'true');
       row.hidden = false;
+      // The pane id rides on the button, not the row: it is the capture target,
+      // not the row's identity.
+      var pane = btn ? btn.getAttribute('data-pane') : '';
       pre.textContent = 'loading…';
       fetch('/api/pane?pane=' + encodeURIComponent(pane), { headers: { 'Accept': 'text/plain' } })
         .then(function (r) { return r.ok ? r.text() : ''; })
@@ -1497,9 +1508,9 @@
       if (!ev.target || !ev.target.closest) return;
       var peekBtn = ev.target.closest('.peek');
       if (peekBtn) {
-        var pane = peekBtn.getAttribute('data-pane');
-        if (peekBtn.getAttribute('aria-expanded') === 'true') { closePane(pane, false); return; }
-        openPane(pane);
+        var psess = peekBtn.getAttribute('data-peek');
+        if (peekBtn.getAttribute('aria-expanded') === 'true') { closePane(psess, false); return; }
+        openPane(psess);
         return;
       }
       var actBtn = ev.target.closest('.actbtn');
@@ -1519,15 +1530,15 @@
       var scope = ev.target && ev.target.closest ? ev.target.closest('.panerow, .peek, .actrow, .actbtn') : null;
       var closed = false;
       if (scope && (scope.classList.contains('panerow') || scope.classList.contains('peek'))) {
-        var pane = scope.getAttribute('data-pane-row') || scope.getAttribute('data-pane');
-        if (pane) closed = closePane(pane, true);
+        var psess = scope.getAttribute('data-peek-row') || scope.getAttribute('data-peek');
+        if (psess) closed = closePane(psess, true);
       } else if (scope && (scope.classList.contains('actrow') || scope.classList.contains('actbtn'))) {
         var sess = scope.getAttribute('data-actions-row') || scope.getAttribute('data-actions');
         if (sess) closed = closeAct(sess, true);
       } else {
         var rows = document.querySelectorAll('#content .panerow');
         for (var i = 0; i < rows.length; i++) {
-          if (!rows[i].hidden && closePane(rows[i].getAttribute('data-pane-row'), false)) closed = true;
+          if (!rows[i].hidden && closePane(rows[i].getAttribute('data-peek-row'), false)) closed = true;
         }
         var arows = document.querySelectorAll('#content .actrow');
         for (var k = 0; k < arows.length; k++) {
@@ -1978,10 +1989,10 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>{{ end }}
-          {{ if or $.PeekEnabled $.MergeEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.MergeEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" aria-expanded="false" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · squash · admin · close · ready · end"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          {{ if or $.PeekEnabled $.MergeEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.MergeEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" data-peek="{{ .SessionID }}" aria-expanded="false" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · squash · admin · close · ready · end"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
-        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-pane-row="{{ .TmuxPane }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
+        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><pre class="panecap" aria-live="polite" tabindex="0"></pre></td></tr>{{ end }}
         {{ if and $.MergeEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><div class="actpanel">
             {{ if .HasPane }}
             <div class="actcol" role="group" aria-label="session actions">

@@ -1539,7 +1539,7 @@ func TestContentTemplate_SessionNamePreservedInPeekTitle(t *testing.T) {
 	html := buf.String()
 
 	// The session name lives in the peek button's title, ahead of the peek hint.
-	want := `class="peek" data-pane="%2310" aria-expanded="false" aria-label="show pane for nono redirect buildx state to the worktree" title="nono redirect buildx state to the worktree — show this pane's last lines"`
+	want := `class="peek" data-pane="%2310" data-peek="s1" aria-expanded="false" aria-label="show pane for nono redirect buildx state to the worktree" title="nono redirect buildx state to the worktree — show this pane's last lines"`
 	if !strings.Contains(html, want) {
 		t.Fatalf("session name must be preserved in the peek button title:\n%s", html)
 	}
@@ -1790,5 +1790,88 @@ func TestDashboardPinReorderPreservesPeekScroll(t *testing.T) {
       for (var s = 0; s < caps.length; s++) caps[s].el.scrollTop = caps[s].top;`
 	if !strings.Contains(body, restore) {
 		t.Errorf("pin reorder no longer restores peek scroll offsets after the re-append loop:\n%s", restore)
+	}
+}
+
+// The pane peek must identify a roster row by its SESSION id, not by the tmux
+// pane id. Two sessions can be attached to one tmux pane, so a pane id addresses
+// more than one row: keyed that way, the poller's carry-over re-opened the peek
+// on whichever row rendered first and collapsed the row the reader was in, and
+// the aria-expanded scan lit the wrong button. Every lookup keys on data-peek /
+// data-peek-row (the session id, unique per roster row because agentRoster groups
+// by a non-empty session_id); the pane id survives only as the fetch payload on
+// the button.
+func TestHandleDashboard_PeekKeysOnSessionNotPane(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	body := getBody(t, db, "/")
+
+	for _, frag := range []string{
+		// swapContent carry-over: capture and match on the session id.
+		`sess: rows[i].getAttribute('data-peek-row'),`,
+		`if (newRows[r].getAttribute('data-peek-row') !== op.sess) continue;`,
+		`if (btns[b].getAttribute('data-peek') === op.sess) {`,
+		// Row/button lookup and the toggle + Esc paths.
+		`var sel = '.panerow[data-peek-row="' + (window.CSS && CSS.escape ? CSS.escape(sess) : sess) + '"]';`,
+		`if (btns[i].getAttribute('data-peek') === sess) return btns[i];`,
+		`if (n.classList.contains('panerow')) closePane(n.getAttribute('data-peek-row'), false);`,
+		`var psess = peekBtn.getAttribute('data-peek');`,
+		`var psess = scope.getAttribute('data-peek-row') || scope.getAttribute('data-peek');`,
+		`if (!rows[i].hidden && closePane(rows[i].getAttribute('data-peek-row'), false)) closed = true;`,
+		// The pane id is still what /api/pane is asked for, read off the button.
+		`var pane = btn ? btn.getAttribute('data-pane') : '';`,
+		`fetch('/api/pane?pane=' + encodeURIComponent(pane)`,
+	} {
+		if !strings.Contains(body, frag) {
+			t.Errorf("peek must key on the session id — fragment missing: %s", frag)
+		}
+	}
+
+	// No lookup may key a row's identity on the pane id any more.
+	for _, gone := range []string{
+		`data-pane-row`,
+		`getAttribute('data-pane') === op.pane`,
+	} {
+		if strings.Contains(body, gone) {
+			t.Errorf("pane-keyed row identity still present in the page: %s", gone)
+		}
+	}
+}
+
+// The rendered roster row must carry the session identity on BOTH halves of the
+// peek (the ⤢ button and its panerow) while the button keeps the pane id for the
+// capture fetch, and two rows sharing one tmux pane must still render distinct
+// peek keys — the whole point of re-keying off the pane id.
+func TestContentTemplate_PeekIdentityIsSessionAcrossSharedPane(t *testing.T) {
+	d := dashboardData{
+		PeekEnabled: true,
+		Agents: []Agent{
+			{SessionID: "sess-a", SourceApp: "app", Status: statusWaiting,
+				TmuxSession: "sess", TmuxPane: "%7", LiveTmux: true},
+			{SessionID: "sess-b", SourceApp: "app", Status: statusWaiting,
+				TmuxSession: "sess", TmuxPane: "%7", LiveTmux: true},
+		},
+	}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+
+	for _, sess := range []string{"sess-a", "sess-b"} {
+		// The button carries the session identity AND the pane id for the fetch.
+		if !strings.Contains(html, `class="peek" data-pane="%7" data-peek="`+sess+`"`) {
+			t.Errorf("peek button for %s must carry both data-pane and data-peek:\n%s", sess, html)
+		}
+		if !strings.Contains(html, `<tr class="panerow" hidden data-peek-row="`+sess+`">`) {
+			t.Errorf("panerow for %s must be keyed by session id:\n%s", sess, html)
+		}
+	}
+	// Two rows, one pane, two distinct identities — nothing keyed on the pane.
+	if n := strings.Count(html, `data-peek-row=`); n != 2 {
+		t.Errorf("expected 2 keyed panerows, got %d:\n%s", n, html)
+	}
+	if strings.Contains(html, "data-pane-row") {
+		t.Errorf("panerow must no longer be keyed on the tmux pane id:\n%s", html)
 	}
 }
