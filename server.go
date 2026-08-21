@@ -211,8 +211,12 @@ type dashboardData struct {
 	Now            time.Time         // render time, passed to shortTS so it can hide same-day dates
 	SessColors     map[string]string // session id -> chip/tint color; see assignSessColors
 	Signature      string            // fingerprint of the report-worthy view; see viewSignature
-	PeekEnabled    bool              // true when serve --pane-peek is set; gates the roster's live-pane peek control
-	CSRFToken      string            // per-serve secret; emitted into the page only when ExecEnabled
+	// PeekEnabled is true when serve --pane-peek is set AND this REQUEST's peer
+	// passes remoteAllowed. /api/pane execs tmux and streams live pane text, so
+	// it is peer-gated exactly like the actions are; rendering the ⤢ control to a
+	// peer that the endpoint will 403 would only be a broken button.
+	PeekEnabled bool
+	CSRFToken   string // per-serve secret; emitted into the page only when ExecEnabled
 	// ExecEnabled gates the whole write path in the UI: it is true only when
 	// serve --enable-merge is set AND this REQUEST's peer passes remoteAllowed
 	// (loopback or Tailscale). A peer that fails it gets a genuinely read-only
@@ -648,7 +652,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConf
 		Generated:      now.Format("15:04:05"),
 		Now:            now,
 		SessColors:     assignSessColors(agents, events),
-		PeekEnabled:    peek.enabled,
+		PeekEnabled:    peek.enabled && remoteAllowed(r.RemoteAddr),
 		ExecEnabled:    act.enabled && remoteAllowed(r.RemoteAddr),
 		CSRFToken:      act.token,
 		Debug:          debug,

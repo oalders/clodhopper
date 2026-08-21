@@ -726,6 +726,45 @@ func TestBuildDashboardDataMergeFlags(t *testing.T) {
 	}
 }
 
+// Both peer-gated view flags collapse for a peer that fails remoteAllowed: the
+// LAN caller gets a read-only board with no action buttons, no CSRF token to
+// drive even the exec-free "end" by hand, and no ⤢ peek control — /api/pane
+// execs tmux and would 403 that peer anyway, so offering the button would only
+// be a dead control.
+func TestBuildDashboardDataPeerGatesExecAndPeek(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ci := newCICache()
+	peek := &peekConfig{enabled: true}
+	cfg := &actionConfig{enabled: true, token: "tok"}
+
+	loop := httptest.NewRequest(http.MethodGet, "/", nil)
+	loop.RemoteAddr = "127.0.0.1:5555"
+	got, err := buildDashboardData(loop, db, ci, peek, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.ExecEnabled || !got.PeekEnabled {
+		t.Fatalf("loopback peer: ExecEnabled=%v PeekEnabled=%v, want both true", got.ExecEnabled, got.PeekEnabled)
+	}
+
+	lan := httptest.NewRequest(http.MethodGet, "/", nil)
+	lan.RemoteAddr = "192.168.1.5:5555"
+	got, err = buildDashboardData(lan, db, ci, peek, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExecEnabled {
+		t.Error("LAN peer: ExecEnabled = true, want false")
+	}
+	if got.PeekEnabled {
+		t.Error("LAN peer: PeekEnabled = true, want false (/api/pane execs tmux and is peer-gated)")
+	}
+}
+
 // Both routes carry the hardening headers. The framing one has teeth: the
 // clipboard fallback used on a non-secure origin still copies inside a frame,
 // so a framed dashboard is a usable decoy.
