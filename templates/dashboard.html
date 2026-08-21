@@ -1112,6 +1112,10 @@
       // scrolled to the bottom snaps back to the top, undoing the restore
       // swapContent just did. Remember each visible capsule's offset and put it
       // back once the shuffling is over. Hidden rows have no offset worth saving.
+      // Scroll only, not focus: a reader whose keyboard focus was inside the
+      // capsule is not re-focused here — swapContent's fallback parks them on
+      // #content instead, so an open peek survives a poll to the eye but not to
+      // the reading cursor. Pre-existing and wider than the reorder; see #101.
       var caps = [];
       var prows = document.querySelectorAll('#content .panerow');
       for (var k = 0; k < prows.length; k++) {
