@@ -2053,6 +2053,14 @@ func TestDashboardPeekSwitchKeepsRememberedMessages(t *testing.T) {
 	if !strings.Contains(html, disarm) {
 		t.Errorf("closeAct must disarm on every path, including the peek switch:\n%s", disarm)
 	}
+	// The literals above enumerate the call sites we know about; they stay green
+	// if a NEW call site appears and forgets to decide keepMsgs. Pin the total so
+	// adding one forces a conscious choice here. 5 = the declaration plus the four
+	// calls (one keep, three dismiss).
+	const wantCloseAct = 5
+	if got := strings.Count(html, "closeAct("); got != wantCloseAct {
+		t.Errorf("dashboard renders %d closeAct( occurrences, want %d: a new call site must decide whether it is a dismissal (clear notes) or an incidental panel swap (keepMsgs), and be enumerated above", got, wantCloseAct)
+	}
 }
 
 // Structural backstop for the exact-literal assertions elsewhere: the restore
