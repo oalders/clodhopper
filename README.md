@@ -176,15 +176,24 @@ plus two modifiers and a single **run** button:
 The row cluster adds two more buttons, each with the same two-step confirm:
 
 - **rebase** runs `git fetch origin BASE`, `git pull --rebase origin BASE`, then
-  `git push --force-with-lease` in that row's worktree — so the PR is actually
-  updated. `BASE` is the repo's default branch, resolved server-side from
-  `origin/HEAD` (falling back to `origin/main` / `origin/master`); it is never
-  supplied by the browser. **This rewrites the branch's history and force-pushes
-  it.** If the rebase hits a conflict it is aborted (`git rebase --abort`, so the
-  worktree is left clean), nothing is pushed, and the row reports that the branch
-  needs a manual rebase. clodhopper refuses to run at all when the default branch
-  cannot be resolved, when the worktree is detached or mid-rebase, or when the
-  worktree is sitting *on* the default branch.
+  `git push --force-with-lease=BRANCH:SHA origin BRANCH` in that row's worktree —
+  so the PR is actually updated. `BASE` is the repo's default branch, resolved
+  server-side from `origin/HEAD`, falling back to `origin/main` / `origin/master`
+  **only when exactly one of them exists** (both, with no `origin/HEAD`, is
+  ambiguous and refuses); it is never supplied by the browser. The push names its
+  refspec explicitly, so a `push.default = matching` config cannot widen it, and
+  the lease is pinned to the `origin/BRANCH` SHA captured *before* the fetch, so
+  a concurrent fetch cannot quietly defeat it. A branch with no remote-tracking
+  ref is pushed without any force. **This rewrites the branch's history and
+  force-pushes it.** If the rebase hits a conflict it is aborted (`git rebase
+  --abort`, so the worktree is left clean), nothing is pushed, and the row reports
+  that the branch needs a manual rebase — or, if the abort itself failed, that
+  the worktree may be left mid-rebase. clodhopper refuses to run at all when the
+  default branch cannot be resolved or is ambiguous, when the worktree is
+  detached or mid-rebase, when it is sitting *on* the default branch, or when its
+  branch is `main`/`master` whatever the default resolved to. The whole sequence
+  is bounded by an overall deadline as well as a per-step one, and every attempt
+  (including a refusal) writes one audit line to serve's stderr.
 - **end** just dismisses the roster row; it never touches the repo or the agent.
 
 When a row's Claude session is in a live tmux pane, it also gains two **session

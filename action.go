@@ -9,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -312,6 +314,17 @@ const (
 	// --rebase, push). A fetch or a force-push against a slow remote is the same
 	// order of work as a teardown, so it gets the same generous ceiling.
 	rebaseTimeout = 120 * time.Second
+	// rebaseTotalTimeout bounds the WHOLE sequence, not just each step: without
+	// it three 120s steps plus an abort could pin a serve goroutine (and the
+	// row's inflight lock) for ~360s+. Each step gets min(rebaseTimeout,
+	// remaining budget), and an exhausted budget stops the sequence and reports a
+	// timeout instead of starting the next step. Ceiling for a rebase attempt:
+	// rebaseTotalTimeout + rebaseAbortTimeout.
+	rebaseTotalTimeout = 180 * time.Second
+	// rebaseAbortTimeout bounds `git rebase --abort`, deliberately OUTSIDE the
+	// sequence budget: the abort is the cleanup that keeps a work tree from being
+	// left mid-rebase, so a sequence that ran out of time must still get to run it.
+	rebaseAbortTimeout = 30 * time.Second
 	// gitProbeTimeout bounds the read-only ref lookups that resolve the default
 	// and current branch. Local ref reads, so a couple of seconds is plenty —
 	// same tight, best-effort budget as gitBranch in the capture path.
@@ -327,10 +340,32 @@ const (
 // [A-Za-z0-9._/-] fail closed.
 var branchNameRe = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._/-]*$`)
 
+// maxBranchNameLen caps how long a derived branch name may be before it becomes
+// an argv element. Git itself has no hard limit, but a pathological ref name is
+// never something we want to hand to a command line, so cap it well above any
+// real branch.
+const maxBranchNameLen = 255
+
 // validBranchName reports whether name is safe to place in an argv.
 func validBranchName(name string) bool {
-	return name != "" && !strings.Contains(name, "..") && branchNameRe.MatchString(name)
+	return name != "" && len(name) <= maxBranchNameLen &&
+		!strings.Contains(name, "..") && branchNameRe.MatchString(name)
 }
+
+// leaseSHARe is the strict shape a captured lease SHA must have before it joins
+// a --force-with-lease argv. Same defence-in-depth posture as validBranchName:
+// the value is derived server-side from a git ref, but it is still validated
+// before it reaches a command line, and anything else refuses the whole action.
+var leaseSHARe = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
+
+// The two ways resolving the default branch can fail, kept distinct so the row
+// can say which happened instead of blaming detection for a rejected name.
+var (
+	errNoDefaultBranch = errors.New("could not resolve the default branch " +
+		"(tried origin/HEAD, origin/main, origin/master); nothing was run")
+	errAmbiguousDefaultBranch = errors.New("origin/HEAD is missing and BOTH origin/main and " +
+		"origin/master exist; refusing to guess the default branch — nothing was run")
+)
 
 // gitProbe runs a READ-ONLY git command in dir and returns its trimmed stdout.
 // Best-effort with a tight timeout, mirroring gitBranch in the capture path: any
@@ -351,22 +386,36 @@ func gitProbe(gitBin, dir string, args ...string) (string, bool) {
 
 // defaultBranch resolves the repo's default branch for the work tree at dir:
 // origin/HEAD when the remote HEAD ref is present locally, else whichever of
-// origin/main / origin/master exists. Returns "" when none resolve (or on any
-// error), which callers treat as "refuse, run nothing".
-func defaultBranch(gitBin, dir string) string {
+// origin/main / origin/master exists.
+//
+// The fallback is accepted ONLY when exactly one of the two conventional names
+// exists. If both do and origin/HEAD is unresolvable, the answer is genuinely
+// ambiguous — a stale origin/main lingering in a repo whose real default is,
+// say, develop would otherwise make the "never force-push the default branch"
+// guard compare against the wrong name and wave the real default through. Every
+// failure returns an error and callers treat it as "refuse, run nothing".
+func defaultBranch(gitBin, dir string) (string, error) {
 	if out, ok := gitProbe(gitBin, dir, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); ok {
 		if b, found := strings.CutPrefix(out, "origin/"); found && b != "" {
-			return b
+			return b, nil
 		}
 	}
 	// origin/HEAD is only created by clone (or an explicit set-head), so plenty
 	// of worktrees lack it. Fall back to the two conventional names.
+	var found []string
 	for _, b := range []string{"main", "master"} {
 		if _, ok := gitProbe(gitBin, dir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+b); ok {
-			return b
+			found = append(found, b)
 		}
 	}
-	return ""
+	switch len(found) {
+	case 1:
+		return found[0], nil
+	case 0:
+		return "", errNoDefaultBranch
+	default:
+		return "", errAmbiguousDefaultBranch
+	}
 }
 
 // worktreeBranch returns the branch currently checked out in dir, or "" if HEAD
@@ -379,15 +428,43 @@ func worktreeBranch(gitBin, dir string) string {
 	return out
 }
 
+// rebaseStep is one argument vector in the rebase sequence plus the metadata
+// the runner needs. abortOnFail says whether a failure at THIS step can have
+// left a half-applied rebase behind and therefore needs `git rebase --abort`.
+// Carrying it on the step (rather than keying cleanup off an index into the
+// slice) means inserting or reordering a step cannot silently detach the
+// cleanup from the step that needs it.
+type rebaseStep struct {
+	args        []string
+	abortOnFail bool
+}
+
 // rebaseSteps is the fixed argument-vector sequence the rebase action runs, in
-// order. Every element is a literal except base, which runAction never sees
-// until validBranchName has accepted it. Kept separate from the run loop so a
-// test can assert the exact vectors.
-func rebaseSteps(base string) [][]string {
-	return [][]string{
-		{"fetch", "origin", base},
-		{"pull", "--rebase", "origin", base},
-		{"push", "--force-with-lease"},
+// order. Every element is a literal except base, cur and lease, none of which
+// runAction sees until validBranchName / leaseSHARe have accepted them. Kept
+// separate from the run loop so a test can assert the exact vectors.
+//
+// The push names its refspec explicitly (origin cur) rather than relying on a
+// bare `git push`: with push.default = matching, or a remote.origin.push
+// refspec in config, a bare force-push can rewrite EVERY matching local branch.
+// The lease is pinned to the SHA captured before the fetch, because a bare
+// --force-with-lease compares against the local remote-tracking ref, which any
+// intervening fetch (another agent, an IDE, a background job — all likely in
+// the worktrees clodhopper supervises) silently updates, defeating the lease.
+// An empty lease means the branch has no remote-tracking ref at all, i.e. it
+// was never pushed: creating it needs no force, and asking for one would only
+// fail.
+func rebaseSteps(base, cur, lease string) []rebaseStep {
+	push := []string{"push", "origin", cur}
+	if lease != "" {
+		push = []string{"push", "--force-with-lease=" + cur + ":" + lease, "origin", cur}
+	}
+	return []rebaseStep{
+		{args: []string{"fetch", "origin", base}},
+		// Only the rebase itself can stop mid-flight: a failed fetch has touched
+		// nothing, and a failed push happens after the rebase already succeeded.
+		{args: []string{"pull", "--rebase", "origin", base}, abortOnFail: true},
+		{args: push},
 	}
 }
 
@@ -395,52 +472,130 @@ func rebaseSteps(base string) [][]string {
 // is never left mid-rebase for the user to discover.
 func rebaseAbortArgv() []string { return []string{"rebase", "--abort"} }
 
+// auditw is where the rebase audit line is written. A package var so tests can
+// capture it; serve leaves it on stderr next to the other "clodhopper serve:"
+// diagnostics.
+var auditw io.Writer = os.Stderr
+
+// auditRebase records one rebase attempt. Unlike debugf this is NOT gated on
+// CLODHOPPER_DEBUG: a rebase force-pushes rewritten history, the only
+// irreversible thing this tool does, so every attempt leaves a line behind
+// whether or not debugging is on.
+func auditRebase(now time.Time, sessionID, dir, base, cur, lease, outcome string) {
+	fmt.Fprintf(auditw, "clodhopper serve: audit rebase ts=%s session=%q cwd=%q base=%q cur=%q lease=%q outcome=%q\n",
+		now.UTC().Format(time.RFC3339), sessionID, dir, base, cur, lease, outcome)
+}
+
 // runRebase rebases the work tree at dir onto the repo's default branch and
-// force-pushes (with lease) so the PR is actually updated. Everything it needs
-// is derived server-side; the caller passes no request data at all.
+// force-pushes (with a pinned lease) so the PR is actually updated. Everything
+// it needs is derived server-side; the caller passes no request data at all.
 //
-// Refuses, running nothing, when the default branch cannot be resolved, when the
-// work tree is not on a branch (detached / mid-rebase), or when it is sitting ON
-// the default branch — force-pushing main is exactly the accident this guard
-// exists to prevent. A rebase that fails or times out is aborted (best-effort)
-// and reported as "needs manual rebase"; the push is never reached.
-func runRebase(gitBin, dir string, timeout time.Duration) actionResult {
-	base := defaultBranch(gitBin, dir)
-	if !validBranchName(base) {
-		return actionResult{ExitCode: -1, Output: "could not resolve the default branch " +
-			"(tried origin/HEAD, origin/main, origin/master); nothing was run"}
+// Refuses, running nothing, when the default branch cannot be resolved or is
+// ambiguous, when either branch name fails validation, when the work tree is not
+// on a branch (detached / mid-rebase), when it is sitting ON the default branch,
+// or when its branch is literally main/master (a hardcoded backstop that holds
+// even if detection resolved something else) — force-pushing the trunk is
+// exactly the accident these guards exist to prevent. A rebase that fails or
+// times out is aborted and reported as "needs manual rebase"; the push is never
+// reached. stepTimeout bounds each step, totalTimeout the whole sequence.
+func runRebase(gitBin, dir, sessionID string, stepTimeout, totalTimeout time.Duration, now time.Time) actionResult {
+	base, cur, lease := "", "", ""
+	outcome := "refused"
+	defer func() { auditRebase(now, sessionID, dir, base, cur, lease, outcome) }()
+	refuse := func(msg string) actionResult {
+		outcome = "refused: " + msg
+		return actionResult{ExitCode: -1, Output: msg}
 	}
-	cur := worktreeBranch(gitBin, dir)
+
+	base, err := defaultBranch(gitBin, dir)
+	if err != nil {
+		base = ""
+		return refuse(err.Error())
+	}
+	if !validBranchName(base) {
+		bad := base
+		base = ""
+		return refuse("the resolved default branch " + strconv.Quote(bad) +
+			" is not a name we will put on a command line; nothing was run")
+	}
+	cur = worktreeBranch(gitBin, dir)
+	if cur == "" {
+		return refuse("worktree is not on a named branch (detached HEAD or mid-rebase); nothing was run")
+	}
 	if !validBranchName(cur) {
-		return actionResult{ExitCode: -1,
-			Output: "worktree is not on a named branch (detached HEAD or mid-rebase); nothing was run"}
+		bad := cur
+		cur = ""
+		return refuse("the checked-out branch " + strconv.Quote(bad) +
+			" is not a name we will put on a command line; nothing was run")
 	}
 	if cur == base {
-		return actionResult{ExitCode: -1, Output: "worktree is on the default branch (" + base +
-			"); refusing to rebase and force-push it"}
+		return refuse("worktree is on the default branch (" + base + "); refusing to rebase and force-push it")
+	}
+	// Backstop independent of detection: whatever base resolved to, main and
+	// master are never rewritten from here.
+	if cur == "main" || cur == "master" {
+		return refuse("worktree is on " + cur + "; refusing to rebase and force-push it")
+	}
+
+	// Capture the lease BEFORE the fetch — that is the whole point. Pinning it
+	// afterwards would pin whatever the fetch just wrote, which is precisely the
+	// value a bare --force-with-lease already (uselessly) compares against.
+	if got, ok := gitProbe(gitBin, dir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+cur); ok {
+		if !leaseSHARe.MatchString(got) {
+			return refuse("origin/" + cur + " resolved to something that is not a commit id; nothing was run")
+		}
+		lease = got
 	}
 
 	var out strings.Builder
-	steps := rebaseSteps(base)
-	for i, args := range steps {
-		out.WriteString("$ git " + strings.Join(args, " ") + "\n")
-		res := runAction(gitBin, dir, args, timeout)
+	deadline := time.Now().Add(totalTimeout)
+	for _, st := range rebaseSteps(base, cur, lease) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			// Nothing to abort: this step never started, so the work tree is in
+			// whatever (clean) state the previous step left it.
+			outcome = "timeout: overall budget exhausted"
+			out.WriteString("\nrebase timed out (overall budget " + totalTimeout.String() +
+				" exhausted); the remaining steps were not run\n")
+			return actionResult{ExitCode: -1, TimedOut: true, Output: out.String()}
+		}
+		out.WriteString("$ git " + strings.Join(st.args, " ") + "\n")
+		res := runAction(gitBin, dir, st.args, min(stepTimeout, remaining))
 		out.WriteString(res.Output)
 		if res.ExitCode == 0 && !res.TimedOut {
 			continue
 		}
-		// The pull --rebase step is the one that can leave a conflicted, half-applied
-		// rebase behind. Abort it so the worktree is clean, then report — never push.
-		if i == 1 {
-			abort := runAction(gitBin, dir, rebaseAbortArgv(), timeout)
-			out.WriteString("$ git " + strings.Join(rebaseAbortArgv(), " ") + "\n")
-			out.WriteString(abort.Output)
-			out.WriteString("\nrebase stopped and was aborted — needs manual rebase\n")
+		outcome = "failed: git " + st.args[0]
+		if res.TimedOut {
+			outcome = "timeout: git " + st.args[0]
 		}
-		res.Output = out.String()
-		return res
+		return rebaseAbort(gitBin, dir, st, &out, res, &outcome)
 	}
+	outcome = "pushed"
 	return actionResult{ExitCode: 0, Output: out.String()}
+}
+
+// rebaseAbort finishes a failed sequence: it runs `git rebase --abort` when the
+// step that failed was one that can leave a half-applied rebase behind, and
+// reports the abort's OWN outcome honestly — an abort that itself failed means
+// the work tree really is left mid-rebase, and saying otherwise would be a lie
+// the user only discovers later.
+func rebaseAbort(gitBin, dir string, st rebaseStep, out *strings.Builder, res actionResult, outcome *string) actionResult {
+	if st.abortOnFail {
+		out.WriteString("$ git " + strings.Join(rebaseAbortArgv(), " ") + "\n")
+		abort := runAction(gitBin, dir, rebaseAbortArgv(), rebaseAbortTimeout)
+		out.WriteString(abort.Output)
+		if abort.ExitCode == 0 && !abort.TimedOut {
+			out.WriteString("\nrebase stopped and was aborted — needs manual rebase\n")
+			*outcome += "; aborted"
+		} else {
+			out.WriteString("\nrebase stopped AND `git rebase --abort` failed — " +
+				"the worktree may be left mid-rebase and needs manual cleanup\n")
+			*outcome += "; abort FAILED, worktree may be mid-rebase"
+		}
+	}
+	res.Output = out.String()
+	return res
 }
 
 // actionConfig is serve's write-path state. Binary names are injected so tests
@@ -573,6 +728,20 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 	}
 	defer cfg.inflight.release(sessionID)
 
+	// Dedupe on the WORK TREE as well as the session. Two roster rows can resolve
+	// to the same cwd (a resumed or restarted agent, a shared checkout), and two
+	// concurrent git/merge-pr runs in one directory means interleaved operations,
+	// index.lock contention, or a push firing against whatever branch the other
+	// one left checked out — which would sidestep the cur == base guard entirely.
+	// The key is namespaced ("cwd:") so it cannot collide with a session id, and
+	// acquisition order is fixed (session, then cwd) so two requests can never
+	// deadlock against each other. The session lock is released by its defer.
+	if !cfg.inflight.acquire("cwd:" + cwd) {
+		http.Error(w, "action already running for this worktree", http.StatusConflict)
+		return
+	}
+	defer cfg.inflight.release("cwd:" + cwd)
+
 	bin := cfg.mergePR
 	timeout := actionTimeout
 	switch binary {
@@ -583,10 +752,11 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 	}
 	// The git binary drives a multi-step sequence rather than one argv (see
 	// runRebase); actionArgv returned no args for it precisely because they are
-	// assembled server-side from a validated base branch.
+	// assembled server-side from a validated base branch. timeout bounds each
+	// step; rebaseTotalTimeout bounds the sequence as a whole.
 	var res actionResult
 	if binary == "git" {
-		res = runRebase(bin, cwd, timeout)
+		res = runRebase(bin, cwd, sessionID, timeout, rebaseTotalTimeout, now)
 	} else {
 		res = runAction(bin, cwd, args, timeout)
 	}

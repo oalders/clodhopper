@@ -2320,11 +2320,21 @@ func TestDashboardWiresRebaseIntoActionScript(t *testing.T) {
 		CSRFToken:    "tok",
 	}
 	html := renderDashboard(t, on)
-	if !strings.Contains(html, "rebase: 'REWRITES THIS BRANCH") {
-		t.Error("CAVEAT has no entry for the rebase action")
+	// caveatFor already prepends "<branch>: ", so the caveat itself must not
+	// re-name the branch — pin the exact literal that renders after that prefix.
+	const caveat = "rebase: 'REWRITTEN — rebased onto the default branch, then force-pushed " +
+		"(--force-with-lease), replacing the PR\\'s commits. On a conflict the rebase is aborted " +
+		"and nothing is pushed'"
+	if !strings.Contains(html, caveat) {
+		t.Errorf("CAVEAT.rebase literal changed; want %s", caveat)
 	}
-	if !strings.Contains(html, "force-push") && !strings.Contains(html, "force-with-lease") {
-		t.Error("rebase caveat does not warn about the force-push")
+	if strings.Contains(html, "rebase: 'REWRITES THIS BRANCH") {
+		t.Error("caveat still restates the branch that caveatFor already prepends")
+	}
+	// A timed-out force-push may or may not have landed, so rebase needs wording
+	// that says WHAT to check rather than the generic "verify before retrying".
+	if !strings.Contains(html, "action === 'rebase'\n                ? 'timed out — the rebase/push may have partially completed; check the branch on GitHub before retrying'") {
+		t.Error("rebase has no timeout-specific wording")
 	}
 	if !strings.Contains(html, "action === 'rebase' ? 'rebased onto the default branch and force-pushed'") {
 		t.Error("rebase has no success wording")
@@ -2333,5 +2343,54 @@ func TestDashboardWiresRebaseIntoActionScript(t *testing.T) {
 	// substring match on 'rebase' alone would not prove that.
 	if !strings.Contains(html, "var clears = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'end');") {
 		t.Error("clears set changed; rebase must not clear the row")
+	}
+}
+
+// An ARMED two-step confirm lives in #content, and window.__ckActionBusy only
+// covers a request that is already in flight — not the gap between the arm click
+// and the confirm click. A poll landing in that gap would innerHTML-replace
+// #content and silently discard both the armed state and the caveat the reader
+// is part-way through, so swapContent must bail out while a .actgroup.confirm
+// exists. The guard is unconditional (it ships even with merge disabled, where
+// no such group can exist), and it must sit inside swapContent.
+func TestDashboardSwapContentSkipsRepaintWhileConfirmArmed(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	})
+	const guard = "if (document.querySelector('#content .actgroup.confirm')) return;"
+	if !strings.Contains(html, guard) {
+		t.Fatal("swapContent has no armed-confirm repaint guard")
+	}
+	fn := strings.Index(html, "function swapContent(")
+	if fn < 0 {
+		t.Fatal("swapContent not found")
+	}
+	if at := strings.Index(html, guard); at < fn {
+		t.Fatalf("guard at %d is not inside swapContent (starts at %d)", at, fn)
+	}
+	// The busy-count guard it complements must still be there.
+	if !strings.Contains(html, "if (window.__ckActionBusy) return;") {
+		t.Error("the in-flight busy guard disappeared")
+	}
+}
+
+// The action JS must read the CSRF token that the server actually rendered:
+// asserting only the header NAME would pass even if CSRF were bound to nothing.
+func TestDashboardBindsCSRFTokenValueIntoActionScript(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:       []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		MergeEnabled: true,
+		CSRFToken:    "tok",
+	})
+	if !strings.Contains(html, `data-csrf="tok"`) {
+		t.Fatal("CSRF token not rendered onto <body>")
+	}
+	if !strings.Contains(html, "var CSRF = document.body.dataset.csrf;") {
+		t.Fatal("action script does not initialize CSRF from the rendered token")
+	}
+	if !strings.Contains(html, "'X-Clodhopper-Token': CSRF,") {
+		t.Fatal("the request does not send the bound token in the CSRF header")
 	}
 }

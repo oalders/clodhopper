@@ -802,6 +802,13 @@
       // Skip this poll's repaint entirely and let the next one (after the
       // action settles and clears the busy flag) pick up the fresh signature.
       if (window.__ckActionBusy) return;
+      // An ARMED confirm is just as fragile, and __ckActionBusy does not cover
+      // it: the counter only rises inside fire(), so between the first (arm)
+      // click and the second (confirm) click a poll would innerHTML-replace
+      // #content and silently discard both the armed state and the caveat the
+      // reader is part-way through. Shared with every destructive action
+      // (squash / close / end / rebase), which is the point.
+      if (document.querySelector('#content .actgroup.confirm')) return;
       var active = document.activeElement;
       var keep = active && active.closest ? active.closest('#content .copycwd') : null;
       var key = keep ? keep.getAttribute('data-session') : null;
@@ -1733,7 +1740,7 @@
       ready: 'mark PR ready?',
       'monitor-ci': '/clear then /monitor-ci — drops the agent\'s current context',
       end: 'dismiss this row from the dashboard — the agent is NOT stopped, and the row returns if it emits another event',
-      rebase: 'REWRITES THIS BRANCH: rebases onto the default branch and then force-pushes it (--force-with-lease), replacing the PR\'s commits. On a conflict the rebase is aborted and nothing is pushed'
+      rebase: 'REWRITTEN — rebased onto the default branch, then force-pushed (--force-with-lease), replacing the PR\'s commits. On a conflict the rebase is aborted and nothing is pushed'
     };
 
     function forceOn(group) {
@@ -1904,9 +1911,14 @@
                  : action === 'rebase' ? 'rebased onto the default branch and force-pushed'
                  : 'done')
               : ('failed: ' + (d.output || ('exit ' + d.exitCode)));
+            // A rebase gets its own wording: the deadline can fire after the
+            // force-push started, so "verify before retrying" has to say WHAT to
+            // verify — a blind retry could rebase on top of a push that landed.
             if (d.timedOut) msg.textContent = clears
               ? 'timed out — teardown may be incomplete; verify before retrying'
-              : 'timed out — verify before retrying';
+              : action === 'rebase'
+                ? 'timed out — the rebase/push may have partially completed; check the branch on GitHub before retrying'
+                : 'timed out — verify before retrying';
             if (!d.ok || d.timedOut) noteMsg(group, msg.textContent);
           }
           // A successful row-clearing action is followed by the row disappearing

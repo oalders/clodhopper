@@ -41,8 +41,9 @@ Three subcommands, dispatched in `main.go`:
 - **`serve`** (`server.go`) — HTTP dashboard, renders `templates/dashboard.html`; read-only
   by default, plus an **opt-in** write path (`--enable-merge`) that runs allowlisted
   `merge-pr`/`gh pr ready` actions per roster row, plus a `rebase` action that
-  runs a fixed `git` sequence (fetch / pull --rebase / push --force-with-lease)
-  onto the server-derived default branch, plus an `end` action that runs
+  runs a fixed `git` sequence (fetch / pull --rebase / push --force-with-lease,
+  explicit refspec, lease pinned to a pre-fetch SHA) onto the server-derived
+  default branch, plus an `end` action that runs
   no subprocess at all and just calls `endSessions` to drop the row. `ingest` never gains write-to-repo
   capability — the capture path stays read-only.
 - **`prune`** (`main.go`) — deletes events older than the retention window.
