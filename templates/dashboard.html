@@ -1107,6 +1107,19 @@
       }
       order = desired;
 
+      // Moving a <tr> is a detach + reinsert, and Blink drops the scroll offset
+      // of every scroll container underneath it — so a peek the reader had
+      // scrolled to the bottom snaps back to the top, undoing the restore
+      // swapContent just did. Remember each visible capsule's offset and put it
+      // back once the shuffling is over. Hidden rows have no offset worth saving.
+      var caps = [];
+      var prows = document.querySelectorAll('#content .panerow');
+      for (var k = 0; k < prows.length; k++) {
+        if (prows[k].hidden) continue;
+        var pc = prows[k].querySelector('.panecap');
+        if (pc) caps.push({ el: pc, top: pc.scrollTop });
+      }
+
       // Re-append each group's block(s) in the desired order. Moving a node
       // keeps its state (an open, carried-over panel row rides along hidden=false).
       for (var d = 0; d < desired.length; d++) {
@@ -1115,6 +1128,7 @@
           for (var c = 0; c < bl[b].length; c++) tbody.appendChild(bl[b][c]);
         }
       }
+      for (var s = 0; s < caps.length; s++) caps[s].el.scrollTop = caps[s].top;
 
       // Repair group-start: it marks the first row of each group EXCEPT the very
       // first row overall, so it is position-derived and wrong after a reorder.
