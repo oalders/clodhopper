@@ -171,8 +171,14 @@ board used to expose.
   from the connection only — forwarding headers such as `X-Forwarded-For` are
   never consulted — and there is no override flag.
 
-  The same gate covers `--pane-peek`'s `/api/pane`, which execs `tmux` and
-  streams a live pane's text.
+  A request that *carries* a forwarding header (`X-Forwarded-For`, `X-Real-IP`,
+  `Forwarded`, `X-Forwarded-Host`) is refused outright, whether or not it would
+  run a command: behind a proxy the peer cannot be attributed at all, so even the
+  exec-free **end** is refused. A `Host` header that does not name this dashboard
+  is refused too (the DNS-rebinding defence).
+
+  The same gate — proxy refusal, `Host` allowlist, peer network — covers
+  `--pane-peek`'s `/api/pane`, which execs `tmux` and streams a live pane's text.
 
   > **Do not run `serve --enable-merge` behind a reverse proxy, `tailscale
   > serve`, nginx/Caddy, a container port forward, or `ssh -L`.** The peer gate
@@ -216,10 +222,15 @@ The row cluster adds two more buttons, each with the same two-step confirm:
   force-pushes it.** If the rebase hits a conflict it is aborted (`git rebase
   --abort`, so the worktree is left clean), nothing is pushed, and the row reports
   that the branch needs a manual rebase — or, if the abort itself failed, that
-  the worktree may be left mid-rebase. clodhopper refuses to run at all when the
+  the worktree may be left mid-rebase. That warning is only raised when git
+  confirms a rebase really is in progress, so a `pull --rebase` that refused
+  *before* starting never sends you off to clean up a healthy worktree.
+  clodhopper refuses to run at all when the
   default branch cannot be resolved or is ambiguous, when the worktree is
-  detached or mid-rebase, when it is sitting *on* the default branch, or when its
-  branch is `main`/`master` whatever the default resolved to. The whole sequence
+  detached or mid-rebase, when it has uncommitted changes (`git pull --rebase`
+  would refuse anyway — commit or stash first), when it is sitting *on* the
+  default branch, or when its branch is `main`/`master` whatever the default
+  resolved to. The whole sequence
   is bounded by an overall deadline as well as a per-step one, and every attempt
   (including a refusal) writes one audit line to serve's stderr.
 - **end** just dismisses the roster row; it never touches the repo or the agent.

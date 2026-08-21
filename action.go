@@ -78,7 +78,20 @@ func newInflightSet() *inflightSet { return &inflightSet{m: map[string]bool{}} }
 // (session, then worktree) so no deadlock is reachable either way — but it keeps
 // the two key spaces provably disjoint.
 func sidKey(sessionID string) string { return "sid:" + sessionID }
-func cwdKey(cwd string) string       { return "cwd:" + cwd }
+
+// cwdKey normalises the path first: two spellings of ONE worktree ("/a/b" and
+// "/a/b/", or a symlinked and a real path) must take the SAME lock, or both
+// requests run git in the same directory concurrently — the thing the worktree
+// lock exists to prevent. EvalSymlinks is best-effort (a path that no longer
+// exists keeps its cleaned form), which is fine: the fallback is the old
+// behaviour, never a wrongly SHARED key.
+func cwdKey(cwd string) string {
+	p := filepath.Clean(cwd)
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		p = resolved
+	}
+	return "cwd:" + p
+}
 
 // acquire marks key as in-flight, returning false if it already is.
 func (s *inflightSet) acquire(key string) bool {
@@ -348,8 +361,11 @@ func remoteAllowed(remoteAddr string) bool {
 func actionExecs(action string) bool { return action != "end" }
 
 // forwardingHeaders are the headers a reverse proxy adds when it relays a
-// request. Their presence — never their value — is what handleAction refuses on.
-var forwardingHeaders = []string{"X-Forwarded-For", "X-Real-Ip", "Forwarded", "X-Forwarded-Host"}
+// request. Their presence — never their value — is what the peer gate refuses
+// on. Spelled in the usual wire form because the names are echoed into the 403
+// body; Header.Get canonicalizes before it looks anything up, so the CHECK is
+// unaffected by the capitalisation used here.
+var forwardingHeaders = []string{"X-Forwarded-For", "X-Real-IP", "Forwarded", "X-Forwarded-Host"}
 
 // forwardingHeader returns the name of the first forwarding header present and
 // non-empty in h, or "" when none is.
@@ -360,6 +376,38 @@ func forwardingHeader(h http.Header) string {
 		}
 	}
 	return ""
+}
+
+// execPeerAllowed is the SINGLE gate every endpoint that can reach the host
+// runs, so /api/action and /api/pane cannot drift apart again. It returns ok
+// plus the reason to put in the 403 body, and performs, in order:
+//
+//   - the forwarding-header refusal, applied UNCONDITIONALLY (even for a request
+//     that execs nothing). It is not about exec, it is about attribution: behind
+//     a proxy every peer arrives on a loopback socket, so we cannot say who asked
+//     for anything at all. A proxied peer must not get to dismiss roster rows
+//     either.
+//   - hostAllowed, the DNS-rebinding defence. Without it an attacker page that
+//     rebinds its own name to 127.0.0.1 is same-origin under that name, and a GET
+//     endpoint (/api/pane) needs no token at all.
+//   - remoteAllowed, the peer-network gate, but only when execs is true. "end" is
+//     the sole exec-free action and stays reachable from any attributable peer on
+//     an allowed Host.
+//
+// It NEVER consults a forwarding header's value — see remoteAllowed.
+func execPeerAllowed(r *http.Request, bindHost string, allowed []string, execs bool) (bool, string) {
+	if h := forwardingHeader(r.Header); h != "" {
+		return false, "request arrived through a proxy (" + h + " present) and cannot be " +
+			"attributed to a peer; this endpoint needs a direct connection"
+	}
+	if !hostAllowed(r.Host, bindHost, allowed) {
+		return false, "host not allowed"
+	}
+	if execs && !remoteAllowed(r.RemoteAddr) {
+		return false, "peer not on an allowed network: reading a live pane or running " +
+			"a command is restricted to loopback and Tailscale peers"
+	}
+	return true, ""
 }
 
 // tokenOK compares a presented CSRF token against the per-serve secret in
@@ -405,7 +453,9 @@ const (
 	// row's inflight lock) for ~360s+. Each step gets min(rebaseTimeout,
 	// remaining budget), and an exhausted budget stops the sequence and reports a
 	// timeout instead of starting the next step. Ceiling for a rebase attempt:
-	// rebaseTotalTimeout + rebaseAbortTimeout.
+	// the probes that run BEFORE the budget starts (default branch, current
+	// branch, dirty check, lease — up to six sequential gitProbeTimeout calls),
+	// then rebaseTotalTimeout, then rebaseAbortTimeout for the cleanup.
 	rebaseTotalTimeout = 180 * time.Second
 	// rebaseAbortTimeout bounds `git rebase --abort`, deliberately OUTSIDE the
 	// sequence budget: the abort is the cleanup that keeps a work tree from being
@@ -463,11 +513,21 @@ func gitProbe(gitBin, dir string, args ...string) (string, bool) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), gitProbeTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, gitBin, append([]string{"-C", dir}, args...)...).Output()
-	if err != nil {
+	cmd := exec.CommandContext(ctx, gitBin, append([]string{"-C", dir}, args...)...)
+	cmd.Stdin = nil
+	// Same process-group + WaitDelay treatment runAction documents at length: a
+	// git that leaves a daemonising grandchild (credential cache, ssh
+	// ControlMaster) would otherwise outlive gitProbeTimeout holding the output
+	// pipe open, blocking the handler while it holds BOTH inflight locks.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = waitDelay
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	if err := cmd.Run(); err != nil || ctx.Err() != nil {
 		return "", false
 	}
-	return strings.TrimSpace(string(out)), true
+	return strings.TrimSpace(buf.String()), true
 }
 
 // defaultBranch resolves the repo's default branch for the work tree at dir:
@@ -540,23 +600,68 @@ type rebaseStep struct {
 // An empty lease means the branch has no remote-tracking ref at all, i.e. it
 // was never pushed: creating it needs no force, and asking for one would only
 // fail.
-func rebaseSteps(base, cur, lease string) []rebaseStep {
-	push := []string{"push", "origin", cur}
+//
+// Every vector starts with `-C dir` exactly as the probes do, rather than
+// relying on cmd.Dir alone. If serve was ever started from a shell with GIT_DIR
+// or GIT_WORK_TREE exported, cmd.Dir would be overridden by that environment and
+// every step — the force-push included — would operate on a repo other than the
+// roster row's worktree, while the guards were computed from the `-C dir` probes
+// and would not notice. (Scrubbing git's env is deliberately out of scope; `-C`
+// closes the same hole without an env policy.)
+func rebaseSteps(dir, base, cur, lease string) []rebaseStep {
+	at := func(args ...string) []string { return append([]string{"-C", dir}, args...) }
+	push := at("push", "origin", cur)
 	if lease != "" {
-		push = []string{"push", "--force-with-lease=" + cur + ":" + lease, "origin", cur}
+		push = at("push", "--force-with-lease="+cur+":"+lease, "origin", cur)
 	}
 	return []rebaseStep{
-		{args: []string{"fetch", "origin", base}},
+		{args: at("fetch", "origin", base)},
 		// Only the rebase itself can stop mid-flight: a failed fetch has touched
 		// nothing, and a failed push happens after the rebase already succeeded.
-		{args: []string{"pull", "--rebase", "origin", base}, abortOnFail: true},
+		{args: at("pull", "--rebase", "origin", base), abortOnFail: true},
 		{args: push},
 	}
 }
 
 // rebaseAbortArgv undoes a rebase that stopped on a conflict, so the work tree
-// is never left mid-rebase for the user to discover.
-func rebaseAbortArgv() []string { return []string{"rebase", "--abort"} }
+// is never left mid-rebase for the user to discover. `-C dir` for the same
+// reason rebaseSteps uses it.
+func rebaseAbortArgv(dir string) []string { return []string{"-C", dir, "rebase", "--abort"} }
+
+// rebaseInProgress reports whether dir is actually sitting mid-rebase, by asking
+// git where it would keep the interactive/apply state and checking whether that
+// path exists.
+//
+// This is what keeps the cleanup honest. `git pull --rebase` refuses BEFORE it
+// starts anything when the work tree has unstaged changes — the normal state of a
+// live agent's worktree — so an unconditional `git rebase --abort` there exits
+// 128 with "No rebase in progress?" and the user gets told their worktree may be
+// half-rebased when nothing was touched at all. Fails closed the other way: a
+// probe we cannot run reads as "no rebase in progress", which only skips a
+// cleanup that had nothing to clean.
+func rebaseInProgress(gitBin, dir string) bool {
+	for _, name := range []string{"rebase-merge", "rebase-apply"} {
+		p, ok := gitProbe(gitBin, dir, "rev-parse", "--git-path", name)
+		if !ok || p == "" {
+			continue
+		}
+		// --git-path answers relative to git's own working directory, which is dir.
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(dir, p)
+		}
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// dirtyWorktree reports whether dir has uncommitted changes (ok=false when the
+// probe itself could not run, which callers treat as "refuse, run nothing").
+func dirtyWorktree(gitBin, dir string) (dirty, ok bool) {
+	out, ok := gitProbe(gitBin, dir, "status", "--porcelain")
+	return out != "", ok
+}
 
 // auditw is where the rebase audit line is written. A package var so tests can
 // capture it; serve leaves it on stderr next to the other "clodhopper serve:"
@@ -623,6 +728,21 @@ func runRebase(gitBin, dir, sessionID string, stepTimeout, totalTimeout time.Dur
 		return refuse("worktree is on " + cur + "; refusing to rebase and force-push it")
 	}
 
+	// Pre-flight the work tree's cleanliness. `git pull --rebase` refuses before
+	// starting when there are unstaged changes, which is the ordinary state of a
+	// live agent's worktree — the whole population this dashboard supervises — so
+	// without this the sequence would half-run and then report a cleanup scare.
+	// Refuse up front, accurately, having run nothing. A probe that could not run
+	// at all refuses too, matching every other guard here.
+	dirty, ok := dirtyWorktree(gitBin, dir)
+	if !ok {
+		return refuse("could not read the worktree's status (git status --porcelain failed); nothing was run")
+	}
+	if dirty {
+		return refuse("worktree has uncommitted changes; git pull --rebase would refuse to start. " +
+			"Commit or stash them first — nothing was run")
+	}
+
 	// Capture the lease BEFORE the fetch — that is the whole point. Pinning it
 	// afterwards would pin whatever the fetch just wrote, which is precisely the
 	// value a bare --force-with-lease already (uselessly) compares against.
@@ -634,10 +754,13 @@ func runRebase(gitBin, dir, sessionID string, stepTimeout, totalTimeout time.Dur
 	}
 
 	var out strings.Builder
-	// Injected now, per the codebase convention (handleAction passes the
-	// request's timestamp) — not time.Now(), so the budget is testable.
-	deadline := now.Add(totalTimeout)
-	for _, st := range rebaseSteps(base, cur, lease) {
+	// The budget is ELAPSED time, so it is measured against the wall clock, not
+	// against the injected now (which is the request timestamp and exists purely
+	// for the audit line). Mixing the two would make a caller that follows this
+	// repo's usual "fixed test date" convention see the budget as already spent
+	// before the first step.
+	deadline := time.Now().Add(totalTimeout)
+	for _, st := range rebaseSteps(dir, base, cur, lease) {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			// Nothing to abort: this step never started, so the work tree is in
@@ -653,14 +776,28 @@ func runRebase(gitBin, dir, sessionID string, stepTimeout, totalTimeout time.Dur
 		if res.ExitCode == 0 && !res.TimedOut {
 			continue
 		}
-		outcome = "failed: git " + st.args[0]
+		outcome = "failed: git " + stepName(st.args)
 		if res.TimedOut {
-			outcome = "timeout: git " + st.args[0]
+			outcome = "timeout: git " + stepName(st.args)
 		}
 		return rebaseAbort(gitBin, dir, st, &out, res, &outcome)
 	}
 	outcome = "pushed"
 	return actionResult{ExitCode: 0, Output: out.String()}
+}
+
+// stepName is the git subcommand a step runs ("fetch", "pull", "push"), i.e. the
+// first argv element that is not part of the leading `-C dir`. Used for the
+// audit line, so it never reaches a command line itself.
+func stepName(args []string) string {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-C" {
+			i++
+			continue
+		}
+		return args[i]
+	}
+	return "git"
 }
 
 // rebaseAbort finishes a failed sequence: it runs `git rebase --abort` when the
@@ -669,9 +806,19 @@ func runRebase(gitBin, dir, sessionID string, stepTimeout, totalTimeout time.Dur
 // the work tree really is left mid-rebase, and saying otherwise would be a lie
 // the user only discovers later.
 func rebaseAbort(gitBin, dir string, st rebaseStep, out *strings.Builder, res actionResult, outcome *string) actionResult {
+	if st.abortOnFail && !rebaseInProgress(gitBin, dir) {
+		// The step that CAN leave a rebase half-applied failed without starting
+		// one — `git pull --rebase` refusing on a dirty tree is the common case.
+		// Aborting here would fail with "No rebase in progress?" and dispatch the
+		// operator to clean up a perfectly healthy worktree.
+		out.WriteString("\nno rebase was started (nothing to abort); the worktree is unchanged\n")
+		*outcome += "; no rebase started"
+		res.Output = out.String()
+		return res
+	}
 	if st.abortOnFail {
-		fmt.Fprintf(out, "$ git %s\n", strings.Join(rebaseAbortArgv(), " "))
-		abort := runAction(gitBin, dir, rebaseAbortArgv(), rebaseAbortTimeout)
+		fmt.Fprintf(out, "$ git %s\n", strings.Join(rebaseAbortArgv(dir), " "))
+		abort := runAction(gitBin, dir, rebaseAbortArgv(dir), rebaseAbortTimeout)
 		out.WriteString(abort.Output)
 		if abort.ExitCode == 0 && !abort.TimedOut {
 			out.WriteString("\nrebase stopped and was aborted — needs manual rebase\n")
@@ -729,8 +876,12 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	if !hostAllowed(r.Host, cfg.bindHost, cfg.allowedHosts) {
-		http.Error(w, "host not allowed", http.StatusForbidden)
+	// Attribution first, before the body is even read: the proxy refusal and the
+	// Host allowlist apply to EVERY action, including the exec-free "end". The
+	// peer-network half of the gate needs the action name, so it runs again below
+	// with execs set (execPeerAllowed is idempotent and cheap).
+	if ok, why := execPeerAllowed(r, cfg.bindHost, cfg.allowedHosts, false); !ok {
+		http.Error(w, why, http.StatusForbidden)
 		return
 	}
 	if !tokenOK(r.Header.Get("X-Clodhopper-Token"), cfg.token) {
@@ -751,30 +902,11 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 	// in the SHARED guard chain, before any lookup or subprocess, and keys off
 	// actionExecs rather than repeating a list of action names, so no action
 	// added below can quietly skip it. Distinct message from the Host-header 403
-	// above so the two are debuggable apart.
-	if actionExecs(action) && !remoteAllowed(r.RemoteAddr) {
-		http.Error(w, "peer not on an allowed network: actions that run commands "+
-			"are restricted to loopback and Tailscale peers", http.StatusForbidden)
+	// above so the two are debuggable apart. The proxy and Host halves already
+	// ran unconditionally above; this pass adds the peer-network check.
+	if ok, why := execPeerAllowed(r, cfg.bindHost, cfg.allowedHosts, actionExecs(action)); !ok {
+		http.Error(w, why, http.StatusForbidden)
 		return
-	}
-	// Behind a reverse proxy (nginx, Caddy, `tailscale serve`, a container port
-	// forward) every request arrives on a loopback socket, so remoteAllowed above
-	// says yes for ANY peer that can reach the proxy and the gate is void. We
-	// therefore refuse on the mere PRESENCE of a forwarding header.
-	//
-	// This is NOT trusting the header, and must never be "fixed" into parsing one
-	// — a parsed value is peer-supplied and would hand the bypass straight back.
-	// Presence is the safe direction: a direct peer never sends these, a proxy
-	// always does, so the failure mode is a refusal rather than an admission.
-	// It honestly does NOT catch `ssh -L` or a proxy that strips the header,
-	// which is why README/CLAUDE.md say never to run --enable-merge behind one.
-	if actionExecs(action) {
-		if h := forwardingHeader(r.Header); h != "" {
-			http.Error(w, "request arrived through a proxy ("+h+" present) and cannot be "+
-				"attributed to a peer; actions that run commands need a direct connection",
-				http.StatusForbidden)
-			return
-		}
 	}
 
 	// Session actions (monitor-ci / new-monitor) act on the agent's LIVE tmux

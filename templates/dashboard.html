@@ -801,14 +801,19 @@
       // drop their state and re-arm the buttons underneath a pending fetch.
       // Skip this poll's repaint entirely and let the next one (after the
       // action settles and clears the busy flag) pick up the fresh signature.
-      if (window.__ckActionBusy) return;
+      if (window.__ckActionBusy) return false;
       // An ARMED confirm is just as fragile, and __ckActionBusy does not cover
       // it: the counter only rises inside fire(), so between the first (arm)
       // click and the second (confirm) click a poll would innerHTML-replace
       // #content and silently discard both the armed state and the caveat the
-      // reader is part-way through. Shared with every destructive action
-      // (squash / close / end / rebase), which is the point.
-      if (document.querySelector('#content .actgroup.confirm')) return;
+      // reader is part-way through. Rather than skip the repaint (which would
+      // freeze EVERY other row's status and CI for as long as one row sits
+      // armed), the armed group is carried across the swap by its stable session
+      // id and re-armed afterwards — the same technique the open peeks and
+      // action panels use. Shared with every destructive action (squash / close
+      // / end / rebase), which is the point.
+      var armedState = null;
+      try { if (window.__ckArmSnapshot) armedState = window.__ckArmSnapshot(); } catch (e) {}
       var active = document.activeElement;
       var keep = active && active.closest ? active.closest('#content .copycwd') : null;
       var key = keep ? keep.getAttribute('data-session') : null;
@@ -934,10 +939,14 @@
       // __ckActionBusy and unchanged-signature skips for free.
       try { if (window.__ckActMsgs) window.__ckActMsgs.restore(); } catch (e) {}
       try { if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply(); } catch (e) {}
+      // Re-arm whatever was armed before the swap, after the panel carry-over
+      // (an armed group lives inside an actions panel that has just been
+      // re-opened) and before focus restore.
+      try { if (armedState && window.__ckArmRestore) window.__ckArmRestore(armedState); } catch (e) {}
       if (key) {
         var btns = document.querySelectorAll('#content .copycwd');
         for (var i = 0; i < btns.length; i++) {
-          if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return; }
+          if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return true; }
         }
       }
       // The capsule the reader was reading went out with the old subtree and
@@ -979,6 +988,7 @@
           host.focus({ preventScroll: true });
         }
       }
+      return true;
     }
 
     if (refresh > 0) {
@@ -993,10 +1003,14 @@
             // no-op this poll, and if we recorded the new signature anyway
             // the stale board would never get repainted once the action
             // clears (the next poll would see d.signature === sig and skip).
+            // swapContent can decline for its own reasons too, so sig only
+            // advances when it reports that it actually painted — same failure
+            // mode, one guard.
             if (d.signature !== sig && !window.__ckActionBusy) {
-              sig = d.signature;
-              swapContent(d.html);
-              tickIdle();
+              if (swapContent(d.html)) {
+                sig = d.signature;
+                tickIdle();
+              }
             }
           })
           .catch(function () {}); // best-effort, like everything else here
@@ -1792,13 +1806,20 @@
         : base;
     }
 
-    // ARM_IDLE_MS is how long an armed-but-unconfirmed group may sit before it
-    // disarms itself. The armed-confirm repaint guard in swapContent is
-    // board-wide — ONE armed row freezes every other row's status, idle counter
-    // and CI state — so an absent-minded arm must not be able to stall the board
-    // indefinitely. Long enough that a reader deciding whether to squash is never
-    // rushed, short enough that a forgotten one clears itself.
+    // ARM_IDLE_MS is how long an armed-but-unconfirmed group may sit IDLE before
+    // it disarms itself, so an absent-minded arm on a destructive action does not
+    // stay live indefinitely. It is an inactivity timer, not a deadline: any
+    // focus, key press or pointer press inside the armed group restarts it (see
+    // resetArmTimer), because a reader working through the rebase caveat — the
+    // longest of them — or checking the branch on GitHub first must never be
+    // timed out mid-decision (WCAG 2.2.1). The board keeps repainting while a row
+    // is armed (swapContent carries the armed group across the swap), so nothing
+    // else is waiting on this timer.
     var ARM_IDLE_MS = 60000;
+
+    // The message a group is left showing when its confirmation lapses, shared by
+    // the idle timer and the hidden-tab disarm so both read the same.
+    var ARM_EXPIRED_MSG = 'confirmation expired — press again';
 
     // Every armed group carries its own idle timer (two different rows can be
     // armed at once). clearArmTimer is called from unlock — the single teardown
@@ -1810,11 +1831,47 @@
       }
     }
 
+    // startArmTimer (re)starts a group's inactivity timer. Routing the timeout
+    // through __ckDisarm keeps its teardown — including the focus restore now
+    // living in unlock — identical to an explicit cancel; __ckDisarm skips a
+    // group whose action is already in flight.
+    function startArmTimer(group) {
+      clearArmTimer(group);
+      group.__ckArmTimer = setTimeout(function () {
+        window.__ckDisarm(group, ARM_EXPIRED_MSG);
+      }, ARM_IDLE_MS);
+    }
+
+    // resetArmTimer restarts the timer for the armed group an event happened in,
+    // so interacting with an armed confirm buys the reader more time. Only a
+    // group that HAS a running timer is touched, so this can never arm anything.
+    function resetArmTimer(ev) {
+      var t = ev.target;
+      var g = t && t.closest ? t.closest('.actgroup.confirm') : null;
+      if (g && g.__ckArmTimer) startArmTimer(g);
+    }
+    // Capture phase, so a handler that stops propagation cannot starve the reset.
+    document.addEventListener('keydown', resetArmTimer, true);
+    document.addEventListener('pointerdown', resetArmTimer, true);
+    document.addEventListener('focusin', resetArmTimer, true);
+
+
     // unlock restores the group to its idle, clickable shape (re-enabled
     // buttons, cancel button gone, labels restored) without touching .actmsg —
     // callers that want the message cleared too pass clearMsg.
+    //
+    // It also owns the FOCUS restore, because it is the single teardown path and
+    // the thing that drops focus: removing the injected ✕ (or any control the
+    // reader was sitting on) leaves keyboard focus on <body>, with no
+    // interaction of the user's own (WCAG 2.4.3). Every disarm — explicit
+    // cancel, the idle timer, the hidden-tab sweep — therefore gets identical
+    // handling. Only a focus that was INSIDE this group and did not survive the
+    // teardown is restored, so unlocking an untouched group never steals it.
     function unlock(group, clearMsg) {
       clearArmTimer(group);
+      var hadFocus = document.activeElement && group.contains(document.activeElement)
+        ? document.activeElement : null;
+      var armedBtn = group.querySelector('.pract.confirm');
       var btns = group.querySelectorAll('.pract');
       for (var i = 0; i < btns.length; i++) {
         btns[i].disabled = false;
@@ -1840,6 +1897,10 @@
         var msg = group.querySelector('.actmsg');
         if (msg) msg.textContent = '';
       }
+      if (hadFocus && (!hadFocus.isConnected || hadFocus.disabled) &&
+          armedBtn && armedBtn.isConnected && !armedBtn.disabled) {
+        armedBtn.focus();
+      }
     }
 
     function armConfirm(group, btn) {
@@ -1862,17 +1923,7 @@
         clearMsgNote(group);
         msg.textContent = caveatFor(group, action);
       }
-      clearArmTimer(group);
-      group.__ckArmTimer = setTimeout(function () {
-        // Route through the shared disarm path so the cancel-button teardown and
-        // focus handling stay identical to an explicit cancel; __ckDisarm skips a
-        // group whose action is already in flight.
-        window.__ckDisarm(group);
-        if (!group.classList.contains('confirm')) {
-          var expired = group.querySelector('.actmsg');
-          if (expired) expired.textContent = 'confirmation expired — press again';
-        }
-      }, ARM_IDLE_MS);
+      startArmTimer(group);
     }
 
     function fire(group, btn) {
@@ -2036,12 +2087,10 @@
       if (!group) return;
 
       if (el.classList.contains('actcancel')) {
-        // unlock() removes the cancel button (the focused element), which would
-        // drop keyboard focus to <body>. Return focus to the run button the
-        // reader was confirming, mirroring fire()'s restoreFocus.
-        var armedBtn = group.querySelector('.pract.confirm');
+        // unlock() removes the cancel button (the focused element) and puts focus
+        // back on the run button the reader was confirming — see unlock, which
+        // owns that restore for every disarm path.
         unlock(group, true);
-        if (armedBtn && armedBtn.isConnected && !armedBtn.disabled) armedBtn.focus();
         return;
       }
       // A no-confirm action (new-monitor: spawning a watcher destroys nothing)
@@ -2104,7 +2153,10 @@
     // survive out of sight — otherwise reopening the panel and clicking once would
     // fire a destructive merge/close with no fresh confirmation. Exposed so the
     // disclosure logic (in the peek IIFE) can disarm a row before hiding it.
-    window.__ckDisarm = function (root) {
+    // msg, when given, is left in each disarmed group's .actmsg so the reader can
+    // see WHY the confirmation went away (an expiry, a hidden tab) rather than
+    // finding a silently blank row.
+    window.__ckDisarm = function (root, msg) {
       if (!root || !root.querySelectorAll) return;
       var groups = [].slice.call(root.querySelectorAll('.actgroup.confirm'));
       // A caller can hand us the armed group ITSELF (the idle timer does), and
@@ -2119,14 +2171,94 @@
         // armed-but-unfired confirm, never one whose action is already running.
         if (groups[i].dataset.ckFiring === '1') continue;
         unlock(groups[i], true);
+        if (msg && !groups[i].classList.contains('confirm')) {
+          var slot = groups[i].querySelector('.actmsg');
+          if (slot) slot.textContent = msg;
+        }
       }
     };
 
-    // A tab the reader has left is a tab whose armed confirm is stale, and while
-    // it stays armed the board-wide repaint guard keeps every row frozen. Disarm
-    // the whole board the moment the page is hidden, through the same path.
+    // __ckArmSnapshot / __ckArmRestore let a poll repaint the board WITHOUT
+    // discarding an armed confirm, which is why the repaint is no longer skipped
+    // board-wide while one row sits armed (one reader deciding whether to squash
+    // used to freeze every other row's status and CI). The armed state is
+    // identified by the same stable key the peek and actions panels use — the
+    // session id — plus the armed button's data-action and the caveat text
+    // currently on screen; the re-arm goes back through armConfirm, so the
+    // rebuilt group is armed exactly as a click would have armed it (fresh idle
+    // timer included). A group whose action is already in flight is skipped: the
+    // repaint cannot reach it anyway (__ckActionBusy).
+    window.__ckArmSnapshot = function () {
+      var out = [];
+      var groups = document.querySelectorAll('#content .actgroup.confirm');
+      for (var i = 0; i < groups.length; i++) {
+        var g = groups[i];
+        if (g.dataset.ckFiring === '1') continue;
+        var armed = g.querySelector('.pract.confirm');
+        var msg = g.querySelector('.actmsg');
+        if (!armed) continue;
+        out.push({
+          session: g.getAttribute('data-session'),
+          action: armed.getAttribute('data-action'),
+          form: g.classList.contains('prform'),
+          admin: !!(g.querySelector('.practadmin') || {}).checked,
+          force: !!(g.querySelector('.practforce') || {}).checked,
+          msg: msg ? msg.textContent : ''
+        });
+      }
+      return out;
+    };
+
+    window.__ckArmRestore = function (list) {
+      for (var i = 0; i < list.length; i++) {
+        var st = list[i];
+        if (!st.session || !st.action) continue;
+        var groups = document.querySelectorAll('#content .actgroup');
+        for (var j = 0; j < groups.length; j++) {
+          var g = groups[j];
+          if (g.getAttribute('data-session') !== st.session) continue;
+          if (g.classList.contains('prform') !== st.form) continue;
+          if (st.form) {
+            // The fresh markup comes back in its default mode, so put the form
+            // back the way the reader left it before arming: the mode segment,
+            // then the modifiers, then syncForm re-derives the run button's
+            // data-action (squash + admin => squash-admin).
+            var mode = (st.action === 'squash-admin') ? 'squash' : st.action;
+            var segs = g.querySelectorAll('.prmode');
+            for (var m = 0; m < segs.length; m++) {
+              if (segs[m].getAttribute('data-mode') === mode) { selectMode(g, segs[m], false); break; }
+            }
+            var adm = g.querySelector('.practadmin');
+            if (adm) adm.checked = st.admin;
+            var frc = g.querySelector('.practforce');
+            if (frc) frc.checked = st.force;
+            syncForm(g);
+          }
+          var btn = null;
+          var cands = g.querySelectorAll('.pract');
+          for (var b = 0; b < cands.length; b++) {
+            if (cands[b].getAttribute('data-action') === st.action) { btn = cands[b]; break; }
+          }
+          if (!btn) break;
+          armConfirm(g, btn);
+          // armConfirm writes a freshly derived caveat; keep whatever the reader
+          // was actually part-way through reading when the poll landed.
+          if (st.msg) {
+            var slot = g.querySelector('.actmsg');
+            if (slot) slot.textContent = st.msg;
+          }
+          break;
+        }
+      }
+    };
+
+    // A tab the reader has left is a tab whose armed confirm is stale: coming
+    // back to a still-armed destructive action and pressing once would fire it.
+    // Disarm the whole board the moment the page is hidden, through the same
+    // path, leaving the same "expired" message the idle timer leaves so the
+    // returning reader is told what happened.
     document.addEventListener('visibilitychange', function () {
-      if (document.hidden) window.__ckDisarm(document);
+      if (document.hidden) window.__ckDisarm(document, ARM_EXPIRED_MSG);
     });
   })();
   {{ end }}
@@ -2255,7 +2387,7 @@
             <div class="actcol rowcol" role="group" aria-label="row actions">
               <span class="acteyebrow">row</span>
               <span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }}">
-                <button type="button" class="pract" data-action="rebase" aria-label="rebase {{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }} onto the default branch and force-push" title="git pull --rebase onto the default branch, then git push --force-with-lease">rebase</button>
+                <button type="button" class="pract" data-action="rebase" aria-label="rebase{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} onto the default branch and force-push" title="git pull --rebase onto the default branch, then git push --force-with-lease">rebase</button>
                 <button type="button" class="pract" data-action="end" aria-label="end {{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ else }}(unknown){{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button>
                 <span class="actmsg" aria-live="polite"></span>
               </span>

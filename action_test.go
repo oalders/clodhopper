@@ -808,7 +808,7 @@ func TestHandleActionEndConcurrentIsConflict(t *testing.T) {
 	if !cfg.inflight.acquire(sidKey("live-1")) {
 		t.Fatal("acquire failed")
 	}
-	defer cfg.inflight.release("live-1")
+	defer cfg.inflight.release(sidKey("live-1"))
 
 	w := httptest.NewRecorder()
 	handleAction(w, actionReq("live-1", "end", false, "secret", "127.0.0.1"), db, cfg, now)
@@ -885,37 +885,64 @@ func TestHandleActionEndGenericErrorHidesDriverDetail(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestRebaseSteps(t *testing.T) {
-	got := rebaseSteps("main", "feature", "deadbeefcafe123")
+	got := rebaseSteps("/w/t", "main", "feature", "deadbeefcafe123")
 	want := []rebaseStep{
-		{args: []string{"fetch", "origin", "main"}},
-		{args: []string{"pull", "--rebase", "origin", "main"}, abortOnFail: true},
-		{args: []string{"push", "--force-with-lease=feature:deadbeefcafe123", "origin", "feature"}},
+		{args: []string{"-C", "/w/t", "fetch", "origin", "main"}},
+		{args: []string{"-C", "/w/t", "pull", "--rebase", "origin", "main"}, abortOnFail: true},
+		{args: []string{"-C", "/w/t", "push", "--force-with-lease=feature:deadbeefcafe123", "origin", "feature"}},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("rebaseSteps = %v, want %v", got, want)
 	}
+	// Every step names the worktree explicitly, so an inherited GIT_DIR /
+	// GIT_WORK_TREE cannot redirect the sequence (the force-push included) at a
+	// repo other than the roster row's.
+	for i, st := range got {
+		if len(st.args) < 2 || st.args[0] != "-C" || st.args[1] != "/w/t" {
+			t.Errorf("step %d (%v) does not pin the worktree with -C", i, st.args)
+		}
+	}
 	// Only the rebase itself can leave a half-applied state behind, so it is the
 	// only step that asks for cleanup. Keyed off the step, not its index.
 	for i, st := range got {
-		if wantAbort := st.args[0] == "pull"; st.abortOnFail != wantAbort {
+		if wantAbort := stepName(st.args) == "pull"; st.abortOnFail != wantAbort {
 			t.Errorf("step %d (%v): abortOnFail = %v, want %v", i, st.args, st.abortOnFail, wantAbort)
 		}
 	}
 	// No remote-tracking ref (never pushed): a plain push creates the branch, and
 	// asking for a force we cannot lease would only fail.
-	noLease := rebaseSteps("main", "feature", "")
-	if !reflect.DeepEqual(noLease[2].args, []string{"push", "origin", "feature"}) {
+	noLease := rebaseSteps("/w/t", "main", "feature", "")
+	if !reflect.DeepEqual(noLease[2].args, []string{"-C", "/w/t", "push", "origin", "feature"}) {
 		t.Fatalf("no-lease push = %v", noLease[2].args)
 	}
 	// The base is the only thing that varies in the first two argvs.
-	if !reflect.DeepEqual(rebaseSteps("release/2.x", "feat", "abc1234")[:2], []rebaseStep{
-		{args: []string{"fetch", "origin", "release/2.x"}},
-		{args: []string{"pull", "--rebase", "origin", "release/2.x"}, abortOnFail: true},
+	if !reflect.DeepEqual(rebaseSteps("/w/t", "release/2.x", "feat", "abc1234")[:2], []rebaseStep{
+		{args: []string{"-C", "/w/t", "fetch", "origin", "release/2.x"}},
+		{args: []string{"-C", "/w/t", "pull", "--rebase", "origin", "release/2.x"}, abortOnFail: true},
 	}) {
-		t.Fatalf("release/2.x = %v", rebaseSteps("release/2.x", "feat", "abc1234"))
+		t.Fatalf("release/2.x = %v", rebaseSteps("/w/t", "release/2.x", "feat", "abc1234"))
 	}
-	if !reflect.DeepEqual(rebaseAbortArgv(), []string{"rebase", "--abort"}) {
-		t.Fatalf("rebaseAbortArgv() = %v", rebaseAbortArgv())
+	if !reflect.DeepEqual(rebaseAbortArgv("/w/t"), []string{"-C", "/w/t", "rebase", "--abort"}) {
+		t.Fatalf("rebaseAbortArgv() = %v", rebaseAbortArgv("/w/t"))
+	}
+}
+
+// stepName reads the git subcommand past the leading -C, so the audit line names
+// the step rather than the flag.
+func TestStepName(t *testing.T) {
+	cases := []struct {
+		in   []string
+		want string
+	}{
+		{[]string{"-C", "/w/t", "fetch", "origin", "main"}, "fetch"},
+		{[]string{"pull", "--rebase"}, "pull"},
+		{[]string{"-C", "/w/t"}, "git"},
+		{nil, "git"},
+	}
+	for _, c := range cases {
+		if got := stepName(c.in); got != c.want {
+			t.Errorf("stepName(%v) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }
 
@@ -983,12 +1010,26 @@ type gitStubOpts struct {
 	failStep   string   // a first argument ("fetch"/"pull"/"push") that exits non-zero
 	abortFail  bool     // `rebase --abort` itself fails
 	sleep      string   // seconds each fetch/pull/push sleeps, as a shell literal
+	dirty      bool     // `status --porcelain` reports uncommitted changes
+	statusFail bool     // `status --porcelain` cannot run at all
+	// midRebase makes `rev-parse --git-path rebase-merge` name a directory that
+	// EXISTS, i.e. the worktree really is mid-rebase and an abort is warranted.
+	// Without it the path does not exist and rebaseInProgress reads false, which
+	// is the ordinary "pull refused before starting" case.
+	midRebase bool
 }
 
 // gitStub writes a fake `git` that appends each invocation's argv (minus the
 // leading -C DIR) to logPath and answers every probe runRebase makes.
 func gitStub(t *testing.T, logPath string, o gitStubOpts) string {
 	t.Helper()
+	midRebaseDir := ""
+	if o.midRebase {
+		midRebaseDir = filepath.Join(t.TempDir(), "rebase-merge")
+		if err := os.MkdirAll(midRebaseDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	return writeStub(t, "git", `
 log=`+strconv.Quote(logPath)+`
 if [ "$1" = "-C" ]; then shift 2; fi
@@ -1000,11 +1041,22 @@ lease=`+strconv.Quote(o.lease)+`
 fail=`+strconv.Quote(o.failStep)+`
 abortfail=`+strconv.Quote(map[bool]string{true: "1"}[o.abortFail])+`
 naptime=`+strconv.Quote(o.sleep)+`
+dirty=`+strconv.Quote(map[bool]string{true: " M a.txt"}[o.dirty])+`
+statusfail=`+strconv.Quote(map[bool]string{true: "1"}[o.statusFail])+`
+midrebase=`+strconv.Quote(midRebaseDir)+`
 case "$1" in
+  status)
+    [ -z "$statusfail" ] || exit 1
+    [ -z "$dirty" ] || echo "$dirty"
+    exit 0 ;;
   symbolic-ref)
     if [ "$4" = "HEAD" ]; then [ -n "$head" ] || exit 1; echo "$head"; exit 0; fi
     [ -n "$ohead" ] || exit 1; echo "$ohead"; exit 0 ;;
   rev-parse)
+    if [ "$2" = "--git-path" ]; then
+      if [ -n "$midrebase" ] && [ "$3" = "rebase-merge" ]; then echo "$midrebase"; exit 0; fi
+      echo ".git/$3"; exit 0
+    fi
     if [ -n "$lease" ] && [ "$4" = "refs/remotes/origin/$head" ]; then echo "$lease"; exit 0; fi
     case "$refs" in *" $4 "*) echo 1111111111111111111111111111111111111111; exit 0 ;; esac
     exit 1 ;;
@@ -1074,6 +1126,7 @@ func TestHandleActionRebaseSuccess(t *testing.T) {
 	want := []string{
 		"symbolic-ref --quiet --short refs/remotes/origin/HEAD",
 		"symbolic-ref --quiet --short HEAD",
+		"status --porcelain",
 		"rev-parse --verify --quiet refs/remotes/origin/feature",
 		"fetch origin main",
 		"pull --rebase origin main",
@@ -1261,6 +1314,7 @@ func TestHandleActionRebaseConflictAbortsAndDoesNotPush(t *testing.T) {
 	db := openTestDB(t)
 	_, logPath, cfg := rebaseFixture(t, db, "reb-5", gitStubOpts{
 		head: "feature", originHead: "origin/main", lease: "abc1234", failStep: "pull",
+		midRebase: true,
 	})
 
 	w := httptest.NewRecorder()
@@ -1275,9 +1329,11 @@ func TestHandleActionRebaseConflictAbortsAndDoesNotPush(t *testing.T) {
 	want := []string{
 		"symbolic-ref --quiet --short refs/remotes/origin/HEAD",
 		"symbolic-ref --quiet --short HEAD",
+		"status --porcelain",
 		"rev-parse --verify --quiet refs/remotes/origin/feature",
 		"fetch origin main",
 		"pull --rebase origin main",
+		"rev-parse --git-path rebase-merge",
 		"rebase --abort",
 	}
 	if !reflect.DeepEqual(gitLog(t, logPath), want) {
@@ -1294,6 +1350,7 @@ func TestHandleActionRebaseFailedAbortReportedHonestly(t *testing.T) {
 	db := openTestDB(t)
 	_, _, cfg := rebaseFixture(t, db, "reb-abfail", gitStubOpts{
 		head: "feature", originHead: "origin/main", failStep: "pull", abortFail: true,
+		midRebase: true,
 	})
 	w := httptest.NewRecorder()
 	handleAction(w, actionReq("reb-abfail", "rebase", false, "secret", "127.0.0.1"), db, cfg, time.Now())
@@ -1429,7 +1486,7 @@ func TestHandleActionConcurrentSameCwd409(t *testing.T) {
 		t.Fatalf("git ran in a worktree another action holds: %v", gitLog(t, logPath))
 	}
 	// The session lock taken on the way to the cwd check must not leak.
-	cfg.inflight.release("cwd:" + dir)
+	cfg.inflight.release(cwdKey(dir))
 	if !cfg.inflight.acquire(sidKey("sess-b")) {
 		t.Fatal("sess-b's session lock leaked after the 409")
 	}
@@ -1939,22 +1996,27 @@ func TestHandleActionOversizedBodyRejected(t *testing.T) {
 	}
 }
 
-// The sequence budget is measured from the INJECTED now (the convention every
-// other time-dependent function here follows), not from the wall clock at the
-// moment runRebase happens to be called.
-func TestRunRebaseBudgetUsesInjectedNow(t *testing.T) {
+// The sequence budget measures ELAPSED time, so it comes off the wall clock —
+// `now` is the request timestamp for the audit line only. A caller passing this
+// repo's usual fixed test date must not have its budget declared spent before
+// the first step runs.
+func TestRunRebaseBudgetIgnoresInjectedNow(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "git.log")
 	git := gitStub(t, logPath, gitStubOpts{head: "feature", originHead: "origin/main"})
-	// An hour-old now with a 30s budget: already exhausted, so no step starts.
+	// An hour-old now with a real budget: the sequence must still run.
 	res := runRebase(git, t.TempDir(), "s1", 30*time.Second, 30*time.Second,
-		time.Now().Add(-time.Hour))
-	if !res.TimedOut || !strings.Contains(res.Output, "overall budget") {
-		t.Fatalf("res = %+v, want a spent-budget timeout", res)
+		time.Date(2026, 8, 21, 9, 30, 0, 0, time.UTC))
+	if res.ExitCode != 0 || res.TimedOut {
+		t.Fatalf("res = %+v, want a completed sequence", res)
 	}
+	var ran []string
 	for _, l := range gitLog(t, logPath) {
 		if strings.HasPrefix(l, "fetch") || strings.HasPrefix(l, "pull") || strings.HasPrefix(l, "push") {
-			t.Fatalf("ran %q with a budget that the injected now had already spent", l)
+			ran = append(ran, l)
 		}
+	}
+	if len(ran) != 3 {
+		t.Fatalf("ran %v, want all three steps despite a stale injected now", ran)
 	}
 }
 
@@ -1967,5 +2029,291 @@ func TestInflightKeyNamespaces(t *testing.T) {
 	}
 	if !s.acquire(sidKey("cwd:/w/one")) {
 		t.Fatal("a session id shaped like a worktree key contended with the worktree lock")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// review round 4
+// ---------------------------------------------------------------------------
+
+// A live agent's worktree usually has uncommitted changes, and `git pull
+// --rebase` refuses BEFORE it starts anything in that state. Refuse up front
+// with the real reason, having run nothing at all — never the mid-rebase scare.
+func TestHandleActionRebaseRefusesDirtyWorktree(t *testing.T) {
+	db := openTestDB(t)
+	_, logPath, cfg := rebaseFixture(t, db, "reb-dirty", gitStubOpts{
+		head: "feature", originHead: "origin/main", dirty: true,
+	})
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("reb-dirty", "rebase", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	got := decodeActionJSON(t, w)
+	if got.OK || !strings.Contains(got.Output, "uncommitted changes") {
+		t.Fatalf("resp = %+v, want a dirty-worktree refusal", got)
+	}
+	if strings.Contains(got.Output, "mid-rebase") {
+		t.Fatalf("a dirty worktree was reported as a mid-rebase mess: %q", got.Output)
+	}
+	for _, l := range gitLog(t, logPath) {
+		if strings.HasPrefix(l, "fetch") || strings.HasPrefix(l, "pull") ||
+			strings.HasPrefix(l, "push") || strings.HasPrefix(l, "rebase") {
+			t.Fatalf("ran %q against a dirty worktree", l)
+		}
+	}
+}
+
+// A status probe that cannot run at all is a refusal too: every other guard here
+// fails closed, and running a force-push on an unknown worktree state is exactly
+// what they exist to stop.
+func TestHandleActionRebaseRefusesUnreadableStatus(t *testing.T) {
+	db := openTestDB(t)
+	_, logPath, cfg := rebaseFixture(t, db, "reb-nostatus", gitStubOpts{
+		head: "feature", originHead: "origin/main", statusFail: true,
+	})
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("reb-nostatus", "rebase", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	got := decodeActionJSON(t, w)
+	if got.OK || !strings.Contains(got.Output, "could not read the worktree's status") {
+		t.Fatalf("resp = %+v", got)
+	}
+	for _, l := range gitLog(t, logPath) {
+		if strings.HasPrefix(l, "fetch") || strings.HasPrefix(l, "pull") || strings.HasPrefix(l, "push") {
+			t.Fatalf("ran %q with an unreadable worktree status", l)
+		}
+	}
+}
+
+// A pull that fails WITHOUT starting a rebase (git says no rebase is in
+// progress) must not run `git rebase --abort` and must not tell the operator to
+// go clean up a healthy worktree.
+func TestHandleActionRebasePullFailureWithoutRebaseInProgress(t *testing.T) {
+	db := openTestDB(t)
+	_, logPath, cfg := rebaseFixture(t, db, "reb-nostart", gitStubOpts{
+		head: "feature", originHead: "origin/main", failStep: "pull", // midRebase: false
+	})
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("reb-nostart", "rebase", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	got := decodeActionJSON(t, w)
+	if got.OK {
+		t.Fatalf("resp = %+v, want a failure", got)
+	}
+	if strings.Contains(got.Output, "mid-rebase") || strings.Contains(got.Output, "manual cleanup") {
+		t.Fatalf("a pull that never started a rebase raised the cleanup alarm: %q", got.Output)
+	}
+	if !strings.Contains(got.Output, "no rebase was started") {
+		t.Fatalf("output does not say the worktree is unchanged: %q", got.Output)
+	}
+	for _, l := range gitLog(t, logPath) {
+		if strings.HasPrefix(l, "rebase --abort") {
+			t.Fatal("aborted a rebase that was never started")
+		}
+	}
+}
+
+// The audit line is the only permanent record of the one irreversible thing this
+// tool does, so its failure outcomes are pinned too — including the genuine
+// mid-rebase case (a real rebase in progress whose abort itself failed).
+func TestRunRebaseAuditsFailureOutcomes(t *testing.T) {
+	var buf bytes.Buffer
+	old := auditw
+	auditw = &buf
+	t.Cleanup(func() { auditw = old })
+	now := time.Date(2026, 8, 21, 9, 30, 0, 0, time.UTC)
+
+	t.Run("abort failed on a genuine mid-rebase", func(t *testing.T) {
+		buf.Reset()
+		logPath := filepath.Join(t.TempDir(), "git.log")
+		git := gitStub(t, logPath, gitStubOpts{head: "feature", originHead: "origin/main",
+			failStep: "pull", abortFail: true, midRebase: true})
+		runRebase(git, t.TempDir(), "sess-mid", 10*time.Second, 30*time.Second, now)
+		if !strings.Contains(buf.String(), `outcome="failed: git pull; abort FAILED, worktree may be mid-rebase"`) {
+			t.Fatalf("audit = %q", buf.String())
+		}
+	})
+	t.Run("clean abort", func(t *testing.T) {
+		buf.Reset()
+		logPath := filepath.Join(t.TempDir(), "git.log")
+		git := gitStub(t, logPath, gitStubOpts{head: "feature", originHead: "origin/main",
+			failStep: "pull", midRebase: true})
+		runRebase(git, t.TempDir(), "sess-ab", 10*time.Second, 30*time.Second, now)
+		if !strings.Contains(buf.String(), `outcome="failed: git pull; aborted"`) {
+			t.Fatalf("audit = %q", buf.String())
+		}
+	})
+	t.Run("pull failed without starting a rebase", func(t *testing.T) {
+		buf.Reset()
+		logPath := filepath.Join(t.TempDir(), "git.log")
+		git := gitStub(t, logPath, gitStubOpts{head: "feature", originHead: "origin/main", failStep: "pull"})
+		runRebase(git, t.TempDir(), "sess-nostart", 10*time.Second, 30*time.Second, now)
+		if !strings.Contains(buf.String(), `outcome="failed: git pull; no rebase started"`) {
+			t.Fatalf("audit = %q", buf.String())
+		}
+	})
+	t.Run("failed fetch names the step", func(t *testing.T) {
+		buf.Reset()
+		logPath := filepath.Join(t.TempDir(), "git.log")
+		git := gitStub(t, logPath, gitStubOpts{head: "feature", originHead: "origin/main", failStep: "fetch"})
+		runRebase(git, t.TempDir(), "sess-f", 10*time.Second, 30*time.Second, now)
+		if !strings.Contains(buf.String(), `outcome="failed: git fetch"`) {
+			t.Fatalf("audit = %q", buf.String())
+		}
+	})
+	t.Run("timed out step names the step", func(t *testing.T) {
+		buf.Reset()
+		logPath := filepath.Join(t.TempDir(), "git.log")
+		git := gitStub(t, logPath, gitStubOpts{head: "feature", originHead: "origin/main", sleep: "5"})
+		runRebase(git, t.TempDir(), "sess-t", 150*time.Millisecond, 30*time.Second, now)
+		if !strings.Contains(buf.String(), `outcome="timeout: git fetch"`) {
+			t.Fatalf("audit = %q", buf.String())
+		}
+	})
+}
+
+// The cur == base guard, exercised where the hardcoded main/master backstop
+// CANNOT cover it: a repo whose default branch is `develop`. This is the
+// force-push-the-trunk accident the guard exists for.
+func TestHandleActionRebaseRefusesOnNonConventionalDefaultBranch(t *testing.T) {
+	db := openTestDB(t)
+	_, logPath, cfg := rebaseFixture(t, db, "reb-dev", gitStubOpts{
+		head: "develop", originHead: "origin/develop",
+	})
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("reb-dev", "rebase", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	got := decodeActionJSON(t, w)
+	if got.OK {
+		t.Fatalf("resp = %+v, want a refusal", got)
+	}
+	if !strings.Contains(got.Output, "worktree is on the default branch (develop)") {
+		t.Fatalf("output does not name the default branch: %q", got.Output)
+	}
+	for _, l := range gitLog(t, logPath) {
+		if strings.HasPrefix(l, "fetch") || strings.HasPrefix(l, "pull") || strings.HasPrefix(l, "push") {
+			t.Fatalf("ran %q while sitting on the default branch", l)
+		}
+	}
+}
+
+// The CHECKED-OUT branch reaches three argv positions (push origin <cur>,
+// --force-with-lease=<cur>:<sha>), so a hostile ref name must be refused by
+// runRebase itself, not merely by validBranchName's unit tests.
+func TestHandleActionRebaseRefusesHostileCheckedOutBranch(t *testing.T) {
+	db := openTestDB(t)
+	_, logPath, cfg := rebaseFixture(t, db, "reb-evil", gitStubOpts{
+		head: "--upload-pack=evil", originHead: "origin/main",
+	})
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("reb-evil", "rebase", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	got := decodeActionJSON(t, w)
+	if got.OK || !strings.Contains(got.Output, "not a name we will put on a command line") {
+		t.Fatalf("resp = %+v", got)
+	}
+	if !strings.Contains(got.Output, "checked-out branch") {
+		t.Fatalf("output blames the wrong branch: %q", got.Output)
+	}
+	for _, l := range gitLog(t, logPath) {
+		if !strings.HasPrefix(l, "symbolic-ref") {
+			t.Fatalf("ran %q with a hostile checked-out branch name", l)
+		}
+	}
+}
+
+// Two spellings of one worktree must take the SAME lock, or two git sequences
+// run concurrently in the same directory.
+func TestCwdKeyNormalisesPath(t *testing.T) {
+	dir := t.TempDir()
+	if cwdKey(dir) != cwdKey(dir+"/") {
+		t.Errorf("trailing slash took a different lock: %q vs %q", cwdKey(dir), cwdKey(dir+"/"))
+	}
+	if cwdKey(dir) != cwdKey(dir+"/./") {
+		t.Errorf("uncleaned path took a different lock: %q", cwdKey(dir+"/./"))
+	}
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(dir, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if cwdKey(link) != cwdKey(dir) {
+		t.Errorf("symlinked spelling took a different lock: %q vs %q", cwdKey(link), cwdKey(dir))
+	}
+	// A path that does not exist still gets a (cleaned) key rather than an empty one.
+	if got := cwdKey("/no/such/dir/"); got != "cwd:/no/such/dir" {
+		t.Errorf("cwdKey(missing) = %q", got)
+	}
+}
+
+// The forwarding-header refusal is about ATTRIBUTION, not about exec: behind a
+// proxy we cannot say who the peer is, so even the exec-free "end" — the one
+// write that used to slip through — is refused, and no row is dismissed.
+func TestHandleActionEndRefusedThroughProxy(t *testing.T) {
+	for _, hdr := range []string{"X-Forwarded-For", "X-Real-IP", "Forwarded", "X-Forwarded-Host"} {
+		t.Run(hdr, func(t *testing.T) {
+			db, cfg, _ := gatedCfg(t)
+			now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+			r := actionReq("live-1", "end", false, "secret", "127.0.0.1")
+			r.Header.Set(hdr, "203.0.113.9")
+			w := httptest.NewRecorder()
+			handleAction(w, r, db, cfg, now)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("code = %d, want 403", w.Code)
+			}
+			if !strings.Contains(w.Body.String(), "through a proxy") {
+				t.Fatalf("body = %q, want the proxy reason", w.Body.String())
+			}
+			if et := queryLatestEventType(t, db, "live-1"); et == "SessionEnd" {
+				t.Fatal("a proxied peer dismissed a roster row")
+			}
+		})
+	}
+}
+
+// A rebound Host is refused for every action, including the exec-free one.
+func TestHandleActionEndRefusedOnBadHost(t *testing.T) {
+	db, cfg, _ := gatedCfg(t)
+	now := time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC)
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("live-1", "end", false, "secret", "evil.example.com"), db, cfg, now)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("code = %d, want 403", w.Code)
+	}
+	if et := queryLatestEventType(t, db, "live-1"); et == "SessionEnd" {
+		t.Fatal("a rebound Host dismissed a roster row")
+	}
+}
+
+// execPeerAllowed is the one gate both endpoints run, so its three checks are
+// pinned here directly.
+func TestExecPeerAllowed(t *testing.T) {
+	req := func(remoteAddr, host string, headers map[string]string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/api/pane?pane=%253", nil)
+		r.RemoteAddr = remoteAddr
+		r.Host = host
+		for k, v := range headers {
+			r.Header.Set(k, v)
+		}
+		return r
+	}
+	if ok, why := execPeerAllowed(req("127.0.0.1:1", "127.0.0.1", nil), "127.0.0.1", nil, true); !ok {
+		t.Fatalf("loopback + clean headers + allowed host refused: %s", why)
+	}
+	if ok, _ := execPeerAllowed(req("127.0.0.1:1", "evil.example.com", nil), "127.0.0.1", nil, true); ok {
+		t.Error("a rebound Host was allowed")
+	}
+	if ok, _ := execPeerAllowed(req("192.168.1.5:1", "127.0.0.1", nil), "127.0.0.1", nil, true); ok {
+		t.Error("a LAN peer was allowed")
+	}
+	// The peer-network half is the only part execs gates; a LAN peer is still
+	// allowed for an exec-free action.
+	if ok, why := execPeerAllowed(req("192.168.1.5:1", "127.0.0.1", nil), "127.0.0.1", nil, false); !ok {
+		t.Errorf("a LAN peer was refused for an exec-free request: %s", why)
+	}
+	// The proxy refusal applies whether or not the request execs.
+	for _, execs := range []bool{true, false} {
+		h := map[string]string{"X-Real-IP": "203.0.113.9"}
+		if ok, _ := execPeerAllowed(req("127.0.0.1:1", "127.0.0.1", h), "127.0.0.1", nil, execs); ok {
+			t.Errorf("execs=%v: a proxied request was allowed", execs)
+		}
+	}
+	// An operator-declared extra host (a magicDNS name) is accepted.
+	if ok, why := execPeerAllowed(req("100.64.0.2:1", "board.tailnet.ts.net", nil),
+		"100.64.0.2", []string{"board.tailnet.ts.net"}, true); !ok {
+		t.Errorf("declared host refused: %s", why)
 	}
 }

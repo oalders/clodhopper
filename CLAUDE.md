@@ -47,13 +47,17 @@ Three subcommands, dispatched in `main.go`:
   no subprocess at all and just calls `endSessions` to drop the row. Every action
   that DOES exec is additionally gated on the peer's address (`remoteAllowed`):
   loopback or Tailscale only, whatever `--host` binds to, with no override — and
-  handleAction refuses outright when a forwarding header (`X-Forwarded-For`,
-  `X-Real-IP`, `Forwarded`, `X-Forwarded-Host`) is *present*, because behind a
-  proxy every peer looks like loopback and the gate would be void. **Never run
+  the request is refused outright when a forwarding header (`X-Forwarded-For`,
+  `X-Real-IP`, `Forwarded`, `X-Forwarded-Host`) is *present* — for EVERY action,
+  including the exec-free `end`, because behind a proxy every peer looks like
+  loopback and no peer can be attributed at all. All three checks (proxy
+  refusal, Host allowlist, peer network) live in ONE helper, `execPeerAllowed`,
+  shared by handleAction and handlePane so they cannot drift. **Never run
   `serve --enable-merge` behind a reverse proxy, `tailscale serve`, or a port
   forward**: the peer gate assumes a direct socket, and `ssh -L` or a
-  header-stripping proxy defeats it silently. `/api/pane` (`--pane-peek`) is
-  peer-gated the same way — it execs `tmux` and streams live transcript text.
+  header-stripping proxy defeats it silently. `/api/pane` (`--pane-peek`) runs the SAME gate — it execs `tmux` and
+  streams live transcript text, and being a GET it carries no CSRF token, so the
+  Host allowlist is what stops a DNS-rebinding page from walking pane ids.
   The CSRF token is emitted into the page only for a peer that passes the gate,
   so a peer that fails it gets a genuinely read-only board (no `end` either).
   `ingest` never gains write-to-repo

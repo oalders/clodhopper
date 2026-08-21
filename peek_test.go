@@ -39,12 +39,22 @@ func TestPaneCache_TTL(t *testing.T) {
 	}
 }
 
+// paneReq builds a /api/pane GET from a given peer with a given Host header.
+// Both matter: /api/pane runs the same gate the exec-backed actions run, so a
+// request needs an allowed peer AND an allowed Host (httptest's defaults are
+// neither).
+func paneReq(remoteAddr, pane, host string) *http.Request {
+	r := httptest.NewRequest(http.MethodGet, "/api/pane?pane="+pane, nil)
+	r.RemoteAddr = remoteAddr
+	r.Host = host
+	return r
+}
+
 // handlePane refuses everything unless enabled.
 func TestHandlePane_DisabledForbids(t *testing.T) {
-	peek := &peekConfig{enabled: false, lines: 40, cache: newPaneCache()}
+	peek := &peekConfig{enabled: false, lines: 40, cache: newPaneCache(), bindHost: "127.0.0.1"}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/pane?pane=%253", nil)
-	handlePane(rec, req, peek, time.Unix(0, 0))
+	handlePane(rec, paneReq("127.0.0.1:5555", "%253", "127.0.0.1"), peek, time.Unix(0, 0))
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("disabled peek = %d, want 403", rec.Code)
 	}
@@ -52,12 +62,11 @@ func TestHandlePane_DisabledForbids(t *testing.T) {
 
 // A malformed pane id is rejected before any tmux call.
 func TestHandlePane_RejectsBadPane(t *testing.T) {
-	peek := &peekConfig{enabled: true, lines: 40, cache: newPaneCache()}
+	peek := &peekConfig{enabled: true, lines: 40, cache: newPaneCache(), bindHost: "127.0.0.1"}
 	for _, bad := range []string{"", "3", "-S", "%", "%3;rm", "abc"} {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, "/api/pane?pane="+bad, nil)
-		req.RemoteAddr = "127.0.0.1:5555" // past the peer gate; the pane id is what's under test
-		handlePane(rec, req, peek, time.Unix(0, 0))
+		// Past the peer gate; the pane id is what's under test.
+		handlePane(rec, paneReq("127.0.0.1:5555", bad, "127.0.0.1"), peek, time.Unix(0, 0))
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("pane=%q = %d, want 404", bad, rec.Code)
 		}
@@ -66,14 +75,13 @@ func TestHandlePane_RejectsBadPane(t *testing.T) {
 
 // A well-formed pane that is not in the live set 404s without capturing.
 func TestHandlePane_UnknownPaneNotFound(t *testing.T) {
-	peek := &peekConfig{enabled: true, lines: 40, cache: newPaneCache()}
+	peek := &peekConfig{enabled: true, lines: 40, cache: newPaneCache(), bindHost: "127.0.0.1"}
 	// Prime an empty live set that will not expire during the test.
 	peek.cache.set = map[string]bool{}
 	peek.cache.at = time.Unix(1_700_000_000, 0)
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/pane?pane=%2599", nil) // %99 encoded
-	req.RemoteAddr = "127.0.0.1:5555"                                       // past the peer gate
-	handlePane(rec, req, peek, time.Unix(1_700_000_000, 0))
+	// %99 encoded, from a peer that passes the gate.
+	handlePane(rec, paneReq("127.0.0.1:5555", "%2599", "127.0.0.1"), peek, time.Unix(1_700_000_000, 0))
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("unknown live pane = %d, want 404", rec.Code)
 	}
@@ -97,7 +105,7 @@ func TestHandlePane_GatedOnPeer(t *testing.T) {
 	t.Setenv("PATH", dir)
 
 	newPeek := func() *peekConfig {
-		p := &peekConfig{enabled: true, lines: 40, cache: newPaneCache()}
+		p := &peekConfig{enabled: true, lines: 40, cache: newPaneCache(), bindHost: "127.0.0.1"}
 		p.cache.set = map[string]bool{"%3": true}
 		p.cache.at = time.Unix(1_700_000_000, 0)
 		return p
@@ -105,9 +113,7 @@ func TestHandlePane_GatedOnPeer(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/pane?pane=%253", nil)
-	req.RemoteAddr = "192.168.1.5:1234"
-	handlePane(rec, req, newPeek(), now)
+	handlePane(rec, paneReq("192.168.1.5:1234", "%253", "127.0.0.1"), newPeek(), now)
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("LAN peer = %d, want 403", rec.Code)
 	}
@@ -119,9 +125,7 @@ func TestHandlePane_GatedOnPeer(t *testing.T) {
 	}
 
 	rec = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/api/pane?pane=%253", nil)
-	req.RemoteAddr = "127.0.0.1:5555"
-	handlePane(rec, req, newPeek(), now)
+	handlePane(rec, paneReq("127.0.0.1:5555", "%253", "127.0.0.1"), newPeek(), now)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("loopback peer = %d, want 200", rec.Code)
 	}
@@ -154,5 +158,67 @@ func TestListAndCapturePane_InTmux(t *testing.T) {
 	}
 	if _, ok := capturePane(pane, 5); !ok {
 		t.Errorf("capturePane(%q) failed for a live pane", pane)
+	}
+}
+
+// /api/pane runs the SAME gate the exec-backed actions run, not just the peer
+// check: it is a GET (so no CSRF token is involved) that streams live transcript
+// text, which makes DNS rebinding and proxying real exfiltration paths. A
+// rebound Host or any forwarding header must 403 with tmux never invoked.
+func TestHandlePane_HostAndProxyGated(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "tmux.log")
+	stub := filepath.Join(dir, "tmux")
+	script := "#!/bin/sh\necho \"$@\" >> " + log + "\necho pane text\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// PATH is REPLACED so "no log file" proves tmux truly never ran.
+	t.Setenv("PATH", dir)
+
+	newPeek := func() *peekConfig {
+		p := &peekConfig{enabled: true, lines: 40, cache: newPaneCache(), bindHost: "127.0.0.1"}
+		p.cache.set = map[string]bool{"%3": true}
+		p.cache.at = time.Unix(1_700_000_000, 0)
+		return p
+	}
+	now := time.Unix(1_700_000_000, 0)
+
+	// A page on attacker.example that rebinds its name to the dashboard's address
+	// is loopback as far as the peer gate is concerned; the Host allowlist is what
+	// stops it.
+	rec := httptest.NewRecorder()
+	handlePane(rec, paneReq("127.0.0.1:5555", "%253", "evil.example.com"), newPeek(), now)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("rebound Host = %d, want 403", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "host not allowed") {
+		t.Errorf("body = %q, want the Host reason", rec.Body.String())
+	}
+
+	for _, hdr := range []string{"X-Forwarded-For", "X-Real-IP", "Forwarded", "X-Forwarded-Host"} {
+		rec = httptest.NewRecorder()
+		req := paneReq("127.0.0.1:5555", "%253", "127.0.0.1")
+		req.Header.Set(hdr, "203.0.113.9")
+		handlePane(rec, req, newPeek(), now)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s: code = %d, want 403", hdr, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "through a proxy") {
+			t.Errorf("%s: body = %q, want the proxy reason", hdr, rec.Body.String())
+		}
+	}
+	if _, err := os.Stat(log); err == nil {
+		t.Error("tmux was invoked for a rebound or proxied request")
+	}
+
+	// The control case: everything clean still serves the pane.
+	rec = httptest.NewRecorder()
+	handlePane(rec, paneReq("127.0.0.1:5555", "%253", "127.0.0.1"), newPeek(), now)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clean request = %d, want 200", rec.Code)
+	}
+	if _, err := os.Stat(log); err != nil {
+		t.Errorf("tmux was not invoked for a clean request: %v", err)
 	}
 }

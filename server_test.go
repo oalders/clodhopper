@@ -576,10 +576,10 @@ func TestHandleDashboard_CopyButtonSurvivesKeyboardUseAndRefresh(t *testing.T) {
 		`function swapContent(html) {`,
 		`active.closest('#content .copycwd')`,
 		`var key = keep ? keep.getAttribute('data-session') : null;`,
-		`if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return; }`,
+		`if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return true; }`,
 		`document.dispatchEvent(new CustomEvent('ch:contentswap'))`,
 		`document.addEventListener('ch:contentswap', unflash);`,
-		`swapContent(d.html);`,
+		`if (swapContent(d.html)) {`,
 	} {
 		if !strings.Contains(body, frag) {
 			t.Errorf("copy-button a11y fragment missing from the page: %s", frag)
@@ -2390,31 +2390,54 @@ func TestDashboardWiresRebaseIntoActionScript(t *testing.T) {
 
 // An ARMED two-step confirm lives in #content, and window.__ckActionBusy only
 // covers a request that is already in flight — not the gap between the arm click
-// and the confirm click. A poll landing in that gap would innerHTML-replace
-// #content and silently discard both the armed state and the caveat the reader
-// is part-way through, so swapContent must bail out while a .actgroup.confirm
-// exists. The guard is unconditional (it ships even with merge disabled, where
-// no such group can exist), and it must sit inside swapContent.
-func TestDashboardSwapContentSkipsRepaintWhileConfirmArmed(t *testing.T) {
+// and the confirm click. A poll landing in that gap must neither discard the
+// armed state nor (as it once did) skip the repaint board-wide, freezing every
+// OTHER row's status and CI while one reader decides. swapContent therefore
+// carries the armed group across the swap by session id and re-arms it, and
+// reports whether it painted so the poller only advances the signature when it
+// did — recording a signature for a paint that never happened would leave the
+// board stale until something else changed it.
+func TestDashboardSwapContentCarriesArmedConfirm(t *testing.T) {
 	html := renderDashboard(t, dashboardData{
 		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
 		ExecEnabled: true,
 		CSRFToken:   "tok",
 	})
-	const guard = "if (document.querySelector('#content .actgroup.confirm')) return;"
-	if !strings.Contains(html, guard) {
-		t.Fatal("swapContent has no armed-confirm repaint guard")
-	}
 	fn := strings.Index(html, "function swapContent(")
 	if fn < 0 {
 		t.Fatal("swapContent not found")
 	}
-	if at := strings.Index(html, guard); at < fn {
-		t.Fatalf("guard at %d is not inside swapContent (starts at %d)", at, fn)
+	// The board-wide bail-out is gone: an armed row must not stop other rows
+	// repainting.
+	if strings.Contains(html, "if (document.querySelector('#content .actgroup.confirm')) return;") {
+		t.Error("swapContent still skips the whole repaint while a row is armed")
 	}
-	// The busy-count guard it complements must still be there.
-	if !strings.Contains(html, "if (window.__ckActionBusy) return;") {
-		t.Error("the in-flight busy guard disappeared")
+	for _, frag := range []string{
+		"if (window.__ckArmSnapshot) armedState = window.__ckArmSnapshot();",
+		"if (armedState && window.__ckArmRestore) window.__ckArmRestore(armedState);",
+		"window.__ckArmSnapshot = function () {",
+		"window.__ckArmRestore = function (list) {",
+	} {
+		at := strings.Index(html, frag)
+		if at < 0 {
+			t.Errorf("armed carry-over fragment missing: %s", frag)
+		}
+	}
+	// Both carry-over calls sit inside swapContent, and the restore runs AFTER
+	// the innerHTML replacement it is restoring into.
+	snap := strings.Index(html, "if (window.__ckArmSnapshot) armedState = window.__ckArmSnapshot();")
+	swap := strings.Index(html, "document.getElementById('content').innerHTML = html;")
+	rest := strings.Index(html, "if (armedState && window.__ckArmRestore) window.__ckArmRestore(armedState);")
+	if snap < fn || snap >= swap || swap >= rest {
+		t.Fatalf("carry-over ordering wrong: swapContent=%d snapshot=%d swap=%d restore=%d", fn, snap, swap, rest)
+	}
+	// The busy-count guard it complements must still be there, and declining now
+	// reports false rather than silently letting the poller advance sig.
+	if !strings.Contains(html, "if (window.__ckActionBusy) return false;") {
+		t.Error("the in-flight busy guard disappeared (or no longer reports a declined paint)")
+	}
+	if !strings.Contains(html, "if (swapContent(d.html)) {") {
+		t.Error("the poller advances sig without checking that swapContent painted")
 	}
 }
 
@@ -2504,11 +2527,12 @@ func TestBuildDashboardDataExecEnabledFollowsPeer(t *testing.T) {
 	}
 }
 
-// The armed-confirm repaint guard in swapContent is board-wide: while ANY row is
-// armed, no row repaints. An arm the reader wandered away from therefore must not
-// be able to stall the board forever, so an armed group disarms itself when the
-// page is hidden and after an idle timeout — both through the shared
-// window.__ckDisarm path, never a second hand-rolled teardown.
+// An armed confirm on a destructive action must not stay live unattended: it
+// disarms itself when the page is hidden and after an idle timeout, both through
+// the shared window.__ckDisarm path (never a second hand-rolled teardown) and
+// both leaving the same "expired" message behind. The timeout is an INACTIVITY
+// timer — interacting with the armed group restarts it — so a reader working
+// through a long caveat is never timed out mid-decision.
 func TestDashboardArmedConfirmAutoDisarms(t *testing.T) {
 	html := renderDashboard(t, dashboardData{
 		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
@@ -2516,13 +2540,20 @@ func TestDashboardArmedConfirmAutoDisarms(t *testing.T) {
 		CSRFToken:   "tok",
 	})
 	for _, want := range []string{
-		// Hidden page: disarm the whole board.
+		// Hidden page: disarm the whole board, with the same message the timer uses.
 		"document.addEventListener('visibilitychange', function () {",
-		"if (document.hidden) window.__ckDisarm(document);",
+		"if (document.hidden) window.__ckDisarm(document, ARM_EXPIRED_MSG);",
+		"var ARM_EXPIRED_MSG = 'confirmation expired — press again';",
 		// Idle timer, armed in armConfirm and routed through the shared path.
 		"var ARM_IDLE_MS = 60000;",
 		"group.__ckArmTimer = setTimeout(function () {",
-		"window.__ckDisarm(group);",
+		"window.__ckDisarm(group, ARM_EXPIRED_MSG);",
+		// Interaction inside the armed group restarts the timer (WCAG 2.2.1).
+		"function resetArmTimer(ev) {",
+		"if (g && g.__ckArmTimer) startArmTimer(g);",
+		"document.addEventListener('keydown', resetArmTimer, true);",
+		"document.addEventListener('pointerdown', resetArmTimer, true);",
+		"document.addEventListener('focusin', resetArmTimer, true);",
 		// One teardown path, cancelled from unlock (cancel/re-arm) and fire (confirm).
 		"function clearArmTimer(group) {",
 	} {
@@ -2547,12 +2578,64 @@ func TestDashboardArmedConfirmAutoDisarms(t *testing.T) {
 	if !strings.Contains(html[fireAt:fireAt+900], "clearArmTimer(group);") {
 		t.Error("fire does not cancel the idle disarm timer on confirm")
 	}
-	// The guard the auto-disarm exists to bound must still be there, and the
-	// row-clearing action list must still exclude rebase (it leaves the row up).
-	if !strings.Contains(html, "if (document.querySelector('#content .actgroup.confirm')) return;") {
-		t.Error("the armed-confirm repaint guard disappeared")
-	}
+	// The row-clearing action list must still exclude rebase (it leaves the row up).
 	if !strings.Contains(html, "var clears = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'end');") {
 		t.Error("the row-clearing action list changed (rebase must stay out of it)")
+	}
+}
+
+// Every disarm path — explicit cancel, idle timeout, hidden tab — removes the
+// injected ✕ the reader may be sitting on, which drops keyboard focus to <body>
+// with no interaction of the user's own (WCAG 2.4.3). The restore therefore
+// lives in unlock, the single teardown path, rather than only on the explicit
+// cancel branch.
+func TestDashboardDisarmRestoresFocus(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	unlockAt := strings.Index(html, "function unlock(group, clearMsg) {")
+	armAt := strings.Index(html, "function armConfirm(group, btn) {")
+	if unlockAt < 0 || armAt < unlockAt {
+		t.Fatal("unlock/armConfirm not found in the expected order")
+	}
+	body := html[unlockAt:armAt]
+	for _, want := range []string{
+		"var hadFocus = document.activeElement && group.contains(document.activeElement)",
+		"var armedBtn = group.querySelector('.pract.confirm');",
+		"if (hadFocus && (!hadFocus.isConnected || hadFocus.disabled) &&",
+		"armedBtn.focus();",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("unlock is missing the focus restore piece: %s", want)
+		}
+	}
+	// The cancel branch must not hand-roll its own restore any more.
+	if strings.Contains(html, "if (armedBtn && armedBtn.isConnected && !armedBtn.disabled) armedBtn.focus();") {
+		t.Error("the explicit-cancel branch still hand-rolls a focus restore")
+	}
+}
+
+// With no branch at all the rebase button used to announce "rebase (unknown)
+// onto the default branch and force-push". Naming a placeholder is worse than
+// naming nothing, so the branch clause is simply omitted.
+func TestDashboardRebaseLabelOmitsUnknownBranch(t *testing.T) {
+	withBranch := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true, CSRFToken: "tok",
+	})
+	if !strings.Contains(withBranch, `aria-label="rebase feature onto the default branch and force-push"`) {
+		t.Error("a known branch is no longer named in the rebase label")
+	}
+	none := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Status: statusWaiting}},
+		ExecEnabled: true, CSRFToken: "tok",
+	})
+	if strings.Contains(none, "rebase (unknown) onto") {
+		t.Error("the rebase label still announces a placeholder branch")
+	}
+	if !strings.Contains(none, `aria-label="rebase onto the default branch and force-push"`) {
+		t.Error("the branch clause was not omitted cleanly")
 	}
 }

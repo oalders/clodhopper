@@ -352,7 +352,12 @@ func runServe(args []string) int {
 	defer db.Close()
 
 	ci := newCICache()
-	peek := &peekConfig{enabled: *panePeek, lines: clampPaneLines(*paneLines), cache: newPaneCache()}
+	peek := &peekConfig{
+		enabled: *panePeek, lines: clampPaneLines(*paneLines), cache: newPaneCache(),
+		// /api/pane runs the same gate the exec-backed actions run, so it needs
+		// the same Host allowlist inputs (see execPeerAllowed).
+		bindHost: *host, allowedHosts: allowedHosts(),
+	}
 	act := &actionConfig{
 		enabled:      *enableMerge,
 		mergePR:      "merge-pr",
