@@ -410,6 +410,18 @@ func execPeerAllowed(r *http.Request, bindHost string, allowed []string, execs b
 	return true, ""
 }
 
+// peerOK is the boolean-only form of execPeerAllowed, for the dashboard RENDER,
+// which has no 403 body to fill in. The render runs the FULL gate (execs: true,
+// so proxy refusal + Host allowlist + peer network) rather than bare
+// remoteAllowed, because the page carries the CSRF token: a DNS-rebinding page
+// is a loopback peer as far as remoteAllowed can tell, and while its own fetches
+// would still fail hostAllowed, the token it scraped can be replayed by a
+// non-browser peer that is free to set Host itself. One gate, one answer.
+func peerOK(r *http.Request, bindHost string, allowed []string) bool {
+	ok, _ := execPeerAllowed(r, bindHost, allowed, true)
+	return ok
+}
+
 // tokenOK compares a presented CSRF token against the per-serve secret in
 // constant time. An empty secret (feature misconfigured) always fails.
 func tokenOK(got, want string) bool {
@@ -602,12 +614,11 @@ type rebaseStep struct {
 // fail.
 //
 // Every vector starts with `-C dir` exactly as the probes do, rather than
-// relying on cmd.Dir alone. If serve was ever started from a shell with GIT_DIR
-// or GIT_WORK_TREE exported, cmd.Dir would be overridden by that environment and
-// every step — the force-push included — would operate on a repo other than the
-// roster row's worktree, while the guards were computed from the `-C dir` probes
-// and would not notice. (Scrubbing git's env is deliberately out of scope; `-C`
-// closes the same hole without an env policy.)
+// relying on cmd.Dir alone, so the exec path and the guard probes name their
+// directory the SAME way and cannot diverge. This is not an environment
+// defence: an exported GIT_DIR still wins over discovery, so `-C` alone would
+// not stop refs and objects coming from elsewhere. Scrubbing git's env is
+// deliberately out of scope.
 func rebaseSteps(dir, base, cur, lease string) []rebaseStep {
 	at := func(args ...string) []string { return append([]string{"-C", dir}, args...) }
 	push := at("push", "origin", cur)
@@ -656,10 +667,17 @@ func rebaseInProgress(gitBin, dir string) bool {
 	return false
 }
 
-// dirtyWorktree reports whether dir has uncommitted changes (ok=false when the
-// probe itself could not run, which callers treat as "refuse, run nothing").
+// dirtyWorktree reports whether dir has uncommitted changes to TRACKED files
+// (ok=false when the probe itself could not run, which callers treat as "refuse,
+// run nothing").
+//
+// --untracked-files=no is the point: `git pull --rebase` refuses on modified
+// tracked files, but is perfectly happy with untracked ones. A live agent's
+// worktree almost always carries untracked scratch output, so counting those as
+// dirty would refuse the rebase button on worktrees git would rebase without
+// complaint.
 func dirtyWorktree(gitBin, dir string) (dirty, ok bool) {
-	out, ok := gitProbe(gitBin, dir, "status", "--porcelain")
+	out, ok := gitProbe(gitBin, dir, "status", "--porcelain", "--untracked-files=no")
 	return out != "", ok
 }
 
@@ -985,11 +1003,25 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		return
 	}
 
-	if !cfg.inflight.acquire(sidKey(sessionID)) {
+	// Compute each lock key ONCE and release the very same string.
+	//
+	// cwdKey's answer is NOT stable across the action: it runs EvalSymlinks, and
+	// the merge actions call merge-pr, which REMOVES the worktree — after which
+	// the same path resolves to its unresolved spelling instead. Releasing under
+	// a re-derived key would delete nothing and pin the entry for the life of the
+	// process, 409-ing every later session that resolves there. Today
+	// `defer release(cwdKey(cwd))` would happen to be safe (a deferred call's
+	// arguments are evaluated where the defer is written, i.e. before the
+	// subprocess runs), but that safety is invisible at the call site and one
+	// refactor into a closure away from a permanent lock leak. Naming the key
+	// states the invariant instead of relying on it. sidKey is stable; it takes
+	// the same treatment so the pattern is uniform.
+	sessionLock := sidKey(sessionID)
+	if !cfg.inflight.acquire(sessionLock) {
 		http.Error(w, "action already running for this session", http.StatusConflict)
 		return
 	}
-	defer cfg.inflight.release(sidKey(sessionID))
+	defer cfg.inflight.release(sessionLock)
 
 	// Dedupe on the WORK TREE as well as the session. Two roster rows can resolve
 	// to the same cwd (a resumed or restarted agent, a shared checkout), and two
@@ -999,11 +1031,12 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 	// The key is namespaced ("cwd:") so it cannot collide with a session id, and
 	// acquisition order is fixed (session, then cwd) so two requests can never
 	// deadlock against each other. The session lock is released by its defer.
-	if !cfg.inflight.acquire(cwdKey(cwd)) {
+	worktreeLock := cwdKey(cwd)
+	if !cfg.inflight.acquire(worktreeLock) {
 		http.Error(w, "action already running for this worktree", http.StatusConflict)
 		return
 	}
-	defer cfg.inflight.release(cwdKey(cwd))
+	defer cfg.inflight.release(worktreeLock)
 
 	bin := cfg.mergePR
 	timeout := actionTimeout

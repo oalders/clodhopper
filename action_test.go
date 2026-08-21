@@ -1010,8 +1010,12 @@ type gitStubOpts struct {
 	failStep   string   // a first argument ("fetch"/"pull"/"push") that exits non-zero
 	abortFail  bool     // `rebase --abort` itself fails
 	sleep      string   // seconds each fetch/pull/push sleeps, as a shell literal
-	dirty      bool     // `status --porcelain` reports uncommitted changes
-	statusFail bool     // `status --porcelain` cannot run at all
+	dirty      bool     // a modified TRACKED file, which `status --porcelain` always reports
+	// untracked adds an untracked-but-not-ignored file, which `status --porcelain`
+	// reports only WITHOUT --untracked-files=no — exactly as real git does, so a
+	// probe that drops the flag is visible to the tests.
+	untracked  bool
+	statusFail bool // `status --porcelain` cannot run at all
 	// midRebase makes `rev-parse --git-path rebase-merge` name a directory that
 	// EXISTS, i.e. the worktree really is mid-rebase and an abort is warranted.
 	// Without it the path does not exist and rebaseInProgress reads false, which
@@ -1042,12 +1046,14 @@ fail=`+strconv.Quote(o.failStep)+`
 abortfail=`+strconv.Quote(map[bool]string{true: "1"}[o.abortFail])+`
 naptime=`+strconv.Quote(o.sleep)+`
 dirty=`+strconv.Quote(map[bool]string{true: " M a.txt"}[o.dirty])+`
+untracked=`+strconv.Quote(map[bool]string{true: "?? scratch.log"}[o.untracked])+`
 statusfail=`+strconv.Quote(map[bool]string{true: "1"}[o.statusFail])+`
 midrebase=`+strconv.Quote(midRebaseDir)+`
 case "$1" in
   status)
     [ -z "$statusfail" ] || exit 1
     [ -z "$dirty" ] || echo "$dirty"
+    case "$*" in *--untracked-files=no*) ;; *) [ -z "$untracked" ] || echo "$untracked" ;; esac
     exit 0 ;;
   symbolic-ref)
     if [ "$4" = "HEAD" ]; then [ -n "$head" ] || exit 1; echo "$head"; exit 0; fi
@@ -1126,7 +1132,7 @@ func TestHandleActionRebaseSuccess(t *testing.T) {
 	want := []string{
 		"symbolic-ref --quiet --short refs/remotes/origin/HEAD",
 		"symbolic-ref --quiet --short HEAD",
-		"status --porcelain",
+		"status --porcelain --untracked-files=no",
 		"rev-parse --verify --quiet refs/remotes/origin/feature",
 		"fetch origin main",
 		"pull --rebase origin main",
@@ -1329,7 +1335,7 @@ func TestHandleActionRebaseConflictAbortsAndDoesNotPush(t *testing.T) {
 	want := []string{
 		"symbolic-ref --quiet --short refs/remotes/origin/HEAD",
 		"symbolic-ref --quiet --short HEAD",
-		"status --porcelain",
+		"status --porcelain --untracked-files=no",
 		"rev-parse --verify --quiet refs/remotes/origin/feature",
 		"fetch origin main",
 		"pull --rebase origin main",
@@ -1906,6 +1912,39 @@ func TestRunTmuxTimeoutEscapedGrandchildDoesNotHang(t *testing.T) {
 	}
 }
 
+// gitProbe gets the same treatment, and matters MORE than the other two: per its
+// own comment it runs while the handler holds BOTH inflight locks, so a probe
+// that blocks on a daemonising grandchild (credential cache, ssh ControlMaster)
+// wedges the session and the worktree, not just one request. Its timeout is a
+// fixed constant, so the ceiling here is gitProbeTimeout + waitDelay + slack,
+// well under the 30s the escaped grandchild sleeps.
+func TestGitProbeTimeoutEscapedGrandchildDoesNotHang(t *testing.T) {
+	stub := escapedGrandchildStub(t, "escapeprobe")
+	start := time.Now()
+	type probeResult struct {
+		out string
+		ok  bool
+	}
+	done := make(chan probeResult, 1)
+	go func() {
+		out, ok := gitProbe(stub, t.TempDir(), "rev-parse", "--verify", "HEAD")
+		done <- probeResult{out, ok}
+	}()
+	select {
+	case r := <-done:
+		if elapsed := time.Since(start); elapsed > gitProbeTimeout+waitDelay+4*time.Second {
+			t.Fatalf("gitProbe took %s; the timeout is not enforceable", elapsed)
+		}
+		if r.ok {
+			t.Fatalf("got (%q, true), want a failed probe so the caller fails closed", r.out)
+		}
+	case <-time.After(gitProbeTimeout + waitDelay + 4*time.Second):
+		t.Fatal("gitProbe still blocked well past its timeout: a grandchild that " +
+			"escaped the process group is holding the output pipe open while both " +
+			"inflight locks are held")
+	}
+}
+
 // Behind a reverse proxy every request arrives on a loopback socket, so the peer
 // gate would pass for anyone who can reach the proxy. handleAction therefore
 // refuses on the mere PRESENCE of a forwarding header for anything that execs.
@@ -2003,9 +2042,13 @@ func TestHandleActionOversizedBodyRejected(t *testing.T) {
 func TestRunRebaseBudgetIgnoresInjectedNow(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "git.log")
 	git := gitStub(t, logPath, gitStubOpts{head: "feature", originHead: "origin/main"})
-	// An hour-old now with a real budget: the sequence must still run.
+	// A now far in the PAST with a real budget: the sequence must still run. It
+	// has to be past-relative to the wall clock, not a fixed date, or the
+	// assertion silently stops biting once the suite runs before that date —
+	// `now.Add(totalTimeout)` would then still be in the future and the mutant
+	// would look healthy.
 	res := runRebase(git, t.TempDir(), "s1", 30*time.Second, 30*time.Second,
-		time.Date(2026, 8, 21, 9, 30, 0, 0, time.UTC))
+		time.Now().Add(-time.Hour))
 	if res.ExitCode != 0 || res.TimedOut {
 		t.Fatalf("res = %+v, want a completed sequence", res)
 	}
@@ -2315,5 +2358,154 @@ func TestExecPeerAllowed(t *testing.T) {
 	if ok, why := execPeerAllowed(req("100.64.0.2:1", "board.tailnet.ts.net", nil),
 		"100.64.0.2", []string{"board.tailnet.ts.net"}, true); !ok {
 		t.Errorf("declared host refused: %s", why)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// review round 5
+// ---------------------------------------------------------------------------
+
+// The worktree lock must be released with the SAME key it was acquired with.
+// cwdKey resolves symlinks, and the merge actions run merge-pr, which REMOVES
+// the worktree — so a key re-derived AFTER the run is the unresolved spelling,
+// deletes nothing, and pins the resolved key for the life of the process. Every
+// later request whose cwd resolves there (the agent recreating the worktree at
+// the same path, say) would 409 forever.
+//
+// The handler is safe from this today whichever way it is spelled, because a
+// deferred call's arguments are evaluated where the defer is WRITTEN, before the
+// subprocess runs. That is invisible at the call site and one refactor into a
+// closure away from being wrong, so the property gets a test of its own.
+func TestHandleActionWorktreeLockReleasedAfterWorktreeRemoved(t *testing.T) {
+	base := t.TempDir()
+	realDir := filepath.Join(base, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(realDir, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if cwdKey(link) == cwdKey(realDir+"-gone") {
+		t.Fatal("fixture is not exercising symlink resolution")
+	}
+
+	db := openTestDB(t)
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "leak-1",
+		Cwd: link, EventType: "Stop", PayloadJSON: "{}"})
+	// A second row already sitting on the RESOLVED path: this is the request the
+	// leaked key would block.
+	insertEvent(db, Event{TS: "2026-08-12T10:01:00Z", SourceApp: "x", SessionID: "leak-2",
+		Cwd: realDir, EventType: "Stop", PayloadJSON: "{}"})
+
+	// merge-pr tears the worktree down, exactly as the real one does.
+	cfg := newActionCfg(writeStub(t, "merge-pr",
+		"rm -rf "+strconv.Quote(link)+" "+strconv.Quote(realDir)+"; exit 0"), "/bin/true")
+
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("leak-1", "close", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusOK {
+		t.Fatalf("first action: code = %d body = %q", w.Code, w.Body.String())
+	}
+	if _, err := os.Lstat(link); err == nil {
+		t.Fatal("the stub did not remove the worktree; the fixture proves nothing")
+	}
+
+	w = httptest.NewRecorder()
+	handleAction(w, actionReq("leak-2", "close", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code == http.StatusConflict {
+		t.Fatalf("code = 409 (%q): the worktree lock leaked when the worktree was removed",
+			strings.TrimSpace(w.Body.String()))
+	}
+}
+
+// `git pull --rebase` does not care about untracked files, and a live agent's
+// worktree almost always has some. Refusing on them would block the button on
+// worktrees git would rebase happily.
+func TestHandleActionRebaseProceedsWithUntrackedFiles(t *testing.T) {
+	db := openTestDB(t)
+	_, logPath, cfg := rebaseFixture(t, db, "reb-untracked", gitStubOpts{
+		head: "feature", originHead: "origin/main", untracked: true,
+	})
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("reb-untracked", "rebase", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	got := decodeActionJSON(t, w)
+	if !got.OK {
+		t.Fatalf("got %+v, want the rebase to run: untracked files do not block `git pull --rebase`", got)
+	}
+	var ran []string
+	for _, l := range gitLog(t, logPath) {
+		if strings.HasPrefix(l, "fetch") || strings.HasPrefix(l, "pull") || strings.HasPrefix(l, "push") {
+			ran = append(ran, l)
+		}
+	}
+	if len(ran) != 3 {
+		t.Fatalf("ran %v, want all three steps", ran)
+	}
+}
+
+// A worktree carrying BOTH an untracked file and a modified tracked one is still
+// refused: the flag narrows what counts as dirty, it does not disable the guard.
+func TestHandleActionRebaseRefusesModifiedTrackedFileDespiteFlag(t *testing.T) {
+	db := openTestDB(t)
+	_, logPath, cfg := rebaseFixture(t, db, "reb-tracked", gitStubOpts{
+		head: "feature", originHead: "origin/main", dirty: true, untracked: true,
+	})
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("reb-tracked", "rebase", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	got := decodeActionJSON(t, w)
+	if got.OK || !strings.Contains(got.Output, "uncommitted changes") {
+		t.Fatalf("got %+v, want a refusal for a modified tracked file", got)
+	}
+	for _, l := range gitLog(t, logPath) {
+		if strings.HasPrefix(l, "fetch") || strings.HasPrefix(l, "pull") || strings.HasPrefix(l, "push") {
+			t.Fatalf("ran %q; nothing may run once the worktree is refused", l)
+		}
+	}
+}
+
+// The 403 body names the header that was actually found, so an operator who put
+// the dashboard behind a proxy can see WHICH hop is being detected. Pins the
+// echoed name per header, not just that some proxy reason came back.
+func TestForwardingHeaderNamesTheHeaderFound(t *testing.T) {
+	for _, name := range []string{"X-Forwarded-For", "X-Real-IP", "Forwarded", "X-Forwarded-Host"} {
+		h := http.Header{}
+		h.Set(name, "203.0.113.9")
+		if got := forwardingHeader(h); got != name {
+			t.Errorf("forwardingHeader(%s) = %q, want %q", name, got, name)
+		}
+		// Whitespace-only is not "present".
+		blank := http.Header{}
+		blank.Set(name, "   ")
+		if got := forwardingHeader(blank); got != "" {
+			t.Errorf("forwardingHeader(%s: blank) = %q, want \"\"", name, got)
+		}
+	}
+	if got := forwardingHeader(http.Header{}); got != "" {
+		t.Errorf("forwardingHeader(none) = %q, want \"\"", got)
+	}
+}
+
+// handleAction refuses a proxied request BEFORE it checks the token and before
+// it reads the body. A request that is both proxied and bogus-tokened must
+// therefore come back with the PROXY reason: if the early gate were dropped, the
+// token check would answer first and say "bad token" instead.
+func TestHandleActionProxyRefusedBeforeTokenCheck(t *testing.T) {
+	db, cfg, logPath := gatedCfg(t)
+	r := actionReq("live-1", "end", false, "wrong-token", "127.0.0.1")
+	r.Header.Set("X-Forwarded-For", "203.0.113.9")
+	w := httptest.NewRecorder()
+	handleAction(w, r, db, cfg, time.Date(2026, 8, 20, 10, 0, 0, 0, time.UTC))
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("code = %d, want 403", w.Code)
+	}
+	if body := w.Body.String(); !strings.Contains(body, "through a proxy") {
+		t.Fatalf("body = %q, want the proxy reason (the peer gate runs before the token check)", body)
+	}
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatal("a subprocess ran for a proxied request")
+	}
+	if et := queryLatestEventType(t, db, "live-1"); et == "SessionEnd" {
+		t.Fatal("a proxied peer dismissed a roster row")
 	}
 }
