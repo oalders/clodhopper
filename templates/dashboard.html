@@ -1380,13 +1380,6 @@
     // would break out of the selector. Comparing attribute values interpolates
     // nothing. (actRow below still uses the selector idiom on the same kind of
     // value.) Document-wide and first-match-or-null, exactly like querySelector.
-    // Compare loop rather than the '[data-peek-row="' + CSS.escape(sess) + '"]'
-    // selector idiom the rest of this file uses: the peek key is a free-form
-    // session id straight off the hook payload, never format-validated the way
-    // the old pane-id key was, so on an engine without CSS.escape a quote in it
-    // would break out of the selector. Comparing attribute values interpolates
-    // nothing. (actRow below still uses the selector idiom on the same kind of
-    // value.) Document-wide and first-match-or-null, exactly like querySelector.
     function paneRow(sess) {
       var rows = document.querySelectorAll('.panerow');
       for (var i = 0; i < rows.length; i++) {
