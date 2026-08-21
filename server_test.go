@@ -1793,6 +1793,173 @@ func TestDashboardPinReorderPreservesPeekScroll(t *testing.T) {
 	}
 }
 
+// A peek capsule the reader has keyboard focus on must survive the ~5s poll.
+// swapContent replaces #content wholesale, so the focused <pre class="panecap">
+// is destroyed and rebuilt; before this it matched no refocus branch and the
+// generic fallback parked the reading cursor on #content, silently losing the
+// reader's place in the capture on every refresh. The capsule carries no id of
+// its own, so the refocus keys on the parent row's data-peek-row — the session
+// id, unique per roster row — and never on the tmux pane id, which two sessions
+// attached to one pane share.
+func TestDashboardRestoresFocusToOpenPeekAcrossSwap(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	body := getBody(t, db, "/")
+
+	capture := `      var pkeep = active && active.closest ? active.closest('#content .panerow') : null;
+      var pkey = pkeep ? pkeep.getAttribute('data-peek-row') : null;`
+	if !strings.Contains(body, capture) {
+		t.Errorf("swapContent no longer captures the focused peek row before the swap:\n%s", capture)
+	}
+	// One contiguous fragment: the scan, the data-peek-row match, and the
+	// preventScroll refocus that ends the branch.
+	restore := `      if (pkey) {
+        var prows2 = document.querySelectorAll('#content .panerow');
+        for (var pr = 0; pr < prows2.length; pr++) {
+          if (prows2[pr].getAttribute('data-peek-row') !== pkey) continue;
+          var pcap = prows2[pr].querySelector('.panecap');
+          if (pcap) { pcap.focus({ preventScroll: true }); return; }`
+	if !strings.Contains(body, restore) {
+		t.Errorf("swapContent no longer refocuses the carried-over peek capsule:\n%s", restore)
+	}
+	// Keyed on the session id, never on the shared pane id, and matched by
+	// scanning rather than by an interpolated selector (no CSS.escape here).
+	for _, gone := range []string{
+		`pkeep.getAttribute('data-pane')`,
+		`prows2[pr].getAttribute('data-pane')`,
+		`'#content .panerow[data-peek-row="'`,
+	} {
+		if strings.Contains(body, gone) {
+			t.Errorf("peek refocus must key on data-peek-row by scanning, not: %s", gone)
+		}
+	}
+
+	// Ordering: capture before the innerHTML swap; refocus after the carry-over
+	// scroll restore AND after the pin-order apply, so the row is already in its
+	// final position and preventScroll has nothing left to fight.
+	iCap := strings.Index(body, capture)
+	iSwap := strings.Index(body, `document.getElementById('content').innerHTML = html;`)
+	iScroll := strings.Index(body, `if (typeof op.scroll === 'number') c.scrollTop = op.scroll;`)
+	iPin := strings.Index(body, `if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply();`)
+	iRestore := strings.Index(body, restore)
+	if iCap < 0 || iSwap < 0 || iScroll < 0 || iPin < 0 || iRestore < 0 {
+		t.Fatalf("swapContent landmarks missing: cap=%d swap=%d scroll=%d pin=%d restore=%d", iCap, iSwap, iScroll, iPin, iRestore)
+	}
+	if iCap > iSwap || iSwap > iScroll || iScroll > iPin || iPin > iRestore {
+		t.Errorf("peek refocus must run after the scroll restore and the pin apply: cap=%d swap=%d scroll=%d pin=%d restore=%d",
+			iCap, iSwap, iScroll, iPin, iRestore)
+	}
+}
+
+// A peek capsule the reader has focus on survives the poll even when "pin
+// order" reshuffles the roster — but NOT because the pin apply() restores focus.
+// It cannot: its only caller is swapContent, which reaches it after replacing
+// #content wholesale, so the pre-swap focused node is already detached and
+// document.activeElement has fallen to <body>. The behaviour comes from
+// swapContent's own data-peek-row refocus, which is why the pin apply must run
+// BEFORE that branch (the row lands in its final position first, so preventScroll
+// is honest) and the scroll restore must run before both. This pins that
+// ordering, and pins the dead activeElement capture out of apply() for good.
+func TestDashboardPinReorderRestoresPeekFocus(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	body := getBody(t, db, "/")
+
+	// The unreachable idiom must not creep back into the pin apply().
+	for _, gone := range []string{
+		`var pfocus = document.activeElement;`,
+		`pfocus.closest('#content .panecap')`,
+		`pfocus.focus({ preventScroll: true })`,
+	} {
+		if strings.Contains(body, gone) {
+			t.Errorf("pin apply() runs after the innerHTML swap, so this focus restore can never fire: %s", gone)
+		}
+	}
+
+	// Source order inside swapContent is execution order: carry-over scroll
+	// restore, then the pin apply, then the .panecap refocus branch.
+	iScroll := strings.Index(body, `if (typeof op.scroll === 'number') c.scrollTop = op.scroll;`)
+	iPin := strings.Index(body, `if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply();`)
+	iRefocus := strings.Index(body, `          var pcap = prows2[pr].querySelector('.panecap');`)
+	if iScroll < 0 || iPin < 0 || iRefocus < 0 {
+		t.Fatalf("landmarks missing: scroll=%d pin=%d refocus=%d", iScroll, iPin, iRefocus)
+	}
+	if iScroll > iPin || iPin > iRefocus {
+		t.Errorf("swapContent must run the pin apply after the scroll restore and before the peek refocus: scroll=%d pin=%d refocus=%d",
+			iScroll, iPin, iRefocus)
+	}
+	// And inside apply() itself the capsule offsets are still saved and put back
+	// around the re-append loop — that half IS load-bearing and stays.
+	if !strings.Contains(body, `      for (var s = 0; s < caps.length; s++) caps[s].el.scrollTop = caps[s].top;`) {
+		t.Error("pin apply() must still restore capsule scroll offsets after re-appending")
+	}
+}
+
+// aria-live must not live in the server markup. The capsule is a one-shot
+// snapshot, but every signature-changing poll rebuilds #content and swapContent
+// writes the carried-over, UNCHANGED text onto a fresh node — a node that is
+// already a live region when its content lands, so screen readers re-announce
+// the same capture every refresh cycle. openPane arms the attribute at open
+// time instead: synchronously, before the pane fetch resolves, so the region is
+// live when the text it should announce arrives.
+//
+// Removing the attribute from the markup is necessary but NOT sufficient:
+// .panecap is a descendant of <main id="content" aria-live="polite">, and a
+// descendant belongs to its nearest live ancestor whether or not it carries
+// aria-live itself. The subtree has to opt out explicitly, so the poll restore
+// stamps aria-live="off" on the rebuilt capsule and openPane stamps "polite"
+// back on for a genuine user-initiated open. Both halves are pinned here.
+func TestDashboardPeekLiveRegionArmedAtOpenNotInMarkup(t *testing.T) {
+	d := dashboardData{
+		PeekEnabled: true,
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", LiveTmux: true,
+		}},
+	}
+	body := renderDashboard(t, d)
+
+	if !strings.Contains(body, `<pre class="panecap" tabindex="0" aria-label="pane capture"></pre>`) {
+		t.Error(`the capsule must render as <pre class="panecap" tabindex="0" aria-label="pane capture"></pre> — class, tabindex and a static name kept, aria-live dropped`)
+	}
+	if strings.Contains(body, `aria-live="polite" tabindex="0"`) {
+		t.Error("the capsule must not be a live region in the server markup — that is what re-announces on every poll")
+	}
+	arm := `pre.setAttribute('aria-live', 'polite');`
+	if !strings.Contains(body, arm) {
+		t.Errorf("openPane must arm the live region when the row is opened: %s", arm)
+	}
+	// Dropping the attribute from the markup does NOT silence the capsule on its
+	// own: .panecap is a descendant of <main id="content" aria-live="polite">, so
+	// it inherits that region. Both directions must therefore be explicit — "off"
+	// where swapContent restores the carried-over text, "polite" in openPane —
+	// which is exactly two call sites, no more.
+	mute := `            c.setAttribute('aria-live', 'off');
+            c.textContent = op.text;`
+	if !strings.Contains(body, mute) {
+		t.Errorf("swapContent must opt the rebuilt capsule out of #content's live region before writing the carried text:\n%s", mute)
+	}
+	if n := strings.Count(body, `setAttribute('aria-live'`); n != 2 {
+		t.Errorf("aria-live must be set at exactly two sites (openPane arms polite, swapContent restores off), got %d", n)
+	}
+	i := strings.Index(body, "function openPane(sess) {")
+	if i < 0 {
+		t.Fatal("openPane missing")
+	}
+	win := body[i:min(i+2500, len(body))]
+	iArm := strings.Index(win, arm)
+	iHide := strings.Index(win, "row.hidden = false;")
+	iFetch := strings.Index(win, `fetch('/api/pane?pane='`)
+	iText := strings.Index(win, `pre.textContent = t ? collapseRules(t) : '(pane unavailable)';`)
+	if iArm < 0 || iHide < 0 || iFetch < 0 || iText < 0 {
+		t.Fatalf("openPane landmarks missing: arm=%d hide=%d fetch=%d text=%d", iArm, iHide, iFetch, iText)
+	}
+	if iHide > iArm || iArm > iFetch || iFetch > iText {
+		t.Errorf("aria-live must be armed where the row is un-hidden, before the fetch writes the text: hide=%d arm=%d fetch=%d text=%d",
+			iHide, iArm, iFetch, iText)
+	}
+}
+
 // The pane peek must identify a roster row by its SESSION id, not by the tmux
 // pane id. Two sessions can be attached to one tmux pane, so a pane id addresses
 // more than one row: keyed that way, the poller's carry-over re-opened the peek
