@@ -734,12 +734,6 @@ func viewSignature(d dashboardData) string {
 // briefly. Mirrors staleWorkingSecs, the roster's other recency window.
 const ciWatchSecs = 5 * 60
 
-// ciWatchCommands are the slash commands taken to mean "a fresh CI run was just
-// triggered for this session". A var, not a const, so a project can extend it;
-// modify only at init, before serve starts, since it is read from concurrent
-// request handlers.
-var ciWatchCommands = []string{"/monitor-ci", "/poll-ci"}
-
 // suppressWatchedCI flips a row's CI verdict to "pending" when the session just
 // ran a CI-watch command, for ciWatchSecs after that command. The red (or green)
 // dot then reflects the *previous* run, which the operator has just superseded,
@@ -786,8 +780,10 @@ func suppressWatchedCI(agents []Agent, now time.Time) {
 	}
 }
 
-// isCIWatchCommand reports whether cmd is one of ciWatchCommands, after
-// stripping a plugin namespace: if the command starts with "/" and contains a
+// isCIWatchCommand reports whether cmd is one of the slash commands taken by
+// convention to mean "a fresh CI run was just triggered for this session" — a
+// convention the code cannot verify. The match is made after stripping a plugin
+// namespace: if the command starts with "/" and contains a
 // ":", everything from just after the leading "/" through the FIRST ":" is
 // removed ("/kitchen-sink:poll-ci" -> "/poll-ci"). Only the first colon is
 // stripped, so "/a:b:poll-ci" -> "/b:poll-ci" and does not match. Matching is
@@ -799,7 +795,11 @@ func isCIWatchCommand(cmd string) bool {
 			cmd = "/" + cmd[i+1:]
 		}
 	}
-	return slices.Contains(ciWatchCommands, cmd)
+	switch cmd {
+	case "/monitor-ci", "/poll-ci":
+		return true
+	}
+	return false
 }
 
 // demotePendingCI relaxes a "needs you"/"waiting for you" row to the non-urgent

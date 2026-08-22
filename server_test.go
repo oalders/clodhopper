@@ -3206,6 +3206,9 @@ func TestSuppressWatchedCI(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			agents := append([]Agent(nil), tc.agents...)
 			suppressWatchedCI(agents, now)
+			if len(agents) != len(tc.want) {
+				t.Fatalf("len(agents) = %d, want %d", len(agents), len(tc.want))
+			}
 			for i := range agents {
 				if got := agents[i].CI; got != tc.want[i] {
 					t.Errorf("agents[%d].CI = %q, want %q", i, got, tc.want[i])

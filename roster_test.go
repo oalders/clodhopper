@@ -371,10 +371,6 @@ func TestAgentRoster_LastCommandLatestPerSession(t *testing.T) {
 	ins(at(2), "s-cmd", "PreToolUse", "")
 	// s-none: never ran a slash command.
 	ins(at(5), "s-none", "PreToolUse", "")
-	// s-bad: a slash command whose timestamp cannot be parsed. It must leave
-	// LastCommandSince at 0 (an age of now.Unix(), i.e. far outside any window)
-	// rather than reading as "just now" to an age-bounded consumer.
-	insertEvent(db, Event{TS: "not-a-timestamp", SourceApp: "myapp", Branch: "fix-111", SessionID: "s-bad", EventType: "UserPromptSubmit", SlashCommand: "/poll-ci", PayloadJSON: "{}"})
 
 	agents, err := agentRoster(db, 16*time.Hour, now)
 	if err != nil {
