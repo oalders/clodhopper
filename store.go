@@ -392,30 +392,31 @@ func distinctBranches(db *sql.DB) ([]string, error) { return distinctColumn(db, 
 // most recent events. It powers the roster at the top of the dashboard — the
 // "which of my agents is waiting on me" view.
 type Agent struct {
-	SessionID   string
-	SourceApp   string
-	Branch      string
-	Rebasing    bool   // true if the session's latest event was captured mid-rebase, so Branch was recovered from rebase state
-	BranchGuess string // basename of Cwd, shown (italicised) ONLY when Branch is unknown, as a hint for locating the worktree/tmux session; "" when Branch is known or Cwd is empty
-	Cwd         string
-	TmuxSession string // tmux session name, the disambiguating label
-	TmuxPane    string // tmux pane id ("%N") of the latest event's Claude pane; targets the live pane peek, "" if unknown
-	HasPane     bool   // true when the session recorded a tmux pane id (TmuxPane != ""); gates the session-action buttons under --enable-merge, decoupled from --pane-peek (the peek's liveness cache is only populated when peek is on)
-	LiveTmux    bool   // true when TmuxPane is currently a live tmux pane (set by the server layer when --pane-peek is on); drives the peek control
-	Status      string // human label (see status* constants)
-	StatusRank  int    // sort key; lower = more urgent
-	Doing       string // most recent skill/command, else latest tool/event
-	LastCommand string // last slash command the session ran (e.g. "/code-review"), "" if none
-	DoingActive bool   // true while the agent is still working the phase; false once it has stopped/gone idle, when Doing is the last *completed* thing
-	LastEvent   string
-	Idle        string // humanised time since last event ("4m", "1h")
-	IdleSecs    int
-	IdleSince   int64  // unix seconds of the last event, so the client can tick idle in place
-	CI          string // merge-readiness; filled by the server layer via gh
-	GroupStart  bool   // true on the first roster row of each (SourceApp, Branch) group except the very first row overall; drives the divider between branch groups in the dashboard
-	Grouped     bool   // true when this row's (SourceApp, Branch) group has 2+ live members; drives the left accent bar that binds a multi-session branch cluster (a worktree with several agents). Singleton branches stay false (no bar)
-	GroupKey    string // hex of the internal group key (per (SourceApp, Branch); per-session for branchless rows). Stable across polls and HTML-attribute-safe, so the dashboard's "pin order" toggle can hold each group's rows together while freezing group order. Not displayed
-	firstSeq    int    // arrival order (0-based) within the roster window; drives stable color assignment, not displayed
+	SessionID        string
+	SourceApp        string
+	Branch           string
+	Rebasing         bool   // true if the session's latest event was captured mid-rebase, so Branch was recovered from rebase state
+	BranchGuess      string // basename of Cwd, shown (italicised) ONLY when Branch is unknown, as a hint for locating the worktree/tmux session; "" when Branch is known or Cwd is empty
+	Cwd              string
+	TmuxSession      string // tmux session name, the disambiguating label
+	TmuxPane         string // tmux pane id ("%N") of the latest event's Claude pane; targets the live pane peek, "" if unknown
+	HasPane          bool   // true when the session recorded a tmux pane id (TmuxPane != ""); gates the session-action buttons under --enable-merge, decoupled from --pane-peek (the peek's liveness cache is only populated when peek is on)
+	LiveTmux         bool   // true when TmuxPane is currently a live tmux pane (set by the server layer when --pane-peek is on); drives the peek control
+	Status           string // human label (see status* constants)
+	StatusRank       int    // sort key; lower = more urgent
+	Doing            string // most recent skill/command, else latest tool/event
+	LastCommand      string // last slash command the session ran (e.g. "/code-review"), "" if none
+	LastCommandSince int64  // unix seconds of the event that supplied LastCommand; 0 when no slash command was seen
+	DoingActive      bool   // true while the agent is still working the phase; false once it has stopped/gone idle, when Doing is the last *completed* thing
+	LastEvent        string
+	Idle             string // humanised time since last event ("4m", "1h")
+	IdleSecs         int
+	IdleSince        int64  // unix seconds of the last event, so the client can tick idle in place
+	CI               string // merge-readiness; filled by the server layer via gh
+	GroupStart       bool   // true on the first roster row of each (SourceApp, Branch) group except the very first row overall; drives the divider between branch groups in the dashboard
+	Grouped          bool   // true when this row's (SourceApp, Branch) group has 2+ live members; drives the left accent bar that binds a multi-session branch cluster (a worktree with several agents). Singleton branches stay false (no bar)
+	GroupKey         string // hex of the internal group key (per (SourceApp, Branch); per-session for branchless rows). Stable across polls and HTML-attribute-safe, so the dashboard's "pin order" toggle can hold each group's rows together while freezing group order. Not displayed
+	firstSeq         int    // arrival order (0-based) within the roster window; drives stable color assignment, not displayed
 }
 
 // Status labels. Kept as constants so tests and the sort agree on the wording.
@@ -535,6 +536,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	type state struct {
 		a         Agent
 		lastTS    string
+		lastCmdTS string
 		lastTool  string
 		lastNotif string
 	}
@@ -600,7 +602,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		// LastCommand tracks the most recent slash command (last-write-wins);
 		// empty values (non-command events) must not clobber it.
 		if slashCmd != "" {
-			s.a.LastCommand = slashCmd
+			s.a.LastCommand, s.lastCmdTS = slashCmd, ts
 		}
 		// "Doing" tracks the most recent skill/command — the phase the agent is in
 		// (fix-gh-issue, code-review, …). Only Skill events update it.
@@ -648,6 +650,18 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		// with IdleSecs); the dashboard's JS reads it from data-since to advance the
 		// idle column locally, without a server round-trip.
 		a.IdleSince = now.Unix() - int64(idleSecs)
+		// Absolute instant of the slash-command event, parsed directly rather than
+		// via idleSeconds: that helper clamps a negative delta to 0, so an event
+		// timestamped in the future (clock skew) would report an age of zero on
+		// every request and pin any age-bounded consumer open forever. Parsing the
+		// instant keeps the age signed so it can expire. Left at 0 when the session
+		// never ran a slash command; a zero value yields an age of now.Unix(),
+		// which is never inside any sane window.
+		if s.lastCmdTS != "" {
+			if t, err := time.Parse(time.RFC3339, s.lastCmdTS); err == nil {
+				a.LastCommandSince = t.Unix()
+			}
+		}
 		out = append(out, a)
 	}
 	// Order the roster by (SourceApp, Branch) group, not by raw idle time, so the

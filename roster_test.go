@@ -1094,3 +1094,46 @@ func TestRosterTmuxSessionSurvivesTransientEmptyCapture(t *testing.T) {
 		t.Errorf("tmux session lost to transient empty capture: got %q, want %q", agents[0].TmuxSession, "fix-113")
 	}
 }
+
+// LastCommandSince carries the instant of the slash-command event (not the
+// session's most recent event) out of the roster, so the server layer can
+// time-box a CI-watch suppression window against it.
+func TestAgentRoster_LastCommandSince(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) time.Time { return now.Add(time.Duration(-mins) * time.Minute).Truncate(time.Second) }
+	ins := func(ts time.Time, sess, etype, slash string) {
+		insertEvent(db, Event{TS: ts.Format(time.RFC3339), SourceApp: "myapp", Branch: "fix-111", SessionID: sess, EventType: etype, SlashCommand: slash, PayloadJSON: "{}"})
+	}
+
+	// s-cmd: the command landed at -6m; later non-command events must not move
+	// LastCommandSince, and the earlier /foo must be superseded.
+	ins(at(10), "s-cmd", "UserPromptSubmit", "/foo")
+	ins(at(6), "s-cmd", "UserPromptSubmit", "/poll-ci")
+	ins(at(2), "s-cmd", "PreToolUse", "")
+	// s-none: never ran a slash command.
+	ins(at(5), "s-none", "PreToolUse", "")
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Agent{}
+	for _, a := range agents {
+		byID[a.SessionID] = a
+	}
+	if got, want := byID["s-cmd"].LastCommandSince, at(6).Unix(); got != want {
+		t.Errorf("s-cmd LastCommandSince = %d, want %d (the /poll-ci event, not the latest event)", got, want)
+	}
+	if got := byID["s-cmd"].LastCommand; got != "/poll-ci" {
+		t.Errorf("s-cmd LastCommand = %q, want /poll-ci", got)
+	}
+	if got := byID["s-none"].LastCommandSince; got != 0 {
+		t.Errorf("s-none LastCommandSince = %d, want 0", got)
+	}
+}
