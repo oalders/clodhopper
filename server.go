@@ -783,12 +783,12 @@ func suppressWatchedCI(agents []Agent, now time.Time) {
 // isCIWatchCommand reports whether cmd is one of the slash commands taken by
 // convention to mean "a fresh CI run was just triggered for this session" — a
 // convention the code cannot verify. The match is made after stripping a plugin
-// namespace: if the command starts with "/" and contains a
-// ":", everything from just after the leading "/" through the FIRST ":" is
-// removed ("/kitchen-sink:poll-ci" -> "/poll-ci"). Only the first colon is
-// stripped, so "/a:b:poll-ci" -> "/b:poll-ci" and does not match. Matching is
-// exact equality, never a prefix or a whitespace split: ingest keeps only the
-// first token of the prompt, so LastCommand can never carry arguments.
+// namespace: if the command starts with "/" and contains a ":", everything from
+// just after the leading "/" through the FIRST ":" is removed
+// ("/kitchen-sink:poll-ci" -> "/poll-ci"). Only the first colon is stripped, so
+// "/a:b:poll-ci" -> "/b:poll-ci" and does not match. Matching is exact equality,
+// never a prefix or a whitespace split: ingest keeps only the first token of the
+// prompt, so LastCommand can never carry arguments.
 func isCIWatchCommand(cmd string) bool {
 	if strings.HasPrefix(cmd, "/") {
 		if i := strings.Index(cmd, ":"); i >= 0 {
