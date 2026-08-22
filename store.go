@@ -564,8 +564,8 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		// legacy path would otherwise be rendered three times per roster row on
 		// every page render and every /api/state poll.
 		s.a.SourceApp = app
-		// TmuxSession and TmuxPane come from the same best-effort tmuxContext call
-		// and follow the same keep-the-last-non-empty rule as Branch below.
+		// TmuxSession comes from the same tmuxContext call as TmuxPane and follows
+		// the same keep-the-last-non-empty rule, for the reason spelled out below.
 		if tmuxSess != "" {
 			s.a.TmuxSession = tmuxSess
 		}
