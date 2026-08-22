@@ -1063,3 +1063,34 @@ func TestHandleDashboard_BranchGuessWhenBranchUnknown(t *testing.T) {
 		t.Errorf("a known branch should render plain, not as a .branch-guess hint in:\n%s", body)
 	}
 }
+
+// TmuxSession is captured by the same best-effort tmuxContext shell-out as
+// TmuxPane, so it transiently comes back "" (an unreachable or timed-out
+// `tmux display-message`). When the latest event for a session carries one of
+// those empty captures, the roster row must keep the name an earlier event
+// recorded rather than rendering an unlabelled row — the same
+// keep-the-last-non-empty rule the fold already applies to TmuxPane and Branch.
+func TestRosterTmuxSessionSurvivesTransientEmptyCapture(t *testing.T) {
+	db, err := openDB(testDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+
+	insertEvent(db, Event{TS: at(3), SourceApp: "mmir", TmuxSession: "fix-113", Cwd: "/w/fix-113", SessionID: "s1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(1), SourceApp: "mmir", TmuxSession: "", Cwd: "/w/fix-113", SessionID: "s1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("want 1 roster row, got %d", len(agents))
+	}
+	if agents[0].TmuxSession != "fix-113" {
+		t.Errorf("tmux session lost to transient empty capture: got %q, want %q", agents[0].TmuxSession, "fix-113")
+	}
+}
