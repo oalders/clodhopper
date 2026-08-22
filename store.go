@@ -651,12 +651,13 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		// idle column locally, without a server round-trip.
 		a.IdleSince = now.Unix() - int64(idleSecs)
 		// Absolute instant of the slash-command event, parsed directly rather than
-		// via idleSeconds: that helper clamps a negative delta to 0, so an event
-		// timestamped in the future (clock skew) would report an age of zero on
-		// every request and pin any age-bounded consumer open forever. Parsing the
-		// instant keeps the age signed so it can expire. Left at 0 when the session
-		// never ran a slash command; a zero value yields an age of now.Unix(),
-		// which is never inside any sane window.
+		// via idleSeconds: that helper returns 0 for an *unparseable* timestamp,
+		// which an age-bounded consumer reads as "just now" and would hold
+		// suppression open indefinitely. Leaving LastCommandSince at its 0 zero
+		// value instead yields an age of now.Unix(), far outside any sane window —
+		// fail closed. Same for a session that never ran a slash command. A
+		// future-dated event is handled by the explicit age < 0 guard in
+		// suppressWatchedCI.
 		if s.lastCmdTS != "" {
 			if t, err := time.Parse(time.RFC3339, s.lastCmdTS); err == nil {
 				a.LastCommandSince = t.Unix()

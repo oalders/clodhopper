@@ -371,6 +371,10 @@ func TestAgentRoster_LastCommandLatestPerSession(t *testing.T) {
 	ins(at(2), "s-cmd", "PreToolUse", "")
 	// s-none: never ran a slash command.
 	ins(at(5), "s-none", "PreToolUse", "")
+	// s-bad: a slash command whose timestamp cannot be parsed. It must leave
+	// LastCommandSince at 0 (an age of now.Unix(), i.e. far outside any window)
+	// rather than reading as "just now" to an age-bounded consumer.
+	insertEvent(db, Event{TS: "not-a-timestamp", SourceApp: "myapp", Branch: "fix-111", SessionID: "s-bad", EventType: "UserPromptSubmit", SlashCommand: "/poll-ci", PayloadJSON: "{}"})
 
 	agents, err := agentRoster(db, 16*time.Hour, now)
 	if err != nil {
@@ -1118,6 +1122,10 @@ func TestAgentRoster_LastCommandSince(t *testing.T) {
 	ins(at(2), "s-cmd", "PreToolUse", "")
 	// s-none: never ran a slash command.
 	ins(at(5), "s-none", "PreToolUse", "")
+	// s-bad: a slash command whose timestamp cannot be parsed. It must leave
+	// LastCommandSince at 0 (an age of now.Unix(), i.e. far outside any window)
+	// rather than reading as "just now" to an age-bounded consumer.
+	insertEvent(db, Event{TS: "not-a-timestamp", SourceApp: "myapp", Branch: "fix-111", SessionID: "s-bad", EventType: "UserPromptSubmit", SlashCommand: "/poll-ci", PayloadJSON: "{}"})
 
 	agents, err := agentRoster(db, 16*time.Hour, now)
 	if err != nil {
@@ -1135,5 +1143,11 @@ func TestAgentRoster_LastCommandSince(t *testing.T) {
 	}
 	if got := byID["s-none"].LastCommandSince; got != 0 {
 		t.Errorf("s-none LastCommandSince = %d, want 0", got)
+	}
+	if _, ok := byID["s-bad"]; !ok {
+		t.Fatalf("s-bad row missing from roster: %+v", agents)
+	}
+	if got := byID["s-bad"].LastCommandSince; got != 0 {
+		t.Errorf("s-bad LastCommandSince = %d, want 0 (unparseable ts must not read as now)", got)
 	}
 }

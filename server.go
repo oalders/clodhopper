@@ -735,7 +735,9 @@ func viewSignature(d dashboardData) string {
 const ciWatchSecs = 5 * 60
 
 // ciWatchCommands are the slash commands taken to mean "a fresh CI run was just
-// triggered for this session". A var, not a const, so a project can extend it.
+// triggered for this session". A var, not a const, so a project can extend it;
+// modify only at init, before serve starts, since it is read from concurrent
+// request handlers.
 var ciWatchCommands = []string{"/monitor-ci", "/poll-ci"}
 
 // suppressWatchedCI flips a row's CI verdict to "pending" when the session just
@@ -773,7 +775,11 @@ func suppressWatchedCI(agents []Agent, now time.Time) {
 		if !isCIWatchCommand(agents[i].LastCommand) {
 			continue
 		}
-		if now.Unix()-agents[i].LastCommandSince >= ciWatchSecs {
+		// Bound the window at BOTH ends: a nonsensical (future-dated) timestamp
+		// yields a negative age, and that must not hide a failing CI verdict until
+		// the wall clock catches up. Fail toward showing the red.
+		age := now.Unix() - agents[i].LastCommandSince
+		if age < 0 || age >= ciWatchSecs {
 			continue
 		}
 		agents[i].CI = "pending"

@@ -3173,32 +3173,43 @@ func TestSuppressWatchedCI(t *testing.T) {
 	fresh := now.Add(-time.Minute).Unix()
 	stale := now.Add(-10 * time.Minute).Unix()
 
+	// agents/want are slices so a case can pass more than one row: a single-element
+	// table can never catch a per-index mutation (agents[i] -> agents[0]).
 	tests := []struct {
-		name  string
-		agent Agent
-		want  string
+		name   string
+		agents []Agent
+		want   []string
 	}{
-		{"failing suppressed", Agent{LastCommand: "/poll-ci", LastCommandSince: fresh, CI: "failing"}, "pending"},
-		{"green suppressed", Agent{LastCommand: "/monitor-ci", LastCommandSince: fresh, CI: "green"}, "pending"},
-		{"window expired", Agent{LastCommand: "/poll-ci", LastCommandSince: stale, CI: "failing"}, "failing"},
-		{"boundary is exclusive", Agent{LastCommand: "/poll-ci", LastCommandSince: now.Unix() - ciWatchSecs, CI: "failing"}, "failing"},
-		{"boundary minus one suppresses", Agent{LastCommand: "/poll-ci", LastCommandSince: now.Unix() - ciWatchSecs + 1, CI: "failing"}, "pending"},
-		{"no command at all", Agent{LastCommand: "", LastCommandSince: 0, CI: "failing"}, "failing"},
-		{"near miss suffix", Agent{LastCommand: "/monitor-ci-nightly", LastCommandSince: fresh, CI: "failing"}, "failing"},
-		{"near miss poll-cirrus", Agent{LastCommand: "/poll-cirrus", LastCommandSince: fresh, CI: "failing"}, "failing"},
-		{"near miss namespaced poll-cirrus", Agent{LastCommand: "/kitchen-sink:poll-cirrus", LastCommandSince: fresh, CI: "failing"}, "failing"},
-		{"namespaced matches", Agent{LastCommand: "/kitchen-sink:poll-ci", LastCommandSince: fresh, CI: "failing"}, "pending"},
-		{"empty namespace matches", Agent{LastCommand: "/:poll-ci", LastCommandSince: fresh, CI: "failing"}, "pending"},
-		{"only the first colon is stripped", Agent{LastCommand: "/a:b:poll-ci", LastCommandSince: fresh, CI: "failing"}, "failing"},
-		{"no CI info stays empty", Agent{LastCommand: "/poll-ci", LastCommandSince: fresh, CI: ""}, ""},
-		{"already pending stays pending", Agent{LastCommand: "/poll-ci", LastCommandSince: fresh, CI: "pending"}, "pending"},
+		{"failing suppressed", []Agent{{LastCommand: "/poll-ci", LastCommandSince: fresh, CI: "failing"}}, []string{"pending"}},
+		{"green suppressed", []Agent{{LastCommand: "/monitor-ci", LastCommandSince: fresh, CI: "green"}}, []string{"pending"}},
+		{"window expired", []Agent{{LastCommand: "/poll-ci", LastCommandSince: stale, CI: "failing"}}, []string{"failing"}},
+		{"boundary is exclusive", []Agent{{LastCommand: "/poll-ci", LastCommandSince: now.Unix() - ciWatchSecs, CI: "failing"}}, []string{"failing"}},
+		{"boundary minus one suppresses", []Agent{{LastCommand: "/poll-ci", LastCommandSince: now.Unix() - ciWatchSecs + 1, CI: "failing"}}, []string{"pending"}},
+		{"no command at all", []Agent{{LastCommand: "", LastCommandSince: 0, CI: "failing"}}, []string{"failing"}},
+		{"near miss suffix", []Agent{{LastCommand: "/monitor-ci-nightly", LastCommandSince: fresh, CI: "failing"}}, []string{"failing"}},
+		{"near miss poll-cirrus", []Agent{{LastCommand: "/poll-cirrus", LastCommandSince: fresh, CI: "failing"}}, []string{"failing"}},
+		{"near miss namespaced poll-cirrus", []Agent{{LastCommand: "/kitchen-sink:poll-cirrus", LastCommandSince: fresh, CI: "failing"}}, []string{"failing"}},
+		{"namespaced matches", []Agent{{LastCommand: "/kitchen-sink:poll-ci", LastCommandSince: fresh, CI: "failing"}}, []string{"pending"}},
+		{"empty namespace matches", []Agent{{LastCommand: "/:poll-ci", LastCommandSince: fresh, CI: "failing"}}, []string{"pending"}},
+		{"only the first colon is stripped", []Agent{{LastCommand: "/a:b:poll-ci", LastCommandSince: fresh, CI: "failing"}}, []string{"failing"}},
+		{"no CI info stays empty", []Agent{{LastCommand: "/poll-ci", LastCommandSince: fresh, CI: ""}}, []string{""}},
+		{"already pending stays pending", []Agent{{LastCommand: "/poll-ci", LastCommandSince: fresh, CI: "pending"}}, []string{"pending"}},
+		{"future timestamp is not suppressed", []Agent{{LastCommand: "/poll-ci", LastCommandSince: now.Unix() + 3600, CI: "failing"}}, []string{"failing"}},
+		{"colon without a leading slash", []Agent{{LastCommand: "kitchen-sink:poll-ci", LastCommandSince: fresh, CI: "failing"}}, []string{"failing"}},
+		{"matching is case sensitive", []Agent{{LastCommand: "/Poll-CI", LastCommandSince: fresh, CI: "failing"}}, []string{"failing"}},
+		{"suppresses the right row of several", []Agent{
+			{LastCommand: "/code-review", LastCommandSince: fresh, CI: "failing"},
+			{LastCommand: "/poll-ci", LastCommandSince: fresh, CI: "failing"},
+		}, []string{"failing", "pending"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			agents := []Agent{tc.agent}
+			agents := append([]Agent(nil), tc.agents...)
 			suppressWatchedCI(agents, now)
-			if got := agents[0].CI; got != tc.want {
-				t.Errorf("CI = %q, want %q", got, tc.want)
+			for i := range agents {
+				if got := agents[i].CI; got != tc.want[i] {
+					t.Errorf("agents[%d].CI = %q, want %q", i, got, tc.want[i])
+				}
 			}
 		})
 	}
