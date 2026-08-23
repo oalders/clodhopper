@@ -3167,3 +3167,167 @@ func TestDashboardArmedConfirmFocusAndLiveRegionHousekeeping(t *testing.T) {
 		t.Error("the aria-live re-enable is not scheduled immediately after the mute; a throw would strand it")
 	}
 }
+
+func TestSuppressWatchedCI(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	fresh := now.Add(-time.Minute).Unix()
+	stale := now.Add(-10 * time.Minute).Unix()
+
+	// agents/want are slices so a case can pass more than one row: a single-element
+	// table can never catch a per-index mutation (agents[i] -> agents[0]).
+	tests := []struct {
+		name   string
+		agents []Agent
+		want   []string
+	}{
+		{"failing suppressed", []Agent{{LastCommand: "/poll-ci", LastCommandSince: fresh, CI: "failing"}}, []string{"pending"}},
+		{"green suppressed", []Agent{{LastCommand: "/monitor-ci", LastCommandSince: fresh, CI: "green"}}, []string{"pending"}},
+		{"window expired", []Agent{{LastCommand: "/poll-ci", LastCommandSince: stale, CI: "failing"}}, []string{"failing"}},
+		{"boundary is exclusive", []Agent{{LastCommand: "/poll-ci", LastCommandSince: now.Unix() - ciWatchSecs, CI: "failing"}}, []string{"failing"}},
+		{"boundary minus one suppresses", []Agent{{LastCommand: "/poll-ci", LastCommandSince: now.Unix() - ciWatchSecs + 1, CI: "failing"}}, []string{"pending"}},
+		{"no command at all", []Agent{{LastCommand: "", LastCommandSince: 0, CI: "failing"}}, []string{"failing"}},
+		{"near miss suffix", []Agent{{LastCommand: "/monitor-ci-nightly", LastCommandSince: fresh, CI: "failing"}}, []string{"failing"}},
+		{"near miss poll-cirrus", []Agent{{LastCommand: "/poll-cirrus", LastCommandSince: fresh, CI: "failing"}}, []string{"failing"}},
+		{"near miss namespaced poll-cirrus", []Agent{{LastCommand: "/kitchen-sink:poll-cirrus", LastCommandSince: fresh, CI: "failing"}}, []string{"failing"}},
+		{"namespaced matches", []Agent{{LastCommand: "/kitchen-sink:poll-ci", LastCommandSince: fresh, CI: "failing"}}, []string{"pending"}},
+		{"empty namespace matches", []Agent{{LastCommand: "/:poll-ci", LastCommandSince: fresh, CI: "failing"}}, []string{"pending"}},
+		{"only the first colon is stripped", []Agent{{LastCommand: "/a:b:poll-ci", LastCommandSince: fresh, CI: "failing"}}, []string{"failing"}},
+		{"no CI info stays empty", []Agent{{LastCommand: "/poll-ci", LastCommandSince: fresh, CI: ""}}, []string{""}},
+		{"already pending stays pending", []Agent{{LastCommand: "/poll-ci", LastCommandSince: fresh, CI: "pending"}}, []string{"pending"}},
+		{"future timestamp is not suppressed", []Agent{{LastCommand: "/poll-ci", LastCommandSince: now.Unix() + 3600, CI: "failing"}}, []string{"failing"}},
+		{"colon without a leading slash", []Agent{{LastCommand: "kitchen-sink:poll-ci", LastCommandSince: fresh, CI: "failing"}}, []string{"failing"}},
+		{"matching is case sensitive", []Agent{{LastCommand: "/Poll-CI", LastCommandSince: fresh, CI: "failing"}}, []string{"failing"}},
+		{"suppresses the right row of several", []Agent{
+			{LastCommand: "/code-review", LastCommandSince: fresh, CI: "failing"},
+			{LastCommand: "/poll-ci", LastCommandSince: fresh, CI: "failing"},
+		}, []string{"failing", "pending"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			agents := append([]Agent(nil), tc.agents...)
+			suppressWatchedCI(agents, now)
+			if len(agents) != len(tc.want) {
+				t.Fatalf("len(agents) = %d, want %d", len(agents), len(tc.want))
+			}
+			for i := range agents {
+				if got := agents[i].CI; got != tc.want[i] {
+					t.Errorf("agents[%d].CI = %q, want %q", i, got, tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// The suppression runs before demotePendingCI, so a suppressed alert row is also
+// relaxed out of the alert band. That knock-on is the most consequential part of
+// the change, so pin it end-to-end through buildDashboardData — which reads
+// time.Now() internally, hence the real wall-clock offsets and pre-seeded cache.
+func TestSuppressWatchedCI_Demotes(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	cwd := "/w/fix-111"
+	ins := func(mins int, etype, slash string) {
+		insertEvent(db, Event{
+			TS:        now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339),
+			SourceApp: "myapp", Branch: "fix-111", Cwd: cwd, SessionID: "s1",
+			EventType: etype, SlashCommand: slash, PayloadJSON: "{}",
+		})
+	}
+	ins(2, "UserPromptSubmit", "/poll-ci")
+	ins(1, "Stop", "") // "waiting for you"
+
+	// Pre-seed rather than shelling out to gh; `at` must be inside ciTTL.
+	ci := &ciCache{m: map[string]ciEntry{cwd: {status: "failing", at: time.Now()}}}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	data, err := buildDashboardData(r, db, ci, &peekConfig{}, &actionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Agents) != 1 {
+		t.Fatalf("got %d agents, want 1", len(data.Agents))
+	}
+	a := data.Agents[0]
+	if a.CI != "pending" {
+		t.Errorf("CI = %q, want pending (suppressed by the fresh /poll-ci)", a.CI)
+	}
+	if a.Status != statusBackground || a.StatusRank != rankBackground {
+		t.Errorf("suppressed alert row = %q rank %d, want %q rank %d", a.Status, a.StatusRank, statusBackground, rankBackground)
+	}
+}
+
+// Suppression is per row, not per cwd: two sessions in the same worktree, only
+// one of which ran a CI-watch command. (enrichCI is cwd-keyed and dedupes, so
+// suppressing there would leak across both rows.)
+func TestSuppressWatchedCI_RowIsolation(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	cwd := "/w/fix-111"
+	ins := func(mins int, sess, etype, slash string) {
+		insertEvent(db, Event{
+			TS:        now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339),
+			SourceApp: "myapp", Branch: "fix-111", Cwd: cwd, SessionID: sess,
+			EventType: etype, SlashCommand: slash, PayloadJSON: "{}",
+		})
+	}
+	ins(2, "watcher", "UserPromptSubmit", "/poll-ci")
+	ins(1, "watcher", "Stop", "")
+	ins(2, "other", "UserPromptSubmit", "/code-review")
+	ins(1, "other", "Stop", "")
+
+	ci := &ciCache{m: map[string]ciEntry{cwd: {status: "failing", at: time.Now()}}}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	data, err := buildDashboardData(r, db, ci, &peekConfig{}, &actionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Agent{}
+	for _, a := range data.Agents {
+		byID[a.SessionID] = a
+	}
+	if got := byID["watcher"].CI; got != "pending" {
+		t.Errorf("watcher CI = %q, want pending", got)
+	}
+	if got := byID["other"].CI; got != "failing" {
+		t.Errorf("other CI = %q, want failing (same cwd, but it ran no CI-watch command)", got)
+	}
+}
+
+// The suppressed row renders the pending dot while an unsuppressed failing row
+// in the same table keeps its red one. Rendered directly (getBody hardcodes
+// newCICache(), so every row there renders "—").
+func TestDashboardRendersSuppressedCIAsPending(t *testing.T) {
+	html := renderDashboard(t, dashboardData{Agents: []Agent{
+		{SessionID: "watcher", Branch: "fix-111", Status: statusBackground, CI: "pending"},
+		{SessionID: "other", Branch: "fix-111", Status: statusWaiting, CI: "failing"},
+	}})
+	if !strings.Contains(html, `aria-label="CI pending"`) {
+		t.Errorf("suppressed row should render the pending dot:\n%s", html)
+	}
+	if !strings.Contains(html, `aria-label="CI failing"`) {
+		t.Errorf("the unsuppressed row must still render the failing dot:\n%s", html)
+	}
+}
+
+// The flip into suppression and the expiry back out of it must both repaint.
+func TestViewSignature_TracksCISuppression(t *testing.T) {
+	failing := dashboardData{Agents: []Agent{{SessionID: "s1", Status: statusWaiting, CI: "failing"}}}
+	suppressed := dashboardData{Agents: []Agent{{SessionID: "s1", Status: statusBackground, CI: "pending"}}}
+	if viewSignature(failing) == viewSignature(suppressed) {
+		t.Error("signature unchanged on the flip into suppression")
+	}
+	// Expiry back out: same status, CI returns to failing.
+	expired := dashboardData{Agents: []Agent{{SessionID: "s1", Status: statusBackground, CI: "failing"}}}
+	if viewSignature(suppressed) == viewSignature(expired) {
+		t.Error("signature unchanged on the expiry out of suppression")
+	}
+}

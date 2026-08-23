@@ -632,6 +632,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConf
 		return dashboardData{}, fmt.Errorf("roster: %w", err)
 	}
 	enrichCI(agents, ci, now)
+	suppressWatchedCI(agents, now)
 	demotePendingCI(agents)
 	if peek.enabled {
 		for i := range agents {
@@ -725,6 +726,80 @@ func viewSignature(d dashboardData) string {
 	}
 
 	return strconv.FormatUint(h.Sum64(), 16)
+}
+
+// ciWatchSecs bounds how long a CI-watch command suppresses the previous run's
+// verdict on that row. Long enough for a freshly triggered run to start
+// reporting, short enough that a genuinely red current run is hidden only
+// briefly. Mirrors staleWorkingSecs, the roster's other recency window.
+const ciWatchSecs = 5 * 60
+
+// suppressWatchedCI flips a row's CI verdict to "pending" when the session just
+// ran a CI-watch command, for ciWatchSecs after that command. The red (or green)
+// dot then reflects the *previous* run, which the operator has just superseded,
+// while `gh pr checks` legitimately keeps reporting the old buckets alongside
+// the new ones during the overlap — so re-querying gh cannot resolve the
+// contradiction and the fix has to be driven by the re-run signal itself
+// (issue #111).
+//
+// This rests on a convention, not on something the code can verify: neither
+// /monitor-ci nor /poll-ci pushes or re-runs anything: both are watchers. The
+// assumption is that the operator runs them only after triggering a fresh run.
+// An operator who instead runs /poll-ci to *look at* an already-red PR will see
+// that row suppressed for the window.
+//
+// Tradeoff (stated in the style of demotePendingCI): because this runs before
+// demotePendingCI, a suppressed "needs you"/"waiting for you" row is also
+// relaxed to statusBackground / rankBackground and drops out of the alert band.
+// That is intended — under the convention a fresh run is in flight, so there is
+// nothing to act on yet.
+//
+// Known limitation: the dashboard's new-monitor action splits a *new* pane
+// running a *new* Claude session and sends /monitor-ci there, so that prompt
+// lands under a different session_id and the original red row is never
+// suppressed (a new roster row appears instead). Only the in-pane monitor-ci
+// action produces the signal this keys on.
+//
+// now is injected per the project's time-injection convention.
+func suppressWatchedCI(agents []Agent, now time.Time) {
+	for i := range agents {
+		if agents[i].CI != "failing" && agents[i].CI != "green" {
+			continue
+		}
+		if !isCIWatchCommand(agents[i].LastCommand) {
+			continue
+		}
+		// Bound the window at BOTH ends: a nonsensical (future-dated) timestamp
+		// yields a negative age, and that must not hide a failing CI verdict until
+		// the wall clock catches up. Fail toward showing the red.
+		age := now.Unix() - agents[i].LastCommandSince
+		if age < 0 || age >= ciWatchSecs {
+			continue
+		}
+		agents[i].CI = "pending"
+	}
+}
+
+// isCIWatchCommand reports whether cmd is one of the slash commands taken by
+// convention to mean "a fresh CI run was just triggered for this session" — a
+// convention the code cannot verify. The match is made after stripping a plugin
+// namespace: if the command starts with "/" and contains a ":", everything from
+// just after the leading "/" through the FIRST ":" is removed
+// ("/kitchen-sink:poll-ci" -> "/poll-ci"). Only the first colon is stripped, so
+// "/a:b:poll-ci" -> "/b:poll-ci" and does not match. Matching is exact equality,
+// never a prefix or a whitespace split: ingest keeps only the first token of the
+// prompt, so LastCommand can never carry arguments.
+func isCIWatchCommand(cmd string) bool {
+	if strings.HasPrefix(cmd, "/") {
+		if i := strings.Index(cmd, ":"); i >= 0 {
+			cmd = "/" + cmd[i+1:]
+		}
+	}
+	switch cmd {
+	case "/monitor-ci", "/poll-ci":
+		return true
+	}
+	return false
 }
 
 // demotePendingCI relaxes a "needs you"/"waiting for you" row to the non-urgent
