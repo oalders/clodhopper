@@ -563,7 +563,12 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		// The cap is re-applied for the same reason as the strip: an oversized
 		// legacy path would otherwise be rendered three times per roster row on
 		// every page render and every /api/state poll.
-		s.a.SourceApp, s.a.TmuxSession = app, tmuxSess
+		s.a.SourceApp = app
+		// TmuxSession comes from the same tmuxContext call as TmuxPane and follows
+		// the same keep-the-last-non-empty rule, for the reason spelled out below.
+		if tmuxSess != "" {
+			s.a.TmuxSession = tmuxSess
+		}
 		// TmuxPane follows the same keep-the-last-non-empty rule as Branch below:
 		// tmuxContext is best-effort and transiently returns "" (a timed-out
 		// `tmux display-message`), and an empty capture must not clobber a pane id
