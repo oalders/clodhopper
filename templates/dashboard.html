@@ -478,6 +478,7 @@
       font-size: var(--fs-sm); color: var(--text-3); text-align: center;
     }
     .ck-footer .host { color: var(--brand); }
+    .ck-footer .ck-ver { font-variant-numeric: tabular-nums; }
 
     /* --- Responsive --------------------------------------------------------
        ≥641px (tablet + desktop): keep the table shape but let it scroll
@@ -743,7 +744,7 @@
   <div id="ck-copystatus" class="ck-sr" role="status" aria-live="polite"></div>
 
   <footer class="ck-footer">
-    clodhopper · read-only · <span class="host" id="ck-host">127.0.0.1:4555</span> — best-effort, like everything else here.
+    clodhopper <span class="ck-ver" title="{{ .VersionDetail }}">{{ .Version }}</span> · read-only · <span class="host" id="ck-host">127.0.0.1:4555</span> — best-effort, like everything else here.
   </footer>
 
   <script>
