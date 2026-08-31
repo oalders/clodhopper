@@ -1900,7 +1900,7 @@ func TestDashboardRestoresFocusToOpenPeekAcrossSwap(t *testing.T) {
 	// scroll restore AND after the pin-order apply, so the row is already in its
 	// final position and preventScroll has nothing left to fight.
 	iCap := strings.Index(body, capture)
-	iSwap := strings.Index(body, `document.getElementById('content').innerHTML = html;`)
+	iSwap := strings.Index(body, `content.replaceChildren(tpl.content);`)
 	iScroll := strings.Index(body, `if (typeof op.scroll === 'number') c.scrollTop = op.scroll;`)
 	iPin := strings.Index(body, `if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply();`)
 	iRestore := strings.Index(body, restore)
@@ -2324,11 +2324,20 @@ func TestDashboardActionMessageRestoreNeverUsesInnerHTML(t *testing.T) {
 }
 
 // wantInnerHTML is the number of innerHTML occurrences the dashboard template is
-// allowed to render: exactly one, the #content.innerHTML assignment in
-// swapContent, which predates this work and paints server-rendered,
-// html/template-escaped markup. Complements the restoreMsgs slice above, which a
-// helper indirection (paintMsg(el, t) { el.innerHTML = t; }) could route around.
-const wantInnerHTML = 1
+// allowed to render: exactly two, both in swapContent and both painting the SAME
+// server-rendered, html/template-escaped markup (never subprocess output):
+//  1. `tpl.innerHTML = html` — the primary path, materialising the markup into an
+//     inert, disconnected <template> fragment before it is swapped into #content
+//     (#119 moved this off the live node).
+//  2. `content.innerHTML = html` — a legacy last resort for engines with no real
+//     <template> support (IE11 / Safari <=7), reproducing the exact pre-#119
+//     in-place paint so that tail is not left broken.
+//
+// Both take the identical, already-escaped server string, so the sink count rose
+// without widening what can reach the parser. Complements the restoreMsgs slice
+// above, which a helper indirection (paintMsg(el, t) { el.innerHTML = t; }) could
+// route around.
+const wantInnerHTML = 2
 
 // The dashboard paints raw git/gh subprocess output, so any NEW innerHTML in this
 // template needs a deliberate security look before the count is bumped.
@@ -2343,6 +2352,55 @@ func TestDashboardInnerHTMLOccurrencesAreAccountedFor(t *testing.T) {
 	got := len(regexp.MustCompile(`(?i)innerHTML`).FindAllString(html, -1))
 	if got != wantInnerHTML {
 		t.Errorf("dashboard renders %d innerHTML occurrences, want %d: the dashboard paints raw git/gh subprocess output, so any new innerHTML needs a deliberate security look (does the assigned string come from a subprocess or any other untrusted source?) before wantInnerHTML is changed", got, wantInnerHTML)
+	}
+}
+
+// swapContent must build the new subtree OFFLINE (parse into a disconnected
+// <template>, then attach it in one shot) on every engine that can, rather than
+// rebuild the live #content node in place with `#content.innerHTML = html`.
+// #content is a live aria-live region, and the old in-place rebuild made engines
+// do per-swap accessibility-tree work on the live node every poll, growing
+// renderer memory without bound over a long-lived tab (#119). This pins the
+// offline-swap mechanism, its <template>-support feature-detect, and guards the
+// old live-node default from creeping back. The legacy `content.innerHTML = html`
+// branch is a deliberate last resort for engines with no <template> at all (see
+// wantInnerHTML) — it uses the `content` variable, not the getElementById literal
+// the guard below rejects, so it is intentionally exempt from that guard.
+func TestDashboardSwapContentBuildsSubtreeOffline(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+	})
+	// The old in-place default must be gone: assigning html straight to the LIVE
+	// #content node via getElementById is exactly the churn #119 removed.
+	if strings.Contains(html, `getElementById('content').innerHTML = html`) {
+		t.Error("swapContent still rebuilds the live #content node in place; #119 moved the parse offline")
+	}
+	// The offline parse, its <template>-support guard, the atomic attach, and the
+	// legacy in-place last resort must all be present.
+	for _, frag := range []string{
+		`var tpl = document.createElement('template');`,
+		`if ('content' in tpl) {`,
+		`tpl.innerHTML = html;`,
+		`content.replaceChildren(tpl.content);`,
+		`content.appendChild(tpl.content);`,
+		`content.innerHTML = html;`,
+	} {
+		if !strings.Contains(html, frag) {
+			t.Errorf("offline-swap fragment missing from swapContent: %s", frag)
+		}
+	}
+	// Ordering: the ch:contentswap teardown signal must fire BEFORE the new subtree
+	// is attached, so subscribers (e.g. unflash) drop their references to the
+	// outgoing subtree first.
+	iSignal := strings.Index(html, `document.dispatchEvent(new CustomEvent('ch:contentswap'))`)
+	iAttach := strings.Index(html, `content.replaceChildren(tpl.content);`)
+	if iSignal < 0 || iAttach < 0 {
+		t.Fatalf("swapContent landmarks missing: signal=%d attach=%d", iSignal, iAttach)
+	}
+	if iSignal > iAttach {
+		t.Errorf("ch:contentswap must dispatch before the subtree is attached: signal=%d attach=%d", iSignal, iAttach)
 	}
 }
 
@@ -2446,7 +2504,7 @@ func TestDashboardSwapContentCarriesArmedConfirm(t *testing.T) {
 	// Both carry-over calls sit inside swapContent, and the restore runs AFTER
 	// the innerHTML replacement it is restoring into.
 	snap := strings.Index(html, "if (window.__ckArmSnapshot) armedState = window.__ckArmSnapshot();")
-	swap := strings.Index(html, "document.getElementById('content').innerHTML = html;")
+	swap := strings.Index(html, "content.replaceChildren(tpl.content);")
 	rest := strings.Index(html, "armRefocused = !!window.__ckArmRestore(armedState);")
 	if snap < fn || snap >= swap || swap >= rest {
 		t.Fatalf("carry-over ordering wrong: swapContent=%d snapshot=%d swap=%d restore=%d", fn, snap, swap, rest)

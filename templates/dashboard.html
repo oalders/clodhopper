@@ -863,7 +863,43 @@
         openActs.push(arows[ai].getAttribute('data-actions-row'));
       }
       try { document.dispatchEvent(new CustomEvent('ch:contentswap')); } catch (e) {}
-      document.getElementById('content').innerHTML = html;
+      // Build the new subtree in a disconnected <template>, then swap it into the
+      // live #content in one shot. #content is itself an aria-live region: the old
+      // form assigned html straight to the live node's innerHTML on every signature
+      // change, and on a long-lived, high-churn tab the renderer's detached-DOM /
+      // accessibility retention grew without bound (#119). Per the HTML spec the
+      // innerHTML setter already parses into a detached fragment and replaces all
+      // children atomically, so this is NOT about "parsing in place" — the parse
+      // was always offline. The difference is WHERE it lands: a <template>'s
+      // .content fragment is inert and outside the a11y tree, so nothing live
+      // observes the transition, which sidesteps the per-swap a11y-tree work
+      // engines do when the target is a connected aria-live element. The parsed
+      // string is the SAME html/template-escaped server markup as before — never
+      // subprocess output — so the primary innerHTML assignment just moves off the
+      // live node onto the inert template (see the wantInnerHTML invariant test).
+      var content = document.getElementById('content');
+      var tpl = document.createElement('template');
+      // <template> and replaceChildren did not ship together: an engine may have
+      // one, the other, or (IE11 / Safari <=7, the tail the closest()/CSS.escape
+      // guards elsewhere still allow for) neither. Feature-detect the fragment
+      // itself, not just replaceChildren — on an engine without real <template>
+      // support tpl.content is undefined and appendChild(undefined) would throw
+      // inside the poller, freezing every future refresh. Fall through those to a
+      // last-resort in-place innerHTML: exactly the pre-#119 behaviour, so that
+      // tail is strictly no worse off, never broken.
+      if ('content' in tpl) {
+        tpl.innerHTML = html;
+        if (content.replaceChildren) {
+          content.replaceChildren(tpl.content);
+        } else {
+          while (content.firstChild) content.removeChild(content.firstChild);
+          content.appendChild(tpl.content);
+        }
+      } else {
+        // Legacy last resort only. Same server-escaped markup, painted in place;
+        // this is the second (and only other) accounted-for innerHTML in the file.
+        content.innerHTML = html;
+      }
       for (var p = 0; p < openPeeks.length; p++) {
         var op = openPeeks[p];
         if (!op.sess) continue;
