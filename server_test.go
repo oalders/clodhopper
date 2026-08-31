@@ -2309,13 +2309,20 @@ func TestDashboardActionMessageRestoreNeverUsesInnerHTML(t *testing.T) {
 }
 
 // wantInnerHTML is the number of innerHTML occurrences the dashboard template is
-// allowed to render: exactly one, the `tpl.innerHTML = html` parse in swapContent
-// that materialises server-rendered, html/template-escaped markup into an inert,
-// disconnected <template> fragment before it is swapped into #content (#119 moved
-// this off the live node; it no longer assigns #content.innerHTML in place).
-// Complements the restoreMsgs slice above, which a helper indirection
-// (paintMsg(el, t) { el.innerHTML = t; }) could route around.
-const wantInnerHTML = 1
+// allowed to render: exactly two, both in swapContent and both painting the SAME
+// server-rendered, html/template-escaped markup (never subprocess output):
+//  1. `tpl.innerHTML = html` — the primary path, materialising the markup into an
+//     inert, disconnected <template> fragment before it is swapped into #content
+//     (#119 moved this off the live node).
+//  2. `content.innerHTML = html` — a legacy last resort for engines with no real
+//     <template> support (IE11 / Safari <=7), reproducing the exact pre-#119
+//     in-place paint so that tail is not left broken.
+//
+// Both take the identical, already-escaped server string, so the sink count rose
+// without widening what can reach the parser. Complements the restoreMsgs slice
+// above, which a helper indirection (paintMsg(el, t) { el.innerHTML = t; }) could
+// route around.
+const wantInnerHTML = 2
 
 // The dashboard paints raw git/gh subprocess output, so any NEW innerHTML in this
 // template needs a deliberate security look before the count is bumped.
@@ -2334,28 +2341,36 @@ func TestDashboardInnerHTMLOccurrencesAreAccountedFor(t *testing.T) {
 }
 
 // swapContent must build the new subtree OFFLINE (parse into a disconnected
-// <template>, then attach it in one shot) rather than rebuild #content in place
-// with `#content.innerHTML = html`. #content is a live aria-live region, and the
-// old in-place rebuild churned the accessibility tree through the whole parse on
-// every poll, growing renderer memory without bound over a long-lived tab (#119).
-// This pins the offline-swap mechanism and guards against the in-place form
-// creeping back.
+// <template>, then attach it in one shot) on every engine that can, rather than
+// rebuild the live #content node in place with `#content.innerHTML = html`.
+// #content is a live aria-live region, and the old in-place rebuild made engines
+// do per-swap accessibility-tree work on the live node every poll, growing
+// renderer memory without bound over a long-lived tab (#119). This pins the
+// offline-swap mechanism, its <template>-support feature-detect, and guards the
+// old live-node default from creeping back. The legacy `content.innerHTML = html`
+// branch is a deliberate last resort for engines with no <template> at all (see
+// wantInnerHTML) — it uses the `content` variable, not the getElementById literal
+// the guard below rejects, so it is intentionally exempt from that guard.
 func TestDashboardSwapContentBuildsSubtreeOffline(t *testing.T) {
 	html := renderDashboard(t, dashboardData{
 		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
 		ExecEnabled: true,
 		CSRFToken:   "tok",
 	})
-	// The old in-place rebuild must be gone: assigning html to the LIVE #content
-	// node is exactly the churn #119 removed.
+	// The old in-place default must be gone: assigning html straight to the LIVE
+	// #content node via getElementById is exactly the churn #119 removed.
 	if strings.Contains(html, `getElementById('content').innerHTML = html`) {
 		t.Error("swapContent still rebuilds the live #content node in place; #119 moved the parse offline")
 	}
-	// The offline parse + atomic attach must be present.
+	// The offline parse, its <template>-support guard, the atomic attach, and the
+	// legacy in-place last resort must all be present.
 	for _, frag := range []string{
 		`var tpl = document.createElement('template');`,
+		`if ('content' in tpl) {`,
 		`tpl.innerHTML = html;`,
 		`content.replaceChildren(tpl.content);`,
+		`content.appendChild(tpl.content);`,
+		`content.innerHTML = html;`,
 	} {
 		if !strings.Contains(html, frag) {
 			t.Errorf("offline-swap fragment missing from swapContent: %s", frag)
