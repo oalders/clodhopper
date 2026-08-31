@@ -1718,6 +1718,21 @@ func renderDashboard(t *testing.T, d dashboardData) string {
 	return buf.String()
 }
 
+// The footer surfaces the running build so an open board makes it obvious
+// whether serve was restarted after a rebuild (issue #118): the short version
+// is visible inline, and the full versionString() (commit + build date) rides
+// in the title tooltip, reusing the single source of truth in main.go.
+func TestDashboardRendersVersionInFooter(t *testing.T) {
+	d := dashboardData{
+		Version:       "1.2.3",
+		VersionDetail: "clodhopper 1.2.3 (commit abc1234, built 2026-01-01T00:00:00Z)",
+	}
+	html := renderDashboard(t, d)
+	if !strings.Contains(html, `<span class="ck-ver" title="clodhopper 1.2.3 (commit abc1234, built 2026-01-01T00:00:00Z)">1.2.3</span>`) {
+		t.Fatalf("footer missing version span with detail tooltip; got:\n%s", html)
+	}
+}
+
 // PR-action buttons (squash/admin/close/ready) render in the roster only when
 // --enable-merge is on, and the CSRF token is only echoed onto <body> in that
 // case too — the JS action handler reads it from data-csrf.

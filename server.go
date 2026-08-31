@@ -208,6 +208,8 @@ type dashboardData struct {
 	WindowDays     int // roster lookback override in days; 0 = full configured cap
 	WindowOptions  []windowOption
 	Generated      string
+	Version        string            // short build version (the `version` var); shown inline in the footer
+	VersionDetail  string            // full versionString(); commit + build date, surfaced in the footer's title tooltip
 	Now            time.Time         // render time, passed to shortTS so it can hide same-day dates
 	SessColors     map[string]string // session id -> chip/tint color; see assignSessColors
 	Signature      string            // fingerprint of the report-worthy view; see viewSignature
@@ -667,6 +669,8 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConf
 		WindowDays:     windowDays,
 		WindowOptions:  windowOptions(windowDays),
 		Generated:      now.Format("15:04:05"),
+		Version:        version,
+		VersionDetail:  versionString(),
 		Now:            now,
 		SessColors:     assignSessColors(agents, events),
 		PeekEnabled:    peek.enabled && peerOK(r, peek.bindHost, peek.allowedHosts),
