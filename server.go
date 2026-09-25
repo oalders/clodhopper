@@ -208,6 +208,7 @@ type dashboardData struct {
 	WindowDays     int // roster lookback override in days; 0 = full configured cap
 	WindowOptions  []windowOption
 	Generated      string
+	Host           string            // this machine's hostname; the browser-tab <title>, so tabs on different boxes are distinguishable
 	Version        string            // short build version (the `version` var); shown inline in the footer
 	VersionDetail  string            // full versionString(); commit + build date, surfaced in the footer's title tooltip
 	Now            time.Time         // render time, passed to shortTS so it can hide same-day dates
@@ -592,6 +593,19 @@ func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache
 
 // buildDashboardData assembles the view model shared by the full page and the
 // JSON poll endpoint, including its signature.
+// dashboardTitle is the browser-tab <title>: this machine's hostname (e.g.
+// "olaf-dev"), so several dashboard tabs open on different boxes are told apart
+// at a glance — the favicon already marks a tab as clodhopper's, so the title
+// carries the host instead. Computed once (the hostname is fixed for the
+// process's life) and falls back to "clodhopper" when the OS reports no name,
+// so the tab is never blank.
+var dashboardTitle = sync.OnceValue(func() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return "clodhopper"
+})
+
 func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConfig, act *actionConfig) (dashboardData, error) {
 	q := r.URL.Query()
 	source := q.Get("source_app")
@@ -669,6 +683,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConf
 		WindowDays:     windowDays,
 		WindowOptions:  windowOptions(windowDays),
 		Generated:      now.Format("15:04:05"),
+		Host:           dashboardTitle(),
 		Version:        version,
 		VersionDetail:  versionString(),
 		Now:            now,

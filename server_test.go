@@ -668,6 +668,19 @@ func TestHandleDashboard_DiagnosticsGatedOnDebug(t *testing.T) {
 	}
 }
 
+// The browser-tab <title> is the machine's hostname, so tabs open on different
+// boxes are distinguishable; the favicon already marks a tab as clodhopper's.
+func TestHandleDashboard_TitleIsHostname(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	body := getBody(t, db, "/")
+	// Hostnames are alnum/hyphen/dot, so no HTML escaping is in play here.
+	want := "<title>" + dashboardTitle() + "</title>"
+	if !strings.Contains(body, want) {
+		t.Errorf("page title is not the hostname; want %q in:\n%s", want, body)
+	}
+}
+
 func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
