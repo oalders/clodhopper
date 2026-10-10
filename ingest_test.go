@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -275,6 +276,8 @@ func TestStamp(t *testing.T) {
 			`{"systemMessage":"Claude needs your permission — 14:05:09"}`},
 		{"notification without message", `{"hook_event_name":"Notification"}`, false,
 			`{"systemMessage":"Waiting — 14:05:09"}`},
+		{"notification strips control chars", `{"hook_event_name":"Notification","message":"\u001b[2Jneeds\nyou"}`, false,
+			`{"systemMessage":"[2Jneedsyou — 14:05:09"}`},
 		{"message first chunk", `{"hook_event_name":"MessageDisplay","index":0,"delta":"Hello"}`, false,
 			`{"hookSpecificOutput":{"displayContent":"[14:05:09] Hello","hookEventName":"MessageDisplay"}}`},
 		{"message later chunk", `{"hook_event_name":"MessageDisplay","index":3,"delta":" world"}`, false,
@@ -308,26 +311,45 @@ func TestStamp(t *testing.T) {
 			if dec.More() {
 				t.Fatalf("want exactly one JSON object, got %q", got)
 			}
-			if got != tt.want+"\n" {
-				t.Errorf("got  %q\nwant %q", got, tt.want+"\n")
+			var want any
+			if err := json.Unmarshal([]byte(tt.want), &want); err != nil {
+				t.Fatalf("bad want JSON %q: %v", tt.want, err)
+			}
+			if !reflect.DeepEqual(obj, want) {
+				t.Errorf("got  %q\nwant %q", got, tt.want)
 			}
 		})
 	}
 }
 
 func TestRunIngest_MessageDisplayWritesNoRow(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "events.db")
-	t.Setenv("CLODHOPPER_DB", dbPath)
-	out := withStdout(t, func() {
-		withStdin(t, `{"hook_event_name":"MessageDisplay","session_id":"s","index":0,"delta":"hi"}`, func() {
-			runIngest([]string{"--source-app", "myapp"})
+	for _, tt := range []struct {
+		name, stamps, want string // want "" means nothing printed
+	}{
+		{"stamps on", "", "] hi"},
+		{"stamps off", "0", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dbPath := filepath.Join(t.TempDir(), "events.db")
+			t.Setenv("CLODHOPPER_DB", dbPath)
+			if tt.stamps != "" {
+				t.Setenv("CLODHOPPER_STAMPS", tt.stamps)
+			}
+			out := withStdout(t, func() {
+				withStdin(t, `{"hook_event_name":"MessageDisplay","session_id":"s","index":0,"delta":"hi"}`, func() {
+					runIngest([]string{"--source-app", "myapp"})
+				})
+			})
+			if tt.want == "" && out != "" {
+				t.Errorf("want no output, got %q", out)
+			}
+			if !strings.Contains(out, tt.want) {
+				t.Errorf("want the stamped message, got %q", out)
+			}
+			if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+				t.Errorf("MessageDisplay must not touch the DB, stat err=%v", err)
+			}
 		})
-	})
-	if !strings.Contains(out, "] hi") {
-		t.Errorf("want the stamped message, got %q", out)
-	}
-	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
-		t.Errorf("MessageDisplay must not touch the DB, stat err=%v", err)
 	}
 }
 

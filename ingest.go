@@ -89,7 +89,8 @@ func stamp(raw []byte, now time.Time, w io.Writer) string {
 	case "Stop":
 		out = map[string]any{"systemMessage": "Finished " + clock}
 	case "Notification":
-		msg := str(p, "message")
+		// Control chars (ANSI escapes, newlines) would reach the terminal.
+		msg := stripControl(str(p, "message"))
 		if msg == "" {
 			msg = "Waiting"
 		}
