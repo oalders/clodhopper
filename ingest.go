@@ -19,7 +19,8 @@ import (
 // runIngest reads a single Claude Code hook event as JSON on stdin, scrubs it,
 // and writes one row to the database. It is designed to NEVER fail a tool call:
 // any error results in exit code 0, and output goes to stderr only when
-// CLODHOPPER_DEBUG is set. Capture is skipped entirely when CLODHOPPER_DISABLED=1.
+// CLODHOPPER_DEBUG is set. Capture is skipped when CLODHOPPER_DISABLED=1, but
+// transcript stamps (see stamp) still print unless CLODHOPPER_STAMPS=0.
 func runIngest(args []string) int {
 	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
 	sourceApp := fs.String("source-app", "unknown", "logical source name for this project")
@@ -28,16 +29,22 @@ func runIngest(args []string) int {
 		return 0
 	}
 
-	if os.Getenv("CLODHOPPER_DISABLED") == "1" {
-		return 0
-	}
-
+	// stdin is read before the DISABLED check: stamps still print when capture is off.
 	raw, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		debugf("read stdin: %v", err)
 		return 0
 	}
 	if len(strings.TrimSpace(string(raw))) == 0 {
+		return 0
+	}
+
+	// Stamp first, so a DB or git failure below can never cost the user a stamp.
+	if stamp(raw, time.Now(), os.Stdout) == "MessageDisplay" {
+		return 0 // fires per streamed chunk and carries chat text: never captured
+	}
+
+	if os.Getenv("CLODHOPPER_DISABLED") == "1" {
 		return 0
 	}
 
@@ -56,6 +63,71 @@ func runIngest(args []string) int {
 	}
 	maybePrune(db, retainDays())
 	return 0
+}
+
+// stampLayout is the fixed 24-hour clock format used by every transcript stamp.
+const stampLayout = "15:04:05"
+
+// stamp writes at most one JSON hook-output object to w that makes Claude Code
+// show the local time in the transcript: when a turn finished (Stop), when the
+// agent started waiting (Notification), and as a prefix on each assistant
+// message (MessageDisplay). With CLODHOPPER_STAMP_CONTEXT=1 it also tells the
+// model when a prompt was sent (UserPromptSubmit). It returns the payload's
+// hook_event_name so the caller need not decode it again. Every failure is
+// silent: a stamp is a nicety and must never fail a tool call.
+func stamp(raw []byte, now time.Time, w io.Writer) string {
+	var p map[string]any
+	_ = json.Unmarshal(raw, &p) // p stays nil on error; getters handle that
+	event := str(p, "hook_event_name")
+	if !stampsEnabled() {
+		return event
+	}
+
+	clock := now.Format(stampLayout)
+	var out any
+	switch event {
+	case "Stop":
+		out = map[string]any{"systemMessage": "Finished " + clock}
+	case "Notification":
+		// Control chars (ANSI escapes, newlines) would reach the terminal.
+		msg := stripControl(str(p, "message"))
+		if msg == "" {
+			msg = "Waiting"
+		}
+		out = map[string]any{"systemMessage": msg + " — " + clock}
+	case "MessageDisplay":
+		delta, ok := p["delta"].(string)
+		index, isNum := numField(p, "index")
+		if !ok || !isNum {
+			return event
+		}
+		if index == 0 {
+			delta = "[" + clock + "] " + delta
+		}
+		out = map[string]any{"hookSpecificOutput": map[string]any{
+			"hookEventName": event, "displayContent": delta,
+		}}
+	case "UserPromptSubmit":
+		if !stampContext() {
+			return event
+		}
+		out = map[string]any{"hookSpecificOutput": map[string]any{
+			"hookEventName":     event,
+			"additionalContext": "Message sent at local time " + now.Format(stampLayout+" MST"),
+		}}
+	default:
+		return event
+	}
+
+	b, err := json.Marshal(out)
+	if err != nil {
+		debugf("stamp: %v", err) // never the payload: delta is chat content
+		return event
+	}
+	if _, err := fmt.Fprintln(w, string(b)); err != nil {
+		debugf("stamp write: %v", err)
+	}
+	return event
 }
 
 // buildEvent extracts the fields we care about from a hook payload and returns

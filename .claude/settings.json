@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "MessageDisplay": [
+      {
+        "hooks": [
+          {
+            "command": "command -v clodhopper >/dev/null 2>&1 && clodhopper ingest --source-app clodhopper 2>/dev/null || true",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "hooks": [
