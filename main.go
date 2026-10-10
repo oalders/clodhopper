@@ -99,7 +99,9 @@ USAGE
 ENV
   CLODHOPPER_DB                    SQLite path (default ~/.claude/clodhopper/var/events.db)
   CLODHOPPER_RETAIN_DAYS           retention window in days (default 14)
-  CLODHOPPER_DISABLED=1            make ingest a no-op
+  CLODHOPPER_DISABLED=1            stop ingest capturing events (transcript stamps still print)
+  CLODHOPPER_STAMPS=0              turn off the finished/waiting/message time stamps in the transcript
+  CLODHOPPER_STAMP_CONTEXT=1       also tell the model the local time each prompt was sent
   CLODHOPPER_PORT                  dashboard port (default 4555)
   CLODHOPPER_HOST                  dashboard bind address (default 127.0.0.1)
   CLODHOPPER_REFRESH_SECS          dashboard live-update poll cadence, 0 = off (default 5)
@@ -172,6 +174,17 @@ func defaultHost() string {
 		return v
 	}
 	return "127.0.0.1"
+}
+
+// stampsEnabled reads CLODHOPPER_STAMPS; only "0" turns the transcript stamps off.
+func stampsEnabled() bool {
+	return os.Getenv("CLODHOPPER_STAMPS") != "0"
+}
+
+// stampContext reads CLODHOPPER_STAMP_CONTEXT; "1" opts in to telling the model
+// when each prompt was sent (it costs context tokens, so it is off by default).
+func stampContext() bool {
+	return os.Getenv("CLODHOPPER_STAMP_CONTEXT") == "1"
 }
 
 // allowPublic reads CLODHOPPER_ALLOW_PUBLIC; "1" opts in to binding a public IP.

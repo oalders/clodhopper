@@ -278,6 +278,34 @@ The choice persists across reloads and rides along with the other query params
 error (bad JSON, unwritable DB, …) results in exit 0, and diagnostics are
 written to stderr only when `CLODHOPPER_DEBUG` is set.
 
+### Timestamps in the transcript
+
+`ingest` also prints a small hook response that makes Claude Code show the local
+time (24-hour `15:04:05`) in the session transcript, so a glance tells you when
+an agent finished or started waiting:
+
+| Hook | What you see |
+|---|---|
+| `Stop` | `Finished 15:04:05` |
+| `Notification` | the notification text, then ` — 15:04:05` (`Waiting — 15:04:05` if it has none) |
+| `MessageDisplay` | each assistant message prefixed with `[15:04:05] ` |
+| `UserPromptSubmit` | nothing visible; with `CLODHOPPER_STAMP_CONTEXT=1` the model is told `Message sent at local time 15:04:05 EDT` |
+
+The stamp is printed before anything touches the database, so an unwritable DB
+or a slow `git` never costs you one. `MessageDisplay` fires for every streamed
+chunk and carries the message text, so it is never recorded — it only stamps.
+`CLODHOPPER_STAMPS=0` turns every stamp off; `CLODHOPPER_DISABLED=1` stops
+capture but leaves the stamps on. The time zone is the hook process's local
+zone (`TZ` is honoured).
+
+Installs wired before this feature lack the `MessageDisplay` hook: re-run
+`clodhopper init` (it only adds what is missing) to get the message prefix.
+`MessageDisplay` needs a Claude Code version that emits it; older versions simply
+never fire it.
+
+Known limitation: a turn you interrupt (Esc) fires no `Stop` hook, so it gets no
+`Finished` stamp.
+
 ### Tearing down agents from scripts
 
 The roster treats a session as gone when it sees a `SessionEnd` event. A hard
@@ -311,7 +339,9 @@ pane's `SIGHUP` usually kills it before cleanup runs.
 |---|---|---|
 | `CLODHOPPER_DB` | `~/.claude/clodhopper/var/events.db` | SQLite path. |
 | `CLODHOPPER_RETAIN_DAYS` | `14` | Events older than this are pruned (opportunistically on ~1% of ingests, and on demand via `prune`). |
-| `CLODHOPPER_DISABLED` | unset | `1` makes `ingest` a no-op. |
+| `CLODHOPPER_DISABLED` | unset | `1` stops `ingest` capturing events. Transcript stamps still print (see `CLODHOPPER_STAMPS`). |
+| `CLODHOPPER_STAMPS` | on | `0` turns off the finished/waiting/message timestamps `ingest` prints into the transcript. |
+| `CLODHOPPER_STAMP_CONTEXT` | unset | `1` also tells the model the local time each prompt was sent (adds a line of context per prompt). |
 | `CLODHOPPER_PORT` | `4555` | Dashboard port. |
 | `CLODHOPPER_HOST` | `127.0.0.1` | Dashboard bind address. Set `0.0.0.0` for container/LAN access. |
 | `CLODHOPPER_ALLOW_PUBLIC` | unset | Set to `1` to allow `serve` to bind a public IP (refused by default; the dashboard has no auth or TLS). Also settable per-run with `--allow-public`. |

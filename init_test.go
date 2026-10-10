@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -81,6 +82,31 @@ func TestMergeClodhopperHooks_Idempotent(t *testing.T) {
 	}
 	if added != 0 || skipped != len(clodhopperEvents) {
 		t.Fatalf("second pass added=%d skipped=%d, want 0/%d", added, skipped, len(clodhopperEvents))
+	}
+}
+
+// An install wired before MessageDisplay existed picks it up on re-running init,
+// and nothing else changes.
+func TestMergeClodhopperHooks_AddsMessageDisplayToOldInstall(t *testing.T) {
+	hooks := map[string]any{}
+	for _, ev := range clodhopperEvents {
+		if ev != "MessageDisplay" {
+			hooks[ev] = []any{hookGroup(testCmd)}
+		}
+	}
+	if len(hooks) != 12 {
+		t.Fatalf("seeded %d events, want the previous 12", len(hooks))
+	}
+	settings := map[string]any{"hooks": hooks}
+	added, skipped, err := mergeClodhopperHooks(settings, testCmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if added != 1 || skipped != 12 {
+		t.Fatalf("added=%d skipped=%d, want 1/12", added, skipped)
+	}
+	if groups, ok := hooks["MessageDisplay"].([]any); !ok || len(groups) != 1 {
+		t.Fatalf("MessageDisplay not wired: %v", hooks["MessageDisplay"])
 	}
 }
 
@@ -268,8 +294,8 @@ func TestDoInit_WritesProjectSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	hooks := settings["hooks"].(map[string]any)
-	if len(hooks) != 12 {
-		t.Fatalf("want 12 events, got %d", len(hooks))
+	if len(hooks) != len(clodhopperEvents) {
+		t.Fatalf("want %d events, got %d", len(clodhopperEvents), len(hooks))
 	}
 	g := hooks["PreToolUse"].([]any)[0].(map[string]any)["hooks"].([]any)[0].(map[string]any)
 	if !strings.Contains(g["command"].(string), "command -v clodhopper") {
@@ -278,7 +304,7 @@ func TestDoInit_WritesProjectSettings(t *testing.T) {
 	if !strings.Contains(g["command"].(string), "--source-app mmir") {
 		t.Errorf("source-app not applied: %v", g["command"])
 	}
-	if !strings.Contains(out.String(), "wired 12 event(s)") {
+	if want := fmt.Sprintf("wired %d event(s)", len(clodhopperEvents)); !strings.Contains(out.String(), want) {
 		t.Errorf("summary: %q", out.String())
 	}
 }

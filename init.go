@@ -44,6 +44,7 @@ var clodhopperEvents = []string{
 	"PreToolUse", "PostToolUse", "PostToolUseFailure",
 	"Stop", "Notification", "PermissionRequest",
 	"SubagentStart", "SubagentStop", "PreCompact",
+	"MessageDisplay",
 }
 
 // hookGroup returns one matcher-less hook group ({"hooks":[{...}]}) for command.

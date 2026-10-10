@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 )
 
@@ -235,5 +238,146 @@ func TestRunIngest_EmptyStdinNoOp(t *testing.T) {
 	})
 	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
 		t.Errorf("expected no DB created for empty stdin")
+	}
+}
+
+// withStdout replaces os.Stdout with a temp file for the duration of fn and
+// returns what fn wrote to it.
+func withStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	orig := os.Stdout
+	os.Stdout = f
+	defer func() { os.Stdout = orig }()
+	fn()
+	out, err := os.ReadFile(f.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(out)
+}
+
+func TestStamp(t *testing.T) {
+	now := time.Date(2026, 10, 10, 14, 5, 9, 0, time.FixedZone("EDT", -4*3600))
+	tests := []struct {
+		name    string
+		raw     string
+		context bool
+		want    string // "" means nothing printed
+	}{
+		{"stop", `{"hook_event_name":"Stop"}`, false,
+			`{"systemMessage":"Finished 14:05:09"}`},
+		{"notification", `{"hook_event_name":"Notification","message":"Claude needs your permission"}`, false,
+			`{"systemMessage":"Claude needs your permission — 14:05:09"}`},
+		{"notification without message", `{"hook_event_name":"Notification"}`, false,
+			`{"systemMessage":"Waiting — 14:05:09"}`},
+		{"message first chunk", `{"hook_event_name":"MessageDisplay","index":0,"delta":"Hello"}`, false,
+			`{"hookSpecificOutput":{"displayContent":"[14:05:09] Hello","hookEventName":"MessageDisplay"}}`},
+		{"message later chunk", `{"hook_event_name":"MessageDisplay","index":3,"delta":" world"}`, false,
+			`{"hookSpecificOutput":{"displayContent":" world","hookEventName":"MessageDisplay"}}`},
+		{"message malformed", `{"hook_event_name":"MessageDisplay","index":"0","delta":7}`, false, ""},
+		{"other event", `{"hook_event_name":"PreToolUse","tool_name":"Bash"}`, false, ""},
+		{"prompt, context off", `{"hook_event_name":"UserPromptSubmit","prompt":"hi"}`, false, ""},
+		{"prompt, context on", `{"hook_event_name":"UserPromptSubmit","prompt":"hi"}`, true,
+			`{"hookSpecificOutput":{"additionalContext":"Message sent at local time 14:05:09 EDT","hookEventName":"UserPromptSubmit"}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.context {
+				t.Setenv("CLODHOPPER_STAMP_CONTEXT", "1")
+			}
+			var buf bytes.Buffer
+			stamp([]byte(tt.raw), now, &buf)
+			got := buf.String()
+			if tt.want == "" {
+				if got != "" {
+					t.Fatalf("want no output, got %q", got)
+				}
+				return
+			}
+			// Exactly one JSON object, and nothing after it.
+			dec := json.NewDecoder(strings.NewReader(got))
+			var obj any
+			if err := dec.Decode(&obj); err != nil {
+				t.Fatalf("output is not JSON: %q (%v)", got, err)
+			}
+			if dec.More() {
+				t.Fatalf("want exactly one JSON object, got %q", got)
+			}
+			if got != tt.want+"\n" {
+				t.Errorf("got  %q\nwant %q", got, tt.want+"\n")
+			}
+		})
+	}
+}
+
+func TestRunIngest_MessageDisplayWritesNoRow(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "events.db")
+	t.Setenv("CLODHOPPER_DB", dbPath)
+	out := withStdout(t, func() {
+		withStdin(t, `{"hook_event_name":"MessageDisplay","session_id":"s","index":0,"delta":"hi"}`, func() {
+			runIngest([]string{"--source-app", "myapp"})
+		})
+	})
+	if !strings.Contains(out, "] hi") {
+		t.Errorf("want the stamped message, got %q", out)
+	}
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Errorf("MessageDisplay must not touch the DB, stat err=%v", err)
+	}
+}
+
+func TestRunIngest_StampSurvivesUnwritableDB(t *testing.T) {
+	// A regular file as the DB's parent directory makes openDB fail.
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLODHOPPER_DB", filepath.Join(blocker, "events.db"))
+	var code int
+	out := withStdout(t, func() {
+		withStdin(t, `{"hook_event_name":"Stop","session_id":"s"}`, func() {
+			code = runIngest([]string{"--source-app", "myapp"})
+		})
+	})
+	if code != 0 {
+		t.Fatalf("runIngest exit=%d, want 0", code)
+	}
+	if !strings.Contains(out, `"systemMessage":"Finished `) {
+		t.Errorf("want the Finished stamp despite the DB failure, got %q", out)
+	}
+}
+
+func TestRunIngest_StampsOff(t *testing.T) {
+	t.Setenv("CLODHOPPER_DB", filepath.Join(t.TempDir(), "events.db"))
+	t.Setenv("CLODHOPPER_STAMPS", "0")
+	out := withStdout(t, func() {
+		withStdin(t, `{"hook_event_name":"Stop","session_id":"s"}`, func() {
+			runIngest([]string{"--source-app", "myapp"})
+		})
+	})
+	if out != "" {
+		t.Errorf("CLODHOPPER_STAMPS=0 must print nothing, got %q", out)
+	}
+}
+
+func TestRunIngest_DisabledStillStamps(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "events.db")
+	t.Setenv("CLODHOPPER_DB", dbPath)
+	t.Setenv("CLODHOPPER_DISABLED", "1")
+	out := withStdout(t, func() {
+		withStdin(t, `{"hook_event_name":"Stop","session_id":"s"}`, func() {
+			runIngest([]string{"--source-app", "myapp"})
+		})
+	})
+	if !strings.Contains(out, `"systemMessage":"Finished `) {
+		t.Errorf("DISABLED suppresses capture only; want the stamp, got %q", out)
+	}
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Errorf("expected no DB created when disabled, stat err=%v", err)
 	}
 }
