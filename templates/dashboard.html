@@ -364,8 +364,9 @@
     .actcol { display: flex; flex-direction: column; gap: 6px; }
     .actcol.prcol { flex: 1 1 320px; }
     /* Fixed width so arming rebase/end (confirm label, ✕, caveat) can't widen the
-       column, wrap it and move the confirm button (#128); 14rem fits the widest. */
-    .actcol.rowcol { width: 14rem; }
+       column, wrap it and move the confirm button (#128); px tracks the px type. */
+    .actcol.rowcol { width: 224px; }
+    .rowcol .actmsg { overflow-wrap: anywhere; }
     .acteyebrow {
       font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.06em;
       color: var(--text-3); /* matches the design; text-3 on the surface-2 panel is ~4.5:1 (clears AA) */

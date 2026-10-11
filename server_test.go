@@ -1816,7 +1816,7 @@ func TestDashboardRendersEndButtonOnlyWhenEnabled(t *testing.T) {
 // phone rule of equal specificity so phones still get a full-width column.
 func TestDashboardFixesRowActionsColumnWidth(t *testing.T) {
 	html := renderDashboard(t, dashboardData{})
-	fixed := strings.Index(html, ".actcol.rowcol { width: 14rem; }")
+	fixed := strings.Index(html, ".actcol.rowcol { width: 224px; }")
 	phone := strings.Index(html, ".actrow .actcol { width: 100%; }")
 	if fixed < 0 || phone < 0 {
 		t.Fatalf("missing rule: rowcol at %d, phone at %d", fixed, phone)
