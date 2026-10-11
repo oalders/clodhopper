@@ -1850,12 +1850,15 @@ func TestHandleActionLANPeerBypassIsRefused(t *testing.T) {
 // Every action that can run a command on the host is refused from a LAN peer
 // and reaches its subprocess from loopback.
 func TestHandleActionExecActionsGatedOnPeer(t *testing.T) {
-	for _, action := range []string{"squash", "close", "ready", "monitor-ci", "new-monitor", "rebase"} {
+	for _, action := range []string{"squash", "close", "ready", "monitor-ci", "new-monitor", "reload-plugins", "rebase", "broadcast-reload"} {
 		t.Run(action, func(t *testing.T) {
 			db, cfg, logPath := gatedCfg(t)
+			// Close to gatedCfg's event, so broadcast-reload's fresh roster
+			// still holds the seeded session.
+			now := time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC)
 
 			w := httptest.NewRecorder()
-			handleAction(w, actionReqFrom("192.168.1.5:1234", "live-1", action, false, "secret", "127.0.0.1"), db, cfg, time.Now())
+			handleAction(w, actionReqFrom("192.168.1.5:1234", "live-1", action, false, "secret", "127.0.0.1"), db, cfg, now)
 			if w.Code != http.StatusForbidden {
 				t.Fatalf("LAN peer: code = %d, want 403", w.Code)
 			}
@@ -1864,7 +1867,7 @@ func TestHandleActionExecActionsGatedOnPeer(t *testing.T) {
 			}
 
 			w = httptest.NewRecorder()
-			handleAction(w, actionReqFrom("127.0.0.1:54321", "live-1", action, false, "secret", "127.0.0.1"), db, cfg, time.Now())
+			handleAction(w, actionReqFrom("127.0.0.1:54321", "live-1", action, false, "secret", "127.0.0.1"), db, cfg, now)
 			if w.Code == http.StatusForbidden {
 				t.Fatalf("loopback peer: code = 403, want the action to run")
 			}
@@ -2549,5 +2552,115 @@ func TestHandleActionProxyRefusedBeforeTokenCheck(t *testing.T) {
 	}
 	if et := queryLatestEventType(t, db, "live-1"); et == "SessionEnd" {
 		t.Fatal("a proxied peer dismissed a roster row")
+	}
+}
+
+func TestHandleActionReloadPluginsBuildsArgv(t *testing.T) {
+	db := openTestDB(t)
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "rp", Cwd: t.TempDir(), TmuxPane: "%4", EventType: "Stop", PayloadJSON: "{}"})
+	stub, logPath := tmuxLogStub(t)
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	cfg.tmux = stub
+
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("rp", "reload-plugins", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	got, _ := os.ReadFile(logPath)
+	if want := "send-keys -t %4 /reload-plugins Enter\n"; string(got) != want {
+		t.Fatalf("argv = %q, want %q", got, want)
+	}
+}
+
+func TestReloadSkipReason(t *testing.T) {
+	cases := []struct {
+		pane, status string
+		includeBusy  bool
+		send         bool
+	}{
+		{"%1", statusWaiting, false, true},
+		{"%1", statusIdle, false, true},
+		{"%1", statusBackground, false, true},
+		{"%1", statusWorking, false, false},
+		{"%1", statusWorking, true, true},
+		// Enter would answer the prompt, so these are never sent, busy or not.
+		{"%1", statusApproval, true, false},
+		{"%1", statusInput, true, false},
+		{"%1", statusNeedsYou, true, false},
+		{"%1", statusEnded, true, false},
+		{"%1", "something new", true, false},
+		{"", statusWaiting, true, false},
+		{"; rm -rf /", statusWaiting, true, false},
+	}
+	for _, c := range cases {
+		reason := reloadSkipReason(Agent{TmuxPane: c.pane, Status: c.status}, c.includeBusy)
+		if (reason == "") != c.send {
+			t.Errorf("pane=%q status=%q busy=%v: reason=%q, want send=%v", c.pane, c.status, c.includeBusy, reason, c.send)
+		}
+	}
+}
+
+func TestHandleActionBroadcastReload(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	seed := func(ts, sess, branch, pane, etype string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: sess, Branch: branch, Cwd: dir, TmuxPane: pane, EventType: etype, PayloadJSON: "{}"})
+	}
+	seed("2026-08-12T10:00:00Z", "waiting-1", "feat-a", "%1", "Stop")
+	seed("2026-08-12T10:00:00Z", "working-1", "feat-b", "%2", "PreToolUse")
+	seed("2026-08-12T10:00:00Z", "prompt-1", "feat-c", "%3", "PermissionRequest")
+	seed("2026-08-12T10:00:00Z", "nopane-1", "feat-d", "", "Stop")
+	seed("2026-08-12T09:00:00Z", "oldpane-1", "feat-e", "%5", "Stop")
+	seed("2026-08-12T09:30:00Z", "newpane-1", "feat-e", "%5", "Stop")
+	now := time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC)
+
+	broadcast := func(includeBusy bool) (sent, report string) {
+		t.Helper()
+		stub, logPath := tmuxLogStub(t)
+		cfg := newActionCfg("/bin/true", "/bin/true")
+		cfg.tmux = stub
+		r := actionReq("", "broadcast-reload", false, "secret", "127.0.0.1")
+		if includeBusy {
+			// FormValue merges the query string with the body, so this is the
+			// same field the dashboard posts in its form body.
+			r.URL.RawQuery = "include_busy=true"
+		}
+		w := httptest.NewRecorder()
+		handleAction(w, r, db, cfg, now)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+		}
+		d := decodeActionJSON(t, w)
+		if !d.OK {
+			t.Fatalf("ok = false: %q", d.Output)
+		}
+		got, _ := os.ReadFile(logPath)
+		return string(got), d.Output
+	}
+
+	sent, report := broadcast(false)
+	if want := "send-keys -t %1 /reload-plugins Enter\nsend-keys -t %5 /reload-plugins Enter\n"; sent != want {
+		t.Fatalf("default sends = %q, want %q", sent, want)
+	}
+	for _, line := range []string{
+		"sent feat-a waiting-",
+		"skipped feat-b working-: working — retry, or include working",
+		"skipped feat-c prompt-1: blocked on a prompt — Enter would answer it",
+		"skipped feat-d nopane-1: not in tmux — reload manually",
+		"skipped feat-e oldpane-: same pane as newer session newpane-",
+		"sent feat-e newpane-",
+	} {
+		if !strings.Contains(report, line+"\n") && !strings.HasSuffix(report, line) {
+			t.Errorf("report missing %q:\n%s", line, report)
+		}
+	}
+
+	sent, report = broadcast(true)
+	if !strings.Contains(sent, "send-keys -t %2 /reload-plugins Enter\n") || strings.Contains(sent, "%3") {
+		t.Fatalf("include_busy sends = %q, want working %%2 sent and prompt %%3 still skipped", sent)
+	}
+	if !strings.Contains(report, "sent feat-b working-") {
+		t.Errorf("include_busy report missing working send:\n%s", report)
 	}
 }

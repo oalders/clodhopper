@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -192,7 +193,7 @@ func runTmux(tmuxBin, dir string, args []string, timeout time.Duration) (stdout 
 
 // runSessionAction executes one of the tmux session actions against a pane the
 // caller has already resolved server-side and validated with paneIDRe. The
-// command strings (/clear, /monitor-ci, nn claude) are FIXED constants; only pane
+// command strings (/clear, /monitor-ci, /reload-plugins, nn claude) are FIXED constants; only pane
 // ids vary, and any pane split-window emits is re-validated before reuse.
 //
 //   - monitor-ci: send /clear into the agent's own pane, pause, then send
@@ -208,6 +209,8 @@ func runTmux(tmuxBin, dir string, args []string, timeout time.Duration) (stdout 
 //     finish booting before those keys land, so there is an inherent startup race
 //     — we send immediately after the split (no shell sleep is available). It
 //     does NOT tear the session down.
+//   - reload-plugins: send /reload-plugins into the agent's own pane. One
+//     send-keys call: nothing redraws first, so there is no swallowed-keys race.
 func runSessionAction(tmuxBin, action, pane, dir string, clearDelay time.Duration) actionResult {
 	switch action {
 	case "monitor-ci":
@@ -236,6 +239,10 @@ func runSessionAction(tmuxBin, action, pane, dir string, clearDelay time.Duratio
 		_, res2 := runTmux(tmuxBin, dir,
 			[]string{"send-keys", "-t", newPane, "/monitor-ci", "Enter"}, tmuxTimeout)
 		return res2
+	case "reload-plugins":
+		_, res := runTmux(tmuxBin, dir,
+			[]string{"send-keys", "-t", pane, "/reload-plugins", "Enter"}, tmuxTimeout)
+		return res
 	default:
 		return actionResult{ExitCode: -1, Output: "unknown session action"}
 	}
@@ -927,12 +934,12 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		return
 	}
 
-	// Session actions (monitor-ci / new-monitor) act on the agent's LIVE tmux
+	// Session actions (monitor-ci / new-monitor / reload-plugins) act on the agent's LIVE tmux
 	// pane rather than merging a PR, so they take a separate path: the pane is
 	// resolved server-side from session_id and validated against paneIDRe before
 	// any tmux command runs. They reuse every guard already checked above
 	// (enabled, method, host, token) plus the inflight dedupe below.
-	if action == "monitor-ci" || action == "new-monitor" {
+	if action == "monitor-ci" || action == "new-monitor" || action == "reload-plugins" {
 		pane, err := latestPaneForSession(db, sessionID)
 		if err != nil {
 			http.Error(w, "lookup failed", http.StatusInternalServerError)
@@ -956,6 +963,27 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		cwd, _ := latestCwdForSession(db, sessionID)
 		res := runSessionAction(cfg.tmux, action, pane, cwd, cfg.clearDelay)
 		writeActionResult(w, res)
+		return
+	}
+
+	// broadcast-reload sends /reload-plugins to every eligible roster row at
+	// once. It takes no session_id: the targets are re-derived here from a fresh
+	// roster (never from the client), and every pane still passes paneIDRe. One
+	// lock for the broadcast itself keeps two from interleaving; each send also
+	// takes its row's session lock, so it cannot race a per-row action.
+	if action == "broadcast-reload" {
+		const broadcastLock = "broadcast:reload-plugins"
+		if !cfg.inflight.acquire(broadcastLock) {
+			http.Error(w, "broadcast already running", http.StatusConflict)
+			return
+		}
+		defer cfg.inflight.release(broadcastLock)
+		agents, err := agentRoster(db, time.Duration(waitingRetainHours())*time.Hour, now)
+		if err != nil {
+			http.Error(w, "lookup failed", http.StatusInternalServerError)
+			return
+		}
+		writeActionResult(w, broadcastReload(cfg, agents, r.FormValue("include_busy") == "true"))
 		return
 	}
 
@@ -1072,6 +1100,77 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 	}
 
 	writeActionResult(w, res)
+}
+
+// reloadSkipReason says why broadcast-reload must NOT send /reload-plugins to a
+// roster row, or "" when it should. Enter is part of the send, so a row parked
+// on a permission prompt or a question is never a target, include_busy or not:
+// the keystrokes would answer the prompt rather than run the command. Unknown
+// statuses fail closed.
+func reloadSkipReason(a Agent, includeBusy bool) string {
+	if !paneIDRe.MatchString(a.TmuxPane) {
+		return "not in tmux — reload manually"
+	}
+	switch a.Status {
+	case statusApproval, statusInput, statusNeedsYou:
+		return "blocked on a prompt — Enter would answer it"
+	case statusWorking:
+		if includeBusy {
+			return ""
+		}
+		return "working — retry, or include working"
+	case statusWaiting, statusIdle, statusBackground:
+		return ""
+	}
+	return "status " + strconv.Quote(a.Status) + " — not sent"
+}
+
+// broadcastReload sends /reload-plugins to every eligible row in agents and
+// returns a one-line-per-row report. Rows sharing a pane (a resumed or
+// restarted agent leaves its old session on the roster) are sent to once, via
+// the newest session, which is the one actually running there. ok is false iff
+// a tmux send failed or timed out; skips are expected and do not fail it.
+func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool) actionResult {
+	if len(agents) == 0 {
+		return actionResult{Output: "no sessions on the roster"}
+	}
+	newest := map[string]Agent{}
+	for _, a := range agents {
+		if cur, ok := newest[a.TmuxPane]; a.TmuxPane != "" && (!ok || a.IdleSince > cur.IdleSince) {
+			newest[a.TmuxPane] = a
+		}
+	}
+	var out strings.Builder
+	res := actionResult{}
+	for _, a := range agents {
+		label := shortID(a.SessionID)
+		if name := cmp.Or(a.Branch, a.BranchGuess, a.TmuxSession); name != "" {
+			label = name + " " + label
+		}
+		reason := reloadSkipReason(a, includeBusy)
+		if n, ok := newest[a.TmuxPane]; reason == "" && ok && n.SessionID != a.SessionID {
+			reason = "same pane as newer session " + shortID(n.SessionID)
+		}
+		if reason != "" {
+			fmt.Fprintf(&out, "skipped %s: %s\n", label, reason)
+			continue
+		}
+		lock := sidKey(a.SessionID)
+		if !cfg.inflight.acquire(lock) {
+			fmt.Fprintf(&out, "skipped %s: action already running\n", label)
+			continue
+		}
+		r := runSessionAction(cfg.tmux, "reload-plugins", a.TmuxPane, a.Cwd, 0)
+		cfg.inflight.release(lock)
+		if r.ExitCode != 0 || r.TimedOut {
+			res.ExitCode = -1
+			fmt.Fprintf(&out, "error %s: %s\n", label, strings.TrimSpace(r.Output))
+			continue
+		}
+		fmt.Fprintf(&out, "sent %s\n", label)
+	}
+	res.Output = strings.TrimRight(out.String(), "\n")
+	return res
 }
 
 // endSession marks one dashboard session ended and returns the actionResult the

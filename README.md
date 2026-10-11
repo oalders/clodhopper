@@ -235,7 +235,7 @@ The row cluster adds two more buttons, each with the same two-step confirm:
   (including a refusal) writes one audit line to serve's stderr.
 - **end** just dismisses the roster row; it never touches the repo or the agent.
 
-When a row's Claude session is in a live tmux pane, it also gains two **session
+When a row's Claude session is in a live tmux pane, it also gains three **session
 actions** that drive that pane directly (they do not touch a PR):
 
 - **monitor ci** sends `/clear` then `/monitor-ci` into the agent's own pane.
@@ -246,6 +246,14 @@ actions** that drive that pane directly (they do not touch a PR):
 - **+ watcher** is additive: it opens a **new** pane in the existing tmux
   session running `nn claude`, then sends `/monitor-ci` to it, leaving the
   original agent untouched.
+- **reload plugins** sends `/reload-plugins` into the agent's own pane.
+
+A **reload plugins (all)** button above the roster sends `/reload-plugins` to
+every session at once and reports, per row, what it sent or skipped and why.
+The targets are re-derived server-side: rows not in tmux are listed for a manual
+reload, rows sharing a pane are sent to once (via the newest session), working
+rows are skipped unless **include working** is ticked, and a row blocked on a
+permission prompt or question is **never** sent to (the Enter would answer it).
 
 Every row — pane or no pane — also gains an **end** button. It is the dashboard
 equivalent of `clodhopper end --session <id>`: it writes the synthetic

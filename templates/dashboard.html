@@ -162,6 +162,8 @@
       font-size: .7em; color: var(--text-3); pointer-events: none;
     }
     .ck-spring { flex: 1 1 24px; }
+    .ck-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 16px; }
+    .ck-bulk pre { margin: 0; flex-basis: 100%; }
 
     /* --- Live meta line (inside #content so the poller keeps it current) --- */
     .ck-meta { font-size: var(--fs-sm); color: var(--text-3); margin: 0 0 16px; text-align: right; }
@@ -735,6 +737,16 @@
       </span>
     </span>
   </form>
+
+  {{ if .ExecEnabled }}
+  <!-- Outside #content on purpose: the poller replaces that element wholesale,
+       which would wipe the report (and a pressed button) mid-display. -->
+  <div class="ck-bulk" role="group" aria-label="all sessions">
+    <button type="button" id="ck-reloadall" class="ck-btn" title="send /reload-plugins to every idle or waiting tmux session on the roster">reload plugins (all)</button>
+    <label class="actforce"><input type="checkbox" id="ck-reloadbusy"> include working</label>
+    <pre id="ck-reloadout" class="actmsg" aria-live="polite"></pre>
+  </div>
+  {{ end }}
 
   <main id="content" aria-live="polite" aria-atomic="false">{{ template "content" . }}</main>
 
@@ -2070,6 +2082,7 @@
                  : action === 'ready' ? 'PR marked ready'
                  : action === 'monitor-ci' ? 'sent /monitor-ci'
                  : action === 'new-monitor' ? 'watcher started'
+                 : action === 'reload-plugins' ? 'sent /reload-plugins'
                  : action === 'rebase' ? 'rebased onto the default branch and force-pushed'
                  : 'done')
               : ('failed: ' + (d.output || ('exit ' + d.exitCode)));
@@ -2104,6 +2117,30 @@
         })
         .finally(function () { delete group.dataset.ckFiring; window.__ckActionBusy = Math.max(0, window.__ckActionBusy - 1); });
     }
+
+    // "reload plugins (all)": fire() is built around a per-row .actgroup, so the
+    // broadcast gets this short sibling with the same request shape. It lives
+    // outside #content, so it needs no __ckActionBusy hold or noteMsg replay.
+    var reloadAll = document.getElementById('ck-reloadall');
+    if (reloadAll) reloadAll.addEventListener('click', function () {
+      var out = document.getElementById('ck-reloadout');
+      var busy = document.getElementById('ck-reloadbusy').checked;
+      reloadAll.disabled = true;
+      out.textContent = 'working…';
+      fetch('/api/action', {
+        method: 'POST',
+        headers: {
+          'X-Clodhopper-Token': CSRF,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: 'action=broadcast-reload' + (busy ? '&include_busy=true' : '')
+      })
+        .then(function (resp) { return resp.json().catch(function () { return { ok: false, output: 'HTTP ' + resp.status }; }); })
+        // textContent, never innerHTML: the report carries tmux output.
+        .then(function (d) { out.textContent = d.output || (d.ok ? 'done' : 'failed'); })
+        .catch(function (e) { out.textContent = 'request failed: ' + e; })
+        .finally(function () { reloadAll.disabled = false; });
+    });
 
     // The PR-mode chooser is a segmented toggle of role="radio" buttons, not
     // native radios, so selecting a mode moves aria-checked AND the roving
@@ -2173,7 +2210,7 @@
         unlock(group, true);
         return;
       }
-      // A no-confirm action (new-monitor: spawning a watcher destroys nothing)
+      // A no-confirm action (new-monitor, reload-plugins: neither destroys anything)
       // fires on a single press. If a sibling in the same cluster was mid-confirm,
       // drop that armed state first so it cannot fire by accident.
       if (el.getAttribute('data-noconfirm') === 'true') {
@@ -2292,7 +2329,7 @@
       if (el.classList.contains('practforce')) return 'force';
       if (el.classList.contains('prmode')) return 'mode:' + (el.getAttribute('data-mode') || '');
       // A group can hold MORE than the armed run button: rowform renders rebase
-      // + end and actsession renders monitor-ci + new-monitor, and arming
+      // + end and actsession renders monitor-ci + new-monitor + reload-plugins, and arming
       // disables neither. Naming the button by its action keeps a reader who
       // Tabbed to the sibling on that sibling, instead of being yanked back onto
       // the armed one. (The armed button itself round-trips through this arm too.)
@@ -2554,7 +2591,7 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>{{ end }}
-          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" data-peek="{{ .SessionID }}" aria-expanded="false" aria-controls="panerow-{{ .SessionID }}" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · squash · admin · close · ready · rebase · end"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" data-peek="{{ .SessionID }}" aria-expanded="false" aria-controls="panerow-{{ .SessionID }}" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · reload plugins · squash · admin · close · ready · rebase · end"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
@@ -2565,6 +2602,7 @@
               <span class="actgroup actsession" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}">
                 <button type="button" class="pract" data-action="monitor-ci" title="/clear then /monitor-ci in the running pane">monitor ci</button>
                 <button type="button" class="pract" data-action="new-monitor" data-noconfirm="true" title="split a new pane running /monitor-ci">+ watcher</button>
+                <button type="button" class="pract" data-action="reload-plugins" data-noconfirm="true" title="send /reload-plugins to the running pane">reload plugins</button>
                 <span class="actmsg" aria-live="polite"></span>
               </span>
             </div>
