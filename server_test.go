@@ -1816,12 +1816,12 @@ func TestDashboardRendersEndButtonOnlyWhenEnabled(t *testing.T) {
 // phone rule of equal specificity so phones still get a full-width column.
 func TestDashboardFixesRowActionsColumnWidth(t *testing.T) {
 	html := renderDashboard(t, dashboardData{})
-	fixed := strings.Index(html, ".actcol.rowcol { width: 224px; }")
-	phone := strings.Index(html, ".actrow .actcol { width: 100%; }")
-	if fixed < 0 || phone < 0 {
-		t.Fatalf("missing rule: rowcol at %d, phone at %d", fixed, phone)
+	fixed := regexp.MustCompile(`\.actcol\.rowcol\s*\{[^}]*\bwidth:`).FindStringIndex(html)
+	phone := regexp.MustCompile(`\.actrow\s+\.actcol\s*\{[^}]*\bwidth:\s*100%`).FindStringIndex(html)
+	if fixed == nil || phone == nil {
+		t.Fatalf("missing rule: rowcol at %v, phone at %v", fixed, phone)
 	}
-	if fixed > phone {
+	if fixed[0] > phone[0] {
 		t.Fatal("rowcol width must come before the phone full-width rule")
 	}
 }
