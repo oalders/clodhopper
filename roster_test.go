@@ -475,6 +475,18 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 	// A subagent silent past staleWorkingSecs no longer holds the session.
 	ins(at(20), "s-stale", "SubagentStart", "a1", "")
 	ins(at(1), "s-stale", "Stop", "", "{}")
+	// Only the fresh one of a fresh/stale pair counts, and sets SubagentSince.
+	ins(at(20), "s-mixed", "SubagentStart", "a1", "")
+	ins(at(3), "s-mixed", "SubagentStart", "a2", "")
+	ins(at(1), "s-mixed", "Stop", "", "{}")
+	// Deliberate tradeoff: a subagent's tool events after Stop still drive status.
+	ins(at(4), "s-late", "SubagentStart", "a1", "")
+	ins(at(3), "s-late", "Stop", "", "{}")
+	ins(at(1), "s-late", "PreToolUse", "a1", "")
+	// A subagent asking permission is urgent, outranking the outstanding subagent.
+	ins(at(4), "s-perm", "SubagentStart", "a1", "")
+	ins(at(3), "s-perm", "Stop", "", "{}")
+	ins(at(1), "s-perm", "PermissionRequest", "a1", "")
 
 	agents, err := agentRoster(db, 16*time.Hour, now)
 	if err != nil {
@@ -488,23 +500,33 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 		sess   string
 		status string
 		count  int
+		since  int    // minutes ago of the earliest fresh start; checked only for statusSubagents
+		age    string // humanised since
 	}{
-		{"s-two", statusSubagents, 2},
-		{"s-idle", statusSubagents, 1},
-		{"s-done", statusWaiting, 0},
-		{"s-orphan", statusWaiting, 0},
-		{"s-stale", statusWaiting, 0},
+		{"s-two", statusSubagents, 2, 9, "9m"},
+		{"s-idle", statusSubagents, 1, 4, "4m"},
+		{"s-mixed", statusSubagents, 1, 3, "3m"},
+		{"s-done", statusWaiting, 0, 0, ""},
+		{"s-orphan", statusWaiting, 0, 0, ""},
+		{"s-stale", statusWaiting, 0, 0, ""},
+		{"s-late", statusWorking, 0, 0, ""},
+		{"s-perm", statusApproval, 0, 0, ""},
 	} {
 		a := got[c.sess]
 		if a.Status != c.status || a.Subagents != c.count {
 			t.Errorf("%s: want %q with %d subagents, got %q with %d", c.sess, c.status, c.count, a.Status, a.Subagents)
 		}
-		if c.status == statusSubagents && a.StatusRank <= 1 {
-			t.Errorf("%s: waiting on subagents must not rank as urgent, got rank %d", c.sess, a.StatusRank)
+		if c.status == statusSubagents {
+			if a.StatusRank <= 1 {
+				t.Errorf("%s: waiting on subagents must not rank as urgent, got rank %d", c.sess, a.StatusRank)
+			}
+			if want := now.Add(time.Duration(-c.since) * time.Minute).Unix(); a.SubagentSince != want || a.SubagentAge != c.age {
+				t.Errorf("%s: want SubagentSince %d (%s), got %d (%s)", c.sess, want, c.age, a.SubagentSince, a.SubagentAge)
+			}
 		}
-	}
-	if want := now.Add(-9 * time.Minute).Unix(); got["s-two"].SubagentSince != want {
-		t.Errorf("SubagentSince should be the earliest start %d, got %d", want, got["s-two"].SubagentSince)
+		if c.status == statusApproval && a.StatusRank != 1 {
+			t.Errorf("%s: a subagent permission request must rank urgent (1), got %d", c.sess, a.StatusRank)
+		}
 	}
 }
 

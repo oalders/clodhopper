@@ -539,7 +539,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	defer rows.Close()
 
 	// subagent tracks one background subagent by its start and latest event.
-	type subagent struct{ start, lastSeen string }
+	type subagent struct{ start, lastSeen time.Time }
 	type state struct {
 		a         Agent
 		lastTS    string
@@ -604,8 +604,10 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		// those with no start) leaves a stopped session waiting for you.
 		switch etype {
 		case "SubagentStart":
-			if agentID != "" { // an id-less start would match every main-agent event
-				s.subs[agentID] = &subagent{start: ts, lastSeen: ts}
+			// An id-less start would match every main-agent event; an unparseable
+			// ts is dropped so the session fails toward "waiting for you".
+			if t, err := time.Parse(time.RFC3339, ts); agentID != "" && err == nil {
+				s.subs[agentID] = &subagent{start: t, lastSeen: t}
 			}
 			continue
 		case "SubagentStop":
@@ -613,7 +615,9 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 			continue
 		}
 		if sub := s.subs[agentID]; sub != nil {
-			sub.lastSeen = ts
+			if t, err := time.Parse(time.RFC3339, ts); err == nil {
+				sub.lastSeen = t
+			}
 		}
 		s.a.LastEvent = etype
 		s.lastTS = ts
@@ -648,22 +652,21 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		a := s.a
 		a.Status, a.StatusRank = label, rank
 		// A turn that ended with subagents still running is not waiting on the
-		// user yet; only subagents heard from within staleWorkingSecs count, and
-		// an unparseable timestamp is skipped so it fails toward "waiting for you".
+		// user yet; only subagents heard from within staleWorkingSecs count.
 		if label == statusWaiting {
+			var earliest time.Time
 			for _, sub := range s.subs {
-				start, err1 := time.Parse(time.RFC3339, sub.start)
-				seen, err2 := time.Parse(time.RFC3339, sub.lastSeen)
-				if err1 != nil || err2 != nil || now.Sub(seen) >= staleWorkingSecs*time.Second {
+				if now.Sub(sub.lastSeen) >= staleWorkingSecs*time.Second {
 					continue
 				}
-				if a.Subagents == 0 || start.Unix() < a.SubagentSince {
-					a.SubagentSince = start.Unix()
+				if earliest.IsZero() || sub.start.Before(earliest) {
+					earliest = sub.start
 				}
 				a.Subagents++
 			}
 			if a.Subagents > 0 {
 				a.Status, a.StatusRank = statusSubagents, rankBackground
+				a.SubagentSince = earliest.Unix()
 				a.SubagentAge = humanizeSeconds(int(max(0, now.Unix()-a.SubagentSince)))
 			}
 		}

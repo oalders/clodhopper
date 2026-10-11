@@ -863,9 +863,10 @@ func TestViewSignature_IgnoresIdleButTracksEvents(t *testing.T) {
 	}
 
 	// A change in the running-subagent count repaints the badge text.
-	moreSubs := base
-	moreSubs.Agents = []Agent{{SessionID: "s1", Status: statusWorking, IdleSecs: 10, IdleSince: 100, Subagents: 2}}
-	if viewSignature(base) == viewSignature(moreSubs) {
+	oneSub, moreSubs := base, base
+	oneSub.Agents = []Agent{{SessionID: "s1", Status: statusSubagents, IdleSecs: 10, IdleSince: 100, Subagents: 1}}
+	moreSubs.Agents = []Agent{{SessionID: "s1", Status: statusSubagents, IdleSecs: 10, IdleSince: 100, Subagents: 2}}
+	if viewSignature(oneSub) == viewSignature(moreSubs) {
 		t.Error("signature unchanged after a subagent count change")
 	}
 }
@@ -1750,6 +1751,22 @@ func TestDashboardRendersVersionInFooter(t *testing.T) {
 	html := renderDashboard(t, d)
 	if !strings.Contains(html, `<span class="ck-ver" title="clodhopper 1.2.3 (commit abc1234, built 2026-01-01T00:00:00Z)">1.2.3</span>`) {
 		t.Fatalf("footer missing version span with detail tooltip; got:\n%s", html)
+	}
+}
+
+// A session waiting on subagents renders a background badge with the count
+// (singular/plural) and a ticking running time, the separator hidden from AT.
+func TestDashboardRendersWaitingOnSubagents(t *testing.T) {
+	for _, c := range []struct {
+		n    int
+		text string
+	}{{1, "waiting on 1 agent"}, {2, "waiting on 2 agents"}} {
+		d := dashboardData{Agents: []Agent{{SessionID: "s1", Status: statusSubagents, Subagents: c.n, SubagentSince: 1700000000, SubagentAge: "6m"}}}
+		want := `<td data-label="status" class="status background"><span class="ck-badge"><span class="ck-dot"></span>` + c.text +
+			` <span aria-hidden="true">·</span> <span class="ck-sr">running </span><span data-since="1700000000">6m</span></span></td>`
+		if html := renderDashboard(t, d); !strings.Contains(html, want) {
+			t.Errorf("%d subagents: badge %q missing in:\n%s", c.n, want, html)
+		}
 	}
 }
 
