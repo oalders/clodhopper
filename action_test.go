@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -2601,7 +2602,11 @@ func TestReloadSkipReason(t *testing.T) {
 	}
 }
 
-func TestHandleActionBroadcastReload(t *testing.T) {
+// seedBroadcastRoster seeds one row per broadcast outcome: waiting (sent),
+// working (skipped unless include_busy), prompt-blocked (never sent), no pane,
+// and two sessions sharing pane %5 (only the newer one is sent to).
+func seedBroadcastRoster(t *testing.T) *sql.DB {
+	t.Helper()
 	db := openTestDB(t)
 	dir := t.TempDir()
 	seed := func(ts, sess, branch, pane, etype string) {
@@ -2613,54 +2618,117 @@ func TestHandleActionBroadcastReload(t *testing.T) {
 	seed("2026-08-12T10:00:00Z", "nopane-1", "feat-d", "", "Stop")
 	seed("2026-08-12T09:00:00Z", "oldpane-1", "feat-e", "%5", "Stop")
 	seed("2026-08-12T09:30:00Z", "newpane-1", "feat-e", "%5", "Stop")
-	now := time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC)
+	return db
+}
 
-	broadcast := func(includeBusy bool) (sent, report string) {
-		t.Helper()
-		stub, logPath := tmuxLogStub(t)
-		cfg := newActionCfg("/bin/true", "/bin/true")
-		cfg.tmux = stub
-		r := actionReq("", "broadcast-reload", false, "secret", "127.0.0.1")
-		if includeBusy {
-			// FormValue merges the query string with the body, so this is the
-			// same field the dashboard posts in its form body.
-			r.URL.RawQuery = "include_busy=true"
-		}
-		w := httptest.NewRecorder()
-		handleAction(w, r, db, cfg, now)
-		if w.Code != http.StatusOK {
-			t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
-		}
-		d := decodeActionJSON(t, w)
-		if !d.OK {
-			t.Fatalf("ok = false: %q", d.Output)
-		}
-		got, _ := os.ReadFile(logPath)
-		return string(got), d.Output
+// runBroadcast posts broadcast-reload against db with tmux stubbed by stub and
+// returns the response's ok and output plus the sorted send-keys lines the stub
+// logged (sorted because roster order is not part of the contract).
+func runBroadcast(t *testing.T, db *sql.DB, stub, logPath string, includeBusy bool) (ok bool, report string, sent []string) {
+	t.Helper()
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	cfg.tmux = stub
+	r := actionReq("", "broadcast-reload", false, "secret", "127.0.0.1")
+	if includeBusy {
+		// FormValue merges the query string with the body, so this is the
+		// same field the dashboard posts in its form body.
+		r.URL.RawQuery = "include_busy=true"
 	}
+	w := httptest.NewRecorder()
+	handleAction(w, r, db, cfg, time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC))
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	got, _ := os.ReadFile(logPath)
+	sent = strings.Split(strings.TrimSpace(string(got)), "\n")
+	slices.Sort(sent)
+	d := decodeActionJSON(t, w)
+	return d.OK, d.Output, sent
+}
 
-	sent, report := broadcast(false)
-	if want := "send-keys -t %1 /reload-plugins Enter\nsend-keys -t %5 /reload-plugins Enter\n"; sent != want {
+func reportHas(report, line string) bool {
+	return strings.Contains(report, line+"\n") || strings.HasSuffix(report, line)
+}
+
+func TestHandleActionBroadcastReload(t *testing.T) {
+	db := seedBroadcastRoster(t)
+	var audit bytes.Buffer
+	old := auditw
+	auditw = &audit
+	t.Cleanup(func() { auditw = old })
+
+	stub, logPath := tmuxLogStub(t)
+	ok, report, sent := runBroadcast(t, db, stub, logPath, false)
+	if !ok {
+		t.Fatalf("ok = false: %q", report)
+	}
+	want := []string{"send-keys -t %1 /reload-plugins Enter", "send-keys -t %5 /reload-plugins Enter"}
+	if !slices.Equal(sent, want) {
 		t.Fatalf("default sends = %q, want %q", sent, want)
 	}
 	for _, line := range []string{
-		"sent feat-a waiting-",
-		"skipped feat-b working-: working — retry, or include working",
-		"skipped feat-c prompt-1: blocked on a prompt — Enter would answer it",
-		"skipped feat-d nopane-1: not in tmux — reload manually",
-		"skipped feat-e oldpane-: same pane as newer session newpane-",
-		"sent feat-e newpane-",
+		"sent feat-a " + shortID("waiting-1"),
+		"skipped feat-b " + shortID("working-1") + ": working — retry, or include working",
+		"skipped feat-c " + shortID("prompt-1") + ": " + promptBlockedReason,
+		"skipped feat-d " + shortID("nopane-1") + ": not in tmux — reload manually",
+		"skipped feat-e " + shortID("oldpane-1") + ": same pane as newer session " + shortID("newpane-1"),
+		"sent feat-e " + shortID("newpane-1"),
 	} {
-		if !strings.Contains(report, line+"\n") && !strings.HasSuffix(report, line) {
+		if !reportHas(report, line) {
 			t.Errorf("report missing %q:\n%s", line, report)
 		}
 	}
+	if want := "audit broadcast-reload ts=2026-08-12T10:01:00Z include_busy=false sent=2 skipped=4 errors=0\n"; !strings.Contains(audit.String(), want) {
+		t.Errorf("audit = %q, want it to contain %q", audit.String(), want)
+	}
 
-	sent, report = broadcast(true)
-	if !strings.Contains(sent, "send-keys -t %2 /reload-plugins Enter\n") || strings.Contains(sent, "%3") {
+	stub, logPath = tmuxLogStub(t)
+	_, report, sent = runBroadcast(t, db, stub, logPath, true)
+	if !slices.Contains(sent, "send-keys -t %2 /reload-plugins Enter") || slices.Contains(sent, "send-keys -t %3 /reload-plugins Enter") {
 		t.Fatalf("include_busy sends = %q, want working %%2 sent and prompt %%3 still skipped", sent)
 	}
-	if !strings.Contains(report, "sent feat-b working-") {
+	if !reportHas(report, "sent feat-b "+shortID("working-1")) {
 		t.Errorf("include_busy report missing working send:\n%s", report)
+	}
+}
+
+// One failed send fails the broadcast and is reported, but does not stop the
+// remaining eligible rows from being attempted.
+func TestHandleActionBroadcastReloadSendFails(t *testing.T) {
+	db := seedBroadcastRoster(t)
+	logPath := filepath.Join(t.TempDir(), "tmux.log")
+	stub := writeStub(t, "tmux", `echo "$@" >> `+logPath+`
+if [ "$3" = "%1" ]; then echo "no such pane" >&2; exit 3; fi
+exit 0`)
+
+	ok, report, sent := runBroadcast(t, db, stub, logPath, false)
+	if ok {
+		t.Fatalf("ok = true with a failed send: %q", report)
+	}
+	if !strings.Contains(report, "error feat-a "+shortID("waiting-1")+":") {
+		t.Errorf("report missing the error line:\n%s", report)
+	}
+	want := []string{"send-keys -t %1 /reload-plugins Enter", "send-keys -t %5 /reload-plugins Enter"}
+	if !slices.Equal(sent, want) {
+		t.Fatalf("sends = %q, want both eligible panes attempted %q", sent, want)
+	}
+}
+
+// Enter would answer the prompt, so an explicit per-row click is refused for a
+// prompt-blocked session before tmux runs.
+func TestHandleActionReloadPluginsRefusedOnPrompt(t *testing.T) {
+	db := openTestDB(t)
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "rp", Cwd: t.TempDir(), TmuxPane: "%4", EventType: "PermissionRequest", PayloadJSON: "{}"})
+	stub, logPath := tmuxLogStub(t)
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	cfg.tmux = stub
+
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("rp", "reload-plugins", false, "secret", "127.0.0.1"), db, cfg, time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("code = %d, want 409; body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := os.ReadFile(logPath); len(got) != 0 {
+		t.Fatalf("tmux ran on a prompt-blocked session: %q", got)
 	}
 }

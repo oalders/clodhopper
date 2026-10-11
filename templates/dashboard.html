@@ -163,7 +163,7 @@
     }
     .ck-spring { flex: 1 1 24px; }
     .ck-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 16px; }
-    .ck-bulk pre { margin: 0; flex-basis: 100%; }
+    .ck-bulk pre { margin: 0; flex-basis: 100%; max-height: 30vh; overflow: auto; }
 
     /* --- Live meta line (inside #content so the poller keeps it current) --- */
     .ck-meta { font-size: var(--fs-sm); color: var(--text-3); margin: 0 0 16px; text-align: right; }
@@ -601,6 +601,8 @@
       .actpanel button.pract { min-height: 44px; font-size: var(--fs-sm); border-radius: var(--radius-sm); }
       .actpanel .actforce { grid-column: 1 / -1; min-height: 44px; font-size: var(--fs-sm); }
       .actpanel .actforce input { width: 18px; height: 18px; }
+      .ck-bulk .ck-btn, .ck-bulk .actforce { min-height: 44px; font-size: var(--fs-sm); }
+      .ck-bulk .actforce input { width: 18px; height: 18px; }
       .actpanel .actmsg { grid-column: 1 / -1; font-size: var(--fs-sm); } /* the destructive-action result line skipped the mobile size bump the other controls got */
       /* The PR form's command preview, radio choices, and lone run button must
          span BOTH tracks or the nowrap command line overflows the row, the run
@@ -743,8 +745,8 @@
        which would wipe the report (and a pressed button) mid-display. -->
   <div class="ck-bulk" role="group" aria-label="all sessions">
     <button type="button" id="ck-reloadall" class="ck-btn" title="send /reload-plugins to every idle or waiting tmux session on the roster">reload plugins (all)</button>
-    <label class="actforce"><input type="checkbox" id="ck-reloadbusy"> include working</label>
-    <pre id="ck-reloadout" class="actmsg" aria-live="polite"></pre>
+    <label class="actforce" title="also send to sessions mid-turn, which queue the command; a session that reaches a prompt during the send could have it answered"><input type="checkbox" id="ck-reloadbusy"> include working</label>
+    <pre id="ck-reloadout" class="actmsg" role="status" aria-live="polite" aria-atomic="true" aria-label="reload plugins report" tabindex="0"></pre>
   </div>
   {{ end }}
 
@@ -2210,9 +2212,11 @@
         unlock(group, true);
         return;
       }
-      // A no-confirm action (new-monitor, reload-plugins: neither destroys anything)
-      // fires on a single press. If a sibling in the same cluster was mid-confirm,
-      // drop that armed state first so it cannot fire by accident.
+      // A no-confirm action fires on a single press: new-monitor destroys
+      // nothing, and reload-plugins only types a slash command (the server
+      // refuses it for a row blocked on a prompt, where Enter would answer it).
+      // If a sibling in the same cluster was mid-confirm, drop that armed state
+      // first so it cannot fire by accident.
       if (el.getAttribute('data-noconfirm') === 'true') {
         if (group.classList.contains('confirm')) unlock(group, false);
         fire(group, el);

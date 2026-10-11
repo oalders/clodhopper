@@ -193,8 +193,9 @@ func runTmux(tmuxBin, dir string, args []string, timeout time.Duration) (stdout 
 
 // runSessionAction executes one of the tmux session actions against a pane the
 // caller has already resolved server-side and validated with paneIDRe. The
-// command strings (/clear, /monitor-ci, /reload-plugins, nn claude) are FIXED constants; only pane
-// ids vary, and any pane split-window emits is re-validated before reuse.
+// command strings (/clear, /monitor-ci, /reload-plugins, nn claude) are FIXED
+// constants; only pane ids vary, and any pane split-window emits is re-validated
+// before reuse.
 //
 //   - monitor-ci: send /clear into the agent's own pane, pause, then send
 //     /monitor-ci (/clear and /monitor-ci are literal keys, Enter is tmux's key
@@ -688,9 +689,9 @@ func dirtyWorktree(gitBin, dir string) (dirty, ok bool) {
 	return out != "", ok
 }
 
-// auditw is where the rebase audit line is written. A package var so tests can
-// capture it; serve leaves it on stderr next to the other "clodhopper serve:"
-// diagnostics.
+// auditw is where the rebase and broadcast audit lines are written. A package
+// var so tests can capture it; serve leaves it on stderr next to the other
+// "clodhopper serve:" diagnostics.
 var auditw io.Writer = os.Stderr
 
 // auditRebase records one rebase attempt. Unlike debugf this is NOT gated on
@@ -934,11 +935,12 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		return
 	}
 
-	// Session actions (monitor-ci / new-monitor / reload-plugins) act on the agent's LIVE tmux
-	// pane rather than merging a PR, so they take a separate path: the pane is
-	// resolved server-side from session_id and validated against paneIDRe before
-	// any tmux command runs. They reuse every guard already checked above
-	// (enabled, method, host, token) plus the inflight dedupe below.
+	// Session actions (monitor-ci / new-monitor / reload-plugins) act on the
+	// agent's LIVE tmux pane rather than merging a PR, so they take a separate
+	// path: the pane is resolved server-side from session_id and validated
+	// against paneIDRe before any tmux command runs. They reuse every guard
+	// already checked above (enabled, method, host, token) plus the inflight
+	// dedupe below.
 	if action == "monitor-ci" || action == "new-monitor" || action == "reload-plugins" {
 		pane, err := latestPaneForSession(db, sessionID)
 		if err != nil {
@@ -951,6 +953,22 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		if !paneIDRe.MatchString(pane) {
 			http.Error(w, "unknown session", http.StatusNotFound)
 			return
+		}
+		// reload-plugins sends Enter, which would answer a pending prompt, so
+		// the same prompt check the broadcast applies holds for an explicit
+		// click too. Working rows stay allowed here: the command just queues.
+		if action == "reload-plugins" {
+			agents, err := agentRoster(db, time.Duration(waitingRetainHours())*time.Hour, now)
+			if err != nil {
+				http.Error(w, "lookup failed", http.StatusInternalServerError)
+				return
+			}
+			for _, a := range agents {
+				if a.SessionID == sessionID && promptBlocked(a.Status) {
+					http.Error(w, "session is "+promptBlockedReason, http.StatusConflict)
+					return
+				}
+			}
 		}
 		sessionLock := sidKey(sessionID)
 		if !cfg.inflight.acquire(sessionLock) {
@@ -983,7 +1001,7 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 			http.Error(w, "lookup failed", http.StatusInternalServerError)
 			return
 		}
-		writeActionResult(w, broadcastReload(cfg, agents, r.FormValue("include_busy") == "true"))
+		writeActionResult(w, broadcastReload(cfg, agents, r.FormValue("include_busy") == "true", now))
 		return
 	}
 
@@ -1111,9 +1129,10 @@ func reloadSkipReason(a Agent, includeBusy bool) string {
 	if !paneIDRe.MatchString(a.TmuxPane) {
 		return "not in tmux — reload manually"
 	}
+	if promptBlocked(a.Status) {
+		return promptBlockedReason
+	}
 	switch a.Status {
-	case statusApproval, statusInput, statusNeedsYou:
-		return "blocked on a prompt — Enter would answer it"
 	case statusWorking:
 		if includeBusy {
 			return ""
@@ -1125,12 +1144,31 @@ func reloadSkipReason(a Agent, includeBusy bool) string {
 	return "status " + strconv.Quote(a.Status) + " — not sent"
 }
 
+const promptBlockedReason = "blocked on a prompt — Enter would answer it"
+
+// promptBlocked reports whether a roster status means the agent is parked on a
+// permission prompt or a question, where a send ending in Enter would answer it.
+// Shared by the per-row reload-plugins guard and the broadcast.
+func promptBlocked(status string) bool {
+	switch status {
+	case statusApproval, statusInput, statusNeedsYou:
+		return true
+	}
+	return false
+}
+
 // broadcastReload sends /reload-plugins to every eligible row in agents and
 // returns a one-line-per-row report. Rows sharing a pane (a resumed or
 // restarted agent leaves its old session on the roster) are sent to once, via
 // the newest session, which is the one actually running there. ok is false iff
-// a tmux send failed or timed out; skips are expected and do not fail it.
-func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool) actionResult {
+// a tmux send failed or timed out; skips are expected and do not fail it. Each
+// broadcast leaves one audit line, since it types into every agent at once.
+func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool, now time.Time) actionResult {
+	var sent, skipped, errs int
+	defer func() {
+		fmt.Fprintf(auditw, "clodhopper serve: audit broadcast-reload ts=%s include_busy=%t sent=%d skipped=%d errors=%d\n",
+			now.UTC().Format(time.RFC3339), includeBusy, sent, skipped, errs)
+	}()
 	if len(agents) == 0 {
 		return actionResult{Output: "no sessions on the roster"}
 	}
@@ -1151,22 +1189,24 @@ func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool) action
 		if n, ok := newest[a.TmuxPane]; reason == "" && ok && n.SessionID != a.SessionID {
 			reason = "same pane as newer session " + shortID(n.SessionID)
 		}
-		if reason != "" {
-			fmt.Fprintf(&out, "skipped %s: %s\n", label, reason)
-			continue
-		}
 		lock := sidKey(a.SessionID)
-		if !cfg.inflight.acquire(lock) {
-			fmt.Fprintf(&out, "skipped %s: action already running\n", label)
+		if reason == "" && !cfg.inflight.acquire(lock) {
+			reason = "action already running"
+		}
+		if reason != "" {
+			skipped++
+			fmt.Fprintf(&out, "skipped %s: %s\n", label, reason)
 			continue
 		}
 		r := runSessionAction(cfg.tmux, "reload-plugins", a.TmuxPane, a.Cwd, 0)
 		cfg.inflight.release(lock)
 		if r.ExitCode != 0 || r.TimedOut {
 			res.ExitCode = -1
+			errs++
 			fmt.Fprintf(&out, "error %s: %s\n", label, strings.TrimSpace(r.Output))
 			continue
 		}
+		sent++
 		fmt.Fprintf(&out, "sent %s\n", label)
 	}
 	res.Output = strings.TrimRight(out.String(), "\n")

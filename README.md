@@ -246,7 +246,9 @@ actions** that drive that pane directly (they do not touch a PR):
 - **+ watcher** is additive: it opens a **new** pane in the existing tmux
   session running `nn claude`, then sends `/monitor-ci` to it, leaving the
   original agent untouched.
-- **reload plugins** sends `/reload-plugins` into the agent's own pane.
+- **reload plugins** sends `/reload-plugins` into the agent's own pane. It is
+  refused for a row blocked on a permission prompt or question, since the Enter
+  would answer the prompt.
 
 A **reload plugins (all)** button above the roster sends `/reload-plugins` to
 every session at once and reports, per row, what it sent or skipped and why.
