@@ -727,9 +727,9 @@ func viewSignature(d dashboardData) string {
 		// next field's head (branch "main:/w" + cwd "one" hashing the same as
 		// branch "main" + cwd "/w/one"). A collision here is a repaint that never
 		// happens — a stale board, and now a stale copy target.
-		// Subagents is the count in the "waiting on N agents" badge; its running
-		// time is excluded like the idle timer, since it ticks client-side.
-		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.Subagents)
+		// Subagents and SubagentSince feed the "waiting on N agents" badge: the
+		// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
+		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.Subagents, a.SubagentSince)
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)

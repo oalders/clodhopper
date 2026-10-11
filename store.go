@@ -656,6 +656,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		if label == statusWaiting {
 			var earliest time.Time
 			for _, sub := range s.subs {
+				// A subagent in one long tool call goes silent too; same tradeoff as staleWorkingSecs.
 				if now.Sub(sub.lastSeen) >= staleWorkingSecs*time.Second {
 					continue
 				}
