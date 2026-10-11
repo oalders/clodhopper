@@ -2796,3 +2796,26 @@ func TestHandleActionReloadPluginsSentWhileWorking(t *testing.T) {
 		t.Fatalf("argv = %q, want %q", got, want)
 	}
 }
+
+// The pane lookup alone would find a valid pane for "ghost"; the guard must
+// still fail closed because the session has aged off the roster, so its status
+// (and so whether Enter would answer a prompt) is unknown.
+func TestHandleActionReloadPluginsUnknownSession(t *testing.T) {
+	db := openTestDB(t)
+	insertEvent(db, Event{TS: "2025-08-12T10:00:00Z", SourceApp: "x", SessionID: "ghost", Cwd: t.TempDir(), TmuxPane: "%4", EventType: "Stop", PayloadJSON: "{}"})
+	stub, logPath := tmuxLogStub(t)
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	cfg.tmux = stub
+
+	if pane, err := latestPaneForSession(db, "ghost"); err != nil || pane != "%4" {
+		t.Fatalf("latestPaneForSession = %q, %v; want %%4 so the roster check is what refuses", pane, err)
+	}
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("ghost", "reload-plugins", false, "secret", "127.0.0.1"), db, cfg, time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC))
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("code = %d, want 404; body=%s", w.Code, w.Body.String())
+	}
+	if got, _ := os.ReadFile(logPath); len(got) != 0 {
+		t.Fatalf("tmux ran for a session not on the roster: %q", got)
+	}
+}

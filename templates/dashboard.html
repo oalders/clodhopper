@@ -164,6 +164,9 @@
     .ck-spring { flex: 1 1 24px; }
     .ck-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 16px; }
     .ck-bulk pre { margin: 0; flex-basis: 100%; max-height: 30vh; overflow: auto; }
+    /* Collapsed, not hidden: it is a live region and must stay rendered to announce. */
+    .ck-bulk pre:empty { margin: 0; padding: 0; border: 0; }
+    #ck-reloadbusy-hint { flex-basis: 100%; }
 
     /* --- Live meta line (inside #content so the poller keeps it current) --- */
     .ck-meta { font-size: var(--fs-sm); color: var(--text-3); margin: 0 0 16px; text-align: right; }
@@ -603,7 +606,8 @@
       .actpanel .actforce input { width: 18px; height: 18px; }
       .ck-bulk .ck-btn, .ck-bulk .actforce { min-height: 44px; font-size: var(--fs-sm); }
       .ck-bulk .actforce input { width: 18px; height: 18px; }
-      .actpanel .actmsg, .ck-bulk .actmsg { grid-column: 1 / -1; font-size: var(--fs-sm); } /* the destructive-action result line skipped the mobile size bump the other controls got */
+      .actpanel .actmsg { grid-column: 1 / -1; font-size: var(--fs-sm); } /* the destructive-action result line skipped the mobile size bump the other controls got */
+      .ck-bulk .actmsg { font-size: var(--fs-sm); } /* .ck-bulk is flex, so grid-column would be a no-op here */
       /* The PR form's command preview, radio choices, and lone run button must
          span BOTH tracks or the nowrap command line overflows the row, the run
          button strands half-width, and the touch targets shrink. */
@@ -746,7 +750,7 @@
   <div class="ck-bulk" role="group" aria-label="reload plugins in all sessions">
     <button type="button" id="ck-reloadall" class="ck-btn" title="send /reload-plugins to every idle or waiting tmux session on the roster">reload plugins (all)</button>
     <label class="actforce"><input type="checkbox" id="ck-reloadbusy" aria-describedby="ck-reloadbusy-hint"> include working</label>
-    <span id="ck-reloadbusy-hint" class="actmsg">also sends to mid-turn sessions (queued); one that reaches a prompt mid-send could have it answered</span>
+    <span id="ck-reloadbusy-hint" class="actmsg">also sends to mid-turn sessions (queued); a session that reaches a prompt mid-send may have that prompt answered</span>
     <pre id="ck-reloadout" class="actmsg" role="status" aria-live="polite" aria-atomic="true" aria-label="reload plugins report"></pre>
   </div>
   {{ end }}
@@ -2150,7 +2154,10 @@
         .catch(function (e) { out.textContent = 'request failed: ' + e; })
         .finally(function () {
           reloadAll.disabled = false;
-          if (hadFocus) reloadAll.focus();
+          // Only reclaim focus the disable dropped; if the user moved on
+          // during the request, leave their focus where it is.
+          var now = document.activeElement;
+          if (hadFocus && (!now || now === document.body || now === reloadAll)) reloadAll.focus();
         });
     });
 
