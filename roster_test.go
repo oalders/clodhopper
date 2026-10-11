@@ -437,6 +437,77 @@ func TestAgentRoster_NotificationTypeDisambiguates(t *testing.T) {
 	}
 }
 
+// Subagent events share the parent's session_id and carry $.agent_id; a turn
+// that ended while subagents still run is waiting on them, not on the user.
+func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, sess, etype, agentID, payload string) {
+		if agentID != "" {
+			payload = `{"agent_id":"` + agentID + `"}`
+		}
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-127", SessionID: sess, EventType: etype, PayloadJSON: payload})
+	}
+
+	// Two subagents outstanding when the turn ended: count both, earliest start.
+	// Their starts are stale; their later tool events keep them fresh.
+	ins(at(9), "s-two", "SubagentStart", "a1", "")
+	ins(at(8), "s-two", "SubagentStart", "a2", "")
+	ins(at(4), "s-two", "PreToolUse", "a2", "")
+	ins(at(4), "s-two", "PreToolUse", "a1", "")
+	ins(at(3), "s-two", "Stop", "", "{}")
+	// The idle reminder reads the same way as a Stop.
+	ins(at(4), "s-idle", "SubagentStart", "a1", "")
+	ins(at(1), "s-idle", "Notification", "", `{"notification_type":"idle_prompt"}`)
+	// Its last subagent stopping (the latest event) returns it to waiting for you.
+	ins(at(4), "s-done", "SubagentStart", "a1", "")
+	ins(at(3), "s-done", "Stop", "", "{}")
+	ins(at(1), "s-done", "SubagentStop", "a1", "")
+	// An orphan stop (no start) is a no-op.
+	ins(at(3), "s-orphan", "Stop", "", "{}")
+	ins(at(1), "s-orphan", "SubagentStop", "a9", "")
+	// A subagent silent past staleWorkingSecs no longer holds the session.
+	ins(at(20), "s-stale", "SubagentStart", "a1", "")
+	ins(at(1), "s-stale", "Stop", "", "{}")
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Agent{}
+	for _, a := range agents {
+		got[a.SessionID] = a
+	}
+	for _, c := range []struct {
+		sess   string
+		status string
+		count  int
+	}{
+		{"s-two", statusSubagents, 2},
+		{"s-idle", statusSubagents, 1},
+		{"s-done", statusWaiting, 0},
+		{"s-orphan", statusWaiting, 0},
+		{"s-stale", statusWaiting, 0},
+	} {
+		a := got[c.sess]
+		if a.Status != c.status || a.Subagents != c.count {
+			t.Errorf("%s: want %q with %d subagents, got %q with %d", c.sess, c.status, c.count, a.Status, a.Subagents)
+		}
+		if c.status == statusSubagents && a.StatusRank <= 1 {
+			t.Errorf("%s: waiting on subagents must not rank as urgent, got rank %d", c.sess, a.StatusRank)
+		}
+	}
+	if want := now.Add(-9 * time.Minute).Unix(); got["s-two"].SubagentSince != want {
+		t.Errorf("SubagentSince should be the earliest start %d, got %d", want, got["s-two"].SubagentSince)
+	}
+}
+
 func TestAgentRoster_StaleWorkingBecomesIdle(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {

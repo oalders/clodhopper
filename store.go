@@ -412,6 +412,9 @@ type Agent struct {
 	Idle             string // humanised time since last event ("4m", "1h")
 	IdleSecs         int
 	IdleSince        int64  // unix seconds of the last event, so the client can tick idle in place
+	Subagents        int    // background subagents still running while the main agent waits; set only for statusSubagents
+	SubagentSince    int64  // unix seconds of the earliest of those subagents' starts, so the client can tick their running time in place
+	SubagentAge      string // humanised time since SubagentSince, the initial value the client then ticks
 	CI               string // merge-readiness; filled by the server layer via gh
 	GroupStart       bool   // true on the first roster row of each (SourceApp, Branch) group except the very first row overall; drives the divider between branch groups in the dashboard
 	Grouped          bool   // true when this row's (SourceApp, Branch) group has 2+ live members; drives the left accent bar that binds a multi-session branch cluster (a worktree with several agents). Singleton branches stay false (no bar)
@@ -424,8 +427,9 @@ const (
 	statusWaiting    = "waiting for you"
 	statusNeedsYou   = "needs you"
 	statusApproval   = "needs approval"
-	statusInput      = "needs input" // AskUserQuestion: a question to answer, not an action to approve
-	statusBackground = "waiting"     // parked on background work, not blocked on the user
+	statusInput      = "needs input"       // AskUserQuestion: a question to answer, not an action to approve
+	statusBackground = "waiting"           // parked on background work, not blocked on the user
+	statusSubagents  = "waiting on agents" // turn ended but background subagents are still running
 	statusWorking    = "working"
 	statusIdle       = "idle"
 	statusEnded      = "ended"
@@ -525,7 +529,8 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	rows, err := db.Query(
 		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(rebasing,0), COALESCE(cwd,''), COALESCE(tmux_session,''), COALESCE(tmux_pane,''), COALESCE(session_id,''),
 		        event_type, COALESCE(tool_name,''), COALESCE(summary,''), COALESCE(slash_command,''),
-		        COALESCE(CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.notification_type') END,'')
+		        COALESCE(CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.notification_type') END,''),
+		        COALESCE(CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.agent_id') END,'')
 		 FROM events WHERE ts >= ? AND session_id IS NOT NULL AND session_id <> ''
 		 ORDER BY id ASC`, since)
 	if err != nil {
@@ -533,24 +538,27 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	}
 	defer rows.Close()
 
+	// subagent tracks one background subagent by its start and latest event.
+	type subagent struct{ start, lastSeen string }
 	type state struct {
 		a         Agent
 		lastTS    string
 		lastCmdTS string
 		lastTool  string
 		lastNotif string
+		subs      map[string]*subagent // running subagents by agent_id
 	}
 	byID := map[string]*state{}
 	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
 	for rows.Next() {
-		var ts, app, branch, cwd, tmuxSess, tmuxPane, sess, etype, tool, summary, slashCmd, notifType string
+		var ts, app, branch, cwd, tmuxSess, tmuxPane, sess, etype, tool, summary, slashCmd, notifType, agentID string
 		var rebasing bool
-		if err := rows.Scan(&ts, &app, &branch, &rebasing, &cwd, &tmuxSess, &tmuxPane, &sess, &etype, &tool, &summary, &slashCmd, &notifType); err != nil {
+		if err := rows.Scan(&ts, &app, &branch, &rebasing, &cwd, &tmuxSess, &tmuxPane, &sess, &etype, &tool, &summary, &slashCmd, &notifType, &agentID); err != nil {
 			return nil, err
 		}
 		s := byID[sess]
 		if s == nil {
-			s = &state{a: Agent{SessionID: sess, firstSeq: nextSeq}}
+			s = &state{a: Agent{SessionID: sess, firstSeq: nextSeq}, subs: map[string]*subagent{}}
 			byID[sess] = s
 			nextSeq++
 		}
@@ -591,6 +599,22 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		if branch != "" {
 			s.a.Branch, s.a.Rebasing = branch, rebasing
 		}
+		// Subagent lifecycle events are bookkeeping only: they must not move the
+		// session's status, so an orphan SubagentStop (housekeeping agents emit
+		// those with no start) leaves a stopped session waiting for you.
+		switch etype {
+		case "SubagentStart":
+			if agentID != "" { // an id-less start would match every main-agent event
+				s.subs[agentID] = &subagent{start: ts, lastSeen: ts}
+			}
+			continue
+		case "SubagentStop":
+			delete(s.subs, agentID)
+			continue
+		}
+		if sub := s.subs[agentID]; sub != nil {
+			sub.lastSeen = ts
+		}
 		s.a.LastEvent = etype
 		s.lastTS = ts
 		// notifType mirrors LastEvent (last-write-wins); deriveStatus only reads it
@@ -623,6 +647,26 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		}
 		a := s.a
 		a.Status, a.StatusRank = label, rank
+		// A turn that ended with subagents still running is not waiting on the
+		// user yet; only subagents heard from within staleWorkingSecs count, and
+		// an unparseable timestamp is skipped so it fails toward "waiting for you".
+		if label == statusWaiting {
+			for _, sub := range s.subs {
+				start, err1 := time.Parse(time.RFC3339, sub.start)
+				seen, err2 := time.Parse(time.RFC3339, sub.lastSeen)
+				if err1 != nil || err2 != nil || now.Sub(seen) >= staleWorkingSecs*time.Second {
+					continue
+				}
+				if a.Subagents == 0 || start.Unix() < a.SubagentSince {
+					a.SubagentSince = start.Unix()
+				}
+				a.Subagents++
+			}
+			if a.Subagents > 0 {
+				a.Status, a.StatusRank = statusSubagents, rankBackground
+				a.SubagentAge = humanizeSeconds(int(max(0, now.Unix()-a.SubagentSince)))
+			}
+		}
 		// Pane presence is resolved here (independent of --pane-peek) so the
 		// session-action buttons can gate on it under --enable-merge alone; the
 		// backend re-resolves and re-validates the pane server-side before any

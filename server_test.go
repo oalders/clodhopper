@@ -861,6 +861,13 @@ func TestViewSignature_IgnoresIdleButTracksEvents(t *testing.T) {
 	if viewSignature(base) == viewSignature(flipped) {
 		t.Error("signature unchanged after a status change")
 	}
+
+	// A change in the running-subagent count repaints the badge text.
+	moreSubs := base
+	moreSubs.Agents = []Agent{{SessionID: "s1", Status: statusWorking, IdleSecs: 10, IdleSince: 100, Subagents: 2}}
+	if viewSignature(base) == viewSignature(moreSubs) {
+		t.Error("signature unchanged after a subagent count change")
+	}
 }
 
 func TestSessColor(t *testing.T) {
