@@ -603,7 +603,7 @@
       .actpanel .actforce input { width: 18px; height: 18px; }
       .ck-bulk .ck-btn, .ck-bulk .actforce { min-height: 44px; font-size: var(--fs-sm); }
       .ck-bulk .actforce input { width: 18px; height: 18px; }
-      .actpanel .actmsg { grid-column: 1 / -1; font-size: var(--fs-sm); } /* the destructive-action result line skipped the mobile size bump the other controls got */
+      .actpanel .actmsg, .ck-bulk .actmsg { grid-column: 1 / -1; font-size: var(--fs-sm); } /* the destructive-action result line skipped the mobile size bump the other controls got */
       /* The PR form's command preview, radio choices, and lone run button must
          span BOTH tracks or the nowrap command line overflows the row, the run
          button strands half-width, and the touch targets shrink. */
@@ -743,10 +743,11 @@
   {{ if .ExecEnabled }}
   <!-- Outside #content on purpose: the poller replaces that element wholesale,
        which would wipe the report (and a pressed button) mid-display. -->
-  <div class="ck-bulk" role="group" aria-label="all sessions">
+  <div class="ck-bulk" role="group" aria-label="reload plugins in all sessions">
     <button type="button" id="ck-reloadall" class="ck-btn" title="send /reload-plugins to every idle or waiting tmux session on the roster">reload plugins (all)</button>
-    <label class="actforce" title="also send to sessions mid-turn, which queue the command; a session that reaches a prompt during the send could have it answered"><input type="checkbox" id="ck-reloadbusy"> include working</label>
-    <pre id="ck-reloadout" class="actmsg" role="status" aria-live="polite" aria-atomic="true" aria-label="reload plugins report" tabindex="0"></pre>
+    <label class="actforce"><input type="checkbox" id="ck-reloadbusy" aria-describedby="ck-reloadbusy-hint"> include working</label>
+    <span id="ck-reloadbusy-hint" class="actmsg">also sends to mid-turn sessions (queued); one that reaches a prompt mid-send could have it answered</span>
+    <pre id="ck-reloadout" class="actmsg" role="status" aria-live="polite" aria-atomic="true" aria-label="reload plugins report"></pre>
   </div>
   {{ end }}
 
@@ -2127,8 +2128,14 @@
     if (reloadAll) reloadAll.addEventListener('click', function () {
       var out = document.getElementById('ck-reloadout');
       var busy = document.getElementById('ck-reloadbusy').checked;
+      // Disabling a focused button drops focus to <body>; remember it so the
+      // finally below can hand focus back to a keyboard user.
+      var hadFocus = document.activeElement === reloadAll;
       reloadAll.disabled = true;
       out.textContent = 'working…';
+      // Focusable only once it has content, so an empty report is not a dead
+      // tab stop; it stays rendered so the live region announces reliably.
+      out.tabIndex = 0;
       fetch('/api/action', {
         method: 'POST',
         headers: {
@@ -2141,7 +2148,10 @@
         // textContent, never innerHTML: the report carries tmux output.
         .then(function (d) { out.textContent = d.output || (d.ok ? 'done' : 'failed'); })
         .catch(function (e) { out.textContent = 'request failed: ' + e; })
-        .finally(function () { reloadAll.disabled = false; });
+        .finally(function () {
+          reloadAll.disabled = false;
+          if (hadFocus) reloadAll.focus();
+        });
     });
 
     // The PR-mode chooser is a segmented toggle of role="radio" buttons, not

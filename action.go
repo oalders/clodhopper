@@ -957,17 +957,30 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		// reload-plugins sends Enter, which would answer a pending prompt, so
 		// the same prompt check the broadcast applies holds for an explicit
 		// click too. Working rows stay allowed here: the command just queues.
+		// The check is keyed on the PANE as well as the session: after a /clear
+		// the old row lingers on the roster sharing the pane with the new live
+		// session, and Enter lands on whatever owns the pane now. A session not
+		// on the roster is refused: the button is only offered on roster rows,
+		// so fail closed rather than send blind.
 		if action == "reload-plugins" {
 			agents, err := agentRoster(db, time.Duration(waitingRetainHours())*time.Hour, now)
 			if err != nil {
 				http.Error(w, "lookup failed", http.StatusInternalServerError)
 				return
 			}
+			onRoster := false
 			for _, a := range agents {
-				if a.SessionID == sessionID && promptBlocked(a.Status) {
+				if a.SessionID == sessionID {
+					onRoster = true
+				}
+				if (a.SessionID == sessionID || a.TmuxPane == pane) && promptBlocked(a.Status) {
 					http.Error(w, "session is "+promptBlockedReason, http.StatusConflict)
 					return
 				}
+			}
+			if !onRoster {
+				http.Error(w, "unknown session", http.StatusNotFound)
+				return
 			}
 		}
 		sessionLock := sidKey(sessionID)

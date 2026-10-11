@@ -2564,7 +2564,9 @@ func TestHandleActionReloadPluginsBuildsArgv(t *testing.T) {
 	cfg.tmux = stub
 
 	w := httptest.NewRecorder()
-	handleAction(w, actionReq("rp", "reload-plugins", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	// A fixed clock keeps the session on the roster: the guard refuses a
+	// session that is not on it.
+	handleAction(w, actionReq("rp", "reload-plugins", false, "secret", "127.0.0.1"), db, cfg, time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC))
 	if w.Code != http.StatusOK {
 		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
 	}
@@ -2575,29 +2577,37 @@ func TestHandleActionReloadPluginsBuildsArgv(t *testing.T) {
 }
 
 func TestReloadSkipReason(t *testing.T) {
+	const (
+		busy   = "working — retry, or include working"
+		noTmux = "not in tmux — reload manually"
+	)
 	cases := []struct {
 		pane, status string
 		includeBusy  bool
-		send         bool
+		want         string
 	}{
-		{"%1", statusWaiting, false, true},
-		{"%1", statusIdle, false, true},
-		{"%1", statusBackground, false, true},
-		{"%1", statusWorking, false, false},
-		{"%1", statusWorking, true, true},
+		{"%1", statusWaiting, false, ""},
+		{"%1", statusIdle, false, ""},
+		{"%1", statusBackground, false, ""},
+		{"%1", statusWorking, false, busy},
+		{"%1", statusWorking, true, ""},
 		// Enter would answer the prompt, so these are never sent, busy or not.
-		{"%1", statusApproval, true, false},
-		{"%1", statusInput, true, false},
-		{"%1", statusNeedsYou, true, false},
-		{"%1", statusEnded, true, false},
-		{"%1", "something new", true, false},
-		{"", statusWaiting, true, false},
-		{"; rm -rf /", statusWaiting, true, false},
+		{"%1", statusApproval, false, promptBlockedReason},
+		{"%1", statusApproval, true, promptBlockedReason},
+		{"%1", statusInput, false, promptBlockedReason},
+		{"%1", statusInput, true, promptBlockedReason},
+		{"%1", statusNeedsYou, false, promptBlockedReason},
+		{"%1", statusNeedsYou, true, promptBlockedReason},
+		// Unknown statuses fail closed.
+		{"%1", statusEnded, true, "status " + strconv.Quote(statusEnded) + " — not sent"},
+		{"%1", "something new", true, `status "something new" — not sent`},
+		{"", statusWaiting, true, noTmux},
+		{"; rm -rf /", statusWaiting, true, noTmux},
 	}
 	for _, c := range cases {
-		reason := reloadSkipReason(Agent{TmuxPane: c.pane, Status: c.status}, c.includeBusy)
-		if (reason == "") != c.send {
-			t.Errorf("pane=%q status=%q busy=%v: reason=%q, want send=%v", c.pane, c.status, c.includeBusy, reason, c.send)
+		got := reloadSkipReason(Agent{TmuxPane: c.pane, Status: c.status}, c.includeBusy)
+		if got != c.want {
+			t.Errorf("pane=%q status=%q busy=%v: reason=%q, want %q", c.pane, c.status, c.includeBusy, got, c.want)
 		}
 	}
 }
@@ -2647,7 +2657,7 @@ func runBroadcast(t *testing.T, db *sql.DB, stub, logPath string, includeBusy bo
 }
 
 func reportHas(report, line string) bool {
-	return strings.Contains(report, line+"\n") || strings.HasSuffix(report, line)
+	return slices.Contains(strings.Split(report, "\n"), line)
 }
 
 func TestHandleActionBroadcastReload(t *testing.T) {
@@ -2696,6 +2706,10 @@ func TestHandleActionBroadcastReload(t *testing.T) {
 // remaining eligible rows from being attempted.
 func TestHandleActionBroadcastReloadSendFails(t *testing.T) {
 	db := seedBroadcastRoster(t)
+	var audit bytes.Buffer
+	old := auditw
+	auditw = &audit
+	t.Cleanup(func() { auditw = old })
 	logPath := filepath.Join(t.TempDir(), "tmux.log")
 	stub := writeStub(t, "tmux", `echo "$@" >> `+logPath+`
 if [ "$3" = "%1" ]; then echo "no such pane" >&2; exit 3; fi
@@ -2711,6 +2725,9 @@ exit 0`)
 	want := []string{"send-keys -t %1 /reload-plugins Enter", "send-keys -t %5 /reload-plugins Enter"}
 	if !slices.Equal(sent, want) {
 		t.Fatalf("sends = %q, want both eligible panes attempted %q", sent, want)
+	}
+	if !strings.Contains(audit.String(), " errors=1\n") {
+		t.Errorf("audit = %q, want errors=1", audit.String())
 	}
 }
 
@@ -2728,7 +2745,54 @@ func TestHandleActionReloadPluginsRefusedOnPrompt(t *testing.T) {
 	if w.Code != http.StatusConflict {
 		t.Fatalf("code = %d, want 409; body=%s", w.Code, w.Body.String())
 	}
+	// 409 alone is ambiguous with the inflight refusal; pin the prompt reason.
+	if body := w.Body.String(); !strings.Contains(body, promptBlockedReason) {
+		t.Fatalf("body = %q, want the prompt reason", body)
+	}
 	if got, _ := os.ReadFile(logPath); len(got) != 0 {
 		t.Fatalf("tmux ran on a prompt-blocked session: %q", got)
+	}
+}
+
+// After a /clear the old row lingers on the roster sharing the pane with the
+// new live session. Clicking reload on the old (waiting) row must still be
+// refused when the pane's current session is at a prompt: Enter lands on the
+// pane, not the session.
+func TestHandleActionReloadPluginsRefusedOnSharedPanePrompt(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	insertEvent(db, Event{TS: "2026-08-12T09:00:00Z", SourceApp: "x", SessionID: "old", Cwd: dir, TmuxPane: "%4", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "new", Cwd: dir, TmuxPane: "%4", EventType: "PermissionRequest", PayloadJSON: "{}"})
+	stub, logPath := tmuxLogStub(t)
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	cfg.tmux = stub
+
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("old", "reload-plugins", false, "secret", "127.0.0.1"), db, cfg, time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC))
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), promptBlockedReason) {
+		t.Fatalf("code = %d body=%q, want 409 with the prompt reason", w.Code, w.Body.String())
+	}
+	if got, _ := os.ReadFile(logPath); len(got) != 0 {
+		t.Fatalf("tmux ran into a pane parked on a prompt: %q", got)
+	}
+}
+
+// Unlike the broadcast, an explicit per-row click on a WORKING session is sent
+// deliberately: the user chose that row, and the command just queues.
+func TestHandleActionReloadPluginsSentWhileWorking(t *testing.T) {
+	db := openTestDB(t)
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "rp", Cwd: t.TempDir(), TmuxPane: "%4", EventType: "PreToolUse", PayloadJSON: "{}"})
+	stub, logPath := tmuxLogStub(t)
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	cfg.tmux = stub
+
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("rp", "reload-plugins", false, "secret", "127.0.0.1"), db, cfg, time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC))
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	}
+	got, _ := os.ReadFile(logPath)
+	if want := "send-keys -t %4 /reload-plugins Enter\n"; string(got) != want {
+		t.Fatalf("argv = %q, want %q", got, want)
 	}
 }
