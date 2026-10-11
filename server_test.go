@@ -1811,6 +1811,21 @@ func TestDashboardRendersEndButtonOnlyWhenEnabled(t *testing.T) {
 	}
 }
 
+// Arming rebase/end used to widen the row-actions column until it wrapped and
+// the confirm button jumped left (issue #128). The fixed width must precede the
+// phone rule of equal specificity so phones still get a full-width column.
+func TestDashboardFixesRowActionsColumnWidth(t *testing.T) {
+	html := renderDashboard(t, dashboardData{})
+	fixed := strings.Index(html, ".actcol.rowcol { width: 14rem; }")
+	phone := strings.Index(html, ".actrow .actcol { width: 100%; }")
+	if fixed < 0 || phone < 0 {
+		t.Fatalf("missing rule: rowcol at %d, phone at %d", fixed, phone)
+	}
+	if fixed > phone {
+		t.Fatal("rowcol width must come before the phone full-width rule")
+	}
+}
+
 // The End action reuses the PR cluster's already-proven JS, but contributes two
 // new string literals to it: its own CAVEAT entry (the confirm-step warning) and
 // its membership in the "clears" set (which keeps the row locked so the poller
