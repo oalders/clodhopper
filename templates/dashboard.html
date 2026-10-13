@@ -164,10 +164,11 @@
     .ck-spring { flex: 1 1 24px; }
     .ck-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 16px; }
     #ck-reloadout { margin: 0; flex-basis: 100%; max-height: 30vh; overflow: auto; }
-    /* Collapsed, not hidden: it is a live region and must stay rendered to announce. */
-    #ck-reloadout:empty { margin: 0; padding: 0; border: 0; }
-    #ck-reloadout table { border-collapse: collapse; margin-top: 4px; white-space: normal; }
-    #ck-reloadout th, #ck-reloadout td { text-align: left; vertical-align: top; padding: 2px 8px; overflow-wrap: anywhere; }
+    /* Collapsed, not hidden: it holds the live region, which must stay rendered to announce. */
+    #ck-reloadout:has(#ck-reloadmsg:empty):not(:has(table)) { margin: 0; padding: 0; border: 0; }
+    #ck-reloadout table { border-collapse: collapse; margin-top: 4px; }
+    /* pre-wrap beats the card layout's td white-space:normal, keeping multi-line tmux errors. */
+    #ck-reloadout th, #ck-reloadout td { text-align: left; vertical-align: top; padding: 2px 8px; overflow-wrap: anywhere; white-space: pre-wrap; }
     /* The tint comes from the roster's tr.fail/tr.alert; the bold word and left bar mean colour is never the only signal. */
     #ck-reloadout tr.fail { color: var(--fail); }
     #ck-reloadout tr.alert { color: var(--attention); }
@@ -765,7 +766,8 @@
     <label class="actforce"><input type="checkbox" id="ck-reloadbusy" aria-describedby="ck-reloadbusy-hint"> include working</label>
     <button type="button" id="ck-reloadclear" class="ck-btn" title="empty the reload plugins report below" aria-controls="ck-reloadout" hidden>clear report</button>
     <span id="ck-reloadbusy-hint" class="actmsg">also sends to mid-turn sessions (queued); a session that reaches a prompt mid-send may have that prompt answered</span>
-    <div id="ck-reloadout" class="actmsg" role="status" aria-live="polite" aria-atomic="true" aria-label="reload plugins report"></div>
+    <!-- Only the short text is live; the table sits outside it so a run isn't read out row by row. -->
+    <div id="ck-reloadout" class="actmsg" role="region" aria-label="reload plugins report"><span id="ck-reloadmsg" role="status" aria-live="polite" aria-atomic="true"></span></div>
   </div>
   {{ end }}
 
@@ -2145,6 +2147,7 @@
     var reloadAll = document.getElementById('ck-reloadall');
     var reloadClear = document.getElementById('ck-reloadclear');
     var reloadOut = document.getElementById('ck-reloadout');
+    var reloadMsg = document.getElementById('ck-reloadmsg');
     if (reloadAll) reloadAll.addEventListener('click', function () {
       var busy = document.getElementById('ck-reloadbusy').checked;
       // Disabling a focused button drops focus to <body>; remember it so the
@@ -2153,7 +2156,8 @@
       reloadAll.disabled = true;
       // A clear mid-request would just be overwritten by the result.
       if (reloadClear) reloadClear.hidden = true;
-      reloadOut.textContent = 'working…';
+      reloadOut.replaceChildren(reloadMsg);
+      reloadMsg.textContent = 'working…';
       // Focusable only once it has content, so an empty report is not a dead
       // tab stop; it stays rendered so the live region announces reliably.
       reloadOut.tabIndex = 0;
@@ -2168,11 +2172,13 @@
         .then(function (resp) { return resp.json().catch(function () { return { ok: false, output: 'HTTP ' + resp.status }; }); })
         // textContent, never innerHTML: the report carries tmux output.
         .then(function (d) {
-          if (!d.rows || !d.rows.length) { reloadOut.textContent = d.output || (d.ok ? 'done' : 'failed'); return; }
+          if (!d.rows || !d.rows.length) { reloadMsg.textContent = d.output || (d.ok ? 'done' : 'failed'); return; }
           var counts = {}, order = ['error', 'skipped', 'sent'], summary = [];
+          var cols = ['Result', 'Target', 'Reason'];
           var table = document.createElement('table');
+          table.setAttribute('aria-label', 'reload plugins results');
           var head = table.createTHead().insertRow();
-          ['Result', 'Target', 'Reason'].forEach(function (h) {
+          cols.forEach(function (h) {
             var th = document.createElement('th');
             th.scope = 'col';
             th.textContent = h;
@@ -2184,12 +2190,17 @@
             counts[r.result] = (counts[r.result] || 0) + 1;
             var tr = body.insertRow();
             tr.className = { error: 'fail', skipped: 'alert' }[r.result] || '';
-            [r.result, r.target, r.reason].forEach(function (v) { tr.insertCell().textContent = v; });
+            [r.result, r.target, r.reason].forEach(function (v, i) {
+              var td = tr.insertCell();
+              td.textContent = v;
+              td.dataset.label = cols[i]; // the ≤640px card layout prints this in place of the hidden thead
+            });
           });
           order.forEach(function (k) { if (counts[k]) summary.push(counts[k] + ' ' + k + (k === 'error' && counts[k] > 1 ? 's' : '')); });
-          reloadOut.replaceChildren(summary.join(' · '), table);
+          reloadMsg.textContent = summary.join(' · ');
+          reloadOut.append(table);
         })
-        .catch(function (e) { reloadOut.textContent = 'request failed: ' + e; })
+        .catch(function (e) { reloadMsg.textContent = 'request failed: ' + e; })
         .finally(function () {
           reloadAll.disabled = false;
           if (reloadClear) reloadClear.hidden = false;
@@ -2200,7 +2211,8 @@
         });
     });
     if (reloadClear) reloadClear.addEventListener('click', function () {
-      reloadOut.textContent = '';
+      reloadMsg.textContent = '';
+      reloadOut.replaceChildren(reloadMsg);
       // Empty again, so drop the tab stop the run added.
       reloadOut.removeAttribute('tabindex');
       reloadClear.hidden = true;

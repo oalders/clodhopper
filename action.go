@@ -1186,11 +1186,12 @@ func promptBlocked(status string) bool {
 }
 
 // broadcastReload sends /reload-plugins to every eligible row in agents and
-// returns a one-line-per-row report, problems first. Rows sharing a pane (a resumed or
-// restarted agent leaves its old session on the roster) are sent to once, via
-// the newest session, which is the one actually running there. ok is false iff
-// a tmux send failed or timed out; skips are expected and do not fail it. Each
-// broadcast leaves one audit line, since it types into every agent at once.
+// returns a one-line-per-row report, problems first. Rows sharing a pane (a
+// resumed or restarted agent leaves its old session on the roster) are sent to
+// once, via the newest session, which is the one actually running there. ok is
+// false iff a tmux send failed or timed out; skips are expected and do not fail
+// it. Each broadcast leaves one audit line, since it types into every agent at
+// once.
 func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool, now time.Time) actionResult {
 	var sent, skipped, errs int
 	defer func() {
