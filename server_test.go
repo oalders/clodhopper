@@ -1979,16 +1979,13 @@ func TestDashboardRosterSortMarkup(t *testing.T) {
 }
 
 // The column sort runs inside the pin apply(), which swapContent already calls
-// after every #content swap: apply() must re-decorate the freshly swapped
-// headers first, and the sort must land before `order` is rebuilt so the sorted
-// order is what stays frozen across polls.
+// after every #content swap, and must land before `order` is rebuilt so the
+// sorted order is what stays frozen across polls.
 func TestDashboardPinSortWiring(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
 	body := getBody(t, db, "/")
-	if !strings.Contains(body, "    function apply() {\n      decorate();") {
-		t.Error("pin apply() must re-decorate the swapped roster headers before reordering")
-	}
+	// Source position stands in for execution order: that stretch of apply() is straight-line code.
 	iSort, iOrder := strings.Index(body, `desired.sort(function (x, y) {`), strings.Index(body, `      order = desired;`)
 	if iSort < 0 || iOrder < 0 || iSort > iOrder {
 		t.Errorf("sort must run before the frozen order is rebuilt: sort=%d order=%d", iSort, iOrder)

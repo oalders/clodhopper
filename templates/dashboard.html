@@ -290,7 +290,11 @@
        and the full target is only realised at <=640px, where the card layout
        resets td to overflow: visible. */
     @media (pointer: coarse) {
-      td.branch .copycwd, button.sortbtn { padding: 6px 8px; margin: -6px -8px; }
+      td.branch .copycwd { padding: 6px 8px; margin: -6px -8px; }
+      /* ~15px of text + 2x15px = 45px. The button is inline (all:unset), so the
+         padding grows its hit area without moving the header; as with .copycwd,
+         the th's overflow:hidden still clips it to the header row's height. */
+      button.sortbtn { padding: 15px 8px; margin: -15px -8px; }
     }
     /* The glyph is transparent at rest rather than absent: one ⧉ per roster row
        is a column of noise, but the span stays in the flow at all times — never
@@ -534,6 +538,8 @@
       .ck-header { gap: 8px 12px; }
       .ck-meta { text-align: left; }
       thead { display: none; } /* labels move into each cell instead */
+      /* So column sort has no control here, by design; a saved sort still
+         applies, since the pin apply reorders the rows themselves. */
       /* Under display:block these are no longer table boxes, so table-layout and
          the colgroup widths stop applying on their own. */
       table, tbody { display: block; width: auto; }
@@ -1252,6 +1258,7 @@
       var cell = row.querySelector('td[data-label="' + col + '"]');
       if (col === 'app') return cell ? cell.textContent : '';
       var v = cell ? parseInt(cell.getAttribute(col === 'status' ? 'data-rank' : 'data-since'), 10) : NaN;
+      // Fail-safe only: the server always emits integer data-rank/data-since.
       if (isNaN(v)) return Infinity;
       return col === 'status' ? v : -v;
     }
@@ -1282,6 +1289,10 @@
           ar.className = 'sortarrow';
           ar.setAttribute('aria-hidden', 'true');
           sb.appendChild(ar);
+          var hint = document.createElement('span');
+          hint.className = 'ck-sr';
+          hint.textContent = ', sort';
+          sb.appendChild(hint);
           th.appendChild(sb);
         }
         var on = sort && sort.col === col;
