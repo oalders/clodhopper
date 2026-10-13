@@ -323,8 +323,10 @@ kill — `tmux kill-session`, `kill -9`, a crash, or laptop sleep — gives Clau
 Code no chance to emit `SessionEnd`, so the agent would otherwise linger as a
 "waiting for you" zombie until the retention cap expires. The dashboard hides a
 row whose recorded tmux pane no longer exists (or now belongs to another tmux
-session), so a closed pane or restarted tmux server clears itself; a session
-outside tmux, or one killed while its pane survives, still needs an explicit end.
+session), so a closed pane or restarted tmux server clears itself. The check
+runs whether or not `--pane-peek` is on (serve lists tmux panes, cached ~5s), and
+an unreachable tmux hides nothing. A session outside tmux, or one killed while its
+pane survives, still needs an explicit end.
 If a script tears down sessions that way, have it tell clodhopper first:
 
 ```bash
