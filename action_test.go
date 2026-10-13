@@ -2726,12 +2726,12 @@ exit 0`)
 	}
 	// Problems first so the dashboard shows them without scrolling.
 	wantRows := []reportRow{
-		{"error", "feat-a " + shortID("waiting-1"), "no such pane TOKEN=" + redacted},
-		{"skipped", "feat-b " + shortID("working-1"), "working — retry, or include working"},
-		{"skipped", "feat-c " + shortID("prompt-1"), promptBlockedReason},
-		{"skipped", "feat-d " + shortID("nopane-1"), "not in tmux — reload manually"},
-		{"skipped", "feat-e " + shortID("oldpane-1"), "same pane as newer session " + shortID("newpane-1")},
-		{"sent", "feat-e " + shortID("newpane-1"), ""},
+		{Result: "error", Target: "feat-a " + shortID("waiting-1"), Reason: "no such pane TOKEN=" + redacted},
+		{Result: "skipped", Target: "feat-b " + shortID("working-1"), Reason: "working — retry, or include working"},
+		{Result: "skipped", Target: "feat-c " + shortID("prompt-1"), Reason: promptBlockedReason},
+		{Result: "skipped", Target: "feat-d " + shortID("nopane-1"), Reason: "not in tmux — reload manually"},
+		{Result: "skipped", Target: "feat-e " + shortID("oldpane-1"), Reason: "same pane as newer session " + shortID("newpane-1")},
+		{Result: "sent", Target: "feat-e " + shortID("newpane-1")},
 	}
 	if !slices.Equal(rows, wantRows) {
 		t.Errorf("rows = %q, want %q", rows, wantRows)

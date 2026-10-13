@@ -166,11 +166,11 @@
     #ck-reloadout { margin: 0; flex-basis: 100%; max-height: 30vh; overflow: auto; }
     /* Collapsed, not hidden: it holds the live region, which must stay rendered to announce. */
     #ck-reloadout:has(#ck-reloadmsg:empty):not(:has(table)) { margin: 0; padding: 0; border: 0; }
-    #ck-reloadout table { border-collapse: collapse; margin-top: 4px; }
+    #ck-reloadout table { border-collapse: collapse; margin-top: 4px; color: var(--text-2); } /* .actmsg's --text-3 is under AA on light --bg */
     /* pre-wrap beats the card layout's td white-space:normal, keeping multi-line tmux errors. */
     #ck-reloadout th, #ck-reloadout td { text-align: left; vertical-align: top; padding: 2px 8px; overflow-wrap: anywhere; white-space: pre-wrap; }
     /* The tint comes from the roster's tr.fail/tr.alert; the bold word and left bar mean colour is never the only signal.
-       Text is --text-1, not the accent: accent or .actmsg's --text-3 text on the tint misses AA contrast. */
+       Text is --text-1, not the accent: accent text on its own tint misses AA contrast. */
     #ck-reloadout tr.fail { --row-accent: var(--fail); color: var(--text-1); }
     #ck-reloadout tr.alert { --row-accent: var(--attention); color: var(--text-1); }
     #ck-reloadout tr.fail td:first-child, #ck-reloadout tr.alert td:first-child { font-weight: 600; box-shadow: inset 3px 0 0 var(--row-accent); }
@@ -2176,7 +2176,7 @@
         .then(function (d) {
           if (!d.rows || !d.rows.length) { reloadMsg.textContent = d.output || (d.ok ? 'done' : 'failed'); return; }
           var counts = {}, order = ['error', 'skipped', 'sent'], summary = [];
-          var cols = ['Result', 'Target', 'Reason'];
+          var cols = ['result', 'target', 'reason'];
           var table = document.createElement('table');
           table.setAttribute('aria-label', 'reload plugins results');
           var head = table.createTHead().insertRow();
