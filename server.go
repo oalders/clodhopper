@@ -563,10 +563,16 @@ func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciC
 		http.Error(w, "dashboard error", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := dashboardTmpl.Execute(w, data); err != nil {
+	// Render into a buffer, as handleState does: streaming to w meant a failed
+	// write (a client that reloaded mid-render) fell through to http.Error after
+	// the 200 was already sent — "superfluous response.WriteHeader".
+	var buf bytes.Buffer
+	if err := dashboardTmpl.Execute(&buf, data); err != nil {
 		http.Error(w, "render error", http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = buf.WriteTo(w)
 }
 
 // handleState serves the dashboard's dynamic region as JSON for the JS poller:

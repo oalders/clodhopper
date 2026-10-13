@@ -1252,6 +1252,37 @@ func getBody(t *testing.T, db *sql.DB, target string) string {
 	return rec.Body.String()
 }
 
+// goneWriter is a client that disconnected: every Write fails. It counts
+// WriteHeader calls, including the implicit one the first Write makes.
+type goneWriter struct {
+	h       http.Header
+	headers int
+}
+
+func (g *goneWriter) Header() http.Header { return g.h }
+func (g *goneWriter) WriteHeader(int)     { g.headers++ }
+func (g *goneWriter) Write([]byte) (int, error) {
+	if g.headers == 0 {
+		g.headers++
+	}
+	return 0, fmt.Errorf("client gone")
+}
+
+// A client that drops mid-response must not provoke a second WriteHeader
+// ("superfluous response.WriteHeader" in the serve log).
+func TestHandleDashboardClientGoneWritesHeaderOnce(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	w := &goneWriter{h: http.Header{}}
+	handleDashboard(w, httptest.NewRequest(http.MethodGet, "/", nil), db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
+	if w.headers != 1 {
+		t.Errorf("WriteHeader called %d times, want 1", w.headers)
+	}
+}
+
 // The peek control renders only when the feature is enabled AND the row's pane is
 // live. buildDashboardData sets LiveTmux; here we assert the template gate by
 // rendering the content template directly.
