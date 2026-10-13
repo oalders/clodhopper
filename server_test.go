@@ -769,6 +769,37 @@ func TestBuildDashboardDataDropsDeadPane(t *testing.T) {
 	}
 }
 
+// cwdCache.get: nil-safe, skips an empty cwd, memoises a miss for cwdTTL (an
+// entry is fresh while now-at < cwdTTL), and refreshes once that has elapsed.
+func TestCwdCacheGet(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	var nilCache *cwdCache
+	if got := nilCache.get("/wt", now); got != "" {
+		t.Errorf("nil cache: got %q, want empty", got)
+	}
+	if got := (&cwdCache{m: map[string]cwdEntry{}}).get("/wt", now); got != "" {
+		t.Errorf("nil lookup: got %q, want empty", got)
+	}
+
+	calls := 0
+	c := &cwdCache{m: map[string]cwdEntry{}, lookup: func(cwd string) string {
+		calls++
+		return "val:" + cwd
+	}}
+	if got := c.get("", now); got != "" || calls != 0 {
+		t.Errorf("empty cwd: got %q after %d lookups, want empty after 0", got, calls)
+	}
+	if got := c.get("/wt", now); got != "val:/wt" || calls != 1 {
+		t.Fatalf("miss: got %q after %d lookups, want val:/wt after 1", got, calls)
+	}
+	if got := c.get("/wt", now.Add(cwdTTL-time.Second)); got != "val:/wt" || calls != 1 {
+		t.Errorf("within TTL: got %q after %d lookups, want cached after 1", got, calls)
+	}
+	if got := c.get("/wt", now.Add(cwdTTL)); got != "val:/wt" || calls != 2 {
+		t.Errorf("at TTL: got %q after %d lookups, want refreshed after 2", got, calls)
+	}
+}
+
 // Repo (which the PR link needs) is resolved only for a row with a live pane: a
 // pane-less row at the same cwd never has a capture to link.
 func TestBuildDashboardDataRepoOnlyForLivePane(t *testing.T) {

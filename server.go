@@ -462,7 +462,8 @@ func newRepoCache() *cwdCache { return &cwdCache{m: map[string]cwdEntry{}, looku
 
 // get returns the cached lookup result for cwd (e.g. the CI summary for the
 // PR on its branch), refreshing it when stale. now is injected for testing. A nil
-// cache yields "", so a config built without one simply never resolves.
+// cache yields "", so a config built without one simply never resolves; a cache
+// with no lookup serves what it holds and yields "" on a miss.
 func (c *cwdCache) get(cwd string, now time.Time) string {
 	if c == nil || cwd == "" {
 		return ""
@@ -472,6 +473,9 @@ func (c *cwdCache) get(cwd string, now time.Time) string {
 	c.mu.Unlock()
 	if ok && now.Sub(e.at) < cwdTTL {
 		return e.val
+	}
+	if c.lookup == nil {
+		return ""
 	}
 	s := c.lookup(cwd)
 	c.mu.Lock()

@@ -300,3 +300,22 @@ func TestParseGitHubRepo(t *testing.T) {
 		}
 	}
 }
+
+// lookupRepo against real git: a GitHub origin resolves to owner/repo, and a
+// repo with no origin at all resolves to "".
+func TestLookupRepoRealRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "git@github.com:o/r.git")
+	if got := lookupRepo(dir); got != "o/r" {
+		t.Errorf("lookupRepo = %q, want o/r", got)
+	}
+	bare := t.TempDir()
+	runGit(t, bare, "init", "--quiet")
+	if got := lookupRepo(bare); got != "" {
+		t.Errorf("no origin: lookupRepo = %q, want empty", got)
+	}
+}

@@ -112,6 +112,10 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
 - **CI status** (`server.go`) shells out to `gh pr checks` per cwd, memoised in
   `cwdCache` (60s TTL) and fetched concurrently across worktrees. Like `gitBranch`,
   it is strictly best-effort: missing `gh`, no PR, or a timeout yields "".
+  The same `cwdCache` type also backs the pane peek's GitHub owner/repo for the
+  footer's PR #N link (`newRepoCache`/`lookupRepo`, via `git remote get-url origin`),
+  resolved per live-pane row (not concurrently) and likewise best-effort: a
+  non-GitHub remote or any error yields "".
 - The `branch` dimension exists so each concurrent **git worktree** shows up as
   its own roster row / activity tally — that grouping is the point, not incidental.
 - Config is read from env vars with `CLODHOPPER_` prefixes (see README table);
