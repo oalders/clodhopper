@@ -256,6 +256,7 @@ The targets are re-derived server-side: rows not in tmux are listed for a manual
 reload, rows sharing a pane are sent to once (via the newest session), working
 rows are skipped unless **include working** is ticked, and a row blocked on a
 permission prompt or question is **never** sent to (the Enter would answer it).
+Once a run finishes, a **clear report** button dismisses its report.
 
 Every row — pane or no pane — also gains an **end** button. It is the dashboard
 equivalent of `clodhopper end --session <id>`: it writes the synthetic

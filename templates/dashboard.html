@@ -756,7 +756,7 @@
   <div class="ck-bulk" role="group" aria-label="reload plugins in all sessions">
     <button type="button" id="ck-reloadall" class="ck-btn" title="send /reload-plugins to every idle or waiting tmux session on the roster">reload plugins (all)</button>
     <label class="actforce"><input type="checkbox" id="ck-reloadbusy" aria-describedby="ck-reloadbusy-hint"> include working</label>
-    <button type="button" id="ck-reloadclear" class="ck-btn" aria-controls="ck-reloadout" hidden>clear report</button>
+    <button type="button" id="ck-reloadclear" class="ck-btn" title="empty the reload plugins report below" aria-controls="ck-reloadout" hidden>clear report</button>
     <span id="ck-reloadbusy-hint" class="actmsg">also sends to mid-turn sessions (queued); a session that reaches a prompt mid-send may have that prompt answered</span>
     <pre id="ck-reloadout" class="actmsg" role="status" aria-live="polite" aria-atomic="true" aria-label="reload plugins report"></pre>
   </div>
