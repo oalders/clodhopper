@@ -658,6 +658,7 @@
       tr.group-start { border-top: 2px solid var(--divider); }
       tr.grouped { border-left: 3px solid var(--idle); }
       #ck-reloadout tr.fail, #ck-reloadout tr.alert { border-left: 3px solid currentColor; }
+      #ck-reloadout td:empty { display: none; } /* a sent row has no reason; skip its bare label */
       /* The peek panel is a full-width scroller, not a card. On desktop the pre's
          width is bounded by table-layout:fixed + the colgroup + th,td overflow:hidden,
          so its overflow:auto scrolls internally. The card layout drops all three and
