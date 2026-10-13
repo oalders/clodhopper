@@ -340,6 +340,13 @@
        sufficient focus indicator (WCAG 2.4.7); restore a real ring (matches actbtn). */
     button.peek:focus-visible { box-shadow: var(--shadow-focus); }
     button.peek[aria-expanded="true"] { opacity: 1; color: var(--brand); }
+    /* Roster column sort (pin order only): the JS injects this button into the
+       th, so it must read as the header text itself plus a direction arrow. */
+    button.sortbtn { all: unset; cursor: pointer; }
+    button.sortbtn:hover { color: var(--text-1); }
+    button.sortbtn:focus-visible { box-shadow: var(--shadow-focus); }
+    .sortarrow { margin-left: 3px; color: var(--text-3); }
+    th[aria-sort] .sortarrow { color: var(--brand); }
     tr.panerow > td { padding: 0; background: var(--surface-3); }
     pre.panecap {
       margin: 0;
@@ -1204,12 +1211,73 @@
   // that cluster contiguous — so the `grouped` accent bar stays bound and the
   // `group-start` dividers stay meaningful (we recompute them below). Pinning
   // individual sessions could strand a cluster's two rows far apart.
+  //
+  // While pinned, the app/status/idle headers also sort the roster (issue #142).
+  // The sort moves whole group-blocks too, keyed per group: app text, the most
+  // urgent row's server StatusRank (data-rank, so JS never re-ranks statuses),
+  // and the least idle row's data-since. The chosen column persists as ch-pin-sort.
   (function () {
     var btn = document.getElementById('ck-pin');
     var live = document.getElementById('ck-copystatus');
     var order = [];        // frozen group keys, in first-seen order
     var enabled = false;
+    var sort = null;       // {col, dir} while pinned and sorted, else null
     try { enabled = localStorage.getItem('ch-pin') === 'on'; } catch (e) {}
+
+    // Fail closed: anything but a known column and direction means no sort.
+    function loadSort() {
+      var m = null;
+      try { m = /^(app|status|idle):(asc|desc)$/.exec(localStorage.getItem('ch-pin-sort') || ''); } catch (e) {}
+      return m ? { col: m[1], dir: m[2] } : null;
+    }
+    function saveSort() {
+      try { localStorage.setItem('ch-pin-sort', sort ? sort.col + ':' + sort.dir : ''); } catch (e) {}
+    }
+
+    // A group's sort key; ascending puts the most urgent / least idle first.
+    // Cells are found by data-label, not class: an idle session's status cell
+    // also carries class "idle".
+    function rowKey(row, col) {
+      var cell = row.querySelector('td[data-label="' + col + '"]');
+      if (col === 'app') return cell ? cell.textContent : '';
+      var v = cell ? parseInt(cell.getAttribute(col === 'status' ? 'data-rank' : 'data-since'), 10) : NaN;
+      if (isNaN(v)) return Infinity;
+      return col === 'status' ? v : -v;
+    }
+
+    // The roster header lives inside #content, so every swap ships it plain;
+    // this (re)adds the sort buttons and aria-sort while pinned and strips them
+    // when not. Buttons are updated in place, never rebuilt, so a header the
+    // reader just clicked keeps focus.
+    function decorate() {
+      var ths = document.querySelectorAll('#content table.roster thead th[data-sort]');
+      for (var i = 0; i < ths.length; i++) {
+        var th = ths[i], col = th.getAttribute('data-sort');
+        var sb = th.querySelector('button.sortbtn');
+        if (!enabled) {
+          th.removeAttribute('aria-sort');
+          if (sb) th.textContent = col;
+          continue;
+        }
+        if (!sb) {
+          th.textContent = '';
+          sb = document.createElement('button');
+          sb.type = 'button';
+          sb.className = 'sortbtn';
+          sb.setAttribute('data-sort', col);
+          sb.appendChild(document.createTextNode(col));
+          var ar = document.createElement('span');
+          ar.className = 'sortarrow';
+          ar.setAttribute('aria-hidden', 'true');
+          sb.appendChild(ar);
+          th.appendChild(sb);
+        }
+        var on = sort && sort.col === col;
+        if (on) th.setAttribute('aria-sort', sort.dir === 'asc' ? 'ascending' : 'descending');
+        else th.removeAttribute('aria-sort');
+        sb.querySelector('.sortarrow').textContent = on ? (sort.dir === 'asc' ? '▲' : '▼') : '↕';
+      }
+    }
 
     function rosterRows() {
       return document.querySelectorAll('#content table.roster tbody tr[data-group]');
@@ -1230,6 +1298,7 @@
     // Reorder the roster's group-blocks into the frozen order and repair the
     // position-derived group-start divider. Runs after each #content swap.
     function apply() {
+      decorate();
       var main = rosterRows();
       if (!main.length) return;
       var tbody = main[0].parentNode;
@@ -1240,8 +1309,13 @@
       var blocks = {};       // group key -> array of blocks ([]node)
       var present = [];       // group keys, in server order
       var seen = {};
+      var keys = {};          // group key -> its sort key (min over its rows)
       for (var i = 0; i < main.length; i++) {
         var g = main[i].getAttribute('data-group');
+        if (sort) {
+          var rk = rowKey(main[i], sort.col);
+          if (!(g in keys) || rk < keys[g]) keys[g] = rk;
+        }
         var nodes = [main[i]];
         var n = main[i].nextElementSibling;
         while (n && n.tagName === 'TR' && !n.hasAttribute('data-group') &&
@@ -1263,6 +1337,19 @@
       }
       for (var q = 0; q < present.length; q++) {
         if (!used[present[q]]) desired.push(present[q]);
+      }
+      // An active sort reorders that, ties falling back to the pinned position
+      // explicitly (index tie-break) rather than trusting sort() to be stable.
+      // The sorted result becomes the new frozen order, so it holds from here.
+      if (sort) {
+        var sgn = sort.dir === 'asc' ? 1 : -1;
+        var pos = {};
+        for (var o = 0; o < desired.length; o++) pos[desired[o]] = o;
+        desired.sort(function (x, y) {
+          var kx = keys[x], ky = keys[y];
+          var c = sort.col === 'app' ? kx.localeCompare(ky) : (kx < ky ? -1 : kx > ky ? 1 : 0);
+          return c ? sgn * c : pos[x] - pos[y];
+        });
       }
       order = desired;
 
@@ -1316,16 +1403,33 @@
     if (!btn) return;
     function reflect() { btn.setAttribute('aria-pressed', enabled ? 'true' : 'false'); }
     reflect();
-    if (enabled) snapshot();   // pin whatever order loaded
+    // Pin whatever order loaded, re-sorted by the saved column if there is one.
+    if (enabled) { snapshot(); sort = loadSort(); apply(); }
 
     btn.addEventListener('click', function () {
       enabled = !enabled;
       try { localStorage.setItem('ch-pin', enabled ? 'on' : ''); } catch (e) {}
       reflect();
-      if (enabled) snapshot(); else order = [];
+      // Off drops the sort from storage too, not just from memory: the headers
+      // only toggle asc/desc, so a sort that came back on every re-pin would
+      // leave no way back to the server order. ch-pin-sort therefore survives a
+      // reload while pinned, and a fresh pin starts from the server order.
+      if (enabled) { snapshot(); apply(); } else { order = []; sort = null; saveSort(); decorate(); }
       // Announce via the out-of-#content live region (the poller can't wipe it).
       // Off just lets the next poll repaint in fresh server order.
       if (live) live.textContent = enabled ? 'roster order pinned' : 'roster order live';
+    });
+
+    // Delegated from document: the headers are swapped out with #content on
+    // every poll (see the click-to-copy note below).
+    document.addEventListener('click', function (ev) {
+      var sb = ev.target.closest ? ev.target.closest('#content button.sortbtn') : null;
+      if (!sb || !enabled) return;
+      var col = sb.getAttribute('data-sort');
+      sort = { col: col, dir: sort && sort.col === col && sort.dir === 'asc' ? 'desc' : 'asc' };
+      saveSort();
+      apply();
+      if (live) live.textContent = 'roster sorted by ' + col + ', ' + (sort.dir === 'asc' ? 'ascending' : 'descending');
     });
   })();
 
@@ -2661,7 +2765,7 @@
         <col style="width: 36ch"><col style="width: 8ch">{{ if .Debug }}<col style="width: 10ch">{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<col style="width: 10ch">{{ end }}<col>
       </colgroup>
       <thead>
-        <tr><th class="ci">CI</th><th>branch</th><th>app</th><th>status</th><th>doing</th><th>idle</th>{{ if .Debug }}<th>id</th>{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<th>actions</th>{{ end }}<th>session</th></tr>
+        <tr><th class="ci">CI</th><th>branch</th><th data-sort="app">app</th><th data-sort="status">status</th><th>doing</th><th data-sort="idle">idle</th>{{ if .Debug }}<th>id</th>{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<th>actions</th>{{ end }}<th>session</th></tr>
       </thead>
       <tbody>
         {{ range .Agents }}
@@ -2669,7 +2773,7 @@
           <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if eq .CI "green" }}<span role="img" aria-label="CI passing">🟢</span>{{ else if eq .CI "pending" }}<span role="img" aria-label="CI pending">🟡</span>{{ else if eq .CI "failing" }}<span role="img" aria-label="CI failing">🔴</span>{{ else }}<span role="img" aria-label="no CI">—</span>{{ end }}</td>
           {{ template "branchcellroster" . }}
           <td data-label="app">{{ .SourceApp }}</td>
-          <td data-label="status" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if or (eq .Status "waiting") (eq .Status "waiting on agents") }}background{{ else if eq .Status "working" }}working{{ else if eq .Status "idle" }}idle{{ else if eq .Status "ended" }}ended{{ end }}"><span class="ck-badge"><span class="ck-dot"></span>{{ if eq .Status "waiting on agents" }}waiting on {{ .Subagents }} agent{{ if ne .Subagents 1 }}s{{ end }} <span aria-hidden="true">·</span> <span class="ck-sr">running </span><span data-since="{{ .SubagentSince }}">{{ .SubagentAge }}</span>{{ else }}{{ .Status }}{{ end }}</span></td>
+          <td data-label="status" data-rank="{{ .StatusRank }}" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if or (eq .Status "waiting") (eq .Status "waiting on agents") }}background{{ else if eq .Status "working" }}working{{ else if eq .Status "idle" }}idle{{ else if eq .Status "ended" }}ended{{ end }}"><span class="ck-badge"><span class="ck-dot"></span>{{ if eq .Status "waiting on agents" }}waiting on {{ .Subagents }} agent{{ if ne .Subagents 1 }}s{{ end }} <span aria-hidden="true">·</span> <span class="ck-sr">running </span><span data-since="{{ .SubagentSince }}">{{ .SubagentAge }}</span>{{ else }}{{ .Status }}{{ end }}</span></td>
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>{{ end }}

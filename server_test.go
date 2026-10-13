@@ -1955,6 +1955,60 @@ func TestDashboardPinReorderPreservesPeekScroll(t *testing.T) {
 	}
 }
 
+// Sorting the pinned roster by status (issue #142) orders by urgency, and the
+// urgency ranking is the server's: the status cell carries StatusRank so the JS
+// compares that number and never keeps a second ranking table of its own. The
+// sortable headers ship as plain text — the sort affordance is JS-added only
+// while pinned, so an unpinned board never looks sortable.
+func TestDashboardRosterSortMarkup(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents: []Agent{{SessionID: "s1", SourceApp: "app1", Status: statusIdle, StatusRank: 5, IdleSince: 42}},
+	})
+	for _, want := range []string{
+		`<td data-label="status" data-rank="5" class="status idle">`,
+		`<td class="idle" data-label="idle" data-since="42">`,
+		`<th data-sort="app">app</th><th data-sort="status">status</th><th>doing</th><th data-sort="idle">idle</th>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("roster sort markup missing: %s", want)
+		}
+	}
+	if strings.Contains(html, `<th aria-sort`) || strings.Contains(html, `<button type="button" class="sortbtn"`) {
+		t.Error("server markup must not render a sort affordance; JS adds it only while pinned")
+	}
+}
+
+// The column sort rides the pin apply() so it survives every #content swap
+// exactly as the frozen order does, ties keep the pinned position via an
+// explicit index tie-break, the persisted choice is validated (fail closed),
+// and unpinning strips the header affordance. Cells are looked up by data-label:
+// an idle session's status cell also has class "idle", so a td.idle lookup
+// silently read the wrong cell and sorted idle groups last.
+func TestDashboardPinSortWiring(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	body := getBody(t, db, "/")
+	for _, want := range []string{
+		"    function apply() {\n      decorate();",
+		`try { m = /^(app|status|idle):(asc|desc)$/.exec(localStorage.getItem('ch-pin-sort') || ''); } catch (e) {}`,
+		`try { localStorage.setItem('ch-pin-sort', sort ? sort.col + ':' + sort.dir : ''); } catch (e) {}`,
+		`var cell = row.querySelector('td[data-label="' + col + '"]');`,
+		`return c ? sgn * c : pos[x] - pos[y];`,
+		`if (enabled) { snapshot(); apply(); } else { order = []; sort = null; saveSort(); decorate(); }`,
+		`var sb = ev.target.closest ? ev.target.closest('#content button.sortbtn') : null;`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("pin sort wiring missing: %s", want)
+		}
+	}
+	// The sort must land before `order` is rebuilt so the sorted order is what
+	// stays frozen across polls.
+	iSort, iOrder := strings.Index(body, `desired.sort(function (x, y) {`), strings.Index(body, `      order = desired;`)
+	if iSort < 0 || iOrder < 0 || iSort > iOrder {
+		t.Errorf("sort must run before the frozen order is rebuilt: sort=%d order=%d", iSort, iOrder)
+	}
+}
+
 // A peek capsule the reader has keyboard focus on must survive the ~5s poll.
 // swapContent replaces #content wholesale, so the focused <pre class="panecap">
 // is destroyed and rebuilt; before this it matched no refocus branch and the
