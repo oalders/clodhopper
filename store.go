@@ -400,7 +400,7 @@ type Agent struct {
 	Cwd              string
 	TmuxSession      string // tmux session name, the disambiguating label
 	TmuxPane         string // tmux pane id ("%N") of the latest event's Claude pane; targets the live pane peek, "" if unknown
-	HasPane          bool   // true when the session recorded a tmux pane id (TmuxPane != ""); gates the session-action buttons under --enable-merge, decoupled from --pane-peek (the peek's liveness cache is only populated when peek is on)
+	HasPane          bool   // true when the session recorded a tmux pane id (TmuxPane != ""); gates the session-action buttons under --enable-merge, decoupled from --pane-peek (LiveTmux is only set when peek is on)
 	LiveTmux         bool   // true when TmuxPane is currently a live tmux pane (set by the server layer when --pane-peek is on); drives the peek control
 	Status           string // human label (see status* constants)
 	StatusRank       int    // sort key; lower = more urgent
@@ -522,8 +522,9 @@ func deriveStatus(lastEvent, notifType, lastTool string, idleSecs int) (label st
 // agent's current state. Every live session within waitingCap is kept — a
 // working agent that goes quiet is relabeled idle (see deriveStatus) rather than
 // dropped, so it survives a lunch or overnight gap and only leaves the board on
-// a SessionEnd or once it falls out of the waitingCap query window. now is
-// injected so the result is deterministic under test.
+// a SessionEnd or once it falls out of the waitingCap query window (serve also
+// hides a row whose tmux pane has died; see dropDeadPanes). now is injected so
+// the result is deterministic under test.
 func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, error) {
 	since := now.Add(-waitingCap).UTC().Format(time.RFC3339)
 	rows, err := db.Query(

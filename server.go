@@ -331,6 +331,7 @@ func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool
 		bindHost:     host,
 		allowedHosts: allowed,
 		inflight:     newInflightSet(),
+		panes:        peek.cache,
 	}
 	return peek, act
 }
@@ -647,6 +648,8 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConf
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("roster: %w", err)
 	}
+	// Before enrichCI, so no CI is fetched for a row that will not render.
+	agents = dropDeadPanes(agents, peek.cache.panes(now))
 	enrichCI(agents, ci, now)
 	suppressWatchedCI(agents, now)
 	demotePendingCI(agents)

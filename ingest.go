@@ -338,8 +338,13 @@ func tmuxContext() (session, pane string) {
 	if err != nil {
 		return "", pane
 	}
-	session = truncate(scrubString(cleanSessionName(strings.TrimRight(string(out), "\n"))), maxFieldLen)
-	return session, pane
+	return tmuxSessionLabel(strings.TrimRight(string(out), "\n")), pane
+}
+
+// tmuxSessionLabel normalises a raw tmux session name into the stored
+// tmux_session form; serve applies it to its pane listing so the two compare.
+func tmuxSessionLabel(raw string) string {
+	return truncate(scrubString(cleanSessionName(raw)), maxFieldLen)
 }
 
 // cleanSessionName makes a raw tmux session name safe and tidy for the web

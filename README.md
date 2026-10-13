@@ -321,8 +321,11 @@ Known limitation: a turn you interrupt (Esc) fires no `Stop` hook, so it gets no
 The roster treats a session as gone when it sees a `SessionEnd` event. A hard
 kill — `tmux kill-session`, `kill -9`, a crash, or laptop sleep — gives Claude
 Code no chance to emit `SessionEnd`, so the agent would otherwise linger as a
-"waiting for you" zombie until the retention cap expires. If a script tears down
-sessions that way, have it tell clodhopper first:
+"waiting for you" zombie until the retention cap expires. The dashboard hides a
+row whose recorded tmux pane no longer exists (or now belongs to another tmux
+session), so a closed pane or restarted tmux server clears itself; a session
+outside tmux, or one killed while its pane survives, still needs an explicit end.
+If a script tears down sessions that way, have it tell clodhopper first:
 
 ```bash
 clodhopper end --branch "$branch"
