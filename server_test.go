@@ -861,6 +861,21 @@ func TestViewSignature_IgnoresIdleButTracksEvents(t *testing.T) {
 	if viewSignature(base) == viewSignature(flipped) {
 		t.Error("signature unchanged after a status change")
 	}
+
+	// A change in the running-subagent count repaints the badge text.
+	oneSub, moreSubs := base, base
+	oneSub.Agents = []Agent{{SessionID: "s1", Status: statusSubagents, IdleSecs: 10, IdleSince: 100, Subagents: 1}}
+	moreSubs.Agents = []Agent{{SessionID: "s1", Status: statusSubagents, IdleSecs: 10, IdleSince: 100, Subagents: 2}}
+	if viewSignature(oneSub) == viewSignature(moreSubs) {
+		t.Error("signature unchanged after a subagent count change")
+	}
+
+	// One subagent stopping as another starts keeps the count but moves the anchor.
+	moved := oneSub
+	moved.Agents = []Agent{{SessionID: "s1", Status: statusSubagents, IdleSecs: 10, IdleSince: 100, Subagents: 1, SubagentSince: 200}}
+	if viewSignature(oneSub) == viewSignature(moved) {
+		t.Error("signature unchanged after the subagent start anchor moved")
+	}
 }
 
 func TestSessColor(t *testing.T) {
@@ -1743,6 +1758,24 @@ func TestDashboardRendersVersionInFooter(t *testing.T) {
 	html := renderDashboard(t, d)
 	if !strings.Contains(html, `<span class="ck-ver" title="clodhopper 1.2.3 (commit abc1234, built 2026-01-01T00:00:00Z)">1.2.3</span>`) {
 		t.Fatalf("footer missing version span with detail tooltip; got:\n%s", html)
+	}
+}
+
+// A session waiting on subagents renders a background badge with the count
+// (singular/plural) and a ticking running time, the separator hidden from AT.
+func TestDashboardRendersWaitingOnSubagents(t *testing.T) {
+	for _, c := range []struct {
+		n    int
+		text string
+	}{{1, "waiting on 1 agent"}, {2, "waiting on 2 agents"}} {
+		d := dashboardData{Agents: []Agent{{SessionID: "s1", Status: statusSubagents, Subagents: c.n, SubagentSince: 1700000000, SubagentAge: "6m"}}}
+		html := renderDashboard(t, d)
+		// The trailing space keeps "waiting on 1 agent" from matching the plural.
+		for _, want := range []string{c.text + " ", `class="status background"`, `<span aria-hidden="true">·</span>`, `<span class="ck-sr">running </span>`, `<span data-since="1700000000">6m</span>`} {
+			if !strings.Contains(html, want) {
+				t.Errorf("%d subagents: %q missing in:\n%s", c.n, want, html)
+			}
+		}
 	}
 }
 
