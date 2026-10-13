@@ -769,6 +769,40 @@ func TestBuildDashboardDataDropsDeadPane(t *testing.T) {
 	}
 }
 
+// Repo (which the PR link needs) is resolved only for a row with a live pane: a
+// pane-less row at the same cwd never has a capture to link.
+func TestBuildDashboardDataRepoOnlyForLivePane(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+	ts := now.UTC().Format(time.RFC3339)
+	cwd := "/home/me/wt/fix-141"
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "live", Cwd: cwd, TmuxSession: "work", TmuxPane: "%1", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "paneless", Cwd: cwd, EventType: "Stop", PayloadJSON: "{}"})
+	// Both caches are stamped an hour ahead so neither tmux nor git ever runs.
+	peek := &peekConfig{
+		enabled: true,
+		cache:   &paneCache{set: map[string]string{"%1": "work"}, at: now.Add(time.Hour)},
+		repos: &ciCache{m: map[string]ciEntry{cwd: {status: "o/r", at: now.Add(time.Hour)}}, lookup: func(string) string {
+			t.Error("unexpected lookup")
+			return ""
+		}},
+	}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "127.0.0.1:5555"
+	r.Host = "127.0.0.1:4555"
+	data, err := buildDashboardData(r, db, newCICache(), peek, &actionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repos := map[string]string{}
+	for _, a := range data.Agents {
+		repos[a.SessionID] = a.Repo
+	}
+	if len(repos) != 2 || repos["live"] != "o/r" || repos["paneless"] != "" {
+		t.Fatalf("Repo by session = %q, want live=o/r and paneless empty", repos)
+	}
+}
+
 // Both peer-gated view flags collapse for a peer that fails remoteAllowed: the
 // LAN caller gets a read-only board with no action buttons, no CSRF token to
 // drive even the exec-free "end" by hand, and no ⤢ peek control — /api/pane

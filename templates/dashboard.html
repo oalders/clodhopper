@@ -1829,6 +1829,7 @@
         a.target = '_blank';
         a.rel = 'noopener noreferrer';
         a.textContent = 'PR #' + m[3];
+        a.setAttribute('aria-label', 'PR #' + m[3] + ' (opens in a new tab)');
         pre.appendChild(a);
         last = re.lastIndex;
       }
