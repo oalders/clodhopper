@@ -32,7 +32,7 @@ type peekConfig struct {
 	enabled bool
 	lines   int
 	cache   *paneCache
-	repos   *ciCache // cwd → GitHub "owner/repo" for linking the footer's PR #N; nil resolves nothing
+	repos   *cwdCache // cwd → GitHub "owner/repo" for linking the footer's PR #N; nil resolves nothing
 	// bindHost/allowedHosts mirror actionConfig's: /api/pane execs tmux and
 	// streams live transcript text, so it runs the SAME gate the exec-backed
 	// actions do (execPeerAllowed), which needs the Host allowlist too.
@@ -51,7 +51,7 @@ func clampPaneLines(n int) int {
 
 // paneCache memoises the live tmux panes (pane id → normalised session name) so
 // the dashboard (which polls) does not shell out to tmux on every render. now is
-// injected so the TTL is testable, matching ciCache.
+// injected so the TTL is testable, matching cwdCache.
 type paneCache struct {
 	mu  sync.Mutex
 	set map[string]string

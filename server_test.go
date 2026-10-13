@@ -782,7 +782,7 @@ func TestBuildDashboardDataRepoOnlyForLivePane(t *testing.T) {
 	peek := &peekConfig{
 		enabled: true,
 		cache:   &paneCache{set: map[string]string{"%1": "work"}, at: now.Add(time.Hour)},
-		repos: &ciCache{m: map[string]ciEntry{cwd: {status: "o/r", at: now.Add(time.Hour)}}, lookup: func(string) string {
+		repos: &cwdCache{m: map[string]cwdEntry{cwd: {val: "o/r", at: now.Add(time.Hour)}}, lookup: func(string) string {
 			t.Error("unexpected lookup")
 			return ""
 		}},
@@ -853,7 +853,7 @@ func TestHandlers_SetSecurityHeaders(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 
-	routes := map[string]func(http.ResponseWriter, *http.Request, *sql.DB, *ciCache, *peekConfig, *actionConfig){
+	routes := map[string]func(http.ResponseWriter, *http.Request, *sql.DB, *cwdCache, *peekConfig, *actionConfig){
 		"/":          handleDashboard,
 		"/api/state": handleState,
 	}
@@ -3527,8 +3527,8 @@ func TestSuppressWatchedCI_Demotes(t *testing.T) {
 	ins(2, "UserPromptSubmit", "/poll-ci")
 	ins(1, "Stop", "") // "waiting for you"
 
-	// Pre-seed rather than shelling out to gh; `at` must be inside ciTTL.
-	ci := &ciCache{m: map[string]ciEntry{cwd: {status: "failing", at: time.Now()}}}
+	// Pre-seed rather than shelling out to gh; `at` must be inside cwdTTL.
+	ci := &cwdCache{m: map[string]cwdEntry{cwd: {val: "failing", at: time.Now()}}}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	data, err := buildDashboardData(r, db, ci, &peekConfig{}, &actionConfig{})
 	if err != nil {
@@ -3570,7 +3570,7 @@ func TestSuppressWatchedCI_RowIsolation(t *testing.T) {
 	ins(2, "other", "UserPromptSubmit", "/code-review")
 	ins(1, "other", "Stop", "")
 
-	ci := &ciCache{m: map[string]ciEntry{cwd: {status: "failing", at: time.Now()}}}
+	ci := &cwdCache{m: map[string]cwdEntry{cwd: {val: "failing", at: time.Now()}}}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	data, err := buildDashboardData(r, db, ci, &peekConfig{}, &actionConfig{})
 	if err != nil {

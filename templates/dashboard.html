@@ -1821,6 +1821,7 @@
       var last = 0, m;
       while (linkable && (m = re.exec(text))) {
         var n = parseInt(m[3], 10);
+        // GitHub PRs start at 1; a skipped match stays in the next plain-text slice (last is not advanced).
         if (!(n > 0)) continue;
         var start = m.index + m[1].length + m[2].length;
         pre.appendChild(document.createTextNode(text.slice(last, start)));
