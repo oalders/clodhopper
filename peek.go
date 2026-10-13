@@ -32,6 +32,7 @@ type peekConfig struct {
 	enabled bool
 	lines   int
 	cache   *paneCache
+	repos   *ciCache // cwd → GitHub "owner/repo" for linking the footer's PR #N; nil resolves nothing
 	// bindHost/allowedHosts mirror actionConfig's: /api/pane execs tmux and
 	// streams live transcript text, so it runs the SAME gate the exec-backed
 	// actions do (execPeerAllowed), which needs the Host allowlist too.
@@ -173,4 +174,25 @@ func handlePane(w http.ResponseWriter, r *http.Request, peek *peekConfig, now ti
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = io.WriteString(w, out)
+}
+
+// githubRemoteRe matches the github.com origin URL shapes (scp-style ssh,
+// ssh://, https) and captures owner and repo. The character classes are strict
+// because the result is spliced into an href; anything else fails closed to "".
+var githubRemoteRe = regexp.MustCompile(`^(?:git@github\.com:|ssh://git@github\.com/|https://github\.com/)([A-Za-z0-9-]+)/([A-Za-z0-9._-]+?)(?:\.git)?$`)
+
+// parseGitHubRepo returns "owner/repo" for a github.com remote URL, else "".
+func parseGitHubRepo(remote string) string {
+	m := githubRemoteRe.FindStringSubmatch(remote)
+	if m == nil || m[2] == "." || m[2] == ".." {
+		return ""
+	}
+	return m[1] + "/" + m[2]
+}
+
+// lookupRepo resolves cwd's origin remote to a GitHub "owner/repo", or "" when
+// git fails or the remote is not on github.com. Best-effort, like lookupCI.
+func lookupRepo(cwd string) string {
+	out, _ := gitProbe("git", cwd, "remote", "get-url", "origin")
+	return parseGitHubRepo(out)
 }

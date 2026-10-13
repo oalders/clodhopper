@@ -319,7 +319,7 @@ func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool
 	allowed := allowedHosts()
 	peek := &peekConfig{
 		enabled: panePeek, lines: clampPaneLines(paneLines), cache: newPaneCache(),
-		bindHost: host, allowedHosts: allowed,
+		repos: newRepoCache(), bindHost: host, allowedHosts: allowed,
 	}
 	act := &actionConfig{
 		enabled:      enableMerge,
@@ -440,12 +440,13 @@ func runServe(args []string) int {
 	return 0
 }
 
-// ciCache memoises per-cwd CI lookups so the dashboard (which auto-refreshes)
-// does not shell out to gh on every render. Keyed by cwd; entries expire after
-// ciTTL.
+// ciCache memoises per-cwd lookups (CI status; the peek's GitHub repo) so the
+// dashboard (which auto-refreshes) does not shell out on every render. Keyed by
+// cwd; entries expire after ciTTL.
 type ciCache struct {
-	mu sync.Mutex
-	m  map[string]ciEntry
+	mu     sync.Mutex
+	m      map[string]ciEntry
+	lookup func(cwd string) string
 }
 
 type ciEntry struct {
@@ -455,12 +456,15 @@ type ciEntry struct {
 
 const ciTTL = 60 * time.Second
 
-func newCICache() *ciCache { return &ciCache{m: map[string]ciEntry{}} }
+func newCICache() *ciCache { return &ciCache{m: map[string]ciEntry{}, lookup: lookupCI} }
 
-// status returns a cached CI summary for the PR on the branch checked out at cwd,
-// refreshing via gh when the cached value is stale. now is injected for testing.
+func newRepoCache() *ciCache { return &ciCache{m: map[string]ciEntry{}, lookup: lookupRepo} }
+
+// status returns the cached lookup result for cwd (e.g. the CI summary for the
+// PR on its branch), refreshing it when stale. now is injected for testing. A nil
+// cache yields "", so a config built without one simply never resolves.
 func (c *ciCache) status(cwd string, now time.Time) string {
-	if cwd == "" {
+	if c == nil || cwd == "" {
 		return ""
 	}
 	c.mu.Lock()
@@ -469,7 +473,7 @@ func (c *ciCache) status(cwd string, now time.Time) string {
 	if ok && now.Sub(e.at) < ciTTL {
 		return e.status
 	}
-	s := lookupCI(cwd)
+	s := c.lookup(cwd)
 	c.mu.Lock()
 	c.m[cwd] = ciEntry{status: s, at: now}
 	c.mu.Unlock()
@@ -656,6 +660,9 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConf
 	if peek.enabled {
 		for i := range agents {
 			agents[i].LiveTmux = agents[i].TmuxPane != "" && peek.cache.live(agents[i].TmuxPane, now)
+			if agents[i].LiveTmux {
+				agents[i].Repo = peek.repos.status(agents[i].Cwd, now)
+			}
 		}
 	}
 

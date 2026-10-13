@@ -1283,6 +1283,48 @@ func TestContentTemplate_PeekControlGated(t *testing.T) {
 	}
 }
 
+// The peek button carries the row's server-resolved repo for linking the
+// capture's footer "PR #N", and omits the attribute when none was resolved so
+// the client has nothing to link against.
+func TestContentTemplate_PeekRepoAttr(t *testing.T) {
+	render := func(repo string) string {
+		var buf bytes.Buffer
+		d := dashboardData{PeekEnabled: true, Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
+			TmuxPane: "%3", LiveTmux: true, Repo: repo,
+		}}}
+		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+	if !strings.Contains(render("oalders/clodhopper"), `data-peek="s1" data-repo="oalders/clodhopper"`) {
+		t.Error("expected data-repo on the peek button when Repo is set")
+	}
+	if strings.Contains(render(""), `data-repo=`) {
+		t.Error("expected no data-repo when Repo is empty")
+	}
+}
+
+// Pane capture is untrusted terminal text: renderCapture must build it from text
+// nodes (never parsed as markup) and the footer PR link it adds must open with
+// rel="noopener noreferrer" so github.com gets no window.opener handle.
+func TestDashboardRenderCaptureTextOnly(t *testing.T) {
+	body := renderDashboard(t, dashboardData{})
+	i := strings.Index(body, "function renderCapture(")
+	j := strings.Index(body, "window.__ckRenderCapture = renderCapture;")
+	if i < 0 || j < i {
+		t.Fatal("renderCapture missing")
+	}
+	fn := body[i:j]
+	if regexp.MustCompile(`(?i)innerHTML|insertAdjacentHTML|outerHTML`).MatchString(fn) {
+		t.Error("renderCapture must never parse capture text as HTML")
+	}
+	if !strings.Contains(fn, `a.rel = 'noopener noreferrer';`) {
+		t.Error(`the PR link must carry rel="noopener noreferrer"`)
+	}
+}
+
 // The shared controls cell must exist under peek alone (merge off) — a state that
 // was impossible before the session/controls columns were folded together, when
 // the actions cell only rendered under --enable-merge. With peek on and merge off
@@ -2134,7 +2176,7 @@ func TestDashboardPeekLiveRegionArmedAtOpenNotInMarkup(t *testing.T) {
 	// where swapContent restores the carried-over text, "polite" in openPane —
 	// which is exactly two call sites, no more.
 	mute := `            c.setAttribute('aria-live', 'off');
-            c.textContent = op.text;`
+            if (window.__ckRenderCapture) window.__ckRenderCapture(c, op.text, repo);`
 	if !strings.Contains(body, mute) {
 		t.Errorf("swapContent must opt the rebuilt capsule out of #content's live region before writing the carried text:\n%s", mute)
 	}
@@ -2149,7 +2191,7 @@ func TestDashboardPeekLiveRegionArmedAtOpenNotInMarkup(t *testing.T) {
 	iArm := strings.Index(win, arm)
 	iHide := strings.Index(win, "row.hidden = false;")
 	iFetch := strings.Index(win, `fetch('/api/pane?pane='`)
-	iText := strings.Index(win, `pre.textContent = t ? collapseRules(t) : '(pane unavailable)';`)
+	iText := strings.Index(win, `if (t) renderCapture(pre, collapseRules(t),`)
 	if iArm < 0 || iHide < 0 || iFetch < 0 || iText < 0 {
 		t.Fatalf("openPane landmarks missing: arm=%d hide=%d fetch=%d text=%d", iArm, iHide, iFetch, iText)
 	}
