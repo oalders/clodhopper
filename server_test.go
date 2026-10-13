@@ -1841,6 +1841,18 @@ func TestDashboardRendersForceToggleWhenEnabled(t *testing.T) {
 	}
 }
 
+// The reload-plugins report gets a clear control (#138), part of the opt-in
+// .ck-bulk block; it starts hidden since there is no report until a run.
+func TestDashboardRendersReloadClearOnlyWhenEnabled(t *testing.T) {
+	const want = `aria-controls="ck-reloadout" hidden>clear report</button>`
+	if strings.Contains(renderDashboard(t, dashboardData{}), `id="ck-reloadclear"`) {
+		t.Fatal("clear report button rendered while merge disabled")
+	}
+	if !strings.Contains(renderDashboard(t, dashboardData{ExecEnabled: true, CSRFToken: "tok"}), want) {
+		t.Fatalf("clear report button missing or not hidden/aria-controlled while merge enabled; want %q", want)
+	}
+}
+
 // The per-row End button (dismiss this roster row) is part of the opt-in write
 // surface, so it must be absent unless --enable-merge is on — and, unlike the
 // tmux session actions, it must render even for a row with no live pane, since

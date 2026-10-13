@@ -653,17 +653,19 @@ func TestHandleActionSessionActionRejectsBadPane(t *testing.T) {
 
 // decodeActionJSON unpacks the JSON envelope every action handler writes.
 func decodeActionJSON(t *testing.T, w *httptest.ResponseRecorder) struct {
-	OK       bool   `json:"ok"`
-	ExitCode int    `json:"exitCode"`
-	TimedOut bool   `json:"timedOut"`
-	Output   string `json:"output"`
+	OK       bool        `json:"ok"`
+	ExitCode int         `json:"exitCode"`
+	TimedOut bool        `json:"timedOut"`
+	Output   string      `json:"output"`
+	Rows     []reportRow `json:"rows"`
 } {
 	t.Helper()
 	var got struct {
-		OK       bool   `json:"ok"`
-		ExitCode int    `json:"exitCode"`
-		TimedOut bool   `json:"timedOut"`
-		Output   string `json:"output"`
+		OK       bool        `json:"ok"`
+		ExitCode int         `json:"exitCode"`
+		TimedOut bool        `json:"timedOut"`
+		Output   string      `json:"output"`
+		Rows     []reportRow `json:"rows"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode %q: %v", w.Body.String(), err)
@@ -2632,9 +2634,9 @@ func seedBroadcastRoster(t *testing.T) *sql.DB {
 }
 
 // runBroadcast posts broadcast-reload against db with tmux stubbed by stub and
-// returns the response's ok and output plus the sorted send-keys lines the stub
-// logged (sorted because roster order is not part of the contract).
-func runBroadcast(t *testing.T, db *sql.DB, stub, logPath string, includeBusy bool) (ok bool, report string, sent []string) {
+// returns the response's ok, output and rows plus the sorted send-keys lines the
+// stub logged (sorted because roster order is not part of the contract).
+func runBroadcast(t *testing.T, db *sql.DB, stub, logPath string, includeBusy bool) (ok bool, report string, rows []reportRow, sent []string) {
 	t.Helper()
 	cfg := newActionCfg("/bin/true", "/bin/true")
 	cfg.tmux = stub
@@ -2653,7 +2655,7 @@ func runBroadcast(t *testing.T, db *sql.DB, stub, logPath string, includeBusy bo
 	sent = strings.Split(strings.TrimSpace(string(got)), "\n")
 	slices.Sort(sent)
 	d := decodeActionJSON(t, w)
-	return d.OK, d.Output, sent
+	return d.OK, d.Output, d.Rows, sent
 }
 
 func reportHas(report, line string) bool {
@@ -2668,7 +2670,7 @@ func TestHandleActionBroadcastReload(t *testing.T) {
 	t.Cleanup(func() { auditw = old })
 
 	stub, logPath := tmuxLogStub(t)
-	ok, report, sent := runBroadcast(t, db, stub, logPath, false)
+	ok, report, _, sent := runBroadcast(t, db, stub, logPath, false)
 	if !ok {
 		t.Fatalf("ok = false: %q", report)
 	}
@@ -2693,7 +2695,7 @@ func TestHandleActionBroadcastReload(t *testing.T) {
 	}
 
 	stub, logPath = tmuxLogStub(t)
-	_, report, sent = runBroadcast(t, db, stub, logPath, true)
+	_, report, _, sent = runBroadcast(t, db, stub, logPath, true)
 	if !slices.Contains(sent, "send-keys -t %2 /reload-plugins Enter") || slices.Contains(sent, "send-keys -t %3 /reload-plugins Enter") {
 		t.Fatalf("include_busy sends = %q, want working %%2 sent and prompt %%3 still skipped", sent)
 	}
@@ -2712,15 +2714,27 @@ func TestHandleActionBroadcastReloadSendFails(t *testing.T) {
 	t.Cleanup(func() { auditw = old })
 	logPath := filepath.Join(t.TempDir(), "tmux.log")
 	stub := writeStub(t, "tmux", `echo "$@" >> `+logPath+`
-if [ "$3" = "%1" ]; then echo "no such pane" >&2; exit 3; fi
+if [ "$3" = "%1" ]; then echo "no such pane TOKEN=hunter2" >&2; exit 3; fi
 exit 0`)
 
-	ok, report, sent := runBroadcast(t, db, stub, logPath, false)
+	ok, report, rows, sent := runBroadcast(t, db, stub, logPath, false)
 	if ok {
 		t.Fatalf("ok = true with a failed send: %q", report)
 	}
 	if !strings.Contains(report, "error feat-a "+shortID("waiting-1")+":") {
 		t.Errorf("report missing the error line:\n%s", report)
+	}
+	// Problems first so the dashboard shows them without scrolling.
+	wantRows := []reportRow{
+		{Result: "error", Target: "feat-a " + shortID("waiting-1"), Reason: "no such pane TOKEN=" + redacted},
+		{Result: "skipped", Target: "feat-b " + shortID("working-1"), Reason: "working — retry, or include working"},
+		{Result: "skipped", Target: "feat-c " + shortID("prompt-1"), Reason: promptBlockedReason},
+		{Result: "skipped", Target: "feat-d " + shortID("nopane-1"), Reason: "not in tmux — reload manually"},
+		{Result: "skipped", Target: "feat-e " + shortID("oldpane-1"), Reason: "same pane as newer session " + shortID("newpane-1")},
+		{Result: "sent", Target: "feat-e " + shortID("newpane-1")},
+	}
+	if !slices.Equal(rows, wantRows) {
+		t.Errorf("rows = %q, want %q", rows, wantRows)
 	}
 	want := []string{"send-keys -t %1 /reload-plugins Enter", "send-keys -t %5 /reload-plugins Enter"}
 	if !slices.Equal(sent, want) {
