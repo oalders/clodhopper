@@ -163,9 +163,15 @@
     }
     .ck-spring { flex: 1 1 24px; }
     .ck-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 16px; }
-    .ck-bulk pre { margin: 0; flex-basis: 100%; max-height: 30vh; overflow: auto; }
+    #ck-reloadout { margin: 0; flex-basis: 100%; max-height: 30vh; overflow: auto; }
     /* Collapsed, not hidden: it is a live region and must stay rendered to announce. */
-    .ck-bulk pre:empty { margin: 0; padding: 0; border: 0; }
+    #ck-reloadout:empty { margin: 0; padding: 0; border: 0; }
+    #ck-reloadout table { border-collapse: collapse; margin-top: 4px; white-space: normal; }
+    #ck-reloadout th, #ck-reloadout td { text-align: left; vertical-align: top; padding: 2px 8px; overflow-wrap: anywhere; }
+    /* The tint comes from the roster's tr.fail/tr.alert; the bold word and left bar mean colour is never the only signal. */
+    #ck-reloadout tr.fail { color: var(--fail); }
+    #ck-reloadout tr.alert { color: var(--attention); }
+    #ck-reloadout tr.fail td:first-child, #ck-reloadout tr.alert td:first-child { font-weight: 600; box-shadow: inset 3px 0 0 currentColor; }
     #ck-reloadbusy-hint { flex-basis: 100%; }
 
     /* --- Live meta line (inside #content so the poller keeps it current) --- */
@@ -650,6 +656,7 @@
          row is both group-start and grouped. */
       tr.group-start { border-top: 2px solid var(--divider); }
       tr.grouped { border-left: 3px solid var(--idle); }
+      #ck-reloadout tr.fail, #ck-reloadout tr.alert { border-left: 3px solid currentColor; }
       /* The peek panel is a full-width scroller, not a card. On desktop the pre's
          width is bounded by table-layout:fixed + the colgroup + th,td overflow:hidden,
          so its overflow:auto scrolls internally. The card layout drops all three and
@@ -758,7 +765,7 @@
     <label class="actforce"><input type="checkbox" id="ck-reloadbusy" aria-describedby="ck-reloadbusy-hint"> include working</label>
     <button type="button" id="ck-reloadclear" class="ck-btn" title="empty the reload plugins report below" aria-controls="ck-reloadout" hidden>clear report</button>
     <span id="ck-reloadbusy-hint" class="actmsg">also sends to mid-turn sessions (queued); a session that reaches a prompt mid-send may have that prompt answered</span>
-    <pre id="ck-reloadout" class="actmsg" role="status" aria-live="polite" aria-atomic="true" aria-label="reload plugins report"></pre>
+    <div id="ck-reloadout" class="actmsg" role="status" aria-live="polite" aria-atomic="true" aria-label="reload plugins report"></div>
   </div>
   {{ end }}
 
@@ -2160,7 +2167,28 @@
       })
         .then(function (resp) { return resp.json().catch(function () { return { ok: false, output: 'HTTP ' + resp.status }; }); })
         // textContent, never innerHTML: the report carries tmux output.
-        .then(function (d) { reloadOut.textContent = d.output || (d.ok ? 'done' : 'failed'); })
+        .then(function (d) {
+          if (!d.rows || !d.rows.length) { reloadOut.textContent = d.output || (d.ok ? 'done' : 'failed'); return; }
+          var counts = {}, order = ['error', 'skipped', 'sent'], summary = [];
+          var table = document.createElement('table');
+          var head = table.createTHead().insertRow();
+          ['Result', 'Target', 'Reason'].forEach(function (h) {
+            var th = document.createElement('th');
+            th.scope = 'col';
+            th.textContent = h;
+            head.appendChild(th);
+          });
+          var body = table.createTBody();
+          // Rows arrive sorted problems-first from the server.
+          d.rows.forEach(function (r) {
+            counts[r.result] = (counts[r.result] || 0) + 1;
+            var tr = body.insertRow();
+            tr.className = { error: 'fail', skipped: 'alert' }[r.result] || '';
+            [r.result, r.target, r.reason].forEach(function (v) { tr.insertCell().textContent = v; });
+          });
+          order.forEach(function (k) { if (counts[k]) summary.push(counts[k] + ' ' + k + (k === 'error' && counts[k] > 1 ? 's' : '')); });
+          reloadOut.replaceChildren(summary.join(' · '), table);
+        })
         .catch(function (e) { reloadOut.textContent = 'request failed: ' + e; })
         .finally(function () {
           reloadAll.disabled = false;

@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -117,6 +118,14 @@ type actionResult struct {
 	ExitCode int
 	TimedOut bool
 	Output   string
+	Rows     []reportRow // broadcast only; unscrubbed like Output
+}
+
+// reportRow is one broadcast target's outcome, for the dashboard's report table.
+type reportRow struct {
+	Result string `json:"result"` // sent, skipped or error
+	Target string `json:"target"`
+	Reason string `json:"reason"`
 }
 
 // runAction runs bin with args in dir, capturing combined output. stdin is left
@@ -1177,7 +1186,7 @@ func promptBlocked(status string) bool {
 }
 
 // broadcastReload sends /reload-plugins to every eligible row in agents and
-// returns a one-line-per-row report. Rows sharing a pane (a resumed or
+// returns a one-line-per-row report, problems first. Rows sharing a pane (a resumed or
 // restarted agent leaves its old session on the roster) are sent to once, via
 // the newest session, which is the one actually running there. ok is false iff
 // a tmux send failed or timed out; skips are expected and do not fail it. Each
@@ -1197,7 +1206,6 @@ func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool, now ti
 			newest[a.TmuxPane] = a
 		}
 	}
-	var out strings.Builder
 	res := actionResult{}
 	for _, a := range agents {
 		label := shortID(a.SessionID)
@@ -1214,7 +1222,7 @@ func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool, now ti
 		}
 		if reason != "" {
 			skipped++
-			fmt.Fprintf(&out, "skipped %s: %s\n", label, reason)
+			res.Rows = append(res.Rows, reportRow{"skipped", label, reason})
 			continue
 		}
 		r := runSessionAction(cfg.tmux, "reload-plugins", a.TmuxPane, a.Cwd, 0)
@@ -1222,11 +1230,24 @@ func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool, now ti
 		if r.ExitCode != 0 || r.TimedOut {
 			res.ExitCode = -1
 			errs++
-			fmt.Fprintf(&out, "error %s: %s\n", label, strings.TrimSpace(r.Output))
+			res.Rows = append(res.Rows, reportRow{"error", label, strings.TrimSpace(r.Output)})
 			continue
 		}
 		sent++
-		fmt.Fprintf(&out, "sent %s\n", label)
+		res.Rows = append(res.Rows, reportRow{"sent", label, ""})
+	}
+	// Problems first, so the rows needing a look are never below the fold.
+	rank := map[string]int{"error": 0, "skipped": 1, "sent": 2}
+	slices.SortFunc(res.Rows, func(x, y reportRow) int {
+		return cmp.Or(cmp.Compare(rank[x.Result], rank[y.Result]), cmp.Compare(x.Target, y.Target))
+	})
+	var out strings.Builder
+	for _, row := range res.Rows {
+		out.WriteString(row.Result + " " + row.Target)
+		if row.Result != "sent" {
+			out.WriteString(": " + row.Reason)
+		}
+		out.WriteString("\n")
 	}
 	res.Output = strings.TrimRight(out.String(), "\n")
 	return res
@@ -1261,10 +1282,18 @@ func endSession(db *sql.DB, sessionID string, now time.Time) actionResult {
 // identically.
 func writeActionResult(w http.ResponseWriter, res actionResult) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	body := map[string]any{
 		"ok":       res.ExitCode == 0 && !res.TimedOut,
 		"exitCode": res.ExitCode,
 		"timedOut": res.TimedOut,
 		"output":   scrubString(res.Output),
-	})
+	}
+	if res.Rows != nil {
+		rows := make([]reportRow, len(res.Rows))
+		for i, r := range res.Rows {
+			rows[i] = reportRow{r.Result, scrubString(r.Target), scrubString(r.Reason)}
+		}
+		body["rows"] = rows
+	}
+	_ = json.NewEncoder(w).Encode(body)
 }

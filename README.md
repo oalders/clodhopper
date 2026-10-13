@@ -251,7 +251,8 @@ actions** that drive that pane directly (they do not touch a PR):
   would answer the prompt.
 
 A **reload plugins (all)** button above the roster sends `/reload-plugins` to
-every session at once and reports, per row, what it sent or skipped and why.
+every session at once and reports, per row, what it sent or skipped and why,
+with errors and skips listed first and highlighted.
 The targets are re-derived server-side: rows not in tmux are listed for a manual
 reload, rows sharing a pane are sent to once (via the newest session), working
 rows are skipped unless **include working** is ticked, and a row blocked on a
