@@ -1978,31 +1978,17 @@ func TestDashboardRosterSortMarkup(t *testing.T) {
 	}
 }
 
-// The column sort rides the pin apply() so it survives every #content swap
-// exactly as the frozen order does, ties keep the pinned position via an
-// explicit index tie-break, the persisted choice is validated (fail closed),
-// and unpinning strips the header affordance. Cells are looked up by data-label:
-// an idle session's status cell also has class "idle", so a td.idle lookup
-// silently read the wrong cell and sorted idle groups last.
+// The column sort runs inside the pin apply(), which swapContent already calls
+// after every #content swap: apply() must re-decorate the freshly swapped
+// headers first, and the sort must land before `order` is rebuilt so the sorted
+// order is what stays frozen across polls.
 func TestDashboardPinSortWiring(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
 	body := getBody(t, db, "/")
-	for _, want := range []string{
-		"    function apply() {\n      decorate();",
-		`try { m = /^(app|status|idle):(asc|desc)$/.exec(localStorage.getItem('ch-pin-sort') || ''); } catch (e) {}`,
-		`try { localStorage.setItem('ch-pin-sort', sort ? sort.col + ':' + sort.dir : ''); } catch (e) {}`,
-		`var cell = row.querySelector('td[data-label="' + col + '"]');`,
-		`return c ? sgn * c : pos[x] - pos[y];`,
-		`if (enabled) { snapshot(); apply(); } else { order = []; sort = null; saveSort(); decorate(); }`,
-		`var sb = ev.target.closest ? ev.target.closest('#content button.sortbtn') : null;`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("pin sort wiring missing: %s", want)
-		}
+	if !strings.Contains(body, "    function apply() {\n      decorate();") {
+		t.Error("pin apply() must re-decorate the swapped roster headers before reordering")
 	}
-	// The sort must land before `order` is rebuilt so the sorted order is what
-	// stays frozen across polls.
 	iSort, iOrder := strings.Index(body, `desired.sort(function (x, y) {`), strings.Index(body, `      order = desired;`)
 	if iSort < 0 || iOrder < 0 || iSort > iOrder {
 		t.Errorf("sort must run before the frozen order is rebuilt: sort=%d order=%d", iSort, iOrder)

@@ -290,7 +290,7 @@
        and the full target is only realised at <=640px, where the card layout
        resets td to overflow: visible. */
     @media (pointer: coarse) {
-      td.branch .copycwd { padding: 6px 8px; margin: -6px -8px; }
+      td.branch .copycwd, button.sortbtn { padding: 6px 8px; margin: -6px -8px; }
     }
     /* The glyph is transparent at rest rather than absent: one ⧉ per roster row
        is a column of noise, but the span stays in the flow at all times — never
@@ -344,6 +344,7 @@
        th, so it must read as the header text itself plus a direction arrow. */
     button.sortbtn { all: unset; cursor: pointer; }
     button.sortbtn:hover { color: var(--text-1); }
+    /* all:unset strips the native focus ring; restore it (see button.peek). */
     button.sortbtn:focus-visible { box-shadow: var(--shadow-focus); }
     .sortarrow { margin-left: 3px; color: var(--text-3); }
     th[aria-sort] .sortarrow { color: var(--brand); }
@@ -871,6 +872,10 @@
       // a row with no session id, which has no stable key to match on.
       var pkeep = active && active.closest ? active.closest('#content .panerow') : null;
       var pkey = pkeep ? pkeep.getAttribute('data-peek-row') : null;
+      // And for a pinned roster's sort header: the thead is swapped too, and the
+      // pin apply below rebuilds its button, so key it by column (data-sort).
+      var skeep = active && active.closest ? active.closest('#content button.sortbtn') : null;
+      var skey = skeep ? skeep.getAttribute('data-sort') : null;
       // Carry any open pane-peek across the swap. innerHTML replacement detaches
       // the expanded panerow, so without this a poll that repaints the board
       // collapses a peek the reader is still scrolling through — and the lost
@@ -1029,6 +1034,12 @@
         var btns = document.querySelectorAll('#content .copycwd');
         for (var i = 0; i < btns.length; i++) {
           if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return true; }
+        }
+      }
+      if (skey) {
+        var sbtns = document.querySelectorAll('#content button.sortbtn');
+        for (var sb = 0; sb < sbtns.length; sb++) {
+          if (sbtns[sb].getAttribute('data-sort') === skey) { sbtns[sb].focus({ preventScroll: true }); return true; }
         }
       }
       // The capsule the reader was reading went out with the old subtree and
@@ -1247,8 +1258,9 @@
 
     // The roster header lives inside #content, so every swap ships it plain;
     // this (re)adds the sort buttons and aria-sort while pinned and strips them
-    // when not. Buttons are updated in place, never rebuilt, so a header the
-    // reader just clicked keeps focus.
+    // when not. Within one page the buttons are updated in place, so a header
+    // the reader just clicked keeps focus; across a poll the thead is new and
+    // swapContent re-focuses the rebuilt button by its data-sort.
     function decorate() {
       var ths = document.querySelectorAll('#content table.roster thead th[data-sort]');
       for (var i = 0; i < ths.length; i++) {
@@ -1410,11 +1422,9 @@
       enabled = !enabled;
       try { localStorage.setItem('ch-pin', enabled ? 'on' : ''); } catch (e) {}
       reflect();
-      // Off drops the sort from storage too, not just from memory: the headers
-      // only toggle asc/desc, so a sort that came back on every re-pin would
-      // leave no way back to the server order. ch-pin-sort therefore survives a
-      // reload while pinned, and a fresh pin starts from the server order.
-      if (enabled) { snapshot(); apply(); } else { order = []; sort = null; saveSort(); decorate(); }
+      // Off drops only the in-memory sort and the header affordance; ch-pin-sort
+      // stays saved, so re-pinning restores it exactly as a page load does.
+      if (enabled) { snapshot(); sort = loadSort(); apply(); } else { order = []; sort = null; decorate(); }
       // Announce via the out-of-#content live region (the poller can't wipe it).
       // Off just lets the next poll repaint in fresh server order.
       if (live) live.textContent = enabled ? 'roster order pinned' : 'roster order live';
