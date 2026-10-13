@@ -750,8 +750,9 @@ func TestBuildDashboardDataDropsDeadPane(t *testing.T) {
 	ts := now.UTC().Format(time.RFC3339)
 	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "alive", TmuxSession: "work", TmuxPane: "%1", EventType: "Stop", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "dead", TmuxSession: "work", TmuxPane: "%80", EventType: "Stop", PayloadJSON: "{}"})
-	// at = now keeps the seeded listing inside paneTTL, so real tmux is never run.
-	peek := &peekConfig{cache: &paneCache{set: map[string]string{"%1": "work"}, at: now}}
+	// buildDashboardData reads its own clock, so stamp the seeded listing an hour
+	// ahead: paneTTL can never lapse mid-test and real tmux is never run.
+	peek := &peekConfig{cache: &paneCache{set: map[string]string{"%1": "work"}, at: now.Add(time.Hour)}}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.RemoteAddr = "127.0.0.1:5555"
 	r.Host = "127.0.0.1:4555"

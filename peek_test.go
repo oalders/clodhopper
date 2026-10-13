@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -70,6 +71,25 @@ func TestDropDeadPanes(t *testing.T) {
 		if !slices.Equal(got, c.want) {
 			t.Errorf("%s: kept %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// listPanes maps each pane id to its session name in the form ingest stores, so
+// a messy real-world name compares equal to the row's recorded tmux_session.
+func TestListPanes(t *testing.T) {
+	dir := t.TempDir()
+	messy := "\ue0a0  fix-2482     Blog post [in progress]"
+	script := "#!/bin/sh\nprintf '%s\\t%s\\n' '%1' 'my-session' '%7' '" + messy + "'\n"
+	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	want := map[string]string{"%1": "my-session", "%7": tmuxSessionLabel(messy)}
+	if got := listPanes(); !maps.Equal(got, want) {
+		t.Fatalf("listPanes() = %q, want %q", got, want)
+	}
+	if want["%7"] != "fix-2482 Blog post [in progress]" {
+		t.Errorf("messy name stored as %q, want the cleaned name", want["%7"])
 	}
 }
 
