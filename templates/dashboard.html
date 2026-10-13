@@ -169,10 +169,11 @@
     #ck-reloadout table { border-collapse: collapse; margin-top: 4px; }
     /* pre-wrap beats the card layout's td white-space:normal, keeping multi-line tmux errors. */
     #ck-reloadout th, #ck-reloadout td { text-align: left; vertical-align: top; padding: 2px 8px; overflow-wrap: anywhere; white-space: pre-wrap; }
-    /* The tint comes from the roster's tr.fail/tr.alert; the bold word and left bar mean colour is never the only signal. */
-    #ck-reloadout tr.fail { color: var(--fail); }
-    #ck-reloadout tr.alert { color: var(--attention); }
-    #ck-reloadout tr.fail td:first-child, #ck-reloadout tr.alert td:first-child { font-weight: 600; box-shadow: inset 3px 0 0 currentColor; }
+    /* The tint comes from the roster's tr.fail/tr.alert; the bold word and left bar mean colour is never the only signal.
+       Text is --text-1, not the accent: accent or .actmsg's --text-3 text on the tint misses AA contrast. */
+    #ck-reloadout tr.fail { --row-accent: var(--fail); color: var(--text-1); }
+    #ck-reloadout tr.alert { --row-accent: var(--attention); color: var(--text-1); }
+    #ck-reloadout tr.fail td:first-child, #ck-reloadout tr.alert td:first-child { font-weight: 600; box-shadow: inset 3px 0 0 var(--row-accent); }
     #ck-reloadbusy-hint { flex-basis: 100%; }
 
     /* --- Live meta line (inside #content so the poller keeps it current) --- */
@@ -657,7 +658,7 @@
          row is both group-start and grouped. */
       tr.group-start { border-top: 2px solid var(--divider); }
       tr.grouped { border-left: 3px solid var(--idle); }
-      #ck-reloadout tr.fail, #ck-reloadout tr.alert { border-left: 3px solid currentColor; }
+      #ck-reloadout tr.fail, #ck-reloadout tr.alert { border-left: 3px solid var(--row-accent); }
       #ck-reloadout td:empty { display: none; } /* a sent row has no reason; skip its bare label */
       /* The peek panel is a full-width scroller, not a card. On desktop the pre's
          width is bounded by table-layout:fixed + the colgroup + th,td overflow:hidden,

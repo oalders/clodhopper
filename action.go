@@ -1223,7 +1223,7 @@ func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool, now ti
 		}
 		if reason != "" {
 			skipped++
-			res.Rows = append(res.Rows, reportRow{"skipped", label, reason})
+			res.Rows = append(res.Rows, reportRow{Result: "skipped", Target: label, Reason: reason})
 			continue
 		}
 		r := runSessionAction(cfg.tmux, "reload-plugins", a.TmuxPane, a.Cwd, 0)
@@ -1231,11 +1231,11 @@ func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool, now ti
 		if r.ExitCode != 0 || r.TimedOut {
 			res.ExitCode = -1
 			errs++
-			res.Rows = append(res.Rows, reportRow{"error", label, strings.TrimSpace(r.Output)})
+			res.Rows = append(res.Rows, reportRow{Result: "error", Target: label, Reason: strings.TrimSpace(r.Output)})
 			continue
 		}
 		sent++
-		res.Rows = append(res.Rows, reportRow{"sent", label, ""})
+		res.Rows = append(res.Rows, reportRow{Result: "sent", Target: label})
 	}
 	// Problems first, so the rows needing a look are never below the fold.
 	rank := map[string]int{"error": 0, "skipped": 1, "sent": 2}
@@ -1292,7 +1292,7 @@ func writeActionResult(w http.ResponseWriter, res actionResult) {
 	if res.Rows != nil {
 		rows := make([]reportRow, len(res.Rows))
 		for i, r := range res.Rows {
-			rows[i] = reportRow{r.Result, scrubString(r.Target), scrubString(r.Reason)}
+			rows[i] = reportRow{Result: r.Result, Target: scrubString(r.Target), Reason: scrubString(r.Reason)}
 		}
 		body["rows"] = rows
 	}
