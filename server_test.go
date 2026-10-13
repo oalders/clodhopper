@@ -1844,7 +1844,7 @@ func TestDashboardRendersForceToggleWhenEnabled(t *testing.T) {
 // The reload-plugins report gets a clear control (#138), part of the opt-in
 // .ck-bulk block; it starts hidden since there is no report until a run.
 func TestDashboardRendersReloadClearOnlyWhenEnabled(t *testing.T) {
-	const want = `id="ck-reloadclear" class="ck-btn" title="empty the reload plugins report below" aria-controls="ck-reloadout" hidden>`
+	const want = `aria-controls="ck-reloadout" hidden>clear report</button>`
 	if strings.Contains(renderDashboard(t, dashboardData{}), `id="ck-reloadclear"`) {
 		t.Fatal("clear report button rendered while merge disabled")
 	}
