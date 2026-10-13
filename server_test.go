@@ -1955,6 +1955,43 @@ func TestDashboardPinReorderPreservesPeekScroll(t *testing.T) {
 	}
 }
 
+// Sorting the pinned roster by status (issue #142) orders by urgency, and the
+// urgency ranking is the server's: the status cell carries StatusRank so the JS
+// compares that number and never keeps a second ranking table of its own. The
+// sortable headers ship as plain text — the sort affordance is JS-added only
+// while pinned, so an unpinned board never looks sortable.
+func TestDashboardRosterSortMarkup(t *testing.T) {
+	html := renderDashboard(t, dashboardData{
+		Agents: []Agent{{SessionID: "s1", SourceApp: "app1", Status: statusIdle, StatusRank: 5, IdleSince: 42}},
+	})
+	for _, want := range []string{
+		`<td data-label="status" data-rank="5" class="status idle">`,
+		`<td class="idle" data-label="idle" data-since="42">`,
+		`<th data-sort="app">app</th><th data-sort="status">status</th><th>doing</th><th data-sort="idle">idle</th>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("roster sort markup missing: %s", want)
+		}
+	}
+	if strings.Contains(html, `<th aria-sort`) || strings.Contains(html, `<button type="button" class="sortbtn"`) {
+		t.Error("server markup must not render a sort affordance; JS adds it only while pinned")
+	}
+}
+
+// The column sort runs inside the pin apply(), which swapContent already calls
+// after every #content swap, and must land before `order` is rebuilt so the
+// sorted order is what stays frozen across polls.
+func TestDashboardPinSortWiring(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	body := getBody(t, db, "/")
+	// Source position stands in for execution order: that stretch of apply() is straight-line code.
+	iSort, iOrder := strings.Index(body, `desired.sort(function (x, y) {`), strings.Index(body, `      order = desired;`)
+	if iSort < 0 || iOrder < 0 || iSort > iOrder {
+		t.Errorf("sort must run before the frozen order is rebuilt: sort=%d order=%d", iSort, iOrder)
+	}
+}
+
 // A peek capsule the reader has keyboard focus on must survive the ~5s poll.
 // swapContent replaces #content wholesale, so the focused <pre class="panecap">
 // is destroyed and rebuilt; before this it matched no refocus branch and the
