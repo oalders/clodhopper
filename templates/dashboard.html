@@ -634,7 +634,7 @@
       .actpanel button.pract { min-height: 44px; font-size: var(--fs-sm); border-radius: var(--radius-sm); }
       .actpanel .actforce { grid-column: 1 / -1; min-height: 44px; font-size: var(--fs-sm); }
       .actpanel .actforce input { width: 18px; height: 18px; }
-      .ck-bulk .ck-btn, .ck-bulk .actforce { min-height: 44px; font-size: var(--fs-sm); }
+      .ck-bulk .ck-btn, .ck-bulk .pract, .ck-bulk .actforce { min-height: 44px; font-size: var(--fs-sm); }
       .ck-bulk .actforce input { width: 18px; height: 18px; }
       .actpanel .actmsg { grid-column: 1 / -1; font-size: var(--fs-sm); } /* the destructive-action result line skipped the mobile size bump the other controls got */
       .ck-bulk .actmsg { font-size: var(--fs-sm); } /* .ck-bulk is flex, so grid-column would be a no-op here */
@@ -787,10 +787,11 @@
     <!-- Only the short text is live; the table sits outside it so a run isn't read out row by row. -->
     <div id="ck-reloadout" class="actmsg ck-bulkout" role="region" aria-label="reload plugins report"><span id="ck-reloadmsg" role="status" aria-live="polite" aria-atomic="true"></span></div>
   </div>
+  <!-- Outside #content for the same reason as the reload block above. -->
   <div class="ck-bulk" role="group" aria-label="restart all sessions">
     <!-- An .actgroup so the roster's two-step arm/confirm guards it: /exit kills every target's process. -->
     <span class="actgroup">
-      <button type="button" id="ck-restartall" class="ck-btn pract" data-action="broadcast-restart" title="exit and resume (nn claude --resume, same session) every idle or waiting-for-you tmux session on the roster; the resume is only typed once the pane is back at a shell in the session's worktree">restart (all)</button>
+      <button type="button" id="ck-restartall" class="ck-btn pract" data-action="broadcast-restart" title="exit and resume every idle or waiting tmux session on the roster">restart (all)</button>
       <span class="actmsg" aria-live="polite"></span>
     </span>
     <button type="button" id="ck-restartclear" class="ck-btn" title="empty the restart report below" aria-controls="ck-restartout" hidden>clear report</button>
@@ -2059,7 +2060,7 @@
     // escalating with a force-specific warning when the force checkbox is on
     // (force never applies to 'ready', which the server ignores it for).
     function caveatFor(group, action) {
-      // Neither names a single worktree, nor has a force toggle.
+      // Fixed text: ready ignores --force and the broadcast targets no single branch.
       if (action === 'ready' || action === 'broadcast-restart') return CAVEAT[action];
       // data-branch is empty when the row has neither a branch nor a guess;
       // naming the worktree beats leading the caveat with a bare colon or the

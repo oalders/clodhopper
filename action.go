@@ -482,6 +482,10 @@ const (
 	restartPollInterval = 250 * time.Millisecond
 	restartExitWait     = 15 * time.Second
 	restartResumeWait   = 5 * time.Second
+	// restartProbeFloor is the least tmux time one pane probe gets, however
+	// little of the wait is left: display-message is a local RPC that answers in
+	// milliseconds, so a second is generous yet keeps the overrun small.
+	restartProbeFloor = time.Second
 	// rebaseTimeout bounds EACH step of the rebase sequence (fetch, pull
 	// --rebase, push). A fetch or a force-push against a slow remote is the same
 	// order of work as a teardown, so it gets the same generous ceiling.
@@ -1224,8 +1228,9 @@ func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool, now ti
 // pass over, and returns a one-line-per-row report, problems first. Rows
 // sharing a pane (a resumed or restarted agent leaves its old session on the
 // roster) are sent to once, via the newest session, which is the one actually
-// running there. Each send holds its row's session lock. ok is false iff a send
-// failed or timed out; skips are expected and do not fail it.
+// running there. Each send holds its row's session lock, and sends to different
+// rows run concurrently. ok is false iff a send failed or timed out; skips are
+// expected and do not fail it.
 func broadcast(cfg *actionConfig, agents []Agent, skip func(Agent) string, send func(Agent) actionResult) (res actionResult, sent, skipped, errs int) {
 	if len(agents) == 0 {
 		return actionResult{Output: "no sessions on the roster"}, 0, 0, 0
@@ -1236,6 +1241,11 @@ func broadcast(cfg *actionConfig, agents []Agent, skip func(Agent) string, send 
 			newest[a.TmuxPane] = a
 		}
 	}
+	type target struct {
+		a           Agent
+		label, lock string
+	}
+	var targets []target
 	for _, a := range agents {
 		label := shortID(a.SessionID)
 		if name := cmp.Or(a.Branch, a.BranchGuess, a.TmuxSession); name != "" {
@@ -1254,16 +1264,28 @@ func broadcast(cfg *actionConfig, agents []Agent, skip func(Agent) string, send 
 			res.Rows = append(res.Rows, reportRow{Result: "skipped", Target: label, Reason: reason})
 			continue
 		}
-		r := send(a)
-		cfg.inflight.release(lock)
-		if r.ExitCode != 0 || r.TimedOut {
+		targets = append(targets, target{a: a, label: label, lock: lock})
+	}
+	// Sends run concurrently: a restart can spend ~20s on one pane, and the
+	// panes are independent (each target already holds its own session lock).
+	results := make([]actionResult, len(targets))
+	var wg sync.WaitGroup
+	for i, tg := range targets {
+		wg.Go(func() {
+			defer cfg.inflight.release(tg.lock)
+			results[i] = send(tg.a)
+		})
+	}
+	wg.Wait()
+	for i, tg := range targets {
+		if r := results[i]; r.ExitCode != 0 || r.TimedOut {
 			res.ExitCode = -1
 			errs++
-			res.Rows = append(res.Rows, reportRow{Result: "error", Target: label, Reason: strings.TrimSpace(r.Output)})
+			res.Rows = append(res.Rows, reportRow{Result: "error", Target: tg.label, Reason: strings.TrimSpace(r.Output)})
 			continue
 		}
 		sent++
-		res.Rows = append(res.Rows, reportRow{Result: "sent", Target: label})
+		res.Rows = append(res.Rows, reportRow{Result: "sent", Target: tg.label})
 	}
 	// Problems first, so the rows needing a look are never below the fold.
 	rank := map[string]int{"error": 0, "skipped": 1, "sent": 2}
@@ -1373,19 +1395,22 @@ func runRestart(cfg *actionConfig, a Agent) actionResult {
 // pollShell reads pane's foreground command every cfg.restartPoll until
 // whether it is a shell equals atShell, giving up after wait. A failed or empty
 // read never counts as a match either way, so a tmux error cannot pass for an exit
-// or a resume. Wall-clock bounded, like rebase's budget: wait is a real-time
-// ceiling, not something a test fakes through an injected now.
+// or a resume. Wall-clock bounded, like rebase's budget: each probe's tmux
+// timeout is capped by the time left, so the whole wait overruns wait by at most
+// restartProbeFloor — the minimum a probe gets, so a zero wait still probes once.
 func pollShell(cfg *actionConfig, pane, dir string, atShell bool, wait time.Duration) bool {
 	deadline := time.Now().Add(wait)
 	for {
-		out, res := runTmux(cfg.tmux, dir, []string{"display-message", "-p", "-t", pane, "#{pane_current_command}"}, tmuxTimeout)
+		timeout := min(tmuxTimeout, max(time.Until(deadline), restartProbeFloor))
+		out, res := runTmux(cfg.tmux, dir, []string{"display-message", "-p", "-t", pane, "#{pane_current_command}"}, timeout)
 		if cmd := strings.TrimSpace(out); res.ExitCode == 0 && !res.TimedOut && cmd != "" && shellCommands[cmd] == atShell {
 			return true
 		}
-		if !time.Now().Before(deadline) {
+		left := time.Until(deadline)
+		if left <= 0 {
 			return false
 		}
-		time.Sleep(cfg.restartPoll)
+		time.Sleep(min(cfg.restartPoll, left))
 	}
 }
 

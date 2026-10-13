@@ -2905,15 +2905,19 @@ func TestRestartSkipReason(t *testing.T) {
 
 // restartStub is a fake tmux for broadcast-restart. It logs each call with
 // every argument bracketed, so a multi-word argument is visibly ONE argument,
-// answers pane_current_path with path, and pane_current_command with atExit
+// answers pane_current_path with path, and pane_current_command with "claude"
+// for the first busyProbes reads (claude still shutting down), then atExit
 // until a resume has been typed and afterResume once it has.
-func restartStub(t *testing.T, atExit, afterResume, path string) (bin, logPath string) {
+func restartStub(t *testing.T, busyProbes int, atExit, afterResume, path string) (bin, logPath string) {
 	t.Helper()
 	logPath = filepath.Join(t.TempDir(), "tmux.log")
 	bin = writeStub(t, "tmux", `printf '[%s]' "$@" >> '`+logPath+`'; echo >> '`+logPath+`'
 case "$5" in
 '#{pane_current_path}') echo '`+path+`' ;;
-'#{pane_current_command}') if grep -q -- --resume '`+logPath+`'; then echo `+afterResume+`; else echo `+atExit+`; fi ;;
+'#{pane_current_command}')
+  if grep -q -- --resume '`+logPath+`'; then echo `+afterResume+`
+  elif [ "$(grep -c pane_current_command '`+logPath+`')" -le `+strconv.Itoa(busyProbes)+` ]; then echo claude
+  else echo `+atExit+`; fi ;;
 esac
 exit 0`)
 	return bin, logPath
@@ -2921,15 +2925,16 @@ exit 0`)
 
 // runRestartBroadcast seeds one waiting session (restartUUID, pane %1, in dir)
 // plus one working session that must be skipped, posts broadcast-restart with
-// tmux stubbed by stub and zero poll waits, and returns the decoded response and
-// the stub's call log.
-func runRestartBroadcast(t *testing.T, dir, stub, logPath string) (d actionJSON, calls []string) {
+// tmux stubbed by stub, polling every millisecond for up to exitWait (zero
+// probes once), and returns the decoded response and the stub's call log.
+func runRestartBroadcast(t *testing.T, dir, stub, logPath string, exitWait time.Duration) (d actionJSON, calls []string) {
 	t.Helper()
 	db := openTestDB(t)
 	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: restartUUID, Branch: "feat-a", Cwd: dir, TmuxPane: "%1", EventType: "Stop", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: restartUUID2, Branch: "feat-b", Cwd: dir, TmuxPane: "%2", EventType: "PreToolUse", PayloadJSON: "{}"})
 	cfg := newActionCfg("/bin/true", "/bin/true")
 	cfg.tmux = stub
+	cfg.restartPoll, cfg.restartExitWait = time.Millisecond, exitWait
 	w := httptest.NewRecorder()
 	handleAction(w, actionReq("", "broadcast-restart", false, "secret", "127.0.0.1"), db, cfg, time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC))
 	if w.Code != http.StatusOK {
@@ -2945,9 +2950,9 @@ func TestHandleActionBroadcastRestart(t *testing.T) {
 	auditw = &audit
 	t.Cleanup(func() { auditw = old })
 	dir := t.TempDir()
-	stub, logPath := restartStub(t, "zsh", "claude", dir)
+	stub, logPath := restartStub(t, 0, "zsh", "claude", dir)
 
-	d, calls := runRestartBroadcast(t, dir, stub, logPath)
+	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
 	if !d.OK {
 		t.Fatalf("ok = false: %q", d.Output)
 	}
@@ -2980,8 +2985,8 @@ func TestHandleActionBroadcastRestart(t *testing.T) {
 // command we do not recognise) is an error, and nothing more is typed into it.
 func TestHandleActionBroadcastRestartNoShellSendsNoResume(t *testing.T) {
 	dir := t.TempDir()
-	stub, logPath := restartStub(t, "claude", "claude", dir)
-	d, calls := runRestartBroadcast(t, dir, stub, logPath)
+	stub, logPath := restartStub(t, 0, "claude", "claude", dir)
+	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
 	if d.OK || !reportHas(d.Output, "error feat-a "+shortID(restartUUID)+": never returned to a shell after /exit — nothing more sent") {
 		t.Fatalf("ok=%v report=%q, want the no-shell error", d.OK, d.Output)
 	}
@@ -2994,8 +2999,8 @@ func TestHandleActionBroadcastRestartNoShellSendsNoResume(t *testing.T) {
 // resuming there would start claude against the wrong project.
 func TestHandleActionBroadcastRestartCwdMismatchSendsNoResume(t *testing.T) {
 	dir := t.TempDir()
-	stub, logPath := restartStub(t, "bash", "claude", t.TempDir())
-	d, calls := runRestartBroadcast(t, dir, stub, logPath)
+	stub, logPath := restartStub(t, 0, "bash", "claude", t.TempDir())
+	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
 	if d.OK || !strings.Contains(d.Output, "error feat-a "+shortID(restartUUID)+": exited, but the shell is in ") {
 		t.Fatalf("ok=%v report=%q, want the cwd-mismatch error", d.OK, d.Output)
 	}
@@ -3008,12 +3013,31 @@ func TestHandleActionBroadcastRestartCwdMismatchSendsNoResume(t *testing.T) {
 // alias, say) is reported, not counted as restarted.
 func TestHandleActionBroadcastRestartStillAtShellIsError(t *testing.T) {
 	dir := t.TempDir()
-	stub, logPath := restartStub(t, "fish", "fish", dir)
-	d, calls := runRestartBroadcast(t, dir, stub, logPath)
+	stub, logPath := restartStub(t, 0, "fish", "fish", dir)
+	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
 	if d.OK || !reportHas(d.Output, "error feat-a "+shortID(restartUUID)+": exited but did not resume — check the pane") {
 		t.Fatalf("ok=%v report=%q, want the did-not-resume error", d.OK, d.Output)
 	}
 	if !slices.Contains(calls, "[send-keys][-t][%1][nn claude --resume "+restartUUID+"][Enter]") {
 		t.Fatalf("tmux calls = %q, want the resume sent", calls)
+	}
+}
+
+// /exit takes a moment: the pane still runs claude for the first few probes.
+// The restart must keep polling through them and resume once the shell is back.
+func TestHandleActionBroadcastRestartPollsUntilShell(t *testing.T) {
+	dir := t.TempDir()
+	stub, logPath := restartStub(t, 2, "zsh", "claude", dir)
+	d, calls := runRestartBroadcast(t, dir, stub, logPath, 5*time.Second)
+	if !d.OK {
+		t.Fatalf("ok = false: %q", d.Output)
+	}
+	probe := "[display-message][-p][-t][%1][#{pane_current_command}]"
+	resume := slices.Index(calls, "[send-keys][-t][%1][nn claude --resume "+restartUUID+"][Enter]")
+	if resume < 0 {
+		t.Fatalf("tmux calls = %q, want the resume sent", calls)
+	}
+	if n := len(slices.DeleteFunc(slices.Clone(calls[:resume]), func(c string) bool { return c != probe })); n != 3 {
+		t.Fatalf("probed %d times before resuming, want 3 (two busy, then the shell): %q", n, calls)
 	}
 }
