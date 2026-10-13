@@ -877,6 +877,9 @@ type actionConfig struct {
 	bindHost     string
 	allowedHosts []string
 	inflight     *inflightSet
+	// panes is the live tmux pane listing (shared with the peek) the broadcast
+	// uses to skip rows whose pane has died; nil lists nothing and skips none.
+	panes *paneCache
 }
 
 // randomToken returns a 256-bit hex CSRF secret, regenerated each serve start.
@@ -999,9 +1002,11 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 
 	// broadcast-reload sends /reload-plugins to every eligible roster row at
 	// once. It takes no session_id: the targets are re-derived here from a fresh
-	// roster (never from the client), and every pane still passes paneIDRe. One
-	// lock for the broadcast itself keeps two from interleaving; each send also
-	// takes its row's session lock, so it cannot race a per-row action.
+	// roster (never from the client), minus rows whose tmux pane has died (they
+	// would only report "can't find pane"), and every pane still passes
+	// paneIDRe. One lock for the broadcast itself keeps two from interleaving;
+	// each send also takes its row's session lock, so it cannot race a per-row
+	// action.
 	if action == "broadcast-reload" {
 		const broadcastLock = "broadcast:reload-plugins"
 		if !cfg.inflight.acquire(broadcastLock) {
@@ -1014,6 +1019,7 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 			http.Error(w, "lookup failed", http.StatusInternalServerError)
 			return
 		}
+		agents = dropDeadPanes(agents, cfg.panes.panes(now))
 		writeActionResult(w, broadcastReload(cfg, agents, r.FormValue("include_busy") == "true", now))
 		return
 	}

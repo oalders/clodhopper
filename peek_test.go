@@ -1,11 +1,13 @@
 package main
 
 import (
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,13 +31,65 @@ func TestClampPaneLines(t *testing.T) {
 func TestPaneCache_TTL(t *testing.T) {
 	c := newPaneCache()
 	base := time.Unix(1_700_000_000, 0)
-	c.set = map[string]bool{"%3": true}
+	c.set = map[string]string{"%3": "sess"}
 	c.at = base
 	if !c.live("%3", base.Add(paneTTL-time.Second)) {
 		t.Error("within TTL: %3 should read live from the cached set")
 	}
 	if c.live("%9", base.Add(time.Second)) {
 		t.Error("within TTL: %9 not in cached set, should be false")
+	}
+}
+
+// dropDeadPanes hides a row only on positive evidence its pane is gone, and
+// hides nothing when the listing cannot be trusted to describe the roster's
+// tmux server (empty, or sharing none of its live panes).
+func TestDropDeadPanes(t *testing.T) {
+	live := Agent{SessionID: "live", TmuxSession: "work", TmuxPane: "%1"}
+	gone := Agent{SessionID: "gone", TmuxSession: "work", TmuxPane: "%2"}
+	reused := Agent{SessionID: "reused", TmuxSession: "work", TmuxPane: "%3"}
+	noSess := Agent{SessionID: "nosess", TmuxPane: "%3"}
+	noPane := Agent{SessionID: "nopane", TmuxSession: "work"}
+	cases := []struct {
+		name   string
+		agents []Agent
+		panes  map[string]string
+		want   []string
+	}{
+		{"pane absent is hidden", []Agent{live, gone}, map[string]string{"%1": "work"}, []string{"live"}},
+		{"pane reused by another session is hidden", []Agent{live, reused}, map[string]string{"%1": "work", "%3": "other"}, []string{"live"}},
+		{"row without a recorded session matches on pane alone", []Agent{live, noSess}, map[string]string{"%1": "work", "%3": "other"}, []string{"live", "nosess"}},
+		{"row without a pane is kept", []Agent{live, noPane}, map[string]string{"%1": "work"}, []string{"live", "nopane"}},
+		{"empty listing hides nothing", []Agent{live, gone}, map[string]string{}, []string{"live", "gone"}},
+		{"listing unrelated to the roster hides nothing", []Agent{gone, reused}, map[string]string{"%3": "other", "%9": "x"}, []string{"gone", "reused"}},
+	}
+	for _, c := range cases {
+		var got []string
+		for _, a := range dropDeadPanes(slices.Clone(c.agents), c.panes) {
+			got = append(got, a.SessionID)
+		}
+		if !slices.Equal(got, c.want) {
+			t.Errorf("%s: kept %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// listPanes maps each pane id to its session name in the form ingest stores, so
+// a messy real-world name compares equal to the row's recorded tmux_session.
+func TestListPanes(t *testing.T) {
+	dir := t.TempDir()
+	messy := "\ue0a0  fix-2482     Blog post [in progress]"
+	script := "#!/bin/sh\nprintf '%s\\t%s\\n' '%1' 'my-session' '%7' '" + messy + "'\n"
+	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	want := map[string]string{"%1": "my-session", "%7": tmuxSessionLabel(messy)}
+	if got := listPanes(); !maps.Equal(got, want) {
+		t.Fatalf("listPanes() = %q, want %q", got, want)
+	}
+	if want["%7"] != "fix-2482 Blog post [in progress]" {
+		t.Errorf("messy name stored as %q, want the cleaned name", want["%7"])
 	}
 }
 
@@ -77,7 +131,7 @@ func TestHandlePane_RejectsBadPane(t *testing.T) {
 func TestHandlePane_UnknownPaneNotFound(t *testing.T) {
 	peek := &peekConfig{enabled: true, lines: 40, cache: newPaneCache(), bindHost: "127.0.0.1"}
 	// Prime an empty live set that will not expire during the test.
-	peek.cache.set = map[string]bool{}
+	peek.cache.set = map[string]string{}
 	peek.cache.at = time.Unix(1_700_000_000, 0)
 	rec := httptest.NewRecorder()
 	// %99 encoded, from a peer that passes the gate.
@@ -106,7 +160,7 @@ func TestHandlePane_GatedOnPeer(t *testing.T) {
 
 	newPeek := func() *peekConfig {
 		p := &peekConfig{enabled: true, lines: 40, cache: newPaneCache(), bindHost: "127.0.0.1"}
-		p.cache.set = map[string]bool{"%3": true}
+		p.cache.set = map[string]string{"%3": "sess"}
 		p.cache.at = time.Unix(1_700_000_000, 0)
 		return p
 	}
@@ -178,7 +232,7 @@ func TestHandlePane_HostAndProxyGated(t *testing.T) {
 
 	newPeek := func() *peekConfig {
 		p := &peekConfig{enabled: true, lines: 40, cache: newPaneCache(), bindHost: "127.0.0.1"}
-		p.cache.set = map[string]bool{"%3": true}
+		p.cache.set = map[string]string{"%3": "sess"}
 		p.cache.at = time.Unix(1_700_000_000, 0)
 		return p
 	}

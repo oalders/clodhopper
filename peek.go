@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,50 +48,81 @@ func clampPaneLines(n int) int {
 	return n
 }
 
-// paneCache memoises the set of live tmux pane ids so the dashboard (which polls)
-// does not shell out to tmux on every render. now is injected so the TTL is
-// testable, matching ciCache.
+// paneCache memoises the live tmux panes (pane id → normalised session name) so
+// the dashboard (which polls) does not shell out to tmux on every render. now is
+// injected so the TTL is testable, matching ciCache.
 type paneCache struct {
 	mu  sync.Mutex
-	set map[string]bool
+	set map[string]string
 	at  time.Time
 }
 
 func newPaneCache() *paneCache { return &paneCache{} }
 
-// live reports whether pane is a currently-live tmux pane, refreshing the cached
-// set via listPanes when it is unset or older than paneTTL. A tmux failure caches
-// an empty set for the TTL — the peek is simply unavailable, never an error.
-func (c *paneCache) live(pane string, now time.Time) bool {
+// panes returns the live pane listing, refreshing it via listPanes when it is
+// unset or older than paneTTL. A tmux failure caches an empty listing for the
+// TTL — the peek is simply unavailable, never an error. A nil cache lists
+// nothing, so a config built without one hides no rows.
+func (c *paneCache) panes(now time.Time) map[string]string {
+	if c == nil {
+		return nil
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.set == nil || now.Sub(c.at) >= paneTTL {
 		c.set = listPanes()
 		c.at = now
 	}
-	return c.set[pane]
+	return c.set
 }
 
-// listPanes returns every live tmux pane id across all sessions, or an empty set
+// live reports whether pane is a currently-live tmux pane.
+func (c *paneCache) live(pane string, now time.Time) bool {
+	_, ok := c.panes(now)[pane]
+	return ok
+}
+
+// listPanes returns every live tmux pane id across all sessions, mapped to its
+// session name normalised exactly as ingest stores tmux_session, or an empty map
 // if tmux is missing, unreachable (different socket / container / not running),
 // or times out. Best-effort, like lookupCI.
-func listPanes() map[string]bool {
-	set := map[string]bool{}
+func listPanes() map[string]string {
+	set := map[string]string{}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return set
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_id}").Output()
+	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{session_name}").Output()
 	if err != nil {
 		return set
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line != "" {
-			set[line] = true
+		if pane, sess, ok := strings.Cut(line, "\t"); ok {
+			set[pane] = tmuxSessionLabel(sess)
 		}
 	}
 	return set
+}
+
+// dropDeadPanes filters out roster rows whose tmux pane is gone: the pane was
+// closed or the tmux server restarted, so the session never sent SessionEnd. A
+// pane listed under a different session than the row recorded is gone too (pane
+// ids restart from %0 with a new server). Hiding a live agent is the worse
+// mistake, so it fails safe: rows without a pane id are always kept, and nothing
+// is hidden unless at least one row matches the listing — an empty or unrelated
+// listing (tmux missing, or serve on another socket) is not evidence of death.
+func dropDeadPanes(agents []Agent, panes map[string]string) []Agent {
+	alive := func(a Agent) bool {
+		sess, ok := panes[a.TmuxPane]
+		return ok && (a.TmuxSession == "" || a.TmuxSession == sess)
+	}
+	if !slices.ContainsFunc(agents, alive) {
+		return agents
+	}
+	return slices.DeleteFunc(agents, func(a Agent) bool {
+		return paneIDRe.MatchString(a.TmuxPane) && !alive(a)
+	})
 }
 
 // capturePane returns the last `lines` rows of pane, scrubbed for secret-shaped

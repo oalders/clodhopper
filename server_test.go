@@ -742,6 +742,33 @@ func TestBuildDashboardDataMergeFlags(t *testing.T) {
 	}
 }
 
+// A row whose tmux pane has died is dropped from the rendered roster even with
+// --pane-peek off: the pane listing is consulted regardless of the peek flag.
+func TestBuildDashboardDataDropsDeadPane(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+	ts := now.UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "alive", TmuxSession: "work", TmuxPane: "%1", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "dead", TmuxSession: "work", TmuxPane: "%80", EventType: "Stop", PayloadJSON: "{}"})
+	// buildDashboardData reads its own clock, so stamp the seeded listing an hour
+	// ahead: paneTTL can never lapse mid-test and real tmux is never run.
+	peek := &peekConfig{cache: &paneCache{set: map[string]string{"%1": "work"}, at: now.Add(time.Hour)}}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "127.0.0.1:5555"
+	r.Host = "127.0.0.1:4555"
+	data, err := buildDashboardData(r, db, newCICache(), peek, &actionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, a := range data.Agents {
+		got = append(got, a.SessionID)
+	}
+	if !slices.Equal(got, []string{"alive"}) {
+		t.Fatalf("roster = %q, want only the live-pane session", got)
+	}
+}
+
 // Both peer-gated view flags collapse for a peer that fails remoteAllowed: the
 // LAN caller gets a read-only board with no action buttons, no CSRF token to
 // drive even the exec-free "end" by hand, and no ⤢ peek control — /api/pane

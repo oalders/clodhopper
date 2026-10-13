@@ -2731,6 +2731,31 @@ exit 0`)
 	}
 }
 
+// A row whose tmux pane has died is not a broadcast target: it is neither sent
+// to nor reported as an error, so it cannot fail the broadcast.
+func TestHandleActionBroadcastReloadSkipsDeadPane(t *testing.T) {
+	db := openTestDB(t)
+	dir := t.TempDir()
+	for _, sess := range []struct{ id, pane string }{{"alive-1", "%1"}, {"dead-1", "%80"}} {
+		insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: sess.id, Cwd: dir, TmuxPane: sess.pane, EventType: "Stop", PayloadJSON: "{}"})
+	}
+	stub, logPath := tmuxLogStub(t)
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	cfg.tmux = stub
+	now := time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC)
+	cfg.panes = &paneCache{set: map[string]string{"%1": ""}, at: now}
+
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("", "broadcast-reload", false, "secret", "127.0.0.1"), db, cfg, now)
+	d := decodeActionJSON(t, w)
+	if !d.OK || strings.Contains(d.Output, shortID("dead-1")) {
+		t.Fatalf("ok=%v report=%q, want ok with the dead pane absent", d.OK, d.Output)
+	}
+	if got, _ := os.ReadFile(logPath); strings.TrimSpace(string(got)) != "send-keys -t %1 /reload-plugins Enter" {
+		t.Fatalf("sends = %q, want only the live pane", got)
+	}
+}
+
 // Enter would answer the prompt, so an explicit per-row click is refused for a
 // prompt-blocked session before tmux runs.
 func TestHandleActionReloadPluginsRefusedOnPrompt(t *testing.T) {
