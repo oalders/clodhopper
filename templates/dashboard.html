@@ -1906,10 +1906,13 @@
 
     // Esc dismisses an open peek. If focus is inside a peek (its capture or its ⤢
     // button), close just that one and return focus to its button; otherwise close
-    // every open peek. preventDefault only when something actually closed, so Esc
-    // stays free for anything else on the page.
+    // every open peek; an armed restart (all), which sits outside #content and any
+    // .actrow, is disarmed instead. preventDefault only when something actually
+    // closed, so Esc stays free for anything else on the page.
     document.addEventListener('keydown', function (ev) {
       if (ev.key !== 'Escape' && ev.keyCode !== 27) return;
+      var bulk = ev.target && ev.target.closest ? ev.target.closest('.ck-bulk .actgroup.confirm') : null;
+      if (bulk) { window.__ckDisarm(bulk); ev.preventDefault(); return; }
       var scope = ev.target && ev.target.closest ? ev.target.closest('.panerow, .peek, .actrow, .actbtn') : null;
       var closed = false;
       if (scope && (scope.classList.contains('panerow') || scope.classList.contains('peek'))) {

@@ -2995,6 +2995,22 @@ func TestHandleActionBroadcastRestartNoShellSendsNoResume(t *testing.T) {
 	}
 }
 
+// A failed /exit send-keys (pane gone, say) is an error and nothing more is typed.
+func TestHandleActionBroadcastRestartExitSendFailsSendsNoResume(t *testing.T) {
+	dir := t.TempDir()
+	stub, logPath := restartStub(t, 0, "bash", "claude", dir)
+	// Wrap the stub so /exit fails while every other call behaves as before.
+	stub = writeStub(t, "tmux-exitfail", `printf '[%s]' "$@" | grep -q '\[/exit\]' && { printf '[%s]' "$@" >> '`+logPath+`'; echo >> '`+logPath+`'; echo "can't find pane" >&2; exit 1; }
+exec '`+stub+`' "$@"`)
+	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
+	if d.OK || !strings.Contains(d.Output, "error feat-a "+shortID(restartUUID)) {
+		t.Fatalf("ok=%v report=%q, want an error for the failed /exit", d.OK, d.Output)
+	}
+	if want := "[send-keys][-t][%1][/exit][Enter]"; len(calls) != 1 || calls[0] != want {
+		t.Fatalf("tmux calls = %q, want only the failed /exit and no resume", calls)
+	}
+}
+
 // A shell that is not in the session's worktree is refused rather than cd'd:
 // resuming there would start claude against the wrong project.
 func TestHandleActionBroadcastRestartCwdMismatchSendsNoResume(t *testing.T) {
