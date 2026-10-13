@@ -2137,19 +2137,19 @@
     // outside #content, so it needs no __ckActionBusy hold or noteMsg replay.
     var reloadAll = document.getElementById('ck-reloadall');
     var reloadClear = document.getElementById('ck-reloadclear');
+    var reloadOut = document.getElementById('ck-reloadout');
     if (reloadAll) reloadAll.addEventListener('click', function () {
-      var out = document.getElementById('ck-reloadout');
       var busy = document.getElementById('ck-reloadbusy').checked;
       // Disabling a focused button drops focus to <body>; remember it so the
       // finally below can hand focus back to a keyboard user.
       var hadFocus = document.activeElement === reloadAll;
       reloadAll.disabled = true;
       // A clear mid-request would just be overwritten by the result.
-      reloadClear.hidden = true;
-      out.textContent = 'working…';
+      if (reloadClear) reloadClear.hidden = true;
+      reloadOut.textContent = 'working…';
       // Focusable only once it has content, so an empty report is not a dead
       // tab stop; it stays rendered so the live region announces reliably.
-      out.tabIndex = 0;
+      reloadOut.tabIndex = 0;
       fetch('/api/action', {
         method: 'POST',
         headers: {
@@ -2160,11 +2160,11 @@
       })
         .then(function (resp) { return resp.json().catch(function () { return { ok: false, output: 'HTTP ' + resp.status }; }); })
         // textContent, never innerHTML: the report carries tmux output.
-        .then(function (d) { out.textContent = d.output || (d.ok ? 'done' : 'failed'); })
-        .catch(function (e) { out.textContent = 'request failed: ' + e; })
+        .then(function (d) { reloadOut.textContent = d.output || (d.ok ? 'done' : 'failed'); })
+        .catch(function (e) { reloadOut.textContent = 'request failed: ' + e; })
         .finally(function () {
           reloadAll.disabled = false;
-          reloadClear.hidden = false;
+          if (reloadClear) reloadClear.hidden = false;
           // Only reclaim focus the disable dropped; if the user moved on
           // during the request, leave their focus where it is.
           var now = document.activeElement;
@@ -2172,10 +2172,9 @@
         });
     });
     if (reloadClear) reloadClear.addEventListener('click', function () {
-      var out = document.getElementById('ck-reloadout');
-      out.textContent = '';
+      reloadOut.textContent = '';
       // Empty again, so drop the tab stop the run added.
-      out.removeAttribute('tabindex');
+      reloadOut.removeAttribute('tabindex');
       reloadClear.hidden = true;
       // The clear button just hid itself; don't strand focus on <body>.
       reloadAll.focus();
