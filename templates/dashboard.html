@@ -232,6 +232,8 @@
        separator. Keeping the <td> a real cell lets its border collapse into the
        row grid like every other column. */
     table.roster td.actions .ctrlwrap { display: flex; align-items: center; gap: 6px; }
+    /* Pin ⋯ right even when no peek toggle precedes it (rows without a live pane). */
+    table.roster td.actions .ctrlwrap .actbtn { margin-left: auto; }
     td.idle { font-variant-numeric: tabular-nums; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
     td.summary em { font-style: italic; color: var(--text-3); } /* a completed phase, not one in progress */
