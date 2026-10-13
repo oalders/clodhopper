@@ -172,7 +172,7 @@
     .ck-bulkout tr.fail { --row-accent: var(--fail); color: var(--text-1); }
     .ck-bulkout tr.alert { --row-accent: var(--attention); color: var(--text-1); }
     .ck-bulkout tr.fail td:first-child, .ck-bulkout tr.alert td:first-child { font-weight: 600; box-shadow: inset 3px 0 0 var(--row-accent); }
-    /* restart (all) borrows the roster's arm/confirm (.pract) but keeps its neighbour's .ck-btn size. */
+    /* button.pract's own rule outranks bare .ck-btn, so without this the restart button shrinks to row-button size. */
     .ck-bulk button.ck-btn.pract { font-size: var(--fs-sm); padding: 5px 12px; border-radius: var(--radius-sm); }
     #ck-reloadbusy-hint { flex-basis: 100%; }
 

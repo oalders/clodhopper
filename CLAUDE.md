@@ -101,10 +101,11 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   `session_id` travels only as a bound SQL parameter. `rebase` DOES exec, so it
   goes through `actionArgv`; its one varying argv element is the default branch,
   derived server-side from git refs and validated against `branchNameRe` before
-  it can reach a command line. Likewise `broadcast-restart` types
-  `nn claude --resume <id>` into each pane; the id comes from the roster rebuilt
-  server-side per request (never from the client) and must match `sessionIDRe`
-  (a UUID) before `/exit` is even sent.)
+  it can reach a command line. `broadcast-restart` is a separate path that never
+  reaches `actionArgv`: it types `nn claude --resume <id>` into each pane via a
+  fixed tmux send-keys argv; the id comes from a fresh `agentRoster()` call inside
+  the request (never client input) and must match `sessionIDRe` (a UUID) before
+  `/exit` is even sent.)
 
 ### Other conventions
 
