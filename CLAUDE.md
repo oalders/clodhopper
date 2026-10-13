@@ -101,7 +101,9 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   `session_id` travels only as a bound SQL parameter. `rebase` DOES exec, so it
   goes through `actionArgv`; its one varying argv element is the default branch,
   derived server-side from git refs and validated against `branchNameRe` before
-  it can reach a command line.)
+  it can reach a command line. Likewise `broadcast-restart` types
+  `nn claude --resume <id>` into each pane; the id comes from the stored roster
+  and must match `sessionIDRe` (a UUID) before `/exit` is even sent.)
 
 ### Other conventions
 

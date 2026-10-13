@@ -160,17 +160,20 @@
     }
     .ck-spring { flex: 1 1 24px; }
     .ck-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 16px; }
-    #ck-reloadout { margin: 0; flex-basis: 100%; max-height: 30vh; overflow: auto; }
+    /* .ck-bulkout is a broadcast's report region (reload plugins, restart). */
+    .ck-bulkout { margin: 0; flex-basis: 100%; max-height: 30vh; overflow: auto; }
     /* Collapsed, not hidden: it holds the live region, which must stay rendered to announce. */
-    #ck-reloadout:has(#ck-reloadmsg:empty):not(:has(table)) { margin: 0; padding: 0; border: 0; }
-    #ck-reloadout table { border-collapse: collapse; margin-top: 4px; color: var(--text-2); } /* .actmsg's --text-3 is under AA on light --bg */
+    .ck-bulkout:has(> [role="status"]:empty):not(:has(table)) { margin: 0; padding: 0; border: 0; }
+    .ck-bulkout table { border-collapse: collapse; margin-top: 4px; color: var(--text-2); } /* .actmsg's --text-3 is under AA on light --bg */
     /* pre-wrap beats the card layout's td white-space:normal, keeping multi-line tmux errors. */
-    #ck-reloadout th, #ck-reloadout td { text-align: left; vertical-align: top; padding: 2px 8px; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .ck-bulkout th, .ck-bulkout td { text-align: left; vertical-align: top; padding: 2px 8px; overflow-wrap: anywhere; white-space: pre-wrap; }
     /* The tint comes from the roster's tr.fail/tr.alert; the bold word and left bar mean colour is never the only signal.
        Text is --text-1, not the accent: accent text on its own tint misses AA contrast. */
-    #ck-reloadout tr.fail { --row-accent: var(--fail); color: var(--text-1); }
-    #ck-reloadout tr.alert { --row-accent: var(--attention); color: var(--text-1); }
-    #ck-reloadout tr.fail td:first-child, #ck-reloadout tr.alert td:first-child { font-weight: 600; box-shadow: inset 3px 0 0 var(--row-accent); }
+    .ck-bulkout tr.fail { --row-accent: var(--fail); color: var(--text-1); }
+    .ck-bulkout tr.alert { --row-accent: var(--attention); color: var(--text-1); }
+    .ck-bulkout tr.fail td:first-child, .ck-bulkout tr.alert td:first-child { font-weight: 600; box-shadow: inset 3px 0 0 var(--row-accent); }
+    /* restart (all) borrows the roster's arm/confirm (.pract) but keeps its neighbour's .ck-btn size. */
+    .ck-bulk button.ck-btn.pract { font-size: var(--fs-sm); padding: 5px 12px; border-radius: var(--radius-sm); }
     #ck-reloadbusy-hint { flex-basis: 100%; }
 
     /* --- Live meta line (inside #content so the poller keeps it current) --- */
@@ -671,8 +674,8 @@
          row is both group-start and grouped. */
       tr.group-start { border-top: 2px solid var(--divider); }
       tr.grouped { border-left: 3px solid var(--idle); }
-      #ck-reloadout tr.fail, #ck-reloadout tr.alert { border-left: 3px solid var(--row-accent); }
-      #ck-reloadout td:empty { display: none; } /* a sent row has no reason; skip its bare label */
+      .ck-bulkout tr.fail, .ck-bulkout tr.alert { border-left: 3px solid var(--row-accent); }
+      .ck-bulkout td:empty { display: none; } /* a sent row has no reason; skip its bare label */
       /* The peek panel is a full-width scroller, not a card. On desktop the pre's
          width is bounded by table-layout:fixed + the colgroup + th,td overflow:hidden,
          so its overflow:auto scrolls internally. The card layout drops all three and
@@ -782,7 +785,16 @@
     <button type="button" id="ck-reloadclear" class="ck-btn" title="empty the reload plugins report below" aria-controls="ck-reloadout" hidden>clear report</button>
     <span id="ck-reloadbusy-hint" class="actmsg">also sends to mid-turn sessions (queued); a session that reaches a prompt mid-send may have that prompt answered</span>
     <!-- Only the short text is live; the table sits outside it so a run isn't read out row by row. -->
-    <div id="ck-reloadout" class="actmsg" role="region" aria-label="reload plugins report"><span id="ck-reloadmsg" role="status" aria-live="polite" aria-atomic="true"></span></div>
+    <div id="ck-reloadout" class="actmsg ck-bulkout" role="region" aria-label="reload plugins report"><span id="ck-reloadmsg" role="status" aria-live="polite" aria-atomic="true"></span></div>
+  </div>
+  <div class="ck-bulk" role="group" aria-label="restart all sessions">
+    <!-- An .actgroup so the roster's two-step arm/confirm guards it: /exit kills every target's process. -->
+    <span class="actgroup">
+      <button type="button" id="ck-restartall" class="ck-btn pract" data-action="broadcast-restart" title="exit and resume (nn claude --resume, same session) every idle or waiting-for-you tmux session on the roster; the resume is only typed once the pane is back at a shell in the session's worktree">restart (all)</button>
+      <span class="actmsg" aria-live="polite"></span>
+    </span>
+    <button type="button" id="ck-restartclear" class="ck-btn" title="empty the restart report below" aria-controls="ck-restartout" hidden>clear report</button>
+    <div id="ck-restartout" class="actmsg ck-bulkout" role="region" aria-label="restart report"><span id="ck-restartmsg" role="status" aria-live="polite" aria-atomic="true"></span></div>
   </div>
   {{ end }}
 
@@ -2002,7 +2014,8 @@
       ready: 'mark PR ready?',
       'monitor-ci': '/clear then /monitor-ci — drops the agent\'s current context',
       end: 'dismiss this row from the dashboard — the agent is NOT stopped, and the row returns if it emits another event',
-      rebase: 'REWRITTEN — rebased onto the default branch, then force-pushed (--force-with-lease), replacing the PR\'s commits. On a conflict the rebase is aborted and nothing is pushed'
+      rebase: 'REWRITTEN — rebased onto the default branch, then force-pushed (--force-with-lease), replacing the PR\'s commits. On a conflict the rebase is aborted and nothing is pushed',
+      'broadcast-restart': 'restart every idle / waiting-for-you session: /exit kills each claude, then it is resumed with its session id once its pane is back at a shell in its worktree'
     };
 
     function forceOn(group) {
@@ -2046,7 +2059,8 @@
     // escalating with a force-specific warning when the force checkbox is on
     // (force never applies to 'ready', which the server ignores it for).
     function caveatFor(group, action) {
-      if (action === 'ready') return CAVEAT.ready;
+      // Neither names a single worktree, nor has a force toggle.
+      if (action === 'ready' || action === 'broadcast-restart') return CAVEAT[action];
       // data-branch is empty when the row has neither a branch nor a guess;
       // naming the worktree beats leading the caveat with a bare colon or the
       // "(unknown)" placeholder this used to carry.
@@ -2212,6 +2226,9 @@
       // (On Safari a mouse click doesn't focus a <button>, so for mouse users
       // this may be a prior control or nothing — the enabled-.pract fallback in
       // restoreFocus covers that; it matters for keyboard users, who this helps.)
+      // A broadcast button borrows only the arm/confirm step; once confirmed it
+      // posts through its own runner (wireBroadcast), not this per-row request.
+      if (group.__ckBroadcast) { unlock(group, true); group.__ckBroadcast(); return; }
       clearArmTimer(group);
       var focused = document.activeElement;
       function restoreFocus() {
@@ -2300,84 +2317,99 @@
         .finally(function () { delete group.dataset.ckFiring; window.__ckActionBusy = Math.max(0, window.__ckActionBusy - 1); });
     }
 
-    // "reload plugins (all)": fire() is built around a per-row .actgroup, so the
-    // broadcast gets this short sibling with the same request shape. It lives
-    // outside #content, so it needs no __ckActionBusy hold or noteMsg replay.
-    var reloadAll = document.getElementById('ck-reloadall');
-    var reloadClear = document.getElementById('ck-reloadclear');
-    var reloadOut = document.getElementById('ck-reloadout');
-    var reloadMsg = document.getElementById('ck-reloadmsg');
-    if (reloadAll) reloadAll.addEventListener('click', function () {
-      var busy = document.getElementById('ck-reloadbusy').checked;
-      // Disabling a focused button drops focus to <body>; remember it so the
-      // finally below can hand focus back to a keyboard user.
-      var hadFocus = document.activeElement === reloadAll;
-      reloadAll.disabled = true;
-      // A clear mid-request would just be overwritten by the result.
-      if (reloadClear) reloadClear.hidden = true;
-      reloadOut.replaceChildren(reloadMsg);
-      reloadMsg.textContent = 'working…';
-      // Focusable only once it has content, so an empty report is not a dead
-      // tab stop; it stays rendered so the live region announces reliably.
-      reloadOut.tabIndex = 0;
-      fetch('/api/action', {
-        method: 'POST',
-        headers: {
-          'X-Clodhopper-Token': CSRF,
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: 'action=broadcast-reload' + (busy ? '&include_busy=true' : '')
-      })
-        .then(function (resp) { return resp.json().catch(function () { return { ok: false, output: 'HTTP ' + resp.status }; }); })
-        // textContent, never innerHTML: the report carries tmux output.
-        .then(function (d) {
-          if (!d.rows || !d.rows.length) { reloadMsg.textContent = d.output || (d.ok ? 'done' : 'failed'); return; }
-          var counts = {}, order = ['error', 'skipped', 'sent'], summary = [];
-          var cols = ['result', 'target', 'reason'];
-          var table = document.createElement('table');
-          table.setAttribute('aria-label', 'reload plugins results');
-          var head = table.createTHead().insertRow();
-          cols.forEach(function (h) {
-            var th = document.createElement('th');
-            th.scope = 'col';
-            th.textContent = h;
-            head.appendChild(th);
-          });
-          var body = table.createTBody();
-          // Rows arrive sorted problems-first from the server.
-          d.rows.forEach(function (r) {
-            counts[r.result] = (counts[r.result] || 0) + 1;
-            var tr = body.insertRow();
-            tr.className = { error: 'fail', skipped: 'alert' }[r.result] || '';
-            [r.result, r.target, r.reason].forEach(function (v, i) {
-              var td = tr.insertCell();
-              td.textContent = v;
-              td.dataset.label = cols[i]; // the ≤640px card layout prints this in place of the hidden thead
-            });
-          });
-          order.forEach(function (k) { if (counts[k]) summary.push(counts[k] + ' ' + k + (k === 'error' && counts[k] > 1 ? 's' : '')); });
-          reloadMsg.textContent = summary.join(' · ');
-          reloadOut.append(table);
+    // wireBroadcast wires one broadcast button group ("reload plugins (all)",
+    // "restart (all)"): fire() is built around a per-row .actgroup, so the
+    // broadcasts get this short sibling with the same request shape. id is the
+    // ck-<id>all / -clear / -out / -msg prefix, label names the results table,
+    // and extra returns any form fields beyond the action. Returns the runner, or
+    // null when the group is not on the page. It lives outside #content, so it
+    // needs no __ckActionBusy hold or noteMsg replay.
+    function wireBroadcast(id, action, label, extra) {
+      var all = document.getElementById('ck-' + id + 'all');
+      var clear = document.getElementById('ck-' + id + 'clear');
+      var out = document.getElementById('ck-' + id + 'out');
+      var msg = document.getElementById('ck-' + id + 'msg');
+      if (!all) return null;
+      if (clear) clear.addEventListener('click', function () {
+        msg.textContent = '';
+        out.replaceChildren(msg);
+        // Empty again, so drop the tab stop the run added.
+        out.removeAttribute('tabindex');
+        clear.hidden = true;
+        // The clear button just hid itself; don't strand focus on <body>.
+        all.focus();
+      });
+      return function () {
+        // Disabling a focused button drops focus to <body>; remember it so the
+        // finally below can hand focus back to a keyboard user.
+        var hadFocus = document.activeElement === all;
+        all.disabled = true;
+        // A clear mid-request would just be overwritten by the result.
+        if (clear) clear.hidden = true;
+        out.replaceChildren(msg);
+        msg.textContent = 'working…';
+        // Focusable only once it has content, so an empty report is not a dead
+        // tab stop; it stays rendered so the live region announces reliably.
+        out.tabIndex = 0;
+        fetch('/api/action', {
+          method: 'POST',
+          headers: {
+            'X-Clodhopper-Token': CSRF,
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          body: 'action=' + action + extra()
         })
-        .catch(function (e) { reloadMsg.textContent = 'request failed: ' + e; })
-        .finally(function () {
-          reloadAll.disabled = false;
-          if (reloadClear) reloadClear.hidden = false;
-          // Only reclaim focus the disable dropped; if the user moved on
-          // during the request, leave their focus where it is.
-          var now = document.activeElement;
-          if (hadFocus && (!now || now === document.body || now === reloadAll)) reloadAll.focus();
-        });
+          .then(function (resp) { return resp.json().catch(function () { return { ok: false, output: 'HTTP ' + resp.status }; }); })
+          // textContent, never innerHTML: the report carries tmux output.
+          .then(function (d) {
+            if (!d.rows || !d.rows.length) { msg.textContent = d.output || (d.ok ? 'done' : 'failed'); return; }
+            var counts = {}, order = ['error', 'skipped', 'sent'], summary = [];
+            var cols = ['result', 'target', 'reason'];
+            var table = document.createElement('table');
+            table.setAttribute('aria-label', label + ' results');
+            var head = table.createTHead().insertRow();
+            cols.forEach(function (h) {
+              var th = document.createElement('th');
+              th.scope = 'col';
+              th.textContent = h;
+              head.appendChild(th);
+            });
+            var body = table.createTBody();
+            // Rows arrive sorted problems-first from the server.
+            d.rows.forEach(function (r) {
+              counts[r.result] = (counts[r.result] || 0) + 1;
+              var tr = body.insertRow();
+              tr.className = { error: 'fail', skipped: 'alert' }[r.result] || '';
+              [r.result, r.target, r.reason].forEach(function (v, i) {
+                var td = tr.insertCell();
+                td.textContent = v;
+                td.dataset.label = cols[i]; // the ≤640px card layout prints this in place of the hidden thead
+              });
+            });
+            order.forEach(function (k) { if (counts[k]) summary.push(counts[k] + ' ' + k + (k === 'error' && counts[k] > 1 ? 's' : '')); });
+            msg.textContent = summary.join(' · ');
+            out.append(table);
+          })
+          .catch(function (e) { msg.textContent = 'request failed: ' + e; })
+          .finally(function () {
+            all.disabled = false;
+            if (clear) clear.hidden = false;
+            // Only reclaim focus the disable dropped; if the user moved on
+            // during the request, leave their focus where it is.
+            var now = document.activeElement;
+            if (hadFocus && (!now || now === document.body || now === all)) all.focus();
+          });
+      };
+    }
+    var runReload = wireBroadcast('reload', 'broadcast-reload', 'reload plugins', function () {
+      return document.getElementById('ck-reloadbusy').checked ? '&include_busy=true' : '';
     });
-    if (reloadClear) reloadClear.addEventListener('click', function () {
-      reloadMsg.textContent = '';
-      reloadOut.replaceChildren(reloadMsg);
-      // Empty again, so drop the tab stop the run added.
-      reloadOut.removeAttribute('tabindex');
-      reloadClear.hidden = true;
-      // The clear button just hid itself; don't strand focus on <body>.
-      reloadAll.focus();
-    });
+    if (runReload) document.getElementById('ck-reloadall').addEventListener('click', runReload);
+    // restart (all) is a .pract in an .actgroup, so the delegated click handler
+    // below arms it like a roster action and fire() hands the confirm to this.
+    var restartAll = document.getElementById('ck-restartall');
+    if (restartAll) restartAll.closest('.actgroup').__ckBroadcast =
+      wireBroadcast('restart', 'broadcast-restart', 'restart', function () { return ''; });
 
     // The PR-mode chooser is a segmented toggle of role="radio" buttons, not
     // native radios, so selecting a mode moves aria-checked AND the roving

@@ -259,6 +259,21 @@ rows are skipped unless **include working** is ticked, and a row blocked on a
 permission prompt or question is **never** sent to (the Enter would answer it).
 Once a run finishes, a **clear report** button dismisses its report.
 
+A **restart (all)** button beside it exits and resumes every eligible session
+(for example to pick up a new Claude Code build), reporting per row the same
+way. Because `/exit` kills the process, it uses the two-step confirm and is
+stricter than reload: only **idle** and **waiting for you** rows are restarted;
+working rows, rows waiting on background work or subagents (they would be
+killed), and prompt-blocked rows are skipped, with no override. For each target
+it sends `/exit`, waits (up to ~15s) for the pane to be back at a shell (`bash`,
+`zsh`, `fish` or `sh`), checks that shell is in the session's recorded working
+directory, then types `nn claude --resume <session id>` — never `--continue`
+or `--fork-session`. A pane that never reaches a shell, or whose shell is
+somewhere else, is reported as an error and nothing more is typed into it (no
+`cd` is ever sent); a resume that has not left the shell after a few seconds is
+reported as "exited but did not resume". Only UUID session ids are restarted,
+and each run writes one audit line to serve's stderr.
+
 Every row — pane or no pane — also gains an **end** button. It is the dashboard
 equivalent of `clodhopper end --session <id>`: it writes the synthetic
 `SessionEnd` that drops the row from the roster, and does nothing else. No

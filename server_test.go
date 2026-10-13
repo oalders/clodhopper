@@ -2004,6 +2004,25 @@ func TestDashboardRendersReloadClearOnlyWhenEnabled(t *testing.T) {
 	}
 }
 
+// restart (all) is part of the same opt-in .ck-bulk surface as reload (#145),
+// with its own hidden clear control, and sits in an .actgroup as a .pract so the
+// roster's two-step arm/confirm guards it: /exit kills every target's process.
+func TestDashboardRendersRestartOnlyWhenEnabled(t *testing.T) {
+	if strings.Contains(renderDashboard(t, dashboardData{}), `id="ck-restartall"`) {
+		t.Fatal("restart (all) rendered while merge disabled")
+	}
+	html := renderDashboard(t, dashboardData{ExecEnabled: true, CSRFToken: "tok"})
+	for _, want := range []string{
+		`<span class="actgroup">`,
+		`id="ck-restartall" class="ck-btn pract" data-action="broadcast-restart"`,
+		`aria-controls="ck-restartout" hidden>clear report</button>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("restart (all) markup missing %q while merge enabled", want)
+		}
+	}
+}
+
 // The per-row End button (dismiss this roster row) is part of the opt-in write
 // surface, so it must be absent unless --enable-merge is on — and, unlike the
 // tmux session actions, it must render even for a row with no live pane, since

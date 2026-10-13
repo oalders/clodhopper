@@ -473,6 +473,15 @@ const (
 	// input line first. Long enough to cover a slow (e.g. sandboxed) redraw,
 	// short enough that the dashboard's action request still feels immediate.
 	monitorCIClearDelay = 750 * time.Millisecond
+	// restartPollInterval is how often broadcast-restart re-reads a pane's
+	// foreground command; restartExitWait bounds the wait for /exit to drop the
+	// pane back to its shell, restartResumeWait the wait for the resumed claude
+	// to take it over again. Exiting can flush hooks and MCP shutdown, so the
+	// first is generous; a resume that has not left the shell after a few
+	// seconds most likely never started (a typo'd alias, a missing nn).
+	restartPollInterval = 250 * time.Millisecond
+	restartExitWait     = 15 * time.Second
+	restartResumeWait   = 5 * time.Second
 	// rebaseTimeout bounds EACH step of the rebase sequence (fetch, pull
 	// --rebase, push). A fetch or a force-push against a slow remote is the same
 	// order of work as a teardown, so it gets the same generous ceiling.
@@ -881,11 +890,17 @@ type actionConfig struct {
 	// /monitor-ci send-keys calls (see runSessionAction). serve sets it to
 	// monitorCIClearDelay; the zero value sends both back to back, which is what
 	// tests want so they never sleep.
-	clearDelay   time.Duration
-	token        string
-	bindHost     string
-	allowedHosts []string
-	inflight     *inflightSet
+	clearDelay time.Duration
+	// restartPoll / restartExitWait / restartResumeWait pace broadcast-restart's
+	// pane polling (see runRestart). serve sets them from the restart* constants;
+	// the zero values probe each pane exactly once, so tests never sleep.
+	restartPoll       time.Duration
+	restartExitWait   time.Duration
+	restartResumeWait time.Duration
+	token             string
+	bindHost          string
+	allowedHosts      []string
+	inflight          *inflightSet
 	// panes is the live tmux pane listing (shared with the peek) the broadcast
 	// uses to skip rows whose pane has died; nil lists nothing and skips none.
 	panes *paneCache
@@ -1010,14 +1025,18 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 	}
 
 	// broadcast-reload sends /reload-plugins to every eligible roster row at
-	// once. It takes no session_id: the targets are re-derived here from a fresh
-	// roster (never from the client), minus rows whose tmux pane has died (they
-	// would only report "can't find pane"), and every pane still passes
-	// paneIDRe. One lock for the broadcast itself keeps two from interleaving;
-	// each send also takes its row's session lock, so it cannot race a per-row
-	// action.
-	if action == "broadcast-reload" {
-		const broadcastLock = "broadcast:reload-plugins"
+	// once; broadcast-restart exits and resumes every eligible row's claude. They
+	// take no session_id: the targets are re-derived here from a fresh roster
+	// (never from the client), minus rows whose tmux pane has died (they would
+	// only report "can't find pane"), and every pane still passes paneIDRe. One
+	// lock per broadcast kind keeps two of a kind from interleaving; each send
+	// also takes its row's session lock, so it cannot race a per-row action or
+	// the other broadcast.
+	if action == "broadcast-reload" || action == "broadcast-restart" {
+		broadcastLock := "broadcast:reload-plugins"
+		if action == "broadcast-restart" {
+			broadcastLock = "broadcast:restart"
+		}
 		if !cfg.inflight.acquire(broadcastLock) {
 			http.Error(w, "broadcast already running", http.StatusConflict)
 			return
@@ -1029,7 +1048,11 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 			return
 		}
 		agents = dropDeadPanes(agents, cfg.panes.panes(now))
-		writeActionResult(w, broadcastReload(cfg, agents, r.FormValue("include_busy") == "true", now))
+		if action == "broadcast-restart" {
+			writeActionResult(w, broadcastRestart(cfg, agents, now))
+		} else {
+			writeActionResult(w, broadcastReload(cfg, agents, r.FormValue("include_busy") == "true", now))
+		}
 		return
 	}
 
@@ -1185,21 +1208,27 @@ func promptBlocked(status string) bool {
 	return false
 }
 
-// broadcastReload sends /reload-plugins to every eligible row in agents and
-// returns a one-line-per-row report, problems first. Rows sharing a pane (a
-// resumed or restarted agent leaves its old session on the roster) are sent to
-// once, via the newest session, which is the one actually running there. ok is
-// false iff a tmux send failed or timed out; skips are expected and do not fail
-// it. Each broadcast leaves one audit line, since it types into every agent at
-// once.
+// broadcastReload sends /reload-plugins to every eligible row in agents (see
+// broadcast). Each broadcast leaves one audit line, since it types into every
+// agent at once.
 func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool, now time.Time) actionResult {
-	var sent, skipped, errs int
-	defer func() {
-		fmt.Fprintf(auditw, "clodhopper serve: audit broadcast-reload ts=%s include_busy=%t sent=%d skipped=%d errors=%d\n",
-			now.UTC().Format(time.RFC3339), includeBusy, sent, skipped, errs)
-	}()
+	res, sent, skipped, errs := broadcast(cfg, agents,
+		func(a Agent) string { return reloadSkipReason(a, includeBusy) },
+		func(a Agent) actionResult { return runSessionAction(cfg.tmux, "reload-plugins", a.TmuxPane, a.Cwd, 0) })
+	fmt.Fprintf(auditw, "clodhopper serve: audit broadcast-reload ts=%s include_busy=%t sent=%d skipped=%d errors=%d\n",
+		now.UTC().Format(time.RFC3339), includeBusy, sent, skipped, errs)
+	return res
+}
+
+// broadcast runs send against every row in agents that skip has no reason to
+// pass over, and returns a one-line-per-row report, problems first. Rows
+// sharing a pane (a resumed or restarted agent leaves its old session on the
+// roster) are sent to once, via the newest session, which is the one actually
+// running there. Each send holds its row's session lock. ok is false iff a send
+// failed or timed out; skips are expected and do not fail it.
+func broadcast(cfg *actionConfig, agents []Agent, skip func(Agent) string, send func(Agent) actionResult) (res actionResult, sent, skipped, errs int) {
 	if len(agents) == 0 {
-		return actionResult{Output: "no sessions on the roster"}
+		return actionResult{Output: "no sessions on the roster"}, 0, 0, 0
 	}
 	newest := map[string]Agent{}
 	for _, a := range agents {
@@ -1207,13 +1236,12 @@ func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool, now ti
 			newest[a.TmuxPane] = a
 		}
 	}
-	res := actionResult{}
 	for _, a := range agents {
 		label := shortID(a.SessionID)
 		if name := cmp.Or(a.Branch, a.BranchGuess, a.TmuxSession); name != "" {
 			label = name + " " + label
 		}
-		reason := reloadSkipReason(a, includeBusy)
+		reason := skip(a)
 		if n, ok := newest[a.TmuxPane]; reason == "" && ok && n.SessionID != a.SessionID {
 			reason = "same pane as newer session " + shortID(n.SessionID)
 		}
@@ -1226,7 +1254,7 @@ func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool, now ti
 			res.Rows = append(res.Rows, reportRow{Result: "skipped", Target: label, Reason: reason})
 			continue
 		}
-		r := runSessionAction(cfg.tmux, "reload-plugins", a.TmuxPane, a.Cwd, 0)
+		r := send(a)
 		cfg.inflight.release(lock)
 		if r.ExitCode != 0 || r.TimedOut {
 			res.ExitCode = -1
@@ -1251,7 +1279,114 @@ func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool, now ti
 		out.WriteString("\n")
 	}
 	res.Output = strings.TrimRight(out.String(), "\n")
+	return res, sent, skipped, errs
+}
+
+// sessionIDRe is the shape a session id must have before it joins the resume
+// command line: a lowercase UUID, which is what Claude Code issues. The id comes
+// from a stored hook payload, so like branchNameRe for rebase this is defence in
+// depth against a crafted one smuggling options or shell syntax into the pane.
+var sessionIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// shellCommands are the pane foreground commands that mean claude has exited
+// and the pane is back at its shell. Anything else (claude itself, node, a
+// wrapper) fails closed: the restart keeps waiting and then gives up.
+var shellCommands = map[string]bool{"bash": true, "zsh": true, "fish": true, "sh": true}
+
+// restartSkipReason says why broadcast-restart must NOT exit and resume a
+// roster row, or "" when it should. Stricter than reload: /exit kills the
+// process, so only a row with nothing in flight is a target — mid-turn work,
+// background work and running subagents would all be lost. Everything that
+// reaches the resume argv (session id, and the cwd the pane must be in) is
+// checked HERE, before /exit is sent, so a row we could not resume is never
+// killed. Unknown statuses fail closed.
+func restartSkipReason(a Agent) string {
+	if !paneIDRe.MatchString(a.TmuxPane) {
+		return "not in tmux — restart manually"
+	}
+	if promptBlocked(a.Status) {
+		return promptBlockedReason
+	}
+	switch a.Status {
+	case statusIdle, statusWaiting:
+	case statusWorking:
+		return "working — its turn would be cut off"
+	case statusBackground:
+		return "waiting on background work — it would be lost"
+	case statusSubagents:
+		return "waiting on agents — /exit would kill them"
+	default:
+		return "status " + strconv.Quote(a.Status) + " — not restarted"
+	}
+	if !sessionIDRe.MatchString(a.SessionID) {
+		return "session id is not a UUID — restart manually"
+	}
+	if !filepath.IsAbs(a.Cwd) {
+		return "no working directory recorded — restart manually"
+	}
+	return ""
+}
+
+// broadcastRestart exits and resumes claude in every eligible row (see
+// restartSkipReason and runRestart), with one audit line per broadcast.
+func broadcastRestart(cfg *actionConfig, agents []Agent, now time.Time) actionResult {
+	res, sent, skipped, errs := broadcast(cfg, agents, restartSkipReason,
+		func(a Agent) actionResult { return runRestart(cfg, a) })
+	fmt.Fprintf(auditw, "clodhopper serve: audit broadcast-restart ts=%s sent=%d skipped=%d errors=%d\n",
+		now.UTC().Format(time.RFC3339), sent, skipped, errs)
 	return res
+}
+
+// runRestart sends /exit into a's pane, waits for the pane to drop back to a
+// shell, checks that shell is in a's worktree, then types the resume command.
+// The resume is the FIXED string `nn claude --resume <id>`, the id validated by
+// restartSkipReason; never --continue or --fork-session, which would pick or
+// mint a different session. A pane that never reaches a shell, or reaches one
+// somewhere else, gets nothing more typed into it: a cd is never interpolated.
+// Finally it waits for claude to take the pane over, so a resume that silently
+// failed to start is reported rather than counted as sent.
+func runRestart(cfg *actionConfig, a Agent) actionResult {
+	pane := a.TmuxPane
+	if _, res := runTmux(cfg.tmux, a.Cwd, []string{"send-keys", "-t", pane, "/exit", "Enter"}, tmuxTimeout); res.ExitCode != 0 || res.TimedOut {
+		return res
+	}
+	if !pollShell(cfg, pane, a.Cwd, true, cfg.restartExitWait) {
+		return actionResult{ExitCode: -1, Output: "never returned to a shell after /exit — nothing more sent"}
+	}
+	path, res := runTmux(cfg.tmux, a.Cwd, []string{"display-message", "-p", "-t", pane, "#{pane_current_path}"}, tmuxTimeout)
+	if res.ExitCode != 0 || res.TimedOut {
+		return res
+	}
+	// cwdKey cleans and resolves symlinks, so two spellings of one worktree match.
+	if path = strings.TrimSpace(path); path == "" || cwdKey(path) != cwdKey(a.Cwd) {
+		return actionResult{ExitCode: -1, Output: "exited, but the shell is in " + strconv.Quote(path) + ", not the session's worktree — resume manually"}
+	}
+	if _, res := runTmux(cfg.tmux, a.Cwd, []string{"send-keys", "-t", pane, "nn claude --resume " + a.SessionID, "Enter"}, tmuxTimeout); res.ExitCode != 0 || res.TimedOut {
+		return res
+	}
+	if !pollShell(cfg, pane, a.Cwd, false, cfg.restartResumeWait) {
+		return actionResult{ExitCode: -1, Output: "exited but did not resume — check the pane"}
+	}
+	return actionResult{}
+}
+
+// pollShell reads pane's foreground command every cfg.restartPoll until
+// whether it is a shell equals atShell, giving up after wait. A failed or empty
+// read never counts as a match either way, so a tmux error cannot pass for an exit
+// or a resume. Wall-clock bounded, like rebase's budget: wait is a real-time
+// ceiling, not something a test fakes through an injected now.
+func pollShell(cfg *actionConfig, pane, dir string, atShell bool, wait time.Duration) bool {
+	deadline := time.Now().Add(wait)
+	for {
+		out, res := runTmux(cfg.tmux, dir, []string{"display-message", "-p", "-t", pane, "#{pane_current_command}"}, tmuxTimeout)
+		if cmd := strings.TrimSpace(out); res.ExitCode == 0 && !res.TimedOut && cmd != "" && shellCommands[cmd] == atShell {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return false
+		}
+		time.Sleep(cfg.restartPoll)
+	}
 }
 
 // endSession marks one dashboard session ended and returns the actionResult the

@@ -322,16 +322,19 @@ func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool
 		repos: newRepoCache(), bindHost: host, allowedHosts: allowed,
 	}
 	act := &actionConfig{
-		enabled:      enableMerge,
-		mergePR:      "merge-pr",
-		gh:           "gh",
-		tmux:         "tmux",
-		git:          "git",
-		clearDelay:   monitorCIClearDelay,
-		bindHost:     host,
-		allowedHosts: allowed,
-		inflight:     newInflightSet(),
-		panes:        peek.cache,
+		enabled:           enableMerge,
+		mergePR:           "merge-pr",
+		gh:                "gh",
+		tmux:              "tmux",
+		git:               "git",
+		clearDelay:        monitorCIClearDelay,
+		restartPoll:       restartPollInterval,
+		restartExitWait:   restartExitWait,
+		restartResumeWait: restartResumeWait,
+		bindHost:          host,
+		allowedHosts:      allowed,
+		inflight:          newInflightSet(),
+		panes:             peek.cache,
 	}
 	return peek, act
 }
