@@ -29,3 +29,37 @@ jobs:
         # CGO is required by the go-sqlite3 driver; gcc is preinstalled on
         # ubuntu-latest so the default CGO_ENABLED=1 is sufficient.
         run: go test ./...
+
+  e2e:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: e2e
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Playwright
+        run: npx playwright test
+
+      - uses: actions/upload-artifact@v7.0.2
+        if: failure()
+        with:
+          name: playwright-report
+          path: e2e/playwright-report/
