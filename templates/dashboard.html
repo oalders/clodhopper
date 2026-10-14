@@ -75,15 +75,16 @@
     }
 
     /* --- Base --------------------------------------------------------------
-       The page background lives on <html> so the 1480px centered body never
+       The page background lives on <html> so the 1920px centered body never
        leaves an unpainted gutter on a wide screen. The width is generous so the
-       session column has room to show full names without truncating. */
+       session column has room to show full names without truncating; the side
+       padding stays slim because below the cap it comes out of that column. */
     * { box-sizing: border-box; }
     html { background: var(--bg); color: var(--text-1); -webkit-text-size-adjust: 100%; }
     body {
-      max-width: 1480px;
+      max-width: 1920px;
       margin: 0 auto;
-      padding: 22px 44px 40px;
+      padding: 22px 22px 40px;
       font-family: var(--font-mono);
       font-size: var(--fs-base);
       line-height: 1.35;
