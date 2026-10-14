@@ -442,7 +442,6 @@ Runtime data lives under `var/` (gitignored).
 ### Testing
 
 ```bash
-go test ./...                             # Go unit tests (CGO); Node-free
 cd e2e && npm ci && npx playwright test   # rendered-page layout + behavior tests
 ```
 

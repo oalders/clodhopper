@@ -13,6 +13,7 @@ test('theme toggle flips data-theme and persists across reload', async ({ page }
 
   await toggle.click();
   await expect(root).toHaveAttribute('data-theme', 'light');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
   expect(await storage(page, 'ch-theme')).toBe('light');
   await page.reload();
   await expect(root).toHaveAttribute('data-theme', 'light');
@@ -20,6 +21,7 @@ test('theme toggle flips data-theme and persists across reload', async ({ page }
 
   await toggle.click();
   await expect(root).toHaveAttribute('data-theme', 'dark');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
   await page.reload();
   await expect(root).toHaveAttribute('data-theme', 'dark');
   await expect(toggle).toHaveAttribute('aria-pressed', 'false');

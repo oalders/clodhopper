@@ -27,6 +27,14 @@ func TestE2ESeed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	// Fail closed before writing: a non-empty DB may be a real exported CLODHOPPER_DB.
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("CLODHOPPER_DB already holds %d rows; refusing to seed a non-empty DB", n)
+	}
 
 	now := time.Now()
 	// Cwds never exist, so serve's git/gh lookups find nothing.
@@ -76,11 +84,10 @@ func TestE2ESeed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	var n int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != len(evs) {
-		t.Fatalf("seeded %d rows, want %d (CLODHOPPER_DB must start empty)", n, len(evs))
+		t.Fatalf("seeded %d rows, want %d (short write)", n, len(evs))
 	}
 }

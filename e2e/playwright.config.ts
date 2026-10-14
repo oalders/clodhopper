@@ -16,6 +16,7 @@ export default defineConfig({
   use: { baseURL: `http://127.0.0.1:${port}`, browserName: 'chromium' },
   projects: [
     { name: 'desktop 1440', use: { viewport: { width: 1440, height: 900 } } },
+    // Narrowest table layout: dashboard.html's min-width: 641px breakpoint; 640 and below is cards.
     { name: 'narrowest table 641', use: { viewport: { width: 641, height: 900 } } },
     { name: 'phone 390', use: { viewport: { width: 390, height: 844 } } },
   ],

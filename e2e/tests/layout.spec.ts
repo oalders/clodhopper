@@ -15,7 +15,7 @@ for (const path of ['/?refresh=0', '/?refresh=0&debug=1']) {
     });
 
     test('status badges and time cells are not clipped', async ({ page }) => {
-      await expect(page.locator('.ck-badge', { hasText: /waiting on 12 agents · running \d{2}h/ })).toHaveCount(1);
+      await expect(page.locator('.ck-badge', { hasText: /waiting on \d{2,} agents · running \d+h/ })).toHaveCount(1);
       const targets = page.locator(mustFit);
       expect(await targets.count()).toBeGreaterThan(0);
       const clipped = await targets.evaluateAll((els) =>

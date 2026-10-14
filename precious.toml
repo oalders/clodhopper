@@ -38,7 +38,8 @@ lint-failure-exit-codes = [1]
 
 # go vet and golangci-lint operate on whole packages, not individual files, so
 # they run once over ./... regardless of which files matched. Both exit
-# non-zero on findings, which is all precious needs.
+# non-zero on findings, which is all precious needs. The e2eseed tag only adds
+# files, so it pulls the e2e seeder into both checks without dropping any.
 #
 # On a cold module cache the go toolchain prints "go: downloading ..." to
 # stderr while still exiting 0. precious otherwise treats any stderr as a
@@ -50,7 +51,7 @@ type                    = "lint"
 include                 = "**/*.go"
 invoke                  = "once"
 path-args               = "none"
-cmd                     = ["go", "vet", "./..."]
+cmd                     = ["go", "vet", "-tags", "e2eseed", "./..."]
 ok-exit-codes           = [0]
 lint-failure-exit-codes = [1]
 ignore-stderr           = ["^go: downloading "]
@@ -60,7 +61,7 @@ type                    = "lint"
 include                 = "**/*.go"
 invoke                  = "once"
 path-args               = "none"
-cmd                     = ["golangci-lint", "run"]
+cmd                     = ["golangci-lint", "run", "--build-tags", "e2eseed"]
 ok-exit-codes           = [0]
 lint-failure-exit-codes = [1]
 ignore-stderr           = ["^go: downloading "]
