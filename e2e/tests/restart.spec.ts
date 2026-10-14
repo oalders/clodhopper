@@ -3,7 +3,8 @@ import { test, expect } from './fixtures';
 
 // Runs only against serve.sh's --enable-merge server (the "exec desktop 1440"
 // project in playwright.config.ts). Every /api/action request is answered
-// here, so no test ever reaches the real handler and its tmux calls.
+// here, so no test ever reaches the real handler and its tmux calls; one a
+// test forgot to stub is aborted and fails that test (see beforeEach).
 
 // The envelope writeActionResult (action.go) sends for a broadcast: any error
 // row makes ok false and exitCode -1, rows arrive sorted error, skipped, sent
@@ -40,14 +41,31 @@ async function stubActions(page: Page): Promise<Request[]> {
   return seen;
 }
 
+// Requests to the exec endpoints that no test stub answered.
+let unstubbed: string[] = [];
+
 test.beforeEach(async ({ page }) => {
+  unstubbed = [];
+  // Registered first so it runs last: Playwright tries the newest matching
+  // route first, so a test's own stubActions still wins over this.
+  await page.route(
+    (url) => url.pathname === '/api/action' || url.pathname === '/api/pane',
+    (route) => {
+      unstubbed.push(route.request().url());
+      return route.abort();
+    },
+  );
   await page.goto('/?refresh=0');
+});
+
+test.afterEach(() => {
+  expect(unstubbed, 'exec endpoint requests with no stub').toEqual([]);
 });
 
 test('restart (all) arms on the first click, with a cancel and a caveat', async ({ page }) => {
   const posts = await stubActions(page);
   const btn = page.locator('#ck-restartall');
-  const group = btn.locator('xpath=..');
+  const group = page.locator('.actgroup', { has: btn });
   await expect(btn).toHaveText('restart (all)');
 
   await btn.click();
@@ -62,7 +80,7 @@ test('restart (all) arms on the first click, with a cancel and a caveat', async 
 test('Escape disarms restart (all) and puts focus back on it', async ({ page }) => {
   const posts = await stubActions(page);
   const btn = page.locator('#ck-restartall');
-  const group = btn.locator('xpath=..');
+  const group = page.locator('.actgroup', { has: btn });
   await btn.click();
   // From the injected cancel, which the disarm removes: the focus has to be
   // handed back, not left on <body>.
@@ -74,6 +92,21 @@ test('Escape disarms restart (all) and puts focus back on it', async ({ page }) 
   await expect(btn).toHaveText('restart (all)');
   await expect(cancel).toHaveCount(0);
   await expect(group.locator('.actmsg')).toHaveText('');
+  await expect(btn).toBeFocused();
+  expect(posts).toHaveLength(0);
+});
+
+test('the cancel button disarms restart (all) and puts focus back on it', async ({ page }) => {
+  const posts = await stubActions(page);
+  const btn = page.locator('#ck-restartall');
+  const group = page.locator('.actgroup', { has: btn });
+  await btn.click();
+
+  const cancel = group.getByRole('button', { name: 'cancel' });
+  await cancel.click();
+  await expect(group).not.toHaveClass(/\bconfirm\b/);
+  await expect(btn).toHaveText('restart (all)');
+  await expect(cancel).toHaveCount(0);
   await expect(btn).toBeFocused();
   expect(posts).toHaveLength(0);
 });

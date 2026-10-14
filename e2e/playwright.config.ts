@@ -11,13 +11,15 @@ const port = 9324;
 // restart.spec.ts needs the --enable-merge markup, so it gets its own server
 // rather than turning the write path on for every other spec.
 const execPort = 9325;
-const execSpec = /restart\.spec\.ts/;
+// Anchored: testMatch/testIgnore regexes run against the absolute file path.
+const execSpec = /(^|\/)restart\.spec\.ts$/;
 
 const server = (p: number, flags = '') => ({
   command: `./serve.sh ${p}${flags}`,
   url: `http://127.0.0.1:${p}/`,
   reuseExistingServer: false,
-  timeout: 120_000,
+  // Both servers compile cgo sqlite at once, which can outlast 120s on a cold CI runner.
+  timeout: 300_000,
   // SIGTERM (not the default SIGKILL) so serve.sh's trap removes its temp dir.
   gracefulShutdown: { signal: 'SIGTERM' as const, timeout: 5_000 },
 });
