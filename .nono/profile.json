@@ -1,1 +1,4 @@
-{"extends": ["oalders", "oalders-go", "oalders-node"]}
+{
+  "extends": ["oalders", "oalders-go", "oalders-node"],
+  "linux": { "sandbox_policy": "landlock" }
+}
