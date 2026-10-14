@@ -268,8 +268,8 @@ working rows, rows waiting on background work or subagents (they would be
 killed), and prompt-blocked rows are skipped, with no override. For each target
 it sends `/exit`, waits (up to ~15s, plus a few seconds if nono's review must be
 cancelled) for the pane to be back at a shell (`bash`,
-`zsh`, `fish` or `sh`) — if `nono` is still holding the pane with its exit-time
-denied-paths review, it sends a fixed Escape key to cancel that and waits again —
+`zsh`, `fish` or `sh`) — if `nono`'s exit-time denied-paths review is on
+screen instead, it sends a fixed Escape key to cancel that and waits again —
 then checks that shell is in the directory the session was
 launched from, then types `nn --resume <session id>` — never `--continue`
 or `--fork-session`. A pane that never reaches a shell, or whose shell is

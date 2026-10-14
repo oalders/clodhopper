@@ -1377,8 +1377,8 @@ func broadcastRestart(cfg *actionConfig, agents []Agent, now time.Time) actionRe
 
 // runRestart sends /exit into a's pane, waits for the pane to drop back to a
 // shell, checks that shell is in a's launch directory, then types the resume
-// command. If the pane is still held by nono (its exit-time denied-paths
-// review), it sends Escape to cancel that and waits for the shell again. A pane
+// command. If nono's exit-time denied-paths review is on screen instead, it
+// sends Escape to cancel that and waits for the shell again. A pane
 // already at a shell gets nothing: the roster row is stale and /exit would land
 // in the shell. The resume is the FIXED string `nn --resume <id>` (nn already
 // execs claude, so naming claude again would pass it as a prompt), the id
@@ -1399,14 +1399,17 @@ func runRestart(cfg *actionConfig, a Agent) actionResult {
 	}
 	if !pollShell(cfg, pane, dir, true, cfg.restartExitWait) {
 		// nono can hold the pane after claude exits with an interactive "Review
-		// denied paths" prompt; the fixed Escape key cancels it. Only nono gets it:
-		// a pane still running claude ignored /exit, and is left alone.
-		cmd, res := runTmux(cfg.tmux, dir, []string{"display-message", "-p", "-t", pane, "#{pane_current_command}"}, tmuxTimeout)
-		if res.ExitCode != 0 || res.TimedOut || strings.TrimSpace(cmd) != "nono" {
+		// denied paths" prompt. nn runs claude as a child of nono, so a pane
+		// command of "nono" cannot tell that prompt from a claude that ignored
+		// /exit — only the prompt text on screen can. Without it (or if the
+		// capture fails) nothing is typed: the running claude is left alone.
+		screen, res := runTmux(cfg.tmux, dir, []string{"capture-pane", "-p", "-t", pane}, tmuxTimeout)
+		if res.ExitCode != 0 || res.TimedOut || !strings.Contains(screen, "Review denied paths") {
 			return actionResult{ExitCode: -1, Output: "still running " + cfg.restartExitWait.String() + " after /exit (background shells/agents, or the wrapper didn't exit) — nothing more sent"}
 		}
-		// Assumes nono 0.79.0's review: Esc cancels and grants nothing, whereas
-		// Enter would confirm its default "grant" — so Escape is the only key sent.
+		// Checked against nono 0.79.0's review: Esc cancels and grants nothing,
+		// whereas Enter would confirm its default "grant" — so Escape is the only
+		// key sent.
 		if _, res := runTmux(cfg.tmux, dir, []string{"send-keys", "-t", pane, "Escape"}, tmuxTimeout); res.ExitCode != 0 || res.TimedOut {
 			return res
 		}

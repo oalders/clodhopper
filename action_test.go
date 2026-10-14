@@ -2910,12 +2910,15 @@ func TestRestartSkipReason(t *testing.T) {
 // restartStub is a fake tmux for broadcast-restart. It logs each call with
 // every argument bracketed, so a multi-word argument is visibly ONE argument,
 // answers pane_current_path with path, and pane_current_command with "claude"
-// for the first busyProbes reads (claude still shutting down), then atExit
-// until a resume has been typed and afterResume once it has.
+// until /exit and for the first busyProbes reads after it (claude still
+// shutting down), then atExit — or bash once Escape has been sent — until a
+// resume has been typed and afterResume once it has. capture-pane prints
+// logPath+".screen", which a test writes to put text on the pane.
 func restartStub(t *testing.T, busyProbes int, atExit, afterResume, path string) (bin, logPath string) {
 	t.Helper()
 	logPath = filepath.Join(t.TempDir(), "tmux.log")
 	bin = writeStub(t, "tmux", `printf '[%s]' "$@" >> '`+logPath+`'; echo >> '`+logPath+`'
+[ "$1" = capture-pane ] && { cat '`+logPath+`.screen' 2>/dev/null; exit 0; }
 case "$5" in
 '#{pane_current_path}') echo '`+path+`' ;;
 '#{pane_current_command}')
@@ -2927,6 +2930,15 @@ case "$5" in
 esac
 exit 0`)
 	return bin, logPath
+}
+
+// writeReviewScreen puts nono's exit-time denied-paths review on restartStub's
+// pane, as captured by capture-pane.
+func writeReviewScreen(t *testing.T, logPath string) {
+	t.Helper()
+	if err := os.WriteFile(logPath+".screen", []byte("nono: Review denied paths\n  Space cycle · a grant-all · d deny-all · Enter confirm · Esc cancel\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // runRestartBroadcast seeds one waiting session (restartUUID, pane %1, in dir)
@@ -3011,6 +3023,7 @@ func TestHandleActionBroadcastRestartNoShellSendsNoResume(t *testing.T) {
 func TestHandleActionBroadcastRestartCancelsNonoReview(t *testing.T) {
 	dir := t.TempDir()
 	stub, logPath := restartStub(t, 0, "nono", "claude", dir)
+	writeReviewScreen(t, logPath)
 	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
 	if !d.OK {
 		t.Fatalf("ok = false: %q", d.Output)
@@ -3019,8 +3032,8 @@ func TestHandleActionBroadcastRestartCancelsNonoReview(t *testing.T) {
 	want := []string{
 		probe,
 		"[send-keys][-t][%1][/exit][Enter]",
-		probe, // the exit wait: still nono
-		probe, // the one read that names nono
+		probe,                        // the exit wait: still nono
+		"[capture-pane][-p][-t][%1]", // the review is on screen
 		"[send-keys][-t][%1][Escape]",
 		probe,
 		"[display-message][-p][-t][%1][#{pane_current_path}]",
@@ -3089,6 +3102,20 @@ func TestHandleActionBroadcastRestartUsesLaunchCwd(t *testing.T) {
 	}
 }
 
+// nn runs claude under nono, so a claude that ignored /exit also reads as
+// "nono": with no review on screen, Escape must not be typed into it.
+func TestHandleActionBroadcastRestartNonoWithoutReviewSendsNoEscape(t *testing.T) {
+	dir := t.TempDir()
+	stub, logPath := restartStub(t, 0, "nono", "claude", dir)
+	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
+	if d.OK || !reportHas(d.Output, "error x feat-a "+shortID(restartUUID)+": still running 0s after /exit (background shells/agents, or the wrapper didn't exit) — nothing more sent") {
+		t.Fatalf("ok=%v report=%q, want the still-running error", d.OK, d.Output)
+	}
+	if slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "Escape") || strings.Contains(c, "--resume") }) {
+		t.Fatalf("tmux calls = %q, want no Escape and no resume", calls)
+	}
+}
+
 // Escape sent but nono's review still holds the pane: a distinct error, and
 // the resume is never typed.
 func TestHandleActionBroadcastRestartNonoReviewStaysOpen(t *testing.T) {
@@ -3097,6 +3124,7 @@ func TestHandleActionBroadcastRestartNonoReviewStaysOpen(t *testing.T) {
 	// Wrap the stub so the pane keeps reporting nono after Escape too.
 	stub := writeStub(t, "tmux-nonostuck", `if [ "$5" = '#{pane_current_command}' ] && grep -q '\[Escape\]' '`+logPath+`'; then printf '[%s]' "$@" >> '`+logPath+`'; echo >> '`+logPath+`'; echo nono; exit 0; fi
 exec '`+inner+`' "$@"`)
+	writeReviewScreen(t, logPath)
 	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
 	if d.OK || !reportHas(d.Output, "error x feat-a "+shortID(restartUUID)+": nono's denied-paths review still open after Escape — nothing more sent") {
 		t.Fatalf("ok=%v report=%q, want the review-still-open error", d.OK, d.Output)
