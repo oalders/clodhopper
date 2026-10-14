@@ -252,7 +252,8 @@ actions** that drive that pane directly (they do not touch a PR):
 
 A **reload plugins (all)** button above the roster sends `/reload-plugins` to
 every session at once and reports, per row, what it sent or skipped and why,
-with errors and skips listed first and highlighted.
+with errors and skips listed first and highlighted. Each row names the session
+by project, branch and short id, plus the directory it was launched from.
 The targets are re-derived server-side: rows not in tmux are listed for a manual
 reload, rows sharing a pane are sent to once (via the newest session), working
 rows are skipped unless **include working** is ticked, and a row blocked on a
@@ -265,7 +266,8 @@ way. Because `/exit` kills the process, it uses the two-step confirm and is
 stricter than reload: only **idle** and **waiting for you** rows are restarted;
 working rows, rows waiting on background work or subagents (they would be
 killed), and prompt-blocked rows are skipped, with no override. For each target
-it sends `/exit`, waits (up to ~15s) for the pane to be back at a shell (`bash`,
+it sends `/exit`, waits (up to ~15s, plus a few seconds if nono's review must be
+cancelled) for the pane to be back at a shell (`bash`,
 `zsh`, `fish` or `sh`) — if `nono` is still holding the pane with its exit-time
 denied-paths review, it sends a fixed Escape key to cancel that and waits again —
 then checks that shell is in the directory the session was

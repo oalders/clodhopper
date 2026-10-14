@@ -2368,7 +2368,7 @@
           .then(function (d) {
             if (!d.rows || !d.rows.length) { msg.textContent = d.output || (d.ok ? 'done' : 'failed'); return; }
             var counts = {}, order = ['error', 'skipped', 'sent'], summary = [];
-            var cols = ['result', 'target', 'reason'];
+            var cols = ['result', 'target', 'dir', 'reason'];
             var table = document.createElement('table');
             table.setAttribute('aria-label', label + ' results');
             var head = table.createTHead().insertRow();
@@ -2384,7 +2384,7 @@
               counts[r.result] = (counts[r.result] || 0) + 1;
               var tr = body.insertRow();
               tr.className = { error: 'fail', skipped: 'alert' }[r.result] || '';
-              [r.result, r.target, r.reason].forEach(function (v, i) {
+              [r.result, r.target, r.dir, r.reason].forEach(function (v, i) {
                 var td = tr.insertCell();
                 td.textContent = v;
                 td.dataset.label = cols[i]; // the ≤640px card layout prints this in place of the hidden thead

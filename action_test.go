@@ -2616,8 +2616,9 @@ func TestReloadSkipReason(t *testing.T) {
 
 // seedBroadcastRoster seeds one row per broadcast outcome: waiting (sent),
 // working (skipped unless include_busy), prompt-blocked (never sent), no pane,
-// and two sessions sharing pane %5 (only the newer one is sent to).
-func seedBroadcastRoster(t *testing.T) *sql.DB {
+// and two sessions sharing pane %5 (only the newer one is sent to), all
+// launched in the returned dir.
+func seedBroadcastRoster(t *testing.T) (*sql.DB, string) {
 	t.Helper()
 	db := openTestDB(t)
 	dir := t.TempDir()
@@ -2630,7 +2631,7 @@ func seedBroadcastRoster(t *testing.T) *sql.DB {
 	seed("2026-08-12T10:00:00Z", "nopane-1", "feat-d", "", "Stop")
 	seed("2026-08-12T09:00:00Z", "oldpane-1", "feat-e", "%5", "Stop")
 	seed("2026-08-12T09:30:00Z", "newpane-1", "feat-e", "%5", "Stop")
-	return db
+	return db, dir
 }
 
 // runBroadcast posts broadcast-reload against db with tmux stubbed by stub and
@@ -2663,7 +2664,7 @@ func reportHas(report, line string) bool {
 }
 
 func TestHandleActionBroadcastReload(t *testing.T) {
-	db := seedBroadcastRoster(t)
+	db, _ := seedBroadcastRoster(t)
 	var audit bytes.Buffer
 	old := auditw
 	auditw = &audit
@@ -2679,12 +2680,12 @@ func TestHandleActionBroadcastReload(t *testing.T) {
 		t.Fatalf("default sends = %q, want %q", sent, want)
 	}
 	for _, line := range []string{
-		"sent feat-a " + shortID("waiting-1"),
-		"skipped feat-b " + shortID("working-1") + ": working — retry, or include working",
-		"skipped feat-c " + shortID("prompt-1") + ": " + promptBlockedReason,
-		"skipped feat-d " + shortID("nopane-1") + ": not in tmux — reload manually",
-		"skipped feat-e " + shortID("oldpane-1") + ": same pane as newer session " + shortID("newpane-1"),
-		"sent feat-e " + shortID("newpane-1"),
+		"sent x feat-a " + shortID("waiting-1"),
+		"skipped x feat-b " + shortID("working-1") + ": working — retry, or include working",
+		"skipped x feat-c " + shortID("prompt-1") + ": " + promptBlockedReason,
+		"skipped x feat-d " + shortID("nopane-1") + ": not in tmux — reload manually",
+		"skipped x feat-e " + shortID("oldpane-1") + ": same pane as newer session " + shortID("newpane-1"),
+		"sent x feat-e " + shortID("newpane-1"),
 	} {
 		if !reportHas(report, line) {
 			t.Errorf("report missing %q:\n%s", line, report)
@@ -2699,7 +2700,7 @@ func TestHandleActionBroadcastReload(t *testing.T) {
 	if !slices.Contains(sent, "send-keys -t %2 /reload-plugins Enter") || slices.Contains(sent, "send-keys -t %3 /reload-plugins Enter") {
 		t.Fatalf("include_busy sends = %q, want working %%2 sent and prompt %%3 still skipped", sent)
 	}
-	if !reportHas(report, "sent feat-b "+shortID("working-1")) {
+	if !reportHas(report, "sent x feat-b "+shortID("working-1")) {
 		t.Errorf("include_busy report missing working send:\n%s", report)
 	}
 }
@@ -2707,7 +2708,9 @@ func TestHandleActionBroadcastReload(t *testing.T) {
 // One failed send fails the broadcast and is reported, but does not stop the
 // remaining eligible rows from being attempted.
 func TestHandleActionBroadcastReloadSendFails(t *testing.T) {
-	db := seedBroadcastRoster(t)
+	db, dir := seedBroadcastRoster(t)
+	// waiting-1 later cd'd elsewhere: its row's dir must stay the launch dir.
+	insertEvent(db, Event{TS: "2026-08-12T10:00:30Z", SourceApp: "x", SessionID: "waiting-1", Branch: "feat-a", Cwd: t.TempDir(), TmuxPane: "%1", EventType: "Stop", PayloadJSON: "{}"})
 	var audit bytes.Buffer
 	old := auditw
 	auditw = &audit
@@ -2721,17 +2724,18 @@ exit 0`)
 	if ok {
 		t.Fatalf("ok = true with a failed send: %q", report)
 	}
-	if !strings.Contains(report, "error feat-a "+shortID("waiting-1")+":") {
+	if !strings.Contains(report, "error x feat-a "+shortID("waiting-1")+":") {
 		t.Errorf("report missing the error line:\n%s", report)
 	}
-	// Problems first so the dashboard shows them without scrolling.
+	// Problems first so the dashboard shows them without scrolling. Targets lead
+	// with the project (SourceApp "x"); dir is each session's launch dir.
 	wantRows := []reportRow{
-		{Result: "error", Target: "feat-a " + shortID("waiting-1"), Reason: "no such pane TOKEN=" + redacted},
-		{Result: "skipped", Target: "feat-b " + shortID("working-1"), Reason: "working — retry, or include working"},
-		{Result: "skipped", Target: "feat-c " + shortID("prompt-1"), Reason: promptBlockedReason},
-		{Result: "skipped", Target: "feat-d " + shortID("nopane-1"), Reason: "not in tmux — reload manually"},
-		{Result: "skipped", Target: "feat-e " + shortID("oldpane-1"), Reason: "same pane as newer session " + shortID("newpane-1")},
-		{Result: "sent", Target: "feat-e " + shortID("newpane-1")},
+		{Result: "error", Target: "x feat-a " + shortID("waiting-1"), Dir: dir, Reason: "no such pane TOKEN=" + redacted},
+		{Result: "skipped", Target: "x feat-b " + shortID("working-1"), Dir: dir, Reason: "working — retry, or include working"},
+		{Result: "skipped", Target: "x feat-c " + shortID("prompt-1"), Dir: dir, Reason: promptBlockedReason},
+		{Result: "skipped", Target: "x feat-d " + shortID("nopane-1"), Dir: dir, Reason: "not in tmux — reload manually"},
+		{Result: "skipped", Target: "x feat-e " + shortID("oldpane-1"), Dir: dir, Reason: "same pane as newer session " + shortID("newpane-1")},
+		{Result: "sent", Target: "x feat-e " + shortID("newpane-1"), Dir: dir},
 	}
 	if !slices.Equal(rows, wantRows) {
 		t.Errorf("rows = %q, want %q", rows, wantRows)
@@ -2976,8 +2980,8 @@ func TestHandleActionBroadcastRestart(t *testing.T) {
 		t.Fatalf("tmux calls = %q, want %q", calls, want)
 	}
 	for _, line := range []string{
-		"sent feat-a " + shortID(restartUUID),
-		"skipped feat-b " + shortID(restartUUID2) + ": working — its turn would be cut off",
+		"sent x feat-a " + shortID(restartUUID),
+		"skipped x feat-b " + shortID(restartUUID2) + ": working — its turn would be cut off",
 	} {
 		if !reportHas(d.Output, line) {
 			t.Errorf("report missing %q:\n%s", line, d.Output)
@@ -2994,7 +2998,7 @@ func TestHandleActionBroadcastRestartNoShellSendsNoResume(t *testing.T) {
 	dir := t.TempDir()
 	stub, logPath := restartStub(t, 0, "claude", "claude", dir)
 	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
-	if d.OK || !reportHas(d.Output, "error feat-a "+shortID(restartUUID)+": still running 0s after /exit (background shells/agents, or the wrapper didn't exit) — nothing more sent") {
+	if d.OK || !reportHas(d.Output, "error x feat-a "+shortID(restartUUID)+": still running 0s after /exit (background shells/agents, or the wrapper didn't exit) — nothing more sent") {
 		t.Fatalf("ok=%v report=%q, want the no-shell error", d.OK, d.Output)
 	}
 	if want := "[send-keys][-t][%1][/exit][Enter]"; calls[1] != want || slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "--resume") || strings.Contains(c, "Escape") }) {
@@ -3036,7 +3040,7 @@ func TestHandleActionBroadcastRestartExitSendFailsSendsNoResume(t *testing.T) {
 	stub = writeStub(t, "tmux-exitfail", `printf '[%s]' "$@" | grep -q '\[/exit\]' && { printf '[%s]' "$@" >> '`+logPath+`'; echo >> '`+logPath+`'; echo "can't find pane" >&2; exit 1; }
 exec '`+stub+`' "$@"`)
 	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
-	if d.OK || !strings.Contains(d.Output, "error feat-a "+shortID(restartUUID)) {
+	if d.OK || !strings.Contains(d.Output, "error x feat-a "+shortID(restartUUID)) {
 		t.Fatalf("ok=%v report=%q, want an error for the failed /exit", d.OK, d.Output)
 	}
 	if want := "[send-keys][-t][%1][/exit][Enter]"; len(calls) != 2 || calls[1] != want {
@@ -3051,7 +3055,7 @@ func TestHandleActionBroadcastRestartAlreadyAtShellSendsNothing(t *testing.T) {
 	logPath := filepath.Join(t.TempDir(), "tmux.log")
 	stub := writeStub(t, "tmux", `printf '[%s]' "$@" >> '`+logPath+`'; echo >> '`+logPath+`'; echo bash`)
 	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
-	if d.OK || !reportHas(d.Output, "error feat-a "+shortID(restartUUID)+": Claude isn't running in this pane (it's at a shell) — nothing sent") {
+	if d.OK || !reportHas(d.Output, "error x feat-a "+shortID(restartUUID)+": Claude isn't running in this pane (it's at a shell) — nothing sent") {
 		t.Fatalf("ok=%v report=%q, want the already-at-shell error", d.OK, d.Output)
 	}
 	if want := []string{"[display-message][-p][-t][%1][#{pane_current_command}]"}; !slices.Equal(calls, want) {
@@ -3065,7 +3069,7 @@ func TestHandleActionBroadcastRestartCwdMismatchSendsNoResume(t *testing.T) {
 	dir := t.TempDir()
 	stub, logPath := restartStub(t, 0, "bash", "claude", t.TempDir())
 	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
-	if d.OK || !strings.Contains(d.Output, "error feat-a "+shortID(restartUUID)+": exited, but the shell is in ") {
+	if d.OK || !strings.Contains(d.Output, "error x feat-a "+shortID(restartUUID)+": exited, but the shell is in ") {
 		t.Fatalf("ok=%v report=%q, want the cwd-mismatch error", d.OK, d.Output)
 	}
 	if slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "--resume") || strings.Contains(c, "cd ") }) {
@@ -3085,13 +3089,30 @@ func TestHandleActionBroadcastRestartUsesLaunchCwd(t *testing.T) {
 	}
 }
 
+// Escape sent but nono's review still holds the pane: a distinct error, and
+// the resume is never typed.
+func TestHandleActionBroadcastRestartNonoReviewStaysOpen(t *testing.T) {
+	dir := t.TempDir()
+	inner, logPath := restartStub(t, 0, "nono", "claude", dir)
+	// Wrap the stub so the pane keeps reporting nono after Escape too.
+	stub := writeStub(t, "tmux-nonostuck", `if [ "$5" = '#{pane_current_command}' ] && grep -q '\[Escape\]' '`+logPath+`'; then printf '[%s]' "$@" >> '`+logPath+`'; echo >> '`+logPath+`'; echo nono; exit 0; fi
+exec '`+inner+`' "$@"`)
+	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
+	if d.OK || !reportHas(d.Output, "error x feat-a "+shortID(restartUUID)+": nono's denied-paths review still open after Escape — nothing more sent") {
+		t.Fatalf("ok=%v report=%q, want the review-still-open error", d.OK, d.Output)
+	}
+	if !slices.Contains(calls, "[send-keys][-t][%1][Escape]") || slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "--resume") }) {
+		t.Fatalf("tmux calls = %q, want Escape and no resume", calls)
+	}
+}
+
 // A resume typed into the shell that never takes the pane over (a broken nn
 // alias, say) is reported, not counted as restarted.
 func TestHandleActionBroadcastRestartStillAtShellIsError(t *testing.T) {
 	dir := t.TempDir()
 	stub, logPath := restartStub(t, 0, "fish", "fish", dir)
 	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
-	if d.OK || !reportHas(d.Output, "error feat-a "+shortID(restartUUID)+": exited but did not resume — check the pane") {
+	if d.OK || !reportHas(d.Output, "error x feat-a "+shortID(restartUUID)+": exited but did not resume — check the pane") {
 		t.Fatalf("ok=%v report=%q, want the did-not-resume error", d.OK, d.Output)
 	}
 	if !slices.Contains(calls, "[send-keys][-t][%1][nn --resume "+restartUUID+"][Enter]") {

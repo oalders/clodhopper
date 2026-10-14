@@ -102,11 +102,11 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   goes through `actionArgv`; its one varying argv element is the default branch,
   derived server-side from git refs and validated against `branchNameRe` before
   it can reach a command line. `broadcast-restart` is a separate path that never
-  reaches `actionArgv`: it types the fixed prefix `nn --resume ` plus the
-  session id into each pane via tmux send-keys (plus, when nono still holds the
-  pane after `/exit`, a fixed Escape key to cancel its denied-paths review); the id comes from a fresh `agentRoster()` call inside
-  the request (never client input) and must match `sessionIDRe` (a UUID) before
-  `/exit` is even sent.)
+  reaches `actionArgv`: it sends `/exit`, then — only if nono still holds the
+  pane — a fixed Escape key to cancel its denied-paths review, then types the
+  fixed prefix `nn --resume ` plus the session id, all via tmux send-keys; the id
+  comes from a fresh `agentRoster()` call inside the request (never client input)
+  and must match `sessionIDRe` (a UUID) before `/exit` is even sent.)
 
 ### Other conventions
 

@@ -125,6 +125,7 @@ type actionResult struct {
 type reportRow struct {
 	Result string `json:"result"` // sent, skipped or error
 	Target string `json:"target"`
+	Dir    string `json:"dir"` // the session's launch directory, so a row says where on disk
 	Reason string `json:"reason"`
 }
 
@@ -476,7 +477,8 @@ const (
 	// restartPollInterval is how often broadcast-restart re-reads a pane's
 	// foreground command; restartExitWait bounds the wait for /exit to drop the
 	// pane back to its shell, restartResumeWait the wait for the resumed claude
-	// to take it over again. Exiting can flush hooks and MCP shutdown, so the
+	// to take it over again (and for the shell after Escape cancels nono's
+	// denied-paths review). Exiting can flush hooks and MCP shutdown, so the
 	// first is generous; a resume that has not left the shell after a few
 	// seconds most likely never started (a typo'd alias, a missing nn).
 	restartPollInterval = 250 * time.Millisecond
@@ -1247,10 +1249,15 @@ func broadcast(cfg *actionConfig, agents []Agent, skip func(Agent) string, send 
 	}
 	var targets []target
 	for _, a := range agents {
-		label := shortID(a.SessionID)
-		if name := cmp.Or(a.Branch, a.BranchGuess, a.TmuxSession); name != "" {
-			label = name + " " + label
+		// Project, then branch, then session: a bare branch like "main" does not
+		// say which repo the row is.
+		var parts []string
+		for _, p := range []string{a.SourceApp, cmp.Or(a.Branch, a.BranchGuess, a.TmuxSession), shortID(a.SessionID)} {
+			if p != "" {
+				parts = append(parts, p)
+			}
 		}
+		label := strings.Join(parts, " ")
 		reason := skip(a)
 		if n, ok := newest[a.TmuxPane]; reason == "" && ok && n.SessionID != a.SessionID {
 			reason = "same pane as newer session " + shortID(n.SessionID)
@@ -1261,7 +1268,7 @@ func broadcast(cfg *actionConfig, agents []Agent, skip func(Agent) string, send 
 		}
 		if reason != "" {
 			skipped++
-			res.Rows = append(res.Rows, reportRow{Result: "skipped", Target: label, Reason: reason})
+			res.Rows = append(res.Rows, reportRow{Result: "skipped", Target: label, Dir: a.launchCwd(), Reason: reason})
 			continue
 		}
 		targets = append(targets, target{a: a, label: label, lock: lock})
@@ -1281,11 +1288,11 @@ func broadcast(cfg *actionConfig, agents []Agent, skip func(Agent) string, send 
 		if r := results[i]; r.ExitCode != 0 || r.TimedOut {
 			res.ExitCode = -1
 			errs++
-			res.Rows = append(res.Rows, reportRow{Result: "error", Target: tg.label, Reason: strings.TrimSpace(r.Output)})
+			res.Rows = append(res.Rows, reportRow{Result: "error", Target: tg.label, Dir: tg.a.launchCwd(), Reason: strings.TrimSpace(r.Output)})
 			continue
 		}
 		sent++
-		res.Rows = append(res.Rows, reportRow{Result: "sent", Target: tg.label})
+		res.Rows = append(res.Rows, reportRow{Result: "sent", Target: tg.label, Dir: tg.a.launchCwd()})
 	}
 	// Problems first, so the rows needing a look are never below the fold.
 	rank := map[string]int{"error": 0, "skipped": 1, "sent": 2}
@@ -1370,7 +1377,8 @@ func broadcastRestart(cfg *actionConfig, agents []Agent, now time.Time) actionRe
 
 // runRestart sends /exit into a's pane, waits for the pane to drop back to a
 // shell, checks that shell is in a's launch directory, then types the resume
-// command. A pane already at a shell gets nothing: the roster row is stale and
+// command. If the pane is still held by nono (its exit-time denied-paths
+// review), it sends Escape to cancel that and waits for the shell again. A pane already at a shell gets nothing: the roster row is stale and
 // /exit would land in the shell. The resume is the FIXED string
 // `nn --resume <id>` (nn already execs claude, so naming claude again would pass
 // it as a prompt), the id validated by
@@ -1395,13 +1403,15 @@ func runRestart(cfg *actionConfig, a Agent) actionResult {
 		// a pane still running claude ignored /exit, and is left alone.
 		cmd, res := runTmux(cfg.tmux, dir, []string{"display-message", "-p", "-t", pane, "#{pane_current_command}"}, tmuxTimeout)
 		if res.ExitCode != 0 || res.TimedOut || strings.TrimSpace(cmd) != "nono" {
-			return restartStuck(cfg)
+			return actionResult{ExitCode: -1, Output: "still running " + cfg.restartExitWait.String() + " after /exit (background shells/agents, or the wrapper didn't exit) — nothing more sent"}
 		}
+		// Assumes nono 0.79.0's review: Esc cancels and grants nothing, whereas
+		// Enter would confirm its default "grant" — so Escape is the only key sent.
 		if _, res := runTmux(cfg.tmux, dir, []string{"send-keys", "-t", pane, "Escape"}, tmuxTimeout); res.ExitCode != 0 || res.TimedOut {
 			return res
 		}
 		if !pollShell(cfg, pane, dir, true, cfg.restartResumeWait) {
-			return restartStuck(cfg)
+			return actionResult{ExitCode: -1, Output: "nono's denied-paths review still open after Escape — nothing more sent"}
 		}
 	}
 	path, res := runTmux(cfg.tmux, dir, []string{"display-message", "-p", "-t", pane, "#{pane_current_path}"}, tmuxTimeout)
@@ -1419,11 +1429,6 @@ func runRestart(cfg *actionConfig, a Agent) actionResult {
 		return actionResult{ExitCode: -1, Output: "exited but did not resume — check the pane"}
 	}
 	return actionResult{}
-}
-
-// restartStuck is runRestart's error for a pane that never got back to a shell.
-func restartStuck(cfg *actionConfig) actionResult {
-	return actionResult{ExitCode: -1, Output: "still running " + cfg.restartExitWait.String() + " after /exit (background shells/agents, or the wrapper didn't exit) — nothing more sent"}
 }
 
 // pollShell reads pane's foreground command every cfg.restartPoll until
@@ -1486,7 +1491,7 @@ func writeActionResult(w http.ResponseWriter, res actionResult) {
 	if res.Rows != nil {
 		rows := make([]reportRow, len(res.Rows))
 		for i, r := range res.Rows {
-			rows[i] = reportRow{Result: r.Result, Target: scrubString(r.Target), Reason: scrubString(r.Reason)}
+			rows[i] = reportRow{Result: r.Result, Target: scrubString(r.Target), Dir: scrubString(r.Dir), Reason: scrubString(r.Reason)}
 		}
 		body["rows"] = rows
 	}
