@@ -681,6 +681,18 @@ func TestHandleDashboard_TitleIsHostname(t *testing.T) {
 	}
 }
 
+// The dashboard must load nothing from a third party (#58): a CDN fetch leaks the
+// operator's IP and blocks render. Navigation links (e.g. to GitHub) are fine.
+func TestHandleDashboard_LoadsNoThirdPartyResources(t *testing.T) {
+	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
+	defer db.Close()
+	body := getBody(t, db, "/")
+	external := regexp.MustCompile(`(?i)(@import|url\(|src=|<link[^>]*href=)\s*['"]?(https?:)?//`)
+	if m := external.FindString(body); m != "" {
+		t.Errorf("dashboard loads a third-party resource: %q", m)
+	}
+}
+
 func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()

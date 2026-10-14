@@ -19,11 +19,6 @@
     })();
   </script>
   <style>
-    /* JetBrains Mono is the design system's chosen face. It is loaded from a CDN
-       and degrades silently to the system mono stack when offline (this tool
-       usually serves on 127.0.0.1), so the dashboard never blocks on the font. */
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap');
-
     /* The UA `[hidden] { display: none }` rule is weaker than ANY author `display`
        rule regardless of specificity — origin outranks specificity — so the mobile
        `tr { display: flex }` card layout below silently defeats it, leaving a
@@ -38,6 +33,7 @@
        (font, sizes, radii, spacing, motion) live once on :root. Every value is
        lifted verbatim from the clodhopper Design System tokens. */
     :root {
+      /* No web font: a CDN fetch leaks the operator's IP, so JetBrains Mono is used only if installed locally. */
       --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
       --fs-2xs: 10px; --fs-xs: 11px; --fs-sm: 12px; --fs-base: 13px; --fs-md: 14px;
       --fs-lg: 16px; --fs-xl: 20px; --fs-2xl: 26px;
