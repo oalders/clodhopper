@@ -2932,11 +2932,35 @@ exit 0`)
 	return bin, logPath
 }
 
+func TestNonoReviewOnScreen(t *testing.T) {
+	const (
+		title = "  [nono] Review denied paths"
+		hints = "  move · Space cycle · a grant-all · d deny-all · Enter confirm · Esc cancel"
+		box   = "────────────────────"
+	)
+	lines := func(l ...string) string { return strings.Join(l, "\n") + "\n" }
+	for _, c := range []struct {
+		name, screen string
+		want         bool
+	}{
+		// claude's last frame, input box included, stays above nono's review.
+		{"real layout", lines("● done", box, "> ", box, "", title, "  /home/x/.cache", hints), true},
+		{"quoted above a live input box", lines(title, hints, box, "> ", box), false},
+		{"no Esc cancel hint", lines(box, "> ", box, title, "  /home/x/.cache"), false},
+		{"in a tool-output gutter", lines("  ⎿  [nono] Review denied paths", hints), false},
+		{"empty", "", false},
+	} {
+		if got := nonoReviewOnScreen(c.screen); got != c.want {
+			t.Errorf("%s: nonoReviewOnScreen = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 // writeReviewScreen puts nono's exit-time denied-paths review on restartStub's
 // pane, as captured by capture-pane.
 func writeReviewScreen(t *testing.T, logPath string) {
 	t.Helper()
-	if err := os.WriteFile(logPath+".screen", []byte("nono: Review denied paths\n  Space cycle · a grant-all · d deny-all · Enter confirm · Esc cancel\n"), 0o600); err != nil {
+	if err := os.WriteFile(logPath+".screen", []byte("  [nono] Review denied paths\n  Space cycle · a grant-all · d deny-all · Enter confirm · Esc cancel\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

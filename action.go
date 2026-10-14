@@ -1401,10 +1401,10 @@ func runRestart(cfg *actionConfig, a Agent) actionResult {
 		// nono can hold the pane after claude exits with an interactive "Review
 		// denied paths" prompt. nn runs claude as a child of nono, so a pane
 		// command of "nono" cannot tell that prompt from a claude that ignored
-		// /exit — only the prompt text on screen can. Without it (or if the
-		// capture fails) nothing is typed: the running claude is left alone.
+		// /exit — only the screen can (nonoReviewOnScreen). Unless the review is
+		// the last thing on it (or if the capture fails) nothing is typed.
 		screen, res := runTmux(cfg.tmux, dir, []string{"capture-pane", "-p", "-t", pane}, tmuxTimeout)
-		if res.ExitCode != 0 || res.TimedOut || !strings.Contains(screen, "Review denied paths") {
+		if res.ExitCode != 0 || res.TimedOut || !nonoReviewOnScreen(screen) {
 			return actionResult{ExitCode: -1, Output: "still running " + cfg.restartExitWait.String() + " after /exit (background shells/agents, or the wrapper didn't exit) — nothing more sent"}
 		}
 		// Checked against nono 0.79.0's review: Esc cancels and grants nothing,
@@ -1432,6 +1432,31 @@ func runRestart(cfg *actionConfig, a Agent) actionResult {
 		return actionResult{ExitCode: -1, Output: "exited but did not resume — check the pane"}
 	}
 	return actionResult{}
+}
+
+// nonoReviewOnScreen reports whether nono 0.79.0's denied-paths review is the
+// last thing on screen: its title line, its "Esc cancel" hint, and no claude
+// input box ("───" rule) drawn below it — so a live claude merely showing the
+// phrase (in a transcript, a diff, a tool-output gutter) never gets Escape.
+func nonoReviewOnScreen(screen string) bool {
+	lines := strings.Split(screen, "\n")
+	title := -1
+	for i, l := range lines {
+		if strings.HasPrefix(strings.TrimLeft(l, " "), "[nono] Review denied paths") {
+			title = i
+		}
+	}
+	if title < 0 {
+		return false
+	}
+	hint := false
+	for i, l := range lines[title:] {
+		if i > 0 && strings.Contains(l, "───") {
+			return false
+		}
+		hint = hint || strings.Contains(l, "Esc cancel")
+	}
+	return hint
 }
 
 // pollShell reads pane's foreground command every cfg.restartPoll until
