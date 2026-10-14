@@ -7,9 +7,6 @@
 # GoReleaser build output
 /dist/
 
-# Local sandbox tooling
-/.nono/
-
 # Design specs / scratch docs (local only, not committed)
 /docs/
 
