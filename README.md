@@ -266,10 +266,11 @@ stricter than reload: only **idle** and **waiting for you** rows are restarted;
 working rows, rows waiting on background work or subagents (they would be
 killed), and prompt-blocked rows are skipped, with no override. For each target
 it sends `/exit`, waits (up to ~15s) for the pane to be back at a shell (`bash`,
-`zsh`, `fish` or `sh`), checks that shell is in the session's recorded working
-directory, then types `nn claude --resume <session id>` — never `--continue`
+`zsh`, `fish` or `sh`), checks that shell is in the directory the session was
+launched from, then types `nn --resume <session id>` — never `--continue`
 or `--fork-session`. A pane that never reaches a shell, or whose shell is
-somewhere else, is reported as an error and nothing more is typed into it (no
+somewhere else, is reported as an error and nothing more is typed into it, and a
+pane already at a shell (a stale row) gets nothing at all (no
 `cd` is ever sent); a resume that has not left the shell after a few seconds is
 reported as "exited but did not resume". Only UUID session ids are restarted,
 and each run writes one audit line to serve's stderr.

@@ -202,7 +202,7 @@ func runTmux(tmuxBin, dir string, args []string, timeout time.Duration) (stdout 
 
 // runSessionAction executes one of the tmux session actions against a pane the
 // caller has already resolved server-side and validated with paneIDRe. The
-// command strings (/clear, /monitor-ci, /reload-plugins, nn claude) are FIXED
+// command strings (/clear, /monitor-ci, /reload-plugins, nn claude, nn --resume) are FIXED
 // constants; only pane ids vary, and any pane split-window emits is re-validated
 // before reuse.
 //
@@ -1343,10 +1343,19 @@ func restartSkipReason(a Agent) string {
 	if !sessionIDRe.MatchString(a.SessionID) {
 		return "session id is not a UUID — restart manually"
 	}
-	if !filepath.IsAbs(a.Cwd) {
+	if !filepath.IsAbs(a.launchCwd()) {
 		return "no working directory recorded — restart manually"
 	}
 	return ""
+}
+
+// launchCwd is where a was launched, falling back to its latest Cwd when the
+// roster did not record one (an Agent built outside agentRoster).
+func (a Agent) launchCwd() string {
+	if a.LaunchCwd != "" {
+		return a.LaunchCwd
+	}
+	return a.Cwd
 }
 
 // broadcastRestart exits and resumes claude in every eligible row (see
@@ -1360,33 +1369,41 @@ func broadcastRestart(cfg *actionConfig, agents []Agent, now time.Time) actionRe
 }
 
 // runRestart sends /exit into a's pane, waits for the pane to drop back to a
-// shell, checks that shell is in a's worktree, then types the resume command.
-// The resume is the FIXED string `nn claude --resume <id>`, the id validated by
+// shell, checks that shell is in a's launch directory, then types the resume
+// command. A pane already at a shell gets nothing: the roster row is stale and
+// /exit would land in the shell. The resume is the FIXED string
+// `nn --resume <id>` (nn already execs claude, so naming claude again would pass
+// it as a prompt), the id validated by
 // restartSkipReason; never --continue or --fork-session, which would pick or
 // mint a different session. A pane that never reaches a shell, or reaches one
 // somewhere else, gets nothing more typed into it: a cd is never interpolated.
 // Finally it waits for claude to take the pane over, so a resume that silently
 // failed to start is reported rather than counted as sent.
 func runRestart(cfg *actionConfig, a Agent) actionResult {
-	pane := a.TmuxPane
-	if _, res := runTmux(cfg.tmux, a.Cwd, []string{"send-keys", "-t", pane, "/exit", "Enter"}, tmuxTimeout); res.ExitCode != 0 || res.TimedOut {
+	// The launch dir, not the latest Cwd: `claude --resume` finds a session by
+	// where it was started, and a cd'd-into scratch dir may since be gone.
+	pane, dir := a.TmuxPane, a.launchCwd()
+	if pollShell(cfg, pane, dir, true, 0) {
+		return actionResult{ExitCode: -1, Output: "Claude isn't running in this pane (it's at a shell) — nothing sent"}
+	}
+	if _, res := runTmux(cfg.tmux, dir, []string{"send-keys", "-t", pane, "/exit", "Enter"}, tmuxTimeout); res.ExitCode != 0 || res.TimedOut {
 		return res
 	}
-	if !pollShell(cfg, pane, a.Cwd, true, cfg.restartExitWait) {
-		return actionResult{ExitCode: -1, Output: "never returned to a shell after /exit — nothing more sent"}
+	if !pollShell(cfg, pane, dir, true, cfg.restartExitWait) {
+		return actionResult{ExitCode: -1, Output: "still running " + cfg.restartExitWait.String() + " after /exit (background shells/agents, or the wrapper didn't exit) — nothing more sent"}
 	}
-	path, res := runTmux(cfg.tmux, a.Cwd, []string{"display-message", "-p", "-t", pane, "#{pane_current_path}"}, tmuxTimeout)
+	path, res := runTmux(cfg.tmux, dir, []string{"display-message", "-p", "-t", pane, "#{pane_current_path}"}, tmuxTimeout)
 	if res.ExitCode != 0 || res.TimedOut {
 		return res
 	}
 	// cwdKey cleans and resolves symlinks, so two spellings of one worktree match.
-	if path = strings.TrimSpace(path); path == "" || cwdKey(path) != cwdKey(a.Cwd) {
-		return actionResult{ExitCode: -1, Output: "exited, but the shell is in " + strconv.Quote(path) + ", not the session's worktree — resume manually"}
+	if path = strings.TrimSpace(path); path == "" || cwdKey(path) != cwdKey(dir) {
+		return actionResult{ExitCode: -1, Output: "exited, but the shell is in " + strconv.Quote(path) + ", not " + strconv.Quote(dir) + " where the session started — resume manually"}
 	}
-	if _, res := runTmux(cfg.tmux, a.Cwd, []string{"send-keys", "-t", pane, "nn claude --resume " + a.SessionID, "Enter"}, tmuxTimeout); res.ExitCode != 0 || res.TimedOut {
+	if _, res := runTmux(cfg.tmux, dir, []string{"send-keys", "-t", pane, "nn --resume " + a.SessionID, "Enter"}, tmuxTimeout); res.ExitCode != 0 || res.TimedOut {
 		return res
 	}
-	if !pollShell(cfg, pane, a.Cwd, false, cfg.restartResumeWait) {
+	if !pollShell(cfg, pane, dir, false, cfg.restartResumeWait) {
 		return actionResult{ExitCode: -1, Output: "exited but did not resume — check the pane"}
 	}
 	return actionResult{}

@@ -2916,7 +2916,8 @@ case "$5" in
 '#{pane_current_path}') echo '`+path+`' ;;
 '#{pane_current_command}')
   if grep -q -- --resume '`+logPath+`'; then echo `+afterResume+`
-  elif [ "$(grep -c pane_current_command '`+logPath+`')" -le `+strconv.Itoa(busyProbes)+` ]; then echo claude
+  elif ! grep -q '\[/exit\]' '`+logPath+`'; then echo claude
+  elif [ "$(sed -n '/\[\/exit\]/,$p' '`+logPath+`' | grep -c pane_current_command)" -le `+strconv.Itoa(busyProbes)+` ]; then echo claude
   else echo `+atExit+`; fi ;;
 esac
 exit 0`)
@@ -2959,10 +2960,11 @@ func TestHandleActionBroadcastRestart(t *testing.T) {
 	// The resume is ONE literal argument naming the exact session: never
 	// --continue (picks the newest session) or --fork-session (mints a new id).
 	want := []string{
+		"[display-message][-p][-t][%1][#{pane_current_command}]",
 		"[send-keys][-t][%1][/exit][Enter]",
 		"[display-message][-p][-t][%1][#{pane_current_command}]",
 		"[display-message][-p][-t][%1][#{pane_current_path}]",
-		"[send-keys][-t][%1][nn claude --resume " + restartUUID + "][Enter]",
+		"[send-keys][-t][%1][nn --resume " + restartUUID + "][Enter]",
 		"[display-message][-p][-t][%1][#{pane_current_command}]",
 	}
 	if !slices.Equal(calls, want) {
@@ -2987,10 +2989,10 @@ func TestHandleActionBroadcastRestartNoShellSendsNoResume(t *testing.T) {
 	dir := t.TempDir()
 	stub, logPath := restartStub(t, 0, "claude", "claude", dir)
 	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
-	if d.OK || !reportHas(d.Output, "error feat-a "+shortID(restartUUID)+": never returned to a shell after /exit — nothing more sent") {
+	if d.OK || !reportHas(d.Output, "error feat-a "+shortID(restartUUID)+": still running 0s after /exit (background shells/agents, or the wrapper didn't exit) — nothing more sent") {
 		t.Fatalf("ok=%v report=%q, want the no-shell error", d.OK, d.Output)
 	}
-	if want := "[send-keys][-t][%1][/exit][Enter]"; calls[0] != want || slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "--resume") }) {
+	if want := "[send-keys][-t][%1][/exit][Enter]"; calls[1] != want || slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "--resume") }) {
 		t.Fatalf("tmux calls = %q, want /exit and no resume", calls)
 	}
 }
@@ -3006,12 +3008,27 @@ exec '`+stub+`' "$@"`)
 	if d.OK || !strings.Contains(d.Output, "error feat-a "+shortID(restartUUID)) {
 		t.Fatalf("ok=%v report=%q, want an error for the failed /exit", d.OK, d.Output)
 	}
-	if want := "[send-keys][-t][%1][/exit][Enter]"; len(calls) != 1 || calls[0] != want {
-		t.Fatalf("tmux calls = %q, want only the failed /exit and no resume", calls)
+	if want := "[send-keys][-t][%1][/exit][Enter]"; len(calls) != 2 || calls[1] != want {
+		t.Fatalf("tmux calls = %q, want the probe, then only the failed /exit and no resume", calls)
 	}
 }
 
-// A shell that is not in the session's worktree is refused rather than cd'd:
+// A stale row whose pane is already a plain shell gets nothing typed: /exit
+// would land in the shell, and the resume would start a session nobody asked for.
+func TestHandleActionBroadcastRestartAlreadyAtShellSendsNothing(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "tmux.log")
+	stub := writeStub(t, "tmux", `printf '[%s]' "$@" >> '`+logPath+`'; echo >> '`+logPath+`'; echo bash`)
+	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
+	if d.OK || !reportHas(d.Output, "error feat-a "+shortID(restartUUID)+": Claude isn't running in this pane (it's at a shell) — nothing sent") {
+		t.Fatalf("ok=%v report=%q, want the already-at-shell error", d.OK, d.Output)
+	}
+	if want := []string{"[display-message][-p][-t][%1][#{pane_current_command}]"}; !slices.Equal(calls, want) {
+		t.Fatalf("tmux calls = %q, want only the probe %q", calls, want)
+	}
+}
+
+// A shell that is not in the session's launch directory is refused rather than cd'd:
 // resuming there would start claude against the wrong project.
 func TestHandleActionBroadcastRestartCwdMismatchSendsNoResume(t *testing.T) {
 	dir := t.TempDir()
@@ -3034,7 +3051,7 @@ func TestHandleActionBroadcastRestartStillAtShellIsError(t *testing.T) {
 	if d.OK || !reportHas(d.Output, "error feat-a "+shortID(restartUUID)+": exited but did not resume — check the pane") {
 		t.Fatalf("ok=%v report=%q, want the did-not-resume error", d.OK, d.Output)
 	}
-	if !slices.Contains(calls, "[send-keys][-t][%1][nn claude --resume "+restartUUID+"][Enter]") {
+	if !slices.Contains(calls, "[send-keys][-t][%1][nn --resume "+restartUUID+"][Enter]") {
 		t.Fatalf("tmux calls = %q, want the resume sent", calls)
 	}
 }
@@ -3049,11 +3066,11 @@ func TestHandleActionBroadcastRestartPollsUntilShell(t *testing.T) {
 		t.Fatalf("ok = false: %q", d.Output)
 	}
 	probe := "[display-message][-p][-t][%1][#{pane_current_command}]"
-	resume := slices.Index(calls, "[send-keys][-t][%1][nn claude --resume "+restartUUID+"][Enter]")
+	resume := slices.Index(calls, "[send-keys][-t][%1][nn --resume "+restartUUID+"][Enter]")
 	if resume < 0 {
 		t.Fatalf("tmux calls = %q, want the resume sent", calls)
 	}
-	if n := len(slices.DeleteFunc(slices.Clone(calls[:resume]), func(c string) bool { return c != probe })); n != 3 {
-		t.Fatalf("probed %d times before resuming, want 3 (two busy, then the shell): %q", n, calls)
+	if n := len(slices.DeleteFunc(slices.Clone(calls[:resume]), func(c string) bool { return c != probe })); n != 4 {
+		t.Fatalf("probed %d times before resuming, want 4 (the pre-check, two busy, then the shell): %q", n, calls)
 	}
 }

@@ -2019,7 +2019,7 @@
       'monitor-ci': '/clear then /monitor-ci — drops the agent\'s current context',
       end: 'dismiss this row from the dashboard — the agent is NOT stopped, and the row returns if it emits another event',
       rebase: 'REWRITTEN — rebased onto the default branch, then force-pushed (--force-with-lease), replacing the PR\'s commits. On a conflict the rebase is aborted and nothing is pushed',
-      'broadcast-restart': 'restart every idle / waiting-for-you session: /exit kills each claude, then it is resumed with its session id once its pane is back at a shell in its worktree'
+      'broadcast-restart': 'restart every idle / waiting-for-you session: /exit kills each claude, then it is resumed with its session id once its pane is back at a shell in the directory it was launched from'
     };
 
     function forceOn(group) {
