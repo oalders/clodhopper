@@ -683,6 +683,7 @@ func TestHandleDashboard_TitleIsHostname(t *testing.T) {
 
 // The dashboard must load nothing from a third party (#58): a CDN fetch leaks the
 // operator's IP and blocks render. Navigation links (e.g. to GitHub) are fine.
+// It scans markup and CSS only; browser-level enforcement is CSP's job (#60).
 func TestHandleDashboard_LoadsNoThirdPartyResources(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
