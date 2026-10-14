@@ -526,8 +526,8 @@
     @media (min-width: 641px) {
       .ck-tablewrap { overflow-x: auto; }
       table.events { min-width: 118ch; }
-      table.roster { min-width: 141ch; } /* sum of the fixed cols (121ch) + 20ch reserved for the flexible session-name column */
-      {{ if or .PeekEnabled .ExecEnabled }}table.roster { min-width: 151ch; } /* + the 10ch actions col (peek/merge share one narrow icon-toggle cell) */{{ end }}
+      /* sum of the fixed cols (123ch, plus 10ch each for the debug id and actions cols when present) + 20ch reserved for the flexible session-name column */
+      table.roster { min-width: calc(143ch{{ if .Debug }} + 10ch{{ end }}{{ if or .PeekEnabled .ExecEnabled }} + 10ch{{ end }}); }
       table.counts { min-width: 48ch; }
     }
 
@@ -2817,7 +2817,7 @@
     <div class="ck-tablewrap">
     <table class="roster">
       <colgroup>
-        <col style="width: 5ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 30ch">
+        <col style="width: 5ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 32ch">
         <col style="width: 36ch"><col style="width: 8ch">{{ if .Debug }}<col style="width: 10ch">{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<col style="width: 10ch">{{ end }}<col>
       </colgroup>
       <thead>
