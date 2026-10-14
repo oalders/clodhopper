@@ -2928,11 +2928,15 @@ exit 0`)
 // plus one working session that must be skipped, posts broadcast-restart with
 // tmux stubbed by stub, polling every millisecond for up to exitWait (zero
 // probes once), and returns the decoded response and the stub's call log.
-func runRestartBroadcast(t *testing.T, dir, stub, logPath string, exitWait time.Duration) (d actionJSON, calls []string) {
+// extra events are inserted after the seed ones.
+func runRestartBroadcast(t *testing.T, dir, stub, logPath string, exitWait time.Duration, extra ...Event) (d actionJSON, calls []string) {
 	t.Helper()
 	db := openTestDB(t)
 	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: restartUUID, Branch: "feat-a", Cwd: dir, TmuxPane: "%1", EventType: "Stop", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: restartUUID2, Branch: "feat-b", Cwd: dir, TmuxPane: "%2", EventType: "PreToolUse", PayloadJSON: "{}"})
+	for _, e := range extra {
+		insertEvent(db, e)
+	}
 	cfg := newActionCfg("/bin/true", "/bin/true")
 	cfg.tmux = stub
 	cfg.restartPoll, cfg.restartExitWait = time.Millisecond, exitWait
@@ -3039,6 +3043,18 @@ func TestHandleActionBroadcastRestartCwdMismatchSendsNoResume(t *testing.T) {
 	}
 	if slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "--resume") || strings.Contains(c, "cd ") }) {
 		t.Fatalf("tmux calls = %q, want no resume and no cd", calls)
+	}
+}
+
+// A session that later cd'd into a scratch dir is still resumed: the pane's
+// shell is back in the LAUNCH dir, which is what claude --resume looks up by.
+func TestHandleActionBroadcastRestartUsesLaunchCwd(t *testing.T) {
+	dir := t.TempDir()
+	stub, logPath := restartStub(t, 0, "bash", "claude", dir)
+	cd := Event{TS: "2026-08-12T10:00:30Z", SourceApp: "x", SessionID: restartUUID, Branch: "feat-a", Cwd: t.TempDir(), TmuxPane: "%1", EventType: "Stop", PayloadJSON: "{}"}
+	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0, cd)
+	if !d.OK || !slices.Contains(calls, "[send-keys][-t][%1][nn --resume "+restartUUID+"][Enter]") {
+		t.Fatalf("ok=%v report=%q calls=%q, want the resume sent", d.OK, d.Output, calls)
 	}
 }
 
