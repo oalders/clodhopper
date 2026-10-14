@@ -1377,8 +1377,8 @@ func broadcastRestart(cfg *actionConfig, agents []Agent, now time.Time) actionRe
 
 // runRestart sends /exit into a's pane, waits for the pane to drop back to a
 // shell, checks that shell is in a's launch directory, then types the resume
-// command. If nono's exit-time denied-paths review is on screen instead, it
-// sends Escape to cancel that and waits for the shell again. A pane
+// command. If nono's exit-time denied-paths review is the last thing on screen
+// instead, it sends Escape to cancel that and waits for the shell again. A pane
 // already at a shell gets nothing: the roster row is stale and /exit would land
 // in the shell. The resume is the FIXED string `nn --resume <id>` (nn already
 // execs claude, so naming claude again would pass it as a prompt), the id
@@ -1437,7 +1437,8 @@ func runRestart(cfg *actionConfig, a Agent) actionResult {
 // nonoReviewOnScreen reports whether nono 0.79.0's denied-paths review is the
 // last thing on screen: its title line, its "Esc cancel" hint, and no claude
 // input box ("───" rule) drawn below it — so a live claude merely showing the
-// phrase (in a transcript, a diff, a tool-output gutter) never gets Escape.
+// phrase (in a transcript, a diff, a tool-output gutter) is very unlikely to
+// get Escape.
 func nonoReviewOnScreen(screen string) bool {
 	lines := strings.Split(screen, "\n")
 	title := -1

@@ -2946,6 +2946,9 @@ func TestNonoReviewOnScreen(t *testing.T) {
 		// claude's last frame, input box included, stays above nono's review.
 		{"real layout", lines("● done", box, "> ", box, "", title, "  /home/x/.cache", hints), true},
 		{"quoted above a live input box", lines(title, hints, box, "> ", box), false},
+		// The phrase in claude's last frame above its box, then nono's real review
+		// below: the LAST title is the one that counts.
+		{"quoted in the last frame, real review below", lines(title, hints, box, "> ", box, "", title, hints), true},
 		{"no Esc cancel hint", lines(box, "> ", box, title, "  /home/x/.cache"), false},
 		{"in a tool-output gutter", lines("  ⎿  [nono] Review denied paths", hints), false},
 		{"empty", "", false},

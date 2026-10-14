@@ -269,9 +269,9 @@ killed), and prompt-blocked rows are skipped, with no override. For each target
 it sends `/exit`, waits (up to ~15s, plus a few seconds if nono's review must be
 cancelled) for the pane to be back at a shell (`bash`,
 `zsh`, `fish` or `sh`) — if `nono`'s exit-time denied-paths review is the last
-thing on screen instead, it sends a fixed Escape key to cancel that and waits again —
-then checks that shell is in the directory the session was
-launched from, then types `nn --resume <session id>` — never `--continue`
+thing on screen instead, it sends a fixed Escape key to cancel that and waits
+again — then checks that shell is in the directory the session was launched
+from, then types `nn --resume <session id>` — never `--continue`
 or `--fork-session`. A pane that never reaches a shell, or whose shell is
 somewhere else, is reported as an error and nothing more is typed into it, and a
 pane already at a shell (a stale row) gets nothing at all (no
