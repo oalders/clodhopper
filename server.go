@@ -319,7 +319,7 @@ func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool
 	allowed := allowedHosts()
 	peek := &peekConfig{
 		enabled: panePeek, lines: clampPaneLines(paneLines), cache: newPaneCache(),
-		bindHost: host, allowedHosts: allowed,
+		repos: newRepoCache(), bindHost: host, allowedHosts: allowed,
 	}
 	act := &actionConfig{
 		enabled:      enableMerge,
@@ -440,38 +440,46 @@ func runServe(args []string) int {
 	return 0
 }
 
-// ciCache memoises per-cwd CI lookups so the dashboard (which auto-refreshes)
-// does not shell out to gh on every render. Keyed by cwd; entries expire after
-// ciTTL.
-type ciCache struct {
-	mu sync.Mutex
-	m  map[string]ciEntry
+// cwdCache memoises per-cwd lookups (CI status; the peek's GitHub repo) so the
+// dashboard (which auto-refreshes) does not shell out on every render. Keyed by
+// cwd; entries expire after cwdTTL.
+type cwdCache struct {
+	mu     sync.Mutex
+	m      map[string]cwdEntry
+	lookup func(cwd string) string
 }
 
-type ciEntry struct {
-	status string
-	at     time.Time
+type cwdEntry struct {
+	val string
+	at  time.Time
 }
 
-const ciTTL = 60 * time.Second
+const cwdTTL = 60 * time.Second
 
-func newCICache() *ciCache { return &ciCache{m: map[string]ciEntry{}} }
+func newCICache() *cwdCache { return &cwdCache{m: map[string]cwdEntry{}, lookup: lookupCI} }
 
-// status returns a cached CI summary for the PR on the branch checked out at cwd,
-// refreshing via gh when the cached value is stale. now is injected for testing.
-func (c *ciCache) status(cwd string, now time.Time) string {
-	if cwd == "" {
+func newRepoCache() *cwdCache { return &cwdCache{m: map[string]cwdEntry{}, lookup: lookupRepo} }
+
+// get returns the cached lookup result for cwd (e.g. the CI summary for the
+// PR on its branch), refreshing it when stale. now is injected for testing. A nil
+// cache yields "", so a config built without one simply never resolves; a cache
+// with no lookup serves what it holds and yields "" on a miss.
+func (c *cwdCache) get(cwd string, now time.Time) string {
+	if c == nil || cwd == "" {
 		return ""
 	}
 	c.mu.Lock()
 	e, ok := c.m[cwd]
 	c.mu.Unlock()
-	if ok && now.Sub(e.at) < ciTTL {
-		return e.status
+	if ok && now.Sub(e.at) < cwdTTL {
+		return e.val
 	}
-	s := lookupCI(cwd)
+	if c.lookup == nil {
+		return ""
+	}
+	s := c.lookup(cwd)
 	c.mu.Lock()
-	c.m[cwd] = ciEntry{status: s, at: now}
+	c.m[cwd] = cwdEntry{val: s, at: now}
 	c.mu.Unlock()
 	return s
 }
@@ -556,7 +564,7 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
 }
 
-func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache, peek *peekConfig, act *actionConfig) {
+func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *cwdCache, peek *peekConfig, act *actionConfig) {
 	setSecurityHeaders(w)
 	data, err := buildDashboardData(r, db, ci, peek, act)
 	if err != nil {
@@ -573,7 +581,7 @@ func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciC
 // {"signature": ..., "html": ...}. The client compares the signature to what it
 // last rendered and only swaps the DOM when it differs, so a quiet board never
 // repaints.
-func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *ciCache, peek *peekConfig, act *actionConfig) {
+func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *cwdCache, peek *peekConfig, act *actionConfig) {
 	setSecurityHeaders(w)
 	data, err := buildDashboardData(r, db, ci, peek, act)
 	if err != nil {
@@ -607,7 +615,7 @@ var dashboardTitle = sync.OnceValue(func() string {
 	return "clodhopper"
 })
 
-func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConfig, act *actionConfig) (dashboardData, error) {
+func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache, peek *peekConfig, act *actionConfig) (dashboardData, error) {
 	q := r.URL.Query()
 	source := q.Get("source_app")
 	branch := q.Get("branch")
@@ -656,6 +664,9 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *ciCache, peek *peekConf
 	if peek.enabled {
 		for i := range agents {
 			agents[i].LiveTmux = agents[i].TmuxPane != "" && peek.cache.live(agents[i].TmuxPane, now)
+			if agents[i].LiveTmux {
+				agents[i].Repo = peek.repos.get(agents[i].Cwd, now)
+			}
 		}
 	}
 
@@ -853,7 +864,7 @@ func demotePendingCI(agents []Agent) {
 
 // enrichCI fills each agent's CI field, fetching distinct cwds concurrently so a
 // roster of N worktrees costs one slow gh round-trip, not N sequential ones.
-func enrichCI(agents []Agent, ci *ciCache, now time.Time) {
+func enrichCI(agents []Agent, ci *cwdCache, now time.Time) {
 	results := make(map[string]string)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
@@ -869,7 +880,7 @@ func enrichCI(agents []Agent, ci *ciCache, now time.Time) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			s := ci.status(cwd, now)
+			s := ci.get(cwd, now)
 			mu.Lock()
 			results[cwd] = s
 			mu.Unlock()

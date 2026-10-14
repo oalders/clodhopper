@@ -276,3 +276,46 @@ func TestHandlePane_HostAndProxyGated(t *testing.T) {
 		t.Errorf("tmux was not invoked for a clean request: %v", err)
 	}
 }
+
+// Only github.com origins resolve, and the result is spliced into an href, so
+// anything outside the strict owner/repo shape must fail closed to "".
+func TestParseGitHubRepo(t *testing.T) {
+	cases := map[string]string{
+		"git@github.com:oalders/clodhopper.git":        "oalders/clodhopper",
+		"git@github.com:oalders/clodhopper":            "oalders/clodhopper",
+		"ssh://git@github.com/oalders/clod.hopper.git": "oalders/clod.hopper",
+		"https://github.com/oalders/clodhopper.git":    "oalders/clodhopper",
+		"https://github.com/oalders/clodhopper":        "oalders/clodhopper",
+		"https://gitlab.com/oalders/clodhopper.git":    "",
+		"https://github.com.evil.com/o/r":              "",
+		"https://github.com/oalders/clodhopper/":       "",
+		"https://github.com/o/r\"><script>":            "",
+		"https://github.com/o/..":                      "",
+		"https://github.com/o/r/pull/1":                "",
+		"":                                             "",
+	}
+	for in, want := range cases {
+		if got := parseGitHubRepo(in); got != want {
+			t.Errorf("parseGitHubRepo(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// lookupRepo against real git: a GitHub origin resolves to owner/repo, and a
+// repo with no origin at all resolves to "".
+func TestLookupRepoRealRepo(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "remote", "add", "origin", "git@github.com:o/r.git")
+	if got := lookupRepo(dir); got != "o/r" {
+		t.Errorf("lookupRepo = %q, want o/r", got)
+	}
+	bare := t.TempDir()
+	runGit(t, bare, "init", "--quiet")
+	if got := lookupRepo(bare); got != "" {
+		t.Errorf("no origin: lookupRepo = %q, want empty", got)
+	}
+}

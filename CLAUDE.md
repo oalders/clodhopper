@@ -105,13 +105,17 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
 ### Other conventions
 
 - **Time is injected, not read from the clock**, in any function whose output is
-  tested (`agentRoster`, `idleSeconds`, `ciCache.status`, …) — they take a `now
+  tested (`agentRoster`, `idleSeconds`, `cwdCache.get`, …) — they take a `now
   time.Time`. Follow this for new time-dependent logic so tests stay deterministic.
 - **Schema migrations** append to the `migrations` slice in `store.go` and run
   best-effort (an already-applied `ALTER` errors harmlessly and is ignored).
 - **CI status** (`server.go`) shells out to `gh pr checks` per cwd, memoised in
-  `ciCache` (60s TTL) and fetched concurrently across worktrees. Like `gitBranch`,
+  `cwdCache` (60s TTL) and fetched concurrently across worktrees. Like `gitBranch`,
   it is strictly best-effort: missing `gh`, no PR, or a timeout yields "".
+  The same `cwdCache` type also backs the pane peek's GitHub owner/repo for the
+  footer's PR #N link (`newRepoCache`/`lookupRepo`, via `git remote get-url origin`),
+  resolved per live-pane row (not concurrently) and likewise best-effort: a
+  non-GitHub remote or any error yields "".
 - The `branch` dimension exists so each concurrent **git worktree** shows up as
   its own roster row / activity tally — that grouping is the point, not incidental.
 - Config is read from env vars with `CLODHOPPER_` prefixes (see README table);

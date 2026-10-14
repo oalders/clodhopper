@@ -769,6 +769,71 @@ func TestBuildDashboardDataDropsDeadPane(t *testing.T) {
 	}
 }
 
+// cwdCache.get: nil-safe, skips an empty cwd, memoises a miss for cwdTTL (an
+// entry is fresh while now-at < cwdTTL), and refreshes once that has elapsed.
+func TestCwdCacheGet(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	var nilCache *cwdCache
+	if got := nilCache.get("/wt", now); got != "" {
+		t.Errorf("nil cache: got %q, want empty", got)
+	}
+	if got := (&cwdCache{m: map[string]cwdEntry{}}).get("/wt", now); got != "" {
+		t.Errorf("nil lookup: got %q, want empty", got)
+	}
+
+	calls := 0
+	c := &cwdCache{m: map[string]cwdEntry{}, lookup: func(cwd string) string {
+		calls++
+		return "val:" + cwd
+	}}
+	if got := c.get("", now); got != "" || calls != 0 {
+		t.Errorf("empty cwd: got %q after %d lookups, want empty after 0", got, calls)
+	}
+	if got := c.get("/wt", now); got != "val:/wt" || calls != 1 {
+		t.Fatalf("miss: got %q after %d lookups, want val:/wt after 1", got, calls)
+	}
+	if got := c.get("/wt", now.Add(cwdTTL-time.Second)); got != "val:/wt" || calls != 1 {
+		t.Errorf("within TTL: got %q after %d lookups, want cached after 1", got, calls)
+	}
+	if got := c.get("/wt", now.Add(cwdTTL)); got != "val:/wt" || calls != 2 {
+		t.Errorf("at TTL: got %q after %d lookups, want refreshed after 2", got, calls)
+	}
+}
+
+// Repo (which the PR link needs) is resolved only for a row with a live pane: a
+// pane-less row at the same cwd never has a capture to link.
+func TestBuildDashboardDataRepoOnlyForLivePane(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+	ts := now.UTC().Format(time.RFC3339)
+	cwd := "/home/me/wt/fix-141"
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "live", Cwd: cwd, TmuxSession: "work", TmuxPane: "%1", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "paneless", Cwd: cwd, EventType: "Stop", PayloadJSON: "{}"})
+	// Both caches are stamped an hour ahead so neither tmux nor git ever runs.
+	peek := &peekConfig{
+		enabled: true,
+		cache:   &paneCache{set: map[string]string{"%1": "work"}, at: now.Add(time.Hour)},
+		repos: &cwdCache{m: map[string]cwdEntry{cwd: {val: "o/r", at: now.Add(time.Hour)}}, lookup: func(string) string {
+			t.Error("unexpected lookup")
+			return ""
+		}},
+	}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "127.0.0.1:5555"
+	r.Host = "127.0.0.1:4555"
+	data, err := buildDashboardData(r, db, newCICache(), peek, &actionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repos := map[string]string{}
+	for _, a := range data.Agents {
+		repos[a.SessionID] = a.Repo
+	}
+	if len(repos) != 2 || repos["live"] != "o/r" || repos["paneless"] != "" {
+		t.Fatalf("Repo by session = %q, want live=o/r and paneless empty", repos)
+	}
+}
+
 // Both peer-gated view flags collapse for a peer that fails remoteAllowed: the
 // LAN caller gets a read-only board with no action buttons, no CSRF token to
 // drive even the exec-free "end" by hand, and no ⤢ peek control — /api/pane
@@ -819,7 +884,7 @@ func TestHandlers_SetSecurityHeaders(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 
-	routes := map[string]func(http.ResponseWriter, *http.Request, *sql.DB, *ciCache, *peekConfig, *actionConfig){
+	routes := map[string]func(http.ResponseWriter, *http.Request, *sql.DB, *cwdCache, *peekConfig, *actionConfig){
 		"/":          handleDashboard,
 		"/api/state": handleState,
 	}
@@ -1280,6 +1345,48 @@ func TestContentTemplate_PeekControlGated(t *testing.T) {
 	off := base // PeekEnabled false
 	if strings.Contains(render(off), `data-pane=`) {
 		t.Error("disabled: expected no peek control")
+	}
+}
+
+// The peek button carries the row's server-resolved repo for linking the
+// capture's footer "PR #N", and omits the attribute when none was resolved so
+// the client has nothing to link against.
+func TestContentTemplate_PeekRepoAttr(t *testing.T) {
+	render := func(repo string) string {
+		var buf bytes.Buffer
+		d := dashboardData{PeekEnabled: true, Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting,
+			TmuxPane: "%3", LiveTmux: true, Repo: repo,
+		}}}
+		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+	if !strings.Contains(render("oalders/clodhopper"), `data-peek="s1" data-repo="oalders/clodhopper"`) {
+		t.Error("expected data-repo on the peek button when Repo is set")
+	}
+	if strings.Contains(render(""), `data-repo=`) {
+		t.Error("expected no data-repo when Repo is empty")
+	}
+}
+
+// Pane capture is untrusted terminal text: renderCapture must build it from text
+// nodes (never parsed as markup) and the footer PR link it adds must open with
+// rel="noopener noreferrer" so github.com gets no window.opener handle.
+func TestDashboardRenderCaptureTextOnly(t *testing.T) {
+	body := renderDashboard(t, dashboardData{})
+	i := strings.Index(body, "function renderCapture(")
+	j := strings.Index(body, "window.__ckRenderCapture = renderCapture;")
+	if i < 0 || j < i {
+		t.Fatal("renderCapture missing")
+	}
+	fn := body[i:j]
+	if regexp.MustCompile(`(?i)innerHTML|insertAdjacentHTML|outerHTML`).MatchString(fn) {
+		t.Error("renderCapture must never parse capture text as HTML")
+	}
+	if !strings.Contains(fn, `a.rel = 'noopener noreferrer';`) {
+		t.Error(`the PR link must carry rel="noopener noreferrer"`)
 	}
 }
 
@@ -2134,7 +2241,7 @@ func TestDashboardPeekLiveRegionArmedAtOpenNotInMarkup(t *testing.T) {
 	// where swapContent restores the carried-over text, "polite" in openPane —
 	// which is exactly two call sites, no more.
 	mute := `            c.setAttribute('aria-live', 'off');
-            c.textContent = op.text;`
+            if (window.__ckRenderCapture) window.__ckRenderCapture(c, op.text, repo);`
 	if !strings.Contains(body, mute) {
 		t.Errorf("swapContent must opt the rebuilt capsule out of #content's live region before writing the carried text:\n%s", mute)
 	}
@@ -2149,7 +2256,7 @@ func TestDashboardPeekLiveRegionArmedAtOpenNotInMarkup(t *testing.T) {
 	iArm := strings.Index(win, arm)
 	iHide := strings.Index(win, "row.hidden = false;")
 	iFetch := strings.Index(win, `fetch('/api/pane?pane='`)
-	iText := strings.Index(win, `pre.textContent = t ? collapseRules(t) : '(pane unavailable)';`)
+	iText := strings.Index(win, `if (t) renderCapture(pre, collapseRules(t),`)
 	if iArm < 0 || iHide < 0 || iFetch < 0 || iText < 0 {
 		t.Fatalf("openPane landmarks missing: arm=%d hide=%d fetch=%d text=%d", iArm, iHide, iFetch, iText)
 	}
@@ -3451,8 +3558,8 @@ func TestSuppressWatchedCI_Demotes(t *testing.T) {
 	ins(2, "UserPromptSubmit", "/poll-ci")
 	ins(1, "Stop", "") // "waiting for you"
 
-	// Pre-seed rather than shelling out to gh; `at` must be inside ciTTL.
-	ci := &ciCache{m: map[string]ciEntry{cwd: {status: "failing", at: time.Now()}}}
+	// Pre-seed rather than shelling out to gh; `at` must be inside cwdTTL.
+	ci := &cwdCache{m: map[string]cwdEntry{cwd: {val: "failing", at: time.Now()}}}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	data, err := buildDashboardData(r, db, ci, &peekConfig{}, &actionConfig{})
 	if err != nil {
@@ -3494,7 +3601,7 @@ func TestSuppressWatchedCI_RowIsolation(t *testing.T) {
 	ins(2, "other", "UserPromptSubmit", "/code-review")
 	ins(1, "other", "Stop", "")
 
-	ci := &ciCache{m: map[string]ciEntry{cwd: {status: "failing", at: time.Now()}}}
+	ci := &cwdCache{m: map[string]cwdEntry{cwd: {val: "failing", at: time.Now()}}}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	data, err := buildDashboardData(r, db, ci, &peekConfig{}, &actionConfig{})
 	if err != nil {
