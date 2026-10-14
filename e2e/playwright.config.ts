@@ -8,6 +8,19 @@ import { defineConfig } from '@playwright/test';
 
 // The nono sandbox opens only 9323–9342 for e2e work; 9323 is the HTML report.
 const port = 9324;
+// restart.spec.ts needs the --enable-merge markup, so it gets its own server
+// rather than turning the write path on for every other spec.
+const execPort = 9325;
+const execSpec = /restart\.spec\.ts/;
+
+const server = (p: number, flags = '') => ({
+  command: `./serve.sh ${p}${flags}`,
+  url: `http://127.0.0.1:${p}/`,
+  reuseExistingServer: false,
+  timeout: 120_000,
+  // SIGTERM (not the default SIGKILL) so serve.sh's trap removes its temp dir.
+  gracefulShutdown: { signal: 'SIGTERM' as const, timeout: 5_000 },
+});
 
 export default defineConfig({
   testDir: './tests',
@@ -15,17 +28,15 @@ export default defineConfig({
   reporter: [['list'], ['html', { open: 'never' }]],
   use: { baseURL: `http://127.0.0.1:${port}`, browserName: 'chromium' },
   projects: [
-    { name: 'desktop 1440', use: { viewport: { width: 1440, height: 900 } } },
+    { name: 'desktop 1440', testIgnore: execSpec, use: { viewport: { width: 1440, height: 900 } } },
     // Narrowest table layout: dashboard.html's min-width: 641px breakpoint; 640 and below is cards.
-    { name: 'narrowest table 641', use: { viewport: { width: 641, height: 900 } } },
-    { name: 'phone 390', use: { viewport: { width: 390, height: 844 } } },
+    { name: 'narrowest table 641', testIgnore: execSpec, use: { viewport: { width: 641, height: 900 } } },
+    { name: 'phone 390', testIgnore: execSpec, use: { viewport: { width: 390, height: 844 } } },
+    {
+      name: 'exec desktop 1440',
+      testMatch: execSpec,
+      use: { baseURL: `http://127.0.0.1:${execPort}`, viewport: { width: 1440, height: 900 } },
+    },
   ],
-  webServer: {
-    command: `./serve.sh ${port}`,
-    url: `http://127.0.0.1:${port}/`,
-    reuseExistingServer: false,
-    timeout: 120_000,
-    // SIGTERM (not the default SIGKILL) so serve.sh's trap removes its temp dir.
-    gracefulShutdown: { signal: 'SIGTERM', timeout: 5_000 },
-  },
+  webServer: [server(port), server(execPort, ' --enable-merge')],
 });
