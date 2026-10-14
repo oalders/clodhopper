@@ -19,6 +19,7 @@ go vet ./...
 go install ./...      # install `clodhopper` to GOBIN / $GOPATH/bin
 precious lint --all   # gofmt + go vet + golangci-lint (what CI runs)
 precious tidy --all   # auto-fix formatting
+cd e2e && npm ci && npx playwright test   # rendered-page tests; see README "Testing"
 ```
 
 CGO must be enabled (a C compiler must be present) because of the SQLite driver.
