@@ -1378,15 +1378,15 @@ func broadcastRestart(cfg *actionConfig, agents []Agent, now time.Time) actionRe
 // runRestart sends /exit into a's pane, waits for the pane to drop back to a
 // shell, checks that shell is in a's launch directory, then types the resume
 // command. If the pane is still held by nono (its exit-time denied-paths
-// review), it sends Escape to cancel that and waits for the shell again. A pane already at a shell gets nothing: the roster row is stale and
-// /exit would land in the shell. The resume is the FIXED string
-// `nn --resume <id>` (nn already execs claude, so naming claude again would pass
-// it as a prompt), the id validated by
-// restartSkipReason; never --continue or --fork-session, which would pick or
-// mint a different session. A pane that never reaches a shell, or reaches one
-// somewhere else, gets nothing more typed into it: a cd is never interpolated.
-// Finally it waits for claude to take the pane over, so a resume that silently
-// failed to start is reported rather than counted as sent.
+// review), it sends Escape to cancel that and waits for the shell again. A pane
+// already at a shell gets nothing: the roster row is stale and /exit would land
+// in the shell. The resume is the FIXED string `nn --resume <id>` (nn already
+// execs claude, so naming claude again would pass it as a prompt), the id
+// validated by restartSkipReason; never --continue or --fork-session, which
+// would pick or mint a different session. A pane that never reaches a shell, or
+// reaches one somewhere else, gets nothing more typed into it: a cd is never
+// interpolated. Finally it waits for claude to take the pane over, so a resume
+// that silently failed to start is reported rather than counted as sent.
 func runRestart(cfg *actionConfig, a Agent) actionResult {
 	// The launch dir, not the latest Cwd: `claude --resume` finds a session by
 	// where it was started, and a cd'd-into scratch dir may since be gone.
