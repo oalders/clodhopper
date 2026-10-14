@@ -2916,6 +2916,7 @@ case "$5" in
 '#{pane_current_path}') echo '`+path+`' ;;
 '#{pane_current_command}')
   if grep -q -- --resume '`+logPath+`'; then echo `+afterResume+`
+  elif grep -q '\[Escape\]' '`+logPath+`'; then echo bash
   elif ! grep -q '\[/exit\]' '`+logPath+`'; then echo claude
   elif [ "$(sed -n '/\[\/exit\]/,$p' '`+logPath+`' | grep -c pane_current_command)" -le `+strconv.Itoa(busyProbes)+` ]; then echo claude
   else echo `+atExit+`; fi ;;
@@ -2996,8 +2997,34 @@ func TestHandleActionBroadcastRestartNoShellSendsNoResume(t *testing.T) {
 	if d.OK || !reportHas(d.Output, "error feat-a "+shortID(restartUUID)+": still running 0s after /exit (background shells/agents, or the wrapper didn't exit) — nothing more sent") {
 		t.Fatalf("ok=%v report=%q, want the no-shell error", d.OK, d.Output)
 	}
-	if want := "[send-keys][-t][%1][/exit][Enter]"; calls[1] != want || slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "--resume") }) {
-		t.Fatalf("tmux calls = %q, want /exit and no resume", calls)
+	if want := "[send-keys][-t][%1][/exit][Enter]"; calls[1] != want || slices.ContainsFunc(calls, func(c string) bool { return strings.Contains(c, "--resume") || strings.Contains(c, "Escape") }) {
+		t.Fatalf("tmux calls = %q, want /exit and no Escape or resume", calls)
+	}
+}
+
+// nono can hold the pane after claude exits with its "Review denied paths"
+// prompt: Escape cancels it, and the restart carries on to the resume.
+func TestHandleActionBroadcastRestartCancelsNonoReview(t *testing.T) {
+	dir := t.TempDir()
+	stub, logPath := restartStub(t, 0, "nono", "claude", dir)
+	d, calls := runRestartBroadcast(t, dir, stub, logPath, 0)
+	if !d.OK {
+		t.Fatalf("ok = false: %q", d.Output)
+	}
+	probe := "[display-message][-p][-t][%1][#{pane_current_command}]"
+	want := []string{
+		probe,
+		"[send-keys][-t][%1][/exit][Enter]",
+		probe, // the exit wait: still nono
+		probe, // the one read that names nono
+		"[send-keys][-t][%1][Escape]",
+		probe,
+		"[display-message][-p][-t][%1][#{pane_current_path}]",
+		"[send-keys][-t][%1][nn --resume " + restartUUID + "][Enter]",
+		probe,
+	}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("tmux calls = %q, want %q", calls, want)
 	}
 }
 

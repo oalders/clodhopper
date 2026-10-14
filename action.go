@@ -1390,7 +1390,19 @@ func runRestart(cfg *actionConfig, a Agent) actionResult {
 		return res
 	}
 	if !pollShell(cfg, pane, dir, true, cfg.restartExitWait) {
-		return actionResult{ExitCode: -1, Output: "still running " + cfg.restartExitWait.String() + " after /exit (background shells/agents, or the wrapper didn't exit) — nothing more sent"}
+		// nono can hold the pane after claude exits with an interactive "Review
+		// denied paths" prompt; the fixed Escape key cancels it. Only nono gets it:
+		// a pane still running claude ignored /exit, and is left alone.
+		cmd, res := runTmux(cfg.tmux, dir, []string{"display-message", "-p", "-t", pane, "#{pane_current_command}"}, tmuxTimeout)
+		if res.ExitCode != 0 || res.TimedOut || strings.TrimSpace(cmd) != "nono" {
+			return restartStuck(cfg)
+		}
+		if _, res := runTmux(cfg.tmux, dir, []string{"send-keys", "-t", pane, "Escape"}, tmuxTimeout); res.ExitCode != 0 || res.TimedOut {
+			return res
+		}
+		if !pollShell(cfg, pane, dir, true, cfg.restartResumeWait) {
+			return restartStuck(cfg)
+		}
 	}
 	path, res := runTmux(cfg.tmux, dir, []string{"display-message", "-p", "-t", pane, "#{pane_current_path}"}, tmuxTimeout)
 	if res.ExitCode != 0 || res.TimedOut {
@@ -1407,6 +1419,11 @@ func runRestart(cfg *actionConfig, a Agent) actionResult {
 		return actionResult{ExitCode: -1, Output: "exited but did not resume — check the pane"}
 	}
 	return actionResult{}
+}
+
+// restartStuck is runRestart's error for a pane that never got back to a shell.
+func restartStuck(cfg *actionConfig) actionResult {
+	return actionResult{ExitCode: -1, Output: "still running " + cfg.restartExitWait.String() + " after /exit (background shells/agents, or the wrapper didn't exit) — nothing more sent"}
 }
 
 // pollShell reads pane's foreground command every cfg.restartPoll until
