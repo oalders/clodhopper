@@ -1,0 +1,12 @@
+{
+  "name": "clodhopper-e2e",
+  "private": true,
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@fontsource/jetbrains-mono": "5.3.0",
+    "@playwright/test": "1.57.0",
+    "@types/node": "24.19.2"
+  }
+}

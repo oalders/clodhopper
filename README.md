@@ -439,6 +439,29 @@ go vet ./...
 
 Runtime data lives under `var/` (gitignored).
 
+### Testing
+
+```bash
+cd e2e && npm ci && npx playwright test   # rendered-page layout + behavior tests
+```
+
+The Playwright suite in `e2e/` builds `clodhopper` from the working tree, seeds a
+throwaway database with worst-case fixtures (`e2e_seed_test.go`, build tag
+`e2eseed`, so plain `go test ./...` skips it), and serves it on
+`127.0.0.1:9324` with no tmux, no write path, and no host `CLODHOPPER_*`
+config. It checks that status badges and time cells are never clipped and the
+page never scrolls sideways at 1440, 641 and 390px wide, plus the theme toggle
+and filter strip. JetBrains Mono comes from `@fontsource/jetbrains-mono`, so the
+measurements match on every machine. CI runs it as the blocking `e2e` job and
+uploads the HTML report on failure.
+
+Locally the suite uses the browsers already in `PLAYWRIGHT_BROWSERS_PATH` (the
+shared host bundle in `~/.cache/ms-playwright`); don't run `playwright install`
+there. `@playwright/test` is pinned to exactly 1.57.0, which needs chromium
+revision 1200 in that bundle. Before bumping the pin, refresh the host bundle
+with `installer/playwright-mcp.sh` (it lives in the user's installer setup,
+outside this repo), run outside the sandbox.
+
 ### Linting and formatting
 
 Linting is orchestrated by [precious](https://github.com/houseabsolute/precious),
