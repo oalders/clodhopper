@@ -521,12 +521,12 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 	ins(at(3), "s-perm-killed", "Stop", "", "{}")
 	ins(at(2), "s-perm-killed", "PermissionRequest", "a1", "")
 	ins(at(1), "s-perm-killed", "SubagentStop", "a1", "")
-	// An abandoned request (no further subagent event) is cleared once the user
-	// submits a new prompt: the dialog cannot still be open.
-	ins(at(4), "s-perm-abandoned", "SubagentStart", "a1", "")
-	ins(at(3), "s-perm-abandoned", "PermissionRequest", "a1", "")
-	ins(at(2), "s-perm-abandoned", "UserPromptSubmit", "", "{}")
-	ins(at(1), "s-perm-abandoned", "Stop", "", "{}")
+	// A main-agent prompt does not clear it either: a finished background task
+	// re-invokes the main agent as UserPromptSubmit while the dialog is open.
+	ins(at(4), "s-perm-notified", "SubagentStart", "a1", "")
+	ins(at(3), "s-perm-notified", "PermissionRequest", "a1", "")
+	ins(at(2), "s-perm-notified", "UserPromptSubmit", "", "{}")
+	ins(at(1), "s-perm-notified", "Stop", "", "{}")
 	// An approval pending on one subagent outranks a question on another.
 	ins(at(4), "s-perm-mixed", "SubagentStart", "a1", "")
 	ins(at(4), "s-perm-mixed", "SubagentStart", "a2", "")
@@ -565,7 +565,7 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 		{"s-perm-notif", statusApproval, 0, 0, ""},
 		{"s-ask", statusInput, 0, 0, ""},
 		{"s-perm-killed", statusWaiting, 0, 0, ""},
-		{"s-perm-abandoned", statusSubagents, 1, 4, "4m"},
+		{"s-perm-notified", statusApproval, 0, 0, ""},
 		{"s-perm-mixed", statusApproval, 0, 0, ""},
 	} {
 		a := got[c.sess]

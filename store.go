@@ -636,28 +636,23 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		// genuinely blocks on the user, so it is held aside in subPerms
 		// (overriding the status below) until that subagent's next event shows it
 		// was answered — rather than written to LastEvent, where no later subagent
-		// event could ever clear it.
+		// event could ever clear it. Main-agent events deliberately do not clear
+		// it: a finished background task re-invokes the main agent as a
+		// UserPromptSubmit while another subagent's dialog may still be open. So a
+		// request abandoned with no further subagent event stays visible until
+		// SubagentStop or the waitingCap window — fail toward showing it.
 		if agentID != "" {
 			s.lastTS = ts
-			switch {
-			case etype == "PermissionRequest":
-				s.subPerms[agentID] = tool
-			case etype == "Notification" && notifType == "permission_prompt":
+			if etype == "PermissionRequest" || (etype == "Notification" && notifType == "permission_prompt") {
 				// The Notification trailing a request carries no tool_name; keep the
 				// request's tool so AskUserQuestion still reads "needs input".
-				if _, ok := s.subPerms[agentID]; !ok {
+				if _, ok := s.subPerms[agentID]; !ok || tool != "" {
 					s.subPerms[agentID] = tool
 				}
-			default:
+			} else {
 				delete(s.subPerms, agentID)
 			}
 			continue
-		}
-		// The user cannot submit a prompt while a permission dialog is open, so a
-		// new prompt means any subagent request still held was dismissed (an
-		// interrupt fires no further subagent event to clear it).
-		if etype == "UserPromptSubmit" {
-			clear(s.subPerms)
 		}
 		s.a.LastEvent = etype
 		s.lastTS = ts
