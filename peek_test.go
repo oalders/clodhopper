@@ -68,6 +68,7 @@ func TestDropDeadPanes(t *testing.T) {
 		{"pane back at a shell in the launch dir is hidden", []Agent{live, exited}, map[string]livePane{"%1": w, "%4": {session: "work", command: "zsh", path: "/src/repo/"}}, []string{"live"}},
 		{"pane at a shell elsewhere is kept", []Agent{live, exited}, map[string]livePane{"%1": w, "%4": {session: "work", command: "zsh", path: "/elsewhere"}}, []string{"live", "exited"}},
 		{"pane in the launch dir under a stale label is kept", []Agent{live, relabelled}, map[string]livePane{"%1": w, "%5": {session: "new label", command: "nono", path: "/src/repo"}}, []string{"live", "relabelled"}},
+		{"pane in the launch dir claimed by another row's label is hidden", []Agent{live, relabelled, {SessionID: "current", TmuxSession: "new label", TmuxPane: "%5", LaunchCwd: "/src/repo"}}, map[string]livePane{"%1": w, "%5": {session: "new label", command: "nono", path: "/src/repo"}}, []string{"live", "current"}},
 		{"pane elsewhere under a stale label is hidden", []Agent{live, relabelled}, map[string]livePane{"%1": w, "%5": {session: "new label", command: "nono", path: "/elsewhere"}}, []string{"live"}},
 		{"pane still running claude is kept", []Agent{live, exited}, map[string]livePane{"%1": w, "%4": {session: "work", command: "claude", path: "/src/repo"}}, []string{"live", "exited"}},
 	}
