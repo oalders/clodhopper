@@ -32,7 +32,7 @@ type peekConfig struct {
 	enabled bool
 	lines   int
 	cache   *paneCache
-	repos   *cwdCache // cwd → GitHub "owner/repo" for linking the footer's PR #N; nil resolves nothing
+	repos   *cwdCache[string] // cwd → GitHub "owner/repo" for linking the footer's PR #N; nil resolves nothing
 	// bindHost/allowedHosts mirror actionConfig's: /api/pane execs tmux and
 	// streams live transcript text, so it runs the SAME gate the exec-backed
 	// actions do (execPeerAllowed), which needs the Host allowlist too.

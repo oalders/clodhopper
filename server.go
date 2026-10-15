@@ -342,7 +342,7 @@ func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool
 // newServeMux registers the dashboard routes behind one middleware, so the
 // security headers and the Host allowlist cover every response — including the
 // catch-all 404 — rather than relying on each handler to remember them.
-func newServeMux(db *sql.DB, ci *cwdCache, peek *peekConfig, act *actionConfig) http.Handler {
+func newServeMux(db *sql.DB, ci *cwdCache[ciResult], peek *peekConfig, act *actionConfig) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
@@ -461,30 +461,35 @@ func runServe(args []string) int {
 // cwdCache memoises per-cwd lookups (CI status; the peek's GitHub repo) so the
 // dashboard (which auto-refreshes) does not shell out on every render. Keyed by
 // cwd; entries expire after cwdTTL.
-type cwdCache struct {
+type cwdCache[T any] struct {
 	mu     sync.Mutex
-	m      map[string]cwdEntry
-	lookup func(cwd string) string
+	m      map[string]cwdEntry[T]
+	lookup func(cwd string) T
 }
 
-type cwdEntry struct {
-	val string
+type cwdEntry[T any] struct {
+	val T
 	at  time.Time
 }
 
 const cwdTTL = 60 * time.Second
 
-func newCICache() *cwdCache { return &cwdCache{m: map[string]cwdEntry{}, lookup: lookupCI} }
+func newCICache() *cwdCache[ciResult] {
+	return &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{}, lookup: lookupCI}
+}
 
-func newRepoCache() *cwdCache { return &cwdCache{m: map[string]cwdEntry{}, lookup: lookupRepo} }
+func newRepoCache() *cwdCache[string] {
+	return &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: lookupRepo}
+}
 
 // get returns the cached lookup result for cwd (e.g. the CI summary for the
 // PR on its branch), refreshing it when stale. now is injected for testing. A nil
-// cache yields "", so a config built without one simply never resolves; a cache
-// with no lookup serves what it holds and yields "" on a miss.
-func (c *cwdCache) get(cwd string, now time.Time) string {
+// cache yields the zero value, so a config built without one simply never
+// resolves; a cache with no lookup serves what it holds and yields zero on a miss.
+func (c *cwdCache[T]) get(cwd string, now time.Time) T {
+	var zero T
 	if c == nil || cwd == "" {
-		return ""
+		return zero
 	}
 	c.mu.Lock()
 	e, ok := c.m[cwd]
@@ -493,62 +498,122 @@ func (c *cwdCache) get(cwd string, now time.Time) string {
 		return e.val
 	}
 	if c.lookup == nil {
-		return ""
+		return zero
 	}
-	s := c.lookup(cwd)
+	v := c.lookup(cwd)
 	c.mu.Lock()
-	c.m[cwd] = cwdEntry{val: s, at: now}
+	c.m[cwd] = cwdEntry[T]{val: v, at: now}
 	c.mu.Unlock()
-	return s
+	return v
 }
 
-// lookupCI shells out to `gh pr checks` in cwd and summarises the result. It is
+// ciResult is one PR's CI verdict: State is "", "pending", "green", "failing" or
+// "soft-failing" (only non-required checks failed); Fails counts failed checks.
+type ciResult struct {
+	State    string
+	Fails    int
+	Conflict bool // merge conflict with the base branch
+}
+
+// lookupCI shells out to `gh pr view` in cwd and summarises the result. It is
 // strictly best-effort: a missing gh, no PR, an unauthenticated host, or a
 // timeout all yield "" (rendered as "—"), never an error.
-func lookupCI(cwd string) string {
+func lookupCI(cwd string) ciResult {
 	if _, err := exec.LookPath("gh"); err != nil {
-		return ""
+		return ciResult{}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gh", "pr", "checks", "--json", "bucket")
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", "--json", "mergeStateStatus,statusCheckRollup")
 	cmd.Dir = cwd
 	out, err := cmd.Output()
 	if err != nil {
-		return "" // no PR for branch, not a repo, gh unauth, or timeout
+		return ciResult{} // no PR for branch, not a repo, gh unauth, or timeout
 	}
-	var checks []struct {
-		Bucket string `json:"bucket"`
-	}
-	if err := json.Unmarshal(out, &checks); err != nil {
-		return ""
-	}
-	buckets := make([]string, len(checks))
-	for i, c := range checks {
-		buckets[i] = c.Bucket
-	}
-	return summarizeChecks(buckets)
+	return parsePRView(out)
 }
 
-// summarizeChecks reduces gh's per-check buckets to one label. Any failure wins;
-// otherwise any still-pending check keeps it amber; an all-clear run is green.
-func summarizeChecks(buckets []string) string {
-	if len(buckets) == 0 {
-		return ""
+// rollupNode is one statusCheckRollup entry: a CheckRun (status/conclusion) or
+// a StatusContext (state), told apart by __typename.
+type rollupNode struct {
+	Typename   string `json:"__typename"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+	State      string `json:"state"`
+}
+
+// parsePRView turns `gh pr view --json mergeStateStatus,statusCheckRollup`
+// output into a ciResult. The rollup drives the state; mergeStateStatus only
+// refines it, because BLOCKED also means "review missing" with green checks.
+// UNKNOWN never flags a conflict: every fresh PR is UNKNOWN for a moment.
+func parsePRView(out []byte) ciResult {
+	var pr struct {
+		MergeStateStatus  string       `json:"mergeStateStatus"`
+		StatusCheckRollup []rollupNode `json:"statusCheckRollup"`
 	}
+	if err := json.Unmarshal(out, &pr); err != nil {
+		return ciResult{}
+	}
+	r := classifyRollup(pr.StatusCheckRollup)
+	if r.State == "failing" && pr.MergeStateStatus == "UNSTABLE" {
+		r.State = "soft-failing" // GitHub says only non-required checks failed
+	}
+	r.Conflict = pr.MergeStateStatus == "DIRTY"
+	return r
+}
+
+// classifyRollup reduces the rollup to one state plus a fail count. Any failure
+// wins; otherwise any still-pending check keeps it amber; passes and skips alone
+// are green. An unrecognised value counts as a failure (fail closed).
+func classifyRollup(nodes []rollupNode) ciResult {
+	if len(nodes) == 0 {
+		return ciResult{}
+	}
+	var r ciResult
 	var pending bool
-	for _, b := range buckets {
-		switch b {
-		case "fail", "cancel":
-			return "failing"
+	for _, n := range nodes {
+		switch rollupBucket(n) {
+		case "fail":
+			r.Fails++
 		case "pending":
 			pending = true
 		}
 	}
-	if pending {
+	switch {
+	case r.Fails > 0:
+		r.State = "failing"
+	case pending:
+		r.State = "pending"
+	default:
+		r.State = "green"
+	}
+	return r
+}
+
+// rollupBucket maps one node to "pass", "skip", "pending" or "fail".
+func rollupBucket(n rollupNode) string {
+	if n.Typename == "StatusContext" {
+		switch n.State {
+		case "EXPECTED", "PENDING":
+			return "pending"
+		case "SUCCESS":
+			return "pass"
+		}
+		return "fail"
+	}
+	if n.Typename != "CheckRun" {
+		return "fail"
+	}
+	if n.Status != "COMPLETED" {
 		return "pending"
 	}
-	return "green"
+	switch n.Conclusion {
+	case "SUCCESS", "NEUTRAL":
+		return "pass"
+	case "SKIPPED", "STALE":
+		return "skip"
+	}
+	return "fail"
 }
 
 // setSecurityHeaders hardens every dashboard response. Framing is the one that
@@ -581,7 +646,7 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'; base-uri 'none'; object-src 'none'")
 }
 
-func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *cwdCache, peek *peekConfig, act *actionConfig) {
+func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *cwdCache[ciResult], peek *peekConfig, act *actionConfig) {
 	data, err := buildDashboardData(r, db, ci, peek, act)
 	if err != nil {
 		http.Error(w, "dashboard error", http.StatusInternalServerError)
@@ -603,7 +668,7 @@ func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *cwd
 // {"signature": ..., "html": ...}. The client compares the signature to what it
 // last rendered and only swaps the DOM when it differs, so a quiet board never
 // repaints.
-func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *cwdCache, peek *peekConfig, act *actionConfig) {
+func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *cwdCache[ciResult], peek *peekConfig, act *actionConfig) {
 	data, err := buildDashboardData(r, db, ci, peek, act)
 	if err != nil {
 		http.Error(w, "dashboard error", http.StatusInternalServerError)
@@ -636,7 +701,7 @@ var dashboardTitle = sync.OnceValue(func() string {
 	return "clodhopper"
 })
 
-func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache, peek *peekConfig, act *actionConfig) (dashboardData, error) {
+func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], peek *peekConfig, act *actionConfig) (dashboardData, error) {
 	q := r.URL.Query()
 	source := q.Get("source_app")
 	branch := q.Get("branch")
@@ -765,7 +830,7 @@ func viewSignature(d dashboardData) string {
 		// Subagents and SubagentSince feed the "waiting on N agents" badge: the
 		// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
 		// Launcher feeds the [n]/[c] marker, which a resume can flip in place.
-		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.Launcher, a.Subagents, a.SubagentSince)
+		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%t:%q:%d:%d", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIConflict, a.Launcher, a.Subagents, a.SubagentSince)
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)
@@ -794,7 +859,7 @@ const ciWatchSecs = 5 * 60
 // suppressWatchedCI flips a row's CI verdict to "pending" when the session just
 // ran a CI-watch command, for ciWatchSecs after that command. The red (or green)
 // dot then reflects the *previous* run, which the operator has just superseded,
-// while `gh pr checks` legitimately keeps reporting the old buckets alongside
+// while gh legitimately keeps reporting the old checks alongside
 // the new ones during the overlap — so re-querying gh cannot resolve the
 // contradiction and the fix has to be driven by the re-run signal itself
 // (issue #111).
@@ -820,7 +885,7 @@ const ciWatchSecs = 5 * 60
 // now is injected per the project's time-injection convention.
 func suppressWatchedCI(agents []Agent, now time.Time) {
 	for i := range agents {
-		if agents[i].CI != "failing" && agents[i].CI != "green" {
+		if agents[i].CI != "failing" && agents[i].CI != "soft-failing" && agents[i].CI != "green" {
 			continue
 		}
 		if !isCIWatchCommand(agents[i].LastCommand) {
@@ -833,6 +898,7 @@ func suppressWatchedCI(agents []Agent, now time.Time) {
 		if age < 0 || age >= ciWatchSecs {
 			continue
 		}
+		// CIFails/CIConflict stay: the count only renders when failing, and a conflict is independent of the run.
 		agents[i].CI = "pending"
 	}
 }
@@ -860,7 +926,8 @@ func isCIWatchCommand(cmd string) bool {
 }
 
 // demotePendingCI relaxes a "needs you"/"waiting for you" row to the non-urgent
-// statusBackground when its CI is still running. A pending check means the agent
+// statusBackground when its CI is still running, or only non-required checks
+// failed (the PR is still mergeable). A pending check means the agent
 // most likely pushed and is waiting on that run, not blocked on the user — so the
 // alert styling would be misleading (issue #31). This runs in the server layer,
 // not in deriveStatus, because CI is fetched here via gh and is deliberately kept
@@ -874,7 +941,7 @@ func isCIWatchCommand(cmd string) bool {
 // on you regardless of CI.
 func demotePendingCI(agents []Agent) {
 	for i := range agents {
-		if agents[i].CI != "pending" {
+		if agents[i].CI != "pending" && agents[i].CI != "soft-failing" {
 			continue
 		}
 		if agents[i].Status == statusNeedsYou || agents[i].Status == statusWaiting {
@@ -884,10 +951,10 @@ func demotePendingCI(agents []Agent) {
 	}
 }
 
-// enrichCI fills each agent's CI field, fetching distinct cwds concurrently so a
+// enrichCI fills each agent's CI fields, fetching distinct cwds concurrently so a
 // roster of N worktrees costs one slow gh round-trip, not N sequential ones.
-func enrichCI(agents []Agent, ci *cwdCache, now time.Time) {
-	results := make(map[string]string)
+func enrichCI(agents []Agent, ci *cwdCache[ciResult], now time.Time) {
+	results := make(map[string]ciResult)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 6)
@@ -910,6 +977,7 @@ func enrichCI(agents []Agent, ci *cwdCache, now time.Time) {
 	}
 	wg.Wait()
 	for i := range agents {
-		agents[i].CI = results[agents[i].Cwd]
+		r := results[agents[i].Cwd]
+		agents[i].CI, agents[i].CIFails, agents[i].CIConflict = r.State, r.Fails, r.Conflict
 	}
 }

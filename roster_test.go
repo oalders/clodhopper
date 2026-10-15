@@ -12,22 +12,53 @@ import (
 	"time"
 )
 
-func TestSummarizeChecks(t *testing.T) {
+func TestClassifyRollup(t *testing.T) {
+	run := func(status, conclusion string) rollupNode {
+		return rollupNode{Typename: "CheckRun", Status: status, Conclusion: conclusion}
+	}
+	ctx := func(state string) rollupNode { return rollupNode{Typename: "StatusContext", State: state} }
 	cases := []struct {
-		name    string
-		buckets []string
-		want    string
+		name  string
+		nodes []rollupNode
+		want  ciResult
 	}{
-		{"none", nil, ""},
-		{"all pass", []string{"pass", "pass"}, "green"},
-		{"pass and skip", []string{"pass", "skipping"}, "green"},
-		{"any fail wins", []string{"pass", "pending", "fail"}, "failing"},
-		{"cancel is failing", []string{"pass", "cancel"}, "failing"},
-		{"pending holds amber", []string{"pass", "pending"}, "pending"},
+		{"none", nil, ciResult{}},
+		{"passes and skips are green", []rollupNode{run("COMPLETED", "SUCCESS"), run("COMPLETED", "NEUTRAL"), run("COMPLETED", "SKIPPED"), run("COMPLETED", "STALE"), ctx("SUCCESS")}, ciResult{State: "green"}},
+		{"incomplete run is pending", []rollupNode{run("COMPLETED", "SUCCESS"), run("IN_PROGRESS", "")}, ciResult{State: "pending"}},
+		{"expected context is pending", []rollupNode{ctx("EXPECTED")}, ciResult{State: "pending"}},
+		{"pending context is pending", []rollupNode{ctx("PENDING")}, ciResult{State: "pending"}},
+		{"every fail conclusion counts", []rollupNode{run("COMPLETED", "FAILURE"), run("COMPLETED", "TIMED_OUT"), run("COMPLETED", "ACTION_REQUIRED"), run("COMPLETED", "STARTUP_FAILURE"), run("COMPLETED", "CANCELLED"), run("QUEUED", "")}, ciResult{State: "failing", Fails: 5}},
+		{"failed contexts count", []rollupNode{ctx("FAILURE"), ctx("ERROR"), ctx("SUCCESS")}, ciResult{State: "failing", Fails: 2}},
+		{"unknown values fail closed", []rollupNode{run("COMPLETED", "NEW"), ctx("NEW"), {Typename: "NewNode"}}, ciResult{State: "failing", Fails: 3}},
 	}
 	for _, c := range cases {
-		if got := summarizeChecks(c.buckets); got != c.want {
-			t.Errorf("%s: summarizeChecks(%v) = %q, want %q", c.name, c.buckets, got, c.want)
+		if got := classifyRollup(c.nodes); got != c.want {
+			t.Errorf("%s: classifyRollup = %+v, want %+v", c.name, got, c.want)
+		}
+	}
+}
+
+// mergeStateStatus only refines the rollup's verdict: UNSTABLE softens a red,
+// DIRTY (and only DIRTY) flags a conflict, and junk output yields no CI.
+func TestParsePRView(t *testing.T) {
+	const failed = `{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}`
+	const passed = `{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}`
+	cases := []struct {
+		name string
+		out  string
+		want ciResult
+	}{
+		{"unstable softens failing", `{"mergeStateStatus":"UNSTABLE","statusCheckRollup":[` + failed + `]}`, ciResult{State: "soft-failing", Fails: 1}},
+		{"blocked stays failing", `{"mergeStateStatus":"BLOCKED","statusCheckRollup":[` + failed + `]}`, ciResult{State: "failing", Fails: 1}},
+		{"blocked with green checks stays green", `{"mergeStateStatus":"BLOCKED","statusCheckRollup":[` + passed + `]}`, ciResult{State: "green"}},
+		{"dirty is a conflict", `{"mergeStateStatus":"DIRTY","statusCheckRollup":[` + passed + `]}`, ciResult{State: "green", Conflict: true}},
+		{"conflict without checks", `{"mergeStateStatus":"DIRTY","statusCheckRollup":[]}`, ciResult{Conflict: true}},
+		{"unknown is no conflict", `{"mergeStateStatus":"UNKNOWN","statusCheckRollup":[` + failed + `]}`, ciResult{State: "failing", Fails: 1}},
+		{"malformed", `not json`, ciResult{}},
+	}
+	for _, c := range cases {
+		if got := parsePRView([]byte(c.out)); got != c.want {
+			t.Errorf("%s: parsePRView = %+v, want %+v", c.name, got, c.want)
 		}
 	}
 }

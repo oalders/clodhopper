@@ -775,16 +775,16 @@ func TestBuildDashboardDataDropsDeadPane(t *testing.T) {
 // entry is fresh while now-at < cwdTTL), and refreshes once that has elapsed.
 func TestCwdCacheGet(t *testing.T) {
 	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
-	var nilCache *cwdCache
+	var nilCache *cwdCache[string]
 	if got := nilCache.get("/wt", now); got != "" {
 		t.Errorf("nil cache: got %q, want empty", got)
 	}
-	if got := (&cwdCache{m: map[string]cwdEntry{}}).get("/wt", now); got != "" {
+	if got := (&cwdCache[string]{m: map[string]cwdEntry[string]{}}).get("/wt", now); got != "" {
 		t.Errorf("nil lookup: got %q, want empty", got)
 	}
 
 	calls := 0
-	c := &cwdCache{m: map[string]cwdEntry{}, lookup: func(cwd string) string {
+	c := &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: func(cwd string) string {
 		calls++
 		return "val:" + cwd
 	}}
@@ -815,7 +815,7 @@ func TestBuildDashboardDataRepoOnlyForLivePane(t *testing.T) {
 	peek := &peekConfig{
 		enabled: true,
 		cache:   &paneCache{set: map[string]livePane{"%1": {session: "work"}}, at: now.Add(time.Hour)},
-		repos: &cwdCache{m: map[string]cwdEntry{cwd: {val: "o/r", at: now.Add(time.Hour)}}, lookup: func(string) string {
+		repos: &cwdCache[string]{m: map[string]cwdEntry[string]{cwd: {val: "o/r", at: now.Add(time.Hour)}}, lookup: func(string) string {
 			t.Error("unexpected lookup")
 			return ""
 		}},
@@ -1302,6 +1302,7 @@ func TestDemotePendingCI(t *testing.T) {
 	agents := []Agent{
 		{SessionID: "needs", Status: statusNeedsYou, StatusRank: 1, CI: "pending"},
 		{SessionID: "waiting", Status: statusWaiting, StatusRank: 0, CI: "pending"},
+		{SessionID: "soft", Status: statusWaiting, StatusRank: 0, CI: "soft-failing"},  // still mergeable
 		{SessionID: "approval", Status: statusApproval, StatusRank: 1, CI: "pending"},  // a real prompt: untouched
 		{SessionID: "needs-green", Status: statusNeedsYou, StatusRank: 1, CI: "green"}, // CI not pending: untouched
 		{SessionID: "working", Status: statusWorking, StatusRank: 5, CI: "pending"},    // not an alert: untouched
@@ -1312,7 +1313,7 @@ func TestDemotePendingCI(t *testing.T) {
 	for _, a := range agents {
 		got[a.SessionID] = a
 	}
-	for _, id := range []string{"needs", "waiting"} {
+	for _, id := range []string{"needs", "waiting", "soft"} {
 		if a := got[id]; a.Status != statusBackground || a.StatusRank != rankBackground {
 			t.Errorf("%s with pending CI should demote to %q rank %d, got %q rank %d", id, statusBackground, rankBackground, a.Status, a.StatusRank)
 		}
@@ -3501,6 +3502,7 @@ func TestSuppressWatchedCI(t *testing.T) {
 	}{
 		{"failing suppressed", []Agent{{LastCommand: "/poll-ci", LastCommandSince: fresh, CI: "failing"}}, []string{"pending"}},
 		{"green suppressed", []Agent{{LastCommand: "/monitor-ci", LastCommandSince: fresh, CI: "green"}}, []string{"pending"}},
+		{"soft-failing suppressed", []Agent{{LastCommand: "/poll-ci", LastCommandSince: fresh, CI: "soft-failing"}}, []string{"pending"}},
 		{"window expired", []Agent{{LastCommand: "/poll-ci", LastCommandSince: stale, CI: "failing"}}, []string{"failing"}},
 		{"boundary is exclusive", []Agent{{LastCommand: "/poll-ci", LastCommandSince: now.Unix() - ciWatchSecs, CI: "failing"}}, []string{"failing"}},
 		{"boundary minus one suppresses", []Agent{{LastCommand: "/poll-ci", LastCommandSince: now.Unix() - ciWatchSecs + 1, CI: "failing"}}, []string{"pending"}},
@@ -3561,7 +3563,7 @@ func TestSuppressWatchedCI_Demotes(t *testing.T) {
 	ins(1, "Stop", "") // "waiting for you"
 
 	// Pre-seed rather than shelling out to gh; `at` must be inside cwdTTL.
-	ci := &cwdCache{m: map[string]cwdEntry{cwd: {val: "failing", at: time.Now()}}}
+	ci := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{cwd: {val: ciResult{State: "failing"}, at: time.Now()}}}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	data, err := buildDashboardData(r, db, ci, &peekConfig{}, &actionConfig{})
 	if err != nil {
@@ -3603,7 +3605,7 @@ func TestSuppressWatchedCI_RowIsolation(t *testing.T) {
 	ins(2, "other", "UserPromptSubmit", "/code-review")
 	ins(1, "other", "Stop", "")
 
-	ci := &cwdCache{m: map[string]cwdEntry{cwd: {val: "failing", at: time.Now()}}}
+	ci := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{cwd: {val: ciResult{State: "failing", Fails: 2, Conflict: true}, at: time.Now()}}}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	data, err := buildDashboardData(r, db, ci, &peekConfig{}, &actionConfig{})
 	if err != nil {
@@ -3618,6 +3620,9 @@ func TestSuppressWatchedCI_RowIsolation(t *testing.T) {
 	}
 	if got := byID["other"].CI; got != "failing" {
 		t.Errorf("other CI = %q, want failing (same cwd, but it ran no CI-watch command)", got)
+	}
+	if o := byID["other"]; o.CIFails != 2 || !o.CIConflict {
+		t.Errorf("other CIFails/CIConflict = %d/%t, want 2/true (copied by enrichCI)", o.CIFails, o.CIConflict)
 	}
 }
 
@@ -3634,6 +3639,38 @@ func TestDashboardRendersSuppressedCIAsPending(t *testing.T) {
 	}
 	if !strings.Contains(html, `aria-label="CI failing"`) {
 		t.Errorf("the unsuppressed row must still render the failing dot:\n%s", html)
+	}
+}
+
+// The soft-failing dot, the fail count on red and orange, and the conflict
+// marker, which co-renders even with no CI state at all.
+func TestDashboardRendersCIDetail(t *testing.T) {
+	html := renderDashboard(t, dashboardData{Agents: []Agent{
+		{SessionID: "red", Branch: "a", CI: "failing", CIFails: 3},
+		{SessionID: "orange", Branch: "b", CI: "soft-failing", CIFails: 1, CIConflict: true},
+		{SessionID: "none", Branch: "c", CIConflict: true},
+	}})
+	for _, want := range []string{
+		`<span role="img" aria-label="CI failing">🔴</span> <span class="cifails">3 failed</span>`,
+		`<td data-label="CI" class="ci soft-failing"><span role="img" aria-label="non-required check failing">🟠</span> <span class="cifails">1 failed</span> <span role="img" aria-label="merge conflict with base">🔀</span></td>`,
+		`<span role="img" aria-label="no CI">—</span> <span role="img" aria-label="merge conflict with base">🔀</span>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing %s in:\n%s", want, html)
+		}
+	}
+}
+
+// A change in fail count or conflict alone must repaint.
+func TestViewSignature_TracksCIDetail(t *testing.T) {
+	base := dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1}}}
+	more := dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 2}}}
+	conflict := dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1, CIConflict: true}}}
+	if viewSignature(base) == viewSignature(more) {
+		t.Error("signature unchanged when the fail count changed")
+	}
+	if viewSignature(base) == viewSignature(conflict) {
+		t.Error("signature unchanged when a conflict appeared")
 	}
 }
 
