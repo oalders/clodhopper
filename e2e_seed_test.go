@@ -79,7 +79,13 @@ func TestE2ESeed(t *testing.T) {
 	// Idle with a two-digit hour count; branchless, so the cwd basename stands in.
 	add(23*time.Hour, appB, "", "a-very-long-worktree-directory-name-standing-in-for-the-branch", "e2e-idle-0000-1111-2222-333333333333", "PreToolUse", "Read", "")
 
+	// Peek-able rows for swap.spec.ts: e2e/serve.sh's stub tmux lists exactly these pane ids.
+	panes := map[string]string{
+		"e2e-waiting-0000-1111-2222-333333333333": "%9001",
+		"e2e-needs-0000-1111-2222-333333333333":   "%9002",
+	}
 	for _, ev := range evs {
+		ev.TmuxPane = panes[ev.SessionID]
 		if err := insertEvent(db, ev); err != nil {
 			t.Fatal(err)
 		}

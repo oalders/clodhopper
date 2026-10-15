@@ -1,5 +1,5 @@
 import type { Page, Request } from '@playwright/test';
-import { test, expect } from './fixtures';
+import { test, expect, abortUnstubbedExec } from './fixtures';
 
 // Runs only against serve.sh's --enable-merge server (the "exec desktop 1440"
 // project in playwright.config.ts). Every /api/action request is answered
@@ -45,16 +45,7 @@ async function stubActions(page: Page): Promise<Request[]> {
 let unstubbed: string[] = [];
 
 test.beforeEach(async ({ page }) => {
-  unstubbed = [];
-  // Registered first so it runs last: Playwright tries the newest matching
-  // route first, so a test's own stubActions still wins over this.
-  await page.route(
-    (url) => url.pathname === '/api/action' || url.pathname === '/api/pane',
-    (route) => {
-      unstubbed.push(route.request().url());
-      return route.abort();
-    },
-  );
+  unstubbed = await abortUnstubbedExec(page);
   await page.goto('/?refresh=0');
 });
 

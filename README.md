@@ -480,11 +480,14 @@ throwaway database with worst-case fixtures (`e2e_seed_test.go`, build tag
 `127.0.0.1:9324` with no tmux, no write path, and no host `CLODHOPPER_*`
 config. It checks that status badges and time cells are never clipped and the
 page never scrolls sideways at 1440, 641 and 390px wide, plus the theme toggle
-and filter strip. `restart.spec.ts` runs against a second server on
-`127.0.0.1:9325` started with `--enable-merge`, so the restart (all) arm/confirm,
-Escape and report table render. That server is just as isolated (still no
-tmux), and the spec stubs every `/api/action` request with canned JSON in the
-handler's response shape, so nothing reaches the real write path. JetBrains
+and filter strip. `restart.spec.ts` and `swap.spec.ts` run against a second
+server on `127.0.0.1:9325` started with `--enable-merge --pane-peek`, covering
+the restart (all) arm/confirm, Escape and report table, and what a poll's
+repaint carries over (open peeks and their scroll, open actions panels, focus,
+and the hold-off while an action is busy). That server is just as isolated: a
+stub `tmux` only lists the seeded panes and fails everything else, and the
+specs stub every `/api/action` and `/api/pane` request with canned responses,
+so nothing reaches the real write path. JetBrains
 Mono comes from `@fontsource/jetbrains-mono`, so the measurements match on
 every machine. CI runs it as the blocking `e2e` job and uploads the HTML
 report on failure.
