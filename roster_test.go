@@ -479,14 +479,62 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 	ins(at(20), "s-mixed", "SubagentStart", "a1", "")
 	ins(at(3), "s-mixed", "SubagentStart", "a2", "")
 	ins(at(1), "s-mixed", "Stop", "", "{}")
-	// Deliberate tradeoff: a subagent's tool events after Stop still drive status.
+	// A subagent's tool events after Stop must not flip the session to working.
 	ins(at(4), "s-late", "SubagentStart", "a1", "")
 	ins(at(3), "s-late", "Stop", "", "{}")
 	ins(at(1), "s-late", "PreToolUse", "a1", "")
+	ins(at(1), "s-late", "PostToolUse", "a1", "")
+	// A main agent blocked on a foreground subagent stays working while the
+	// subagent is active, even though the main agent itself has been quiet.
+	ins(at(10), "s-fg", "PreToolUse", "", `{}`)
+	ins(at(10), "s-fg", "SubagentStart", "a1", "")
+	ins(at(1), "s-fg", "PreToolUse", "a1", "")
 	// A subagent asking permission is urgent, outranking the outstanding subagent.
 	ins(at(4), "s-perm", "SubagentStart", "a1", "")
 	ins(at(3), "s-perm", "Stop", "", "{}")
 	ins(at(1), "s-perm", "PermissionRequest", "a1", "")
+	// Once answered, the subagent's next event clears the request: the session
+	// is back to waiting on that subagent, not stuck on "needs approval".
+	ins(at(4), "s-perm-done", "SubagentStart", "a1", "")
+	ins(at(3), "s-perm-done", "Stop", "", "{}")
+	ins(at(2), "s-perm-done", "PermissionRequest", "a1", "")
+	ins(at(1), "s-perm-done", "PreToolUse", "a1", "")
+	// A main-agent event does not answer a subagent's pending request.
+	ins(at(4), "s-perm-main", "SubagentStart", "a1", "")
+	ins(at(3), "s-perm-main", "PermissionRequest", "a1", "")
+	ins(at(1), "s-perm-main", "Stop", "", "{}")
+	// A subagent's permission_prompt Notification blocks on the user too.
+	ins(at(4), "s-perm-notif", "SubagentStart", "a1", "")
+	ins(at(3), "s-perm-notif", "Stop", "", "{}")
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-127", SessionID: "s-perm-notif", EventType: "Notification",
+		PayloadJSON: `{"agent_id":"a1","notification_type":"permission_prompt"}`})
+	// The held request keeps its tool across the trailing tool-less
+	// permission_prompt Notification, so AskUserQuestion still reads "needs input".
+	ins(at(4), "s-ask", "SubagentStart", "a1", "")
+	ins(at(3), "s-ask", "Stop", "", "{}")
+	insertEvent(db, Event{TS: at(2), SourceApp: "myapp", Branch: "fix-127", SessionID: "s-ask", EventType: "PermissionRequest",
+		ToolName: "AskUserQuestion", PayloadJSON: `{"agent_id":"a1"}`})
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-127", SessionID: "s-ask", EventType: "Notification",
+		PayloadJSON: `{"agent_id":"a1","notification_type":"permission_prompt"}`})
+	// A subagent stopped while its request is pending clears it.
+	ins(at(4), "s-perm-killed", "SubagentStart", "a1", "")
+	ins(at(3), "s-perm-killed", "Stop", "", "{}")
+	ins(at(2), "s-perm-killed", "PermissionRequest", "a1", "")
+	ins(at(1), "s-perm-killed", "SubagentStop", "a1", "")
+	// A main-agent prompt does not clear it either: a finished background task
+	// re-invokes the main agent as UserPromptSubmit while the dialog is open.
+	ins(at(4), "s-perm-notified", "SubagentStart", "a1", "")
+	ins(at(3), "s-perm-notified", "PermissionRequest", "a1", "")
+	ins(at(2), "s-perm-notified", "UserPromptSubmit", "", "{}")
+	ins(at(1), "s-perm-notified", "Stop", "", "{}")
+	// An approval pending on one subagent outranks a question on another.
+	ins(at(4), "s-perm-mixed", "SubagentStart", "a1", "")
+	ins(at(4), "s-perm-mixed", "SubagentStart", "a2", "")
+	ins(at(3), "s-perm-mixed", "Stop", "", "{}")
+	insertEvent(db, Event{TS: at(2), SourceApp: "myapp", Branch: "fix-127", SessionID: "s-perm-mixed", EventType: "PermissionRequest",
+		ToolName: "AskUserQuestion", PayloadJSON: `{"agent_id":"a1"}`})
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-127", SessionID: "s-perm-mixed", EventType: "PermissionRequest",
+		ToolName: "Bash", PayloadJSON: `{"agent_id":"a2"}`})
 
 	agents, err := agentRoster(db, 16*time.Hour, now)
 	if err != nil {
@@ -509,8 +557,16 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 		{"s-done", statusWaiting, 0, 0, ""},
 		{"s-orphan", statusWaiting, 0, 0, ""},
 		{"s-stale", statusWaiting, 0, 0, ""},
-		{"s-late", statusWorking, 0, 0, ""},
+		{"s-late", statusSubagents, 1, 4, "4m"},
+		{"s-fg", statusWorking, 0, 0, ""},
 		{"s-perm", statusApproval, 0, 0, ""},
+		{"s-perm-done", statusSubagents, 1, 4, "4m"},
+		{"s-perm-main", statusApproval, 0, 0, ""},
+		{"s-perm-notif", statusApproval, 0, 0, ""},
+		{"s-ask", statusInput, 0, 0, ""},
+		{"s-perm-killed", statusWaiting, 0, 0, ""},
+		{"s-perm-notified", statusApproval, 0, 0, ""},
+		{"s-perm-mixed", statusApproval, 0, 0, ""},
 	} {
 		a := got[c.sess]
 		if a.Status != c.status || a.Subagents != c.count {
@@ -526,6 +582,19 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 		}
 		if c.status == statusApproval && a.StatusRank != 1 {
 			t.Errorf("%s: a subagent permission request must rank urgent (1), got %d", c.sess, a.StatusRank)
+		}
+	}
+	// Map iteration order is randomised; re-fold so a lucky order cannot mask an
+	// order-dependent pick between the pending approval and question.
+	for range 20 {
+		agents, err := agentRoster(db, 16*time.Hour, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range agents {
+			if a.SessionID == "s-perm-mixed" && a.Status != statusApproval {
+				t.Fatalf("s-perm-mixed: want %q regardless of map order, got %q", statusApproval, a.Status)
+			}
 		}
 	}
 }

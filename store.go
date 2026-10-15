@@ -550,6 +550,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		lastTool  string
 		lastNotif string
 		subs      map[string]*subagent // running subagents by agent_id
+		subPerms  map[string]string    // subagents blocked on a permission request: agent_id -> tool
 	}
 	byID := map[string]*state{}
 	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
@@ -561,7 +562,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		}
 		s := byID[sess]
 		if s == nil {
-			s = &state{a: Agent{SessionID: sess, firstSeq: nextSeq}, subs: map[string]*subagent{}}
+			s = &state{a: Agent{SessionID: sess, firstSeq: nextSeq}, subs: map[string]*subagent{}, subPerms: map[string]string{}}
 			byID[sess] = s
 			nextSeq++
 		}
@@ -618,12 +619,40 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 			continue
 		case "SubagentStop":
 			delete(s.subs, agentID)
+			delete(s.subPerms, agentID)
 			continue
 		}
 		if sub := s.subs[agentID]; sub != nil {
 			if t, err := time.Parse(time.RFC3339, ts); err == nil {
 				sub.lastSeen = t
 			}
+		}
+		// A subagent's own events are activity, not the main agent's state:
+		// letting them set LastEvent flips a parked session between "working" and
+		// "waiting for you" on every background tool call. They keep the session
+		// fresh (lastTS) so a main agent blocked on a foreground subagent does not
+		// go stale. A subagent permission prompt (a PermissionRequest, or the
+		// permission_prompt Notification deriveStatus also treats as blocking)
+		// genuinely blocks on the user, so it is held aside in subPerms
+		// (overriding the status below) until that subagent's next event shows it
+		// was answered — rather than written to LastEvent, where no later subagent
+		// event could ever clear it. Main-agent events deliberately do not clear
+		// it: a finished background task re-invokes the main agent as a
+		// UserPromptSubmit while another subagent's dialog may still be open. So a
+		// request abandoned with no further subagent event stays visible until
+		// SubagentStop or the waitingCap window — fail toward showing it.
+		if agentID != "" {
+			s.lastTS = ts
+			if etype == "PermissionRequest" || (etype == "Notification" && notifType == "permission_prompt") {
+				// The Notification trailing a request carries no tool_name; keep the
+				// request's tool so AskUserQuestion still reads "needs input".
+				if _, ok := s.subPerms[agentID]; !ok || tool != "" {
+					s.subPerms[agentID] = tool
+				}
+			} else {
+				delete(s.subPerms, agentID)
+			}
+			continue
 		}
 		s.a.LastEvent = etype
 		s.lastTS = ts
@@ -654,6 +683,14 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		label, rank, active := deriveStatus(s.a.LastEvent, s.lastNotif, s.lastTool, idleSecs)
 		if !active {
 			continue
+		}
+		// A subagent blocked on a permission request outranks whatever the main
+		// agent is doing; the label follows the same input-vs-approval split.
+		for _, tool := range s.subPerms {
+			label, rank, _ = deriveStatus("PermissionRequest", "", tool, 0)
+			if label == statusApproval {
+				break // an approval anywhere wins over a question, independent of map order
+			}
 		}
 		a := s.a
 		a.Status, a.StatusRank = label, rank
