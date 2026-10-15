@@ -161,7 +161,6 @@ func capturePane(pane string, lines int) (string, bool) {
 // degrades to 404 on any miss or capture failure — never 500. now is injected for
 // testing.
 func handlePane(w http.ResponseWriter, r *http.Request, peek *peekConfig, now time.Time) {
-	setSecurityHeaders(w)
 	if !peek.enabled {
 		http.Error(w, "pane peek disabled", http.StatusForbidden)
 		return

@@ -880,49 +880,73 @@ func TestBuildDashboardDataPeerGatesExecAndPeek(t *testing.T) {
 // Both routes carry the hardening headers. The framing one has teeth: the
 // clipboard fallback used on a non-secure origin still copies inside a frame,
 // so a framed dashboard is a usable decoy.
-func TestHandlers_SetSecurityHeaders(t *testing.T) {
+// serveMuxFor builds the real routed handler (as runServe does) over a DB
+// holding one identifiable roster row, bound to 100.64.0.2 with one extra name.
+func serveMuxFor(t *testing.T) http.Handler {
+	t.Helper()
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
-	defer db.Close()
+	t.Cleanup(func() { db.Close() })
 	now := time.Now().UTC().Format(time.RFC3339)
-	insertEvent(db, Event{TS: now, SourceApp: "myapp", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "secret-branch", Cwd: "/home/u/secret-worktree", SessionID: "s1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
+	t.Setenv("CLODHOPPER_ALLOWED_HOSTS", "board.tailnet.ts.net")
+	peek, act := newServeConfigs("100.64.0.2", false, paneLinesDefault, false)
+	return newServeMux(db, newCICache(), peek, act)
+}
 
-	routes := map[string]func(http.ResponseWriter, *http.Request, *sql.DB, *cwdCache, *peekConfig, *actionConfig){
-		"/":          handleDashboard,
-		"/api/state": handleState,
-	}
+func serveGet(h http.Handler, target, host string) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodGet, target, nil)
+	r.Host = host
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+// Through the mux, not the handlers: the catch-all 404 and the 421 are written
+// by no handler at all, so only middleware around the mux can harden them.
+func TestServeMux_SetsSecurityHeaders(t *testing.T) {
+	h := serveMuxFor(t)
 	want := map[string]string{
 		"X-Frame-Options":         "DENY",
 		"X-Content-Type-Options":  "nosniff",
 		"Referrer-Policy":         "no-referrer",
 		"Content-Security-Policy": "frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
 	}
-	for target, h := range routes {
-		rec := httptest.NewRecorder()
-		h(rec, httptest.NewRequest(http.MethodGet, target, nil), db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
-		if rec.Code != http.StatusOK {
-			t.Fatalf("%s: status=%d", target, rec.Code)
+	for _, c := range []struct {
+		target, host string
+		code         int
+	}{
+		{"/", "127.0.0.1:4555", http.StatusOK},
+		{"/api/state", "127.0.0.1:4555", http.StatusOK},
+		{"/nope", "127.0.0.1:4555", http.StatusNotFound},
+		{"/", "attacker.example:4555", http.StatusMisdirectedRequest},
+	} {
+		rec := serveGet(h, c.target, c.host)
+		if rec.Code != c.code {
+			t.Fatalf("%s (Host %s): status=%d, want %d", c.target, c.host, rec.Code, c.code)
 		}
 		for k, v := range want {
 			if got := rec.Header().Get(k); got != v {
-				t.Errorf("%s: %s = %q, want %q", target, k, got, v)
+				t.Errorf("%s (Host %s): %s = %q, want %q", c.target, c.host, k, got, v)
 			}
 		}
 	}
+}
 
-	// The error path has to carry them too. http.Error writes the response, so a
-	// handler that set headers only after a successful query would ship its 500
-	// unframed — which is the response an attacker can most easily provoke.
-	closed, _ := openDB(filepath.Join(t.TempDir(), "closed.db"))
-	closed.Close()
-	for target, h := range routes {
-		rec := httptest.NewRecorder()
-		h(rec, httptest.NewRequest(http.MethodGet, target, nil), closed, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
-		if rec.Code != http.StatusInternalServerError {
-			t.Fatalf("%s: a closed DB should 500, got %d", target, rec.Code)
+// DNS rebinding: a page whose name resolves to the dashboard is same-origin, so
+// the read-only routes must refuse any Host that does not name this dashboard.
+func TestServeMux_RejectsUnknownHost(t *testing.T) {
+	h := serveMuxFor(t)
+	for _, target := range []string{"/", "/api/state"} {
+		rec := serveGet(h, target, "attacker.example:4555")
+		if rec.Code != http.StatusMisdirectedRequest {
+			t.Errorf("%s: rebound Host status=%d, want 421", target, rec.Code)
 		}
-		for k, v := range want {
-			if got := rec.Header().Get(k); got != v {
-				t.Errorf("%s (500): %s = %q, want %q", target, k, got, v)
+		if body := rec.Body.String(); strings.Contains(body, "secret-worktree") || strings.Contains(body, "secret-branch") {
+			t.Errorf("%s: 421 body leaks roster data: %q", target, body)
+		}
+		for _, host := range []string{"127.0.0.1:4555", "localhost:4555", "[::1]:4555", "100.64.0.2:4555", "board.tailnet.ts.net:4555"} {
+			if rec := serveGet(h, target, host); rec.Code != http.StatusOK {
+				t.Errorf("%s (Host %s): status=%d, want 200", target, host, rec.Code)
 			}
 		}
 	}

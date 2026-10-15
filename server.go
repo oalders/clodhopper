@@ -339,6 +339,41 @@ func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool
 	return peek, act
 }
 
+// newServeMux registers the dashboard routes behind one middleware, so the
+// security headers and the Host allowlist cover every response — including the
+// catch-all 404 — rather than relying on each handler to remember them.
+func newServeMux(db *sql.DB, ci *cwdCache, peek *peekConfig, act *actionConfig) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		handleDashboard(w, r, db, ci, peek, act)
+	})
+	// JSON polling endpoint: the dashboard's JS hits this on the refresh interval
+	// and re-renders only when the returned signature changes.
+	mux.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
+		handleState(w, r, db, ci, peek, act)
+	})
+	mux.HandleFunc("/api/pane", func(w http.ResponseWriter, r *http.Request) {
+		handlePane(w, r, peek, time.Now())
+	})
+	mux.HandleFunc("/api/action", func(w http.ResponseWriter, r *http.Request) {
+		handleAction(w, r, db, act, time.Now())
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		setSecurityHeaders(w)
+		// DNS rebinding: an attacker page whose name resolves here is same-origin
+		// and could otherwise read the roster (paths, prompt previews, branches).
+		if !hostAllowed(r.Host, act.bindHost, act.allowedHosts) {
+			http.Error(w, "unrecognised Host; add it to CLODHOPPER_ALLOWED_HOSTS", http.StatusMisdirectedRequest)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
+
 // runServe starts the read-only dashboard HTTP server. It binds 127.0.0.1 by
 // default; --host 0.0.0.0 (or CLODHOPPER_HOST) exposes it on all interfaces, which
 // is needed when the browser is on a different machine/namespace than the
@@ -395,26 +430,6 @@ func runServe(args []string) int {
 		}
 		act.token = tok
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
-		}
-		handleDashboard(w, r, db, ci, peek, act)
-	})
-	// JSON polling endpoint: the dashboard's JS hits this on the refresh interval
-	// and re-renders only when the returned signature changes.
-	mux.HandleFunc("/api/state", func(w http.ResponseWriter, r *http.Request) {
-		handleState(w, r, db, ci, peek, act)
-	})
-	mux.HandleFunc("/api/pane", func(w http.ResponseWriter, r *http.Request) {
-		handlePane(w, r, peek, time.Now())
-	})
-	mux.HandleFunc("/api/action", func(w http.ResponseWriter, r *http.Request) {
-		handleAction(w, r, db, act, time.Now())
-	})
-
 	addr := net.JoinHostPort(*host, strconv.Itoa(*port))
 	if err := guardPublicBind(*host, *allowPub); err != nil {
 		fmt.Fprintln(os.Stderr, "clodhopper serve:", err)
@@ -431,7 +446,7 @@ func runServe(args []string) int {
 	// `gh` CI lookups, and cutting that off mid-response would corrupt the page.
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           newServeMux(db, ci, peek, act),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		IdleTimeout:       60 * time.Second,
@@ -536,7 +551,7 @@ func summarizeChecks(buckets []string) string {
 	return "green"
 }
 
-// setSecurityHeaders hardens both dashboard responses. Framing is the one that
+// setSecurityHeaders hardens every dashboard response. Framing is the one that
 // matters here: the clipboard fallback the dashboard uses on a non-secure origin
 // (document.execCommand, the path serve --tailscale takes) still works inside a
 // frame under a user gesture, unlike navigator.clipboard, so a page that framed
@@ -555,11 +570,10 @@ func summarizeChecks(buckets []string) string {
 // would still hold even alongside 'unsafe-inline'; that is worth doing, and is
 // tracked as its own change rather than grown onto this one.
 //
-// Called FIRST in each handler, before any error path can return: http.Error
-// writes a response, and headers set afterwards are lost, so an error response
-// would otherwise ship unhardened. Setting them up front is safe — nothing is
-// written yet — and makes "every response carries these" structural rather than
-// something each new return statement has to remember.
+// newServeMux's middleware applies it to every response, before any handler (or
+// the mux's own 404) can write: http.Error writes a response, and headers set
+// afterwards are lost, so doing it once up front makes "every response carries
+// these" structural rather than something each handler has to remember.
 func setSecurityHeaders(w http.ResponseWriter) {
 	w.Header().Set("X-Frame-Options", "DENY")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -568,7 +582,6 @@ func setSecurityHeaders(w http.ResponseWriter) {
 }
 
 func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *cwdCache, peek *peekConfig, act *actionConfig) {
-	setSecurityHeaders(w)
 	data, err := buildDashboardData(r, db, ci, peek, act)
 	if err != nil {
 		http.Error(w, "dashboard error", http.StatusInternalServerError)
@@ -591,7 +604,6 @@ func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *cwd
 // last rendered and only swaps the DOM when it differs, so a quiet board never
 // repaints.
 func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *cwdCache, peek *peekConfig, act *actionConfig) {
-	setSecurityHeaders(w)
 	data, err := buildDashboardData(r, db, ci, peek, act)
 	if err != nil {
 		http.Error(w, "dashboard error", http.StatusInternalServerError)

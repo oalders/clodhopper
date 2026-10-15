@@ -926,7 +926,6 @@ func randomToken() (string, error) {
 // is deterministic in tests. Every early return uses a plain http status; only a
 // completed run writes the JSON body.
 func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actionConfig, now time.Time) {
-	setSecurityHeaders(w)
 	if !cfg.enabled {
 		http.Error(w, "PR actions disabled", http.StatusForbidden)
 		return
