@@ -102,6 +102,30 @@ func TestListPanes(t *testing.T) {
 	}
 }
 
+// capturePane drops tmux's trailing blank padding rows but keeps leading and
+// interior blank lines, and an all-blank pane still yields "\n" (not "", which
+// the dashboard shows as "(pane unavailable)").
+func TestCapturePane_TrimsTrailingBlankRows(t *testing.T) {
+	cases := []struct{ name, printed, want string }{
+		{"content", `\nfirst\n\nsecond  \n\n   \n\t\n\n\n`, "\nfirst\n\nsecond\n"},
+		{"all blank", `\n  \n\n\n`, "\n"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			script := "#!/bin/sh\nprintf '" + c.printed + "'\n"
+			if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+			got, ok := capturePane("%1", 40)
+			if !ok || got != c.want {
+				t.Errorf("capturePane() = %q, %v; want %q, true", got, ok, c.want)
+			}
+		})
+	}
+}
+
 // paneReq builds a /api/pane GET from a given peer with a given Host header.
 // Both matter: /api/pane runs the same gate the exec-backed actions run, so a
 // request needs an allowed peer AND an allowed Host (httptest's defaults are

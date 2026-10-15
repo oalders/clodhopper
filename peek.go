@@ -144,7 +144,8 @@ func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
 // capturePane returns the last `lines` rows of pane, scrubbed for secret-shaped
 // substrings. ok is false on any error/timeout. pane MUST already be validated
 // against paneIDRe by the caller; it is passed as a discrete argument after -t,
-// never through a shell.
+// never through a shell. Trailing blank rows (tmux pads the visible screen below
+// the cursor) are trimmed to one newline so the bottom-scrolled peek shows output.
 func capturePane(pane string, lines int) (string, bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -152,7 +153,7 @@ func capturePane(pane string, lines int) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	return scrubString(string(out)), true
+	return scrubString(strings.TrimRight(string(out), " \t\n") + "\n"), true
 }
 
 // handlePane serves GET /api/pane?pane=%N: the live pane's last N lines as
