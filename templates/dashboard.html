@@ -1821,26 +1821,31 @@
       }
       return lines.join('\n');
     }
-    // Paint a capture as text, linking only a footer-shaped "PR #N" (a whole line
-    // or " · "-separated segment, so prose like "see PR #12." stays text) to the
-    // row's server-resolved repo. Capture text only ever lands via text nodes.
+    // Paint a capture as text, linking a footer-shaped "PR #N" (a whole line or
+    // " · "-separated segment; in prose like "see PR #12." only "#12" links) to the
+    // row's server-resolved repo, plus a bare "#N" not glued to a word, "/" or
+    // "&" (so abc#12, foo/#12, #12abc and &#12 stay text). Text nodes only.
     function renderCapture(pre, text, repo) {
       pre.textContent = '';
-      var re = /(^|\n| · )([ \t]*)PR #([0-9]{1,9})(?=[ \t]*(?: · |\n|$))/g;
+      var re = /(^|\n| · )([ \t]*)PR #([0-9]{1,9})(?=[ \t]*(?: · |\n|$))|(?<![\w\/&])#([0-9]{1,9})(?!\w)/g;
       var linkable = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/.test(repo || '');
       var last = 0, m;
       while (linkable && (m = re.exec(text))) {
-        var n = parseInt(m[3], 10);
+        var footer = m[3] !== undefined;
+        var digits = footer ? m[3] : m[4];
+        var n = parseInt(digits, 10);
         // GitHub PRs start at 1; a skipped match stays in the next plain-text slice (last is not advanced).
         if (!(n > 0)) continue;
-        var start = m.index + m[1].length + m[2].length;
+        var start = footer ? m.index + m[1].length + m[2].length : m.index;
+        var label = (footer ? 'PR #' : '#') + digits;
         pre.appendChild(document.createTextNode(text.slice(last, start)));
         var a = document.createElement('a');
-        a.href = 'https://github.com/' + repo + '/pull/' + n;
+        // A bare #N may be an issue or a PR; /issues/N redirects to /pull/N for PRs.
+        a.href = 'https://github.com/' + repo + (footer ? '/pull/' : '/issues/') + n;
         a.target = '_blank';
         a.rel = 'noopener noreferrer';
-        a.textContent = 'PR #' + m[3];
-        a.setAttribute('aria-label', 'PR #' + m[3] + ' (opens in a new tab)');
+        a.textContent = label;
+        a.setAttribute('aria-label', label + ' (opens in a new tab)');
         pre.appendChild(a);
         last = re.lastIndex;
       }
