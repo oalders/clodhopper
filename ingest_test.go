@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode"
 )
 
 func TestBuildEvent_ExtractsToolUseIDAndDuration(t *testing.T) {
@@ -37,16 +36,30 @@ func TestBuildEvent_NoDurationWhenAbsent(t *testing.T) {
 // cwd is the one free-text field the dashboard hands to the clipboard, and
 // html/template leaves a newline in an attribute value alone — so a crafted
 // payload could otherwise plant a newline-terminated command in a path the
-// operator is about to paste into a terminal. Every control character goes; a
-// real path has none.
-func TestBuildEvent_StripsControlCharsFromCwd(t *testing.T) {
+// operator is about to paste into a terminal. A path with any control character
+// is refused outright: stripping would leave a path that does not exist.
+func TestBuildEvent_RefusesCwdWithControlChars(t *testing.T) {
 	raw := []byte(`{"hook_event_name":"Stop","session_id":"s","cwd":"/w/a\nrm -rf /\u0007\tb"}`)
-	ev := buildEvent(raw, "app")
-	if want := "/w/arm -rf /b"; ev.Cwd != want {
-		t.Errorf("cwd = %q, want %q", ev.Cwd, want)
+	if got := buildEvent(raw, "app").Cwd; got != "" {
+		t.Errorf("cwd = %q, want it refused (empty)", got)
 	}
-	if strings.ContainsFunc(ev.Cwd, unicode.IsControl) {
-		t.Errorf("control character survived in cwd: %q", ev.Cwd)
+}
+
+// session_id is the roster grouping key and `clodhopper end` prefix-matches it,
+// so a bad id is refused (stored as "") rather than truncated into a collision.
+func TestBuildEvent_SessionIDBounded(t *testing.T) {
+	uuid := "0f8fad5b-d9cb-469f-a165-70867728950e"
+	for name, tc := range map[string]struct{ in, want string }{
+		"uuid kept":        {uuid, uuid},
+		"over cap refused": {strings.Repeat("a", maxSessionIDLen+1), ""},
+		"control refused":  {uuid + `\n`, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw := []byte(`{"hook_event_name":"Stop","session_id":"` + tc.in + `"}`)
+			if got := buildEvent(raw, "app").SessionID; got != tc.want {
+				t.Errorf("session_id = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

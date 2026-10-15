@@ -25,6 +25,10 @@ const maxFieldLen = 300
 // reaches even the rune count, and the field still cannot grow without bound.
 const maxPathLen = 4096
 
+// maxSessionIDLen bounds session_id, the roster grouping key. Real ids are
+// 36-char UUIDs; longer ones are refused, not truncated, so ids never collide.
+const maxSessionIDLen = 128
+
 // payloadAllow is the set of top-level hook-payload keys we are willing to
 // persist. Everything else — notably transcript/chat content (messages,
 // content, tool_response, last_assistant_message, transcript_path) — is dropped.

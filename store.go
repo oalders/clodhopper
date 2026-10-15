@@ -269,7 +269,7 @@ func latestCwdForSession(db *sql.DB, sessionID string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return truncate(stripControl(cwd), maxPathLen), nil
+	return truncate(refuseControl(cwd), maxPathLen), nil
 }
 
 // latestPaneForSession returns the tmux pane id of sessionID's most recent event
@@ -602,7 +602,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		if launcher != "" {
 			s.a.Launcher = launcher
 		}
-		s.a.Cwd = truncate(stripControl(cwd), maxPathLen)
+		s.a.Cwd = truncate(refuseControl(cwd), maxPathLen)
 		if s.a.LaunchCwd == "" {
 			s.a.LaunchCwd = s.a.Cwd // first non-empty wins, unlike the last-write Cwd
 		}
