@@ -190,9 +190,6 @@ func TestHandleDashboard_CopyButtonAccessibility(t *testing.T) {
 	if !strings.Contains(body, `<span class="copyicon" aria-hidden="true">`) {
 		t.Errorf("the ⧉ glyph must be hidden from assistive tech:\n%s", body)
 	}
-	if !strings.Contains(body, `<div id="ck-copystatus" class="ck-sr"></div>`) {
-		t.Errorf("copy status element missing:\n%s", body)
-	}
 	// The path is on hover too — issue #71 asks for it explicitly.
 	if !strings.Contains(body, `title="/home/me/wt/fix-71"`) {
 		t.Errorf("copy button lost the hover title:\n%s", body)
@@ -448,8 +445,7 @@ func TestHandleDashboard_RedactedCwdIsRefusedByTheCopyGuard(t *testing.T) {
 	// that the guard is shipped and wired into the click handler. All three
 	// branches are pinned, not just the one this row exercises: a simplification
 	// that dropped the ellipsis disjunct would let a truncated path be copied as
-	// a broken path with the suite still green. So are the three messages —
-	// their whole point is that each cause is described accurately.
+	// a broken path with the suite still green.
 	for _, frag := range []string{
 		`function unusableReason(s) {`,
 		`if (s.indexOf('` + redacted + `') !== -1) return 'redacted';`,
@@ -457,10 +453,7 @@ func TestHandleDashboard_RedactedCwdIsRefusedByTheCopyGuard(t *testing.T) {
 		`if (pathAllow.test(s)) return 'unsafe';`,
 		`var path = btn.getAttribute('data-cwd') || '';`,
 		`var why = ctrlChars.test(path) ? 'unsafe' : unusableReason(path);`,
-		`flash(btn, false, unusableMsg[why]);`,
-		`redacted: 'part of this path was redacted — not copied',`,
-		`truncated: 'this path was too long and got cut off — not copied',`,
-		`unsafe: 'this path contains shell characters — not copied'`,
+		`flash(btn, false);`,
 	} {
 		if !strings.Contains(body, frag) {
 			t.Errorf("copy guard fragment missing from the page: %s", frag)
@@ -722,11 +715,6 @@ func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
 	// The fragment is the dynamic region only — no surrounding page chrome.
 	if strings.Contains(resp.HTML, "<form") || strings.Contains(resp.HTML, "<script") {
 		t.Errorf("fragment leaked page chrome:\n%s", resp.HTML)
-	}
-	// The copy status element must stay OUTSIDE #content, which this fragment
-	// replaces wholesale.
-	if strings.Contains(resp.HTML, "ck-copystatus") {
-		t.Errorf("copy status element moved inside the swapped region:\n%s", resp.HTML)
 	}
 }
 

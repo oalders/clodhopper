@@ -325,9 +325,8 @@
     .copycwd:hover .copyicon { color: var(--text-1); }
     .copycwd:focus-visible .copyicon { color: var(--brand); }
     .copycwd.copied .copyicon { color: var(--ok); }
-    /* A failed copy needs a visible state: the
-       clipboard silently keeps its old contents, so a sighted user who sees
-       nothing happen would paste the wrong path. */
+    /* A failed copy needs a visible state: the clipboard silently keeps its
+       old contents, so a user who sees nothing happen would paste the wrong path. */
     .copycwd.copyfail .copyicon { color: var(--fail); }
 
     /* Live pane peek: a small toggle in the shared controls cell, and a
@@ -449,7 +448,7 @@
     .actforce input:disabled { cursor: default; }
     label.actforce:has(input:disabled) { opacity: 0.45; cursor: default; }
 
-    /* Visually hidden — the copy confirmation and the cluster suffix live here. clip-path is the modern rule; the deprecated
+    /* Visually hidden — the cluster suffix and other screen-reader text live here. clip-path is the modern rule; the deprecated
        clip stays for browsers that only honour it. */
     .ck-sr {
       position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
@@ -798,10 +797,6 @@
   {{ end }}
 
   <main id="content">{{ template "content" . }}</main>
-
-  <!-- Copy and pin confirmations are written here. It lives OUTSIDE #content
-       because the poller replaces that element wholesale. -->
-  <div id="ck-copystatus" class="ck-sr"></div>
 
   <footer class="ck-footer">
     clodhopper <span class="ck-ver" title="{{ .VersionDetail }}">{{ .Version }}</span> · read-only · <span class="host" id="ck-host">127.0.0.1:4555</span> — best-effort, like everything else here.
@@ -1233,7 +1228,6 @@
   // and the least idle row's data-since. The chosen column persists as ch-pin-sort.
   (function () {
     var btn = document.getElementById('ck-pin');
-    var live = document.getElementById('ck-copystatus');
     var order = [];        // frozen group keys, in first-seen order
     var enabled = false;
     var sort = null;       // {col, dir} while pinned and sorted, else null
@@ -1433,10 +1427,8 @@
       reflect();
       // Off drops only the in-memory sort and the header affordance; ch-pin-sort
       // stays saved, so re-pinning restores it exactly as a page load does.
-      if (enabled) { snapshot(); sort = loadSort(); apply(); } else { order = []; sort = null; decorate(); }
-      // Note it in #ck-copystatus, outside #content (the poller can't wipe it).
       // Off just lets the next poll repaint in fresh server order.
-      if (live) live.textContent = enabled ? 'roster order pinned' : 'roster order live';
+      if (enabled) { snapshot(); sort = loadSort(); apply(); } else { order = []; sort = null; decorate(); }
     });
 
     // Delegated from document: the headers are swapped out with #content on
@@ -1448,31 +1440,23 @@
       sort = { col: col, dir: sort && sort.col === col && sort.dir === 'asc' ? 'desc' : 'asc' };
       saveSort();
       apply();
-      if (live) live.textContent = 'roster sorted by ' + col + ', ' + (sort.dir === 'asc' ? 'ascending' : 'descending');
     });
   })();
 
   // Click-to-copy for the roster's worktree paths.
   //
-  // Two structural constraints, both of which fail SILENTLY if refactored away:
-  //   1. The listener is DELEGATED from document. The poller swaps #content
-  //      wholesale, so per-button listeners bound in a loop would be discarded
-  //      on the first repaint and every click after it would do nothing.
-  //   2. The #ck-copystatus element must stay OUTSIDE #content, or the swap
-  //      wipes it.
+  // The listener is DELEGATED from document, and that fails SILENTLY if
+  // refactored away: the poller swaps #content wholesale, so per-button
+  // listeners bound in a loop would be discarded on the first repaint and every
+  // click after it would do nothing.
   //
   // navigator.clipboard is absent on a plain-HTTP origin (serve --tailscale is
   // not a secure context), so an execCommand fallback carries those hosts; unlike
   // the network calls here, a copy that quietly no-ops is a bug, so a failure
   // gets a visible ✗.
   (function () {
-    var live = document.getElementById('ck-copystatus');
     var flashed = null; // the one button currently showing a transient state
     var timer = null;
-
-    function note(msg) {
-      if (live) live.textContent = msg;
-    }
 
     // The single owner of the revert, shared by the timeout and the pre-empt
     // path so they cannot drift. Only one button may hold the flash: copying row
@@ -1488,12 +1472,11 @@
       flashed = null;
     }
 
-    function flash(btn, ok, msg) {
+    function flash(btn, ok) {
       unflash();
       var icon = btn.querySelector('.copyicon');
       btn.classList.add(ok ? 'copied' : 'copyfail');
       if (icon) icon.textContent = ok ? '✓' : '✗';
-      note(msg);
       flashed = btn;
       timer = setTimeout(unflash, 1200);
     }
@@ -1545,8 +1528,7 @@
     }
 
     // Why this stored cwd is unfit to copy, or null if it is fine. Three
-    // distinct causes, so three distinct messages: telling someone their path
-    // held a secret when it was merely too long is its own small lie.
+    // distinct causes; any of them shows the ✗ and copies nothing.
     //
     // 'redacted'  — the scrub layer fails closed, so a genuine segment shaped
     //   like a credential (…/api-key=v1/…) comes back as «redacted».
@@ -1559,7 +1541,7 @@
     //   fallback would otherwise let through above U+007F.
     //
     // The first two name a directory that does not exist; the third names one
-    // that may do something. Either way, refuse and say which, rather than hand
+    // that may do something. Either way, refuse rather than hand
     // over a path whose problem only shows up once it has been pasted.
     function unusableReason(s) {
       if (s.indexOf('«redacted»') !== -1) return 'redacted';
@@ -1567,11 +1549,6 @@
       if (pathAllow.test(s)) return 'unsafe';
       return null;
     }
-    var unusableMsg = {
-      redacted: 'part of this path was redacted — not copied',
-      truncated: 'this path was too long and got cut off — not copied',
-      unsafe: 'this path contains shell characters — not copied'
-    };
 
     // Pre-secure-context fallback: select an off-screen textarea and let the
     // document copy command take it.
@@ -1621,10 +1598,10 @@
       if (!path) return;
       var why = ctrlChars.test(path) ? 'unsafe' : unusableReason(path);
       if (why) {
-        flash(btn, false, unusableMsg[why]);
+        flash(btn, false);
         return;
       }
-      function done(ok) { flash(btn, ok, (ok ? 'copied ' : 'could not copy ') + path); }
+      function done(ok) { flash(btn, ok); }
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(path).then(
           function () { done(true); },
