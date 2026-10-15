@@ -200,7 +200,8 @@ func TestActiveCounts_GroupsByTmuxSession(t *testing.T) {
 // A session whose tmux_session capture is sometimes blank must not split into a
 // second, unlabelled activity row (#116): blanks inherit the session's latest
 // name (s1's blank joins "new", not "old"), non-blank rows keep their own label,
-// and the carry never crosses session_id (s2, never named, stays blank).
+// and the carry never crosses session_id (s2, never named, stays blank; nor do
+// session-less events, which never share a session).
 func TestActiveCounts_CarriesTmuxSessionAcrossBlankCaptures(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {
@@ -213,18 +214,24 @@ func TestActiveCounts_CarriesTmuxSessionAcrossBlankCaptures(t *testing.T) {
 	insertEvent(db, Event{TS: at(3), SourceApp: "myapp", Branch: "fix-116", SessionID: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-116", TmuxSession: "new", SessionID: "s1", EventType: "Stop", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: at(2), SourceApp: "myapp", Branch: "fix-116", SessionID: "s2", EventType: "PreToolUse", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(4), SourceApp: "myapp", Branch: "legacy", TmuxSession: "stray", EventType: "PreToolUse", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(2), SourceApp: "myapp", Branch: "legacy", EventType: "PreToolUse", PayloadJSON: "{}"})
 
 	counts, err := activeCounts(db, time.Hour, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]int{}
+	type key struct{ branch, tmux string }
+	got := map[key]int{}
 	for _, c := range counts {
-		got[c.TmuxSession] = c.Count
+		got[key{c.Branch, c.TmuxSession}] = c.Count
 	}
-	want := map[string]int{"new": 2, "old": 1, "": 1}
+	want := map[key]int{
+		{"fix-116", "new"}: 2, {"fix-116", "old"}: 1, {"fix-116", ""}: 1,
+		{"legacy", "stray"}: 1, {"legacy", ""}: 1,
+	}
 	if !maps.Equal(got, want) {
-		t.Errorf("tmux_session -> count = %v, want %v (blank should join the latest name, and not cross session_id)", got, want)
+		t.Errorf("(branch, tmux_session) -> count = %v, want %v (blank should join the latest name, and not cross session_id)", got, want)
 	}
 }
 

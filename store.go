@@ -991,7 +991,7 @@ func activeCounts(db *sql.DB, window time.Duration, now time.Time) ([]SourceCoun
 		`WITH w AS (
 		   SELECT source_app, branch, rebasing, COALESCE(NULLIF(tmux_session, ''),
 		     CASE WHEN COALESCE(session_id, '') <> '' THEN FIRST_VALUE(NULLIF(tmux_session, '')) OVER (
-		       PARTITION BY session_id ORDER BY COALESCE(tmux_session, '') = '', id DESC) END,
+		       PARTITION BY session_id ORDER BY NULLIF(tmux_session, '') IS NULL, id DESC) END,
 		     '') AS tmux
 		   FROM events WHERE ts >= ?)
 		 SELECT tmux, source_app, COALESCE(branch, ''), COALESCE(MAX(rebasing), 0), COUNT(*) FROM w
