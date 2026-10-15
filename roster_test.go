@@ -1363,3 +1363,31 @@ func TestAgentRoster_LastCommandSince(t *testing.T) {
 		t.Errorf("s-bad LastCommandSince = %d, want 0 (unparseable ts must not read as now)", got)
 	}
 }
+
+// The roster's launcher comes from the latest event that recorded one: a resume
+// under a different launcher updates it, and a legacy row with no launcher
+// column value does not clobber it.
+func TestAgentRoster_LauncherLatestNonEmptyWins(t *testing.T) {
+	db, err := openDB(testDB(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(mins int, launcher string) {
+		insertEvent(db, Event{TS: at(mins), SourceApp: "myapp", Launcher: launcher, SessionID: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
+	}
+	ins(5, "claude")
+	ins(3, "nono")
+	ins(1, "")
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].Launcher != "nono" {
+		t.Fatalf("want 1 agent with launcher nono (newer wins, empty does not clobber), got %+v", agents)
+	}
+}

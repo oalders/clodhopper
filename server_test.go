@@ -3711,3 +3711,37 @@ func TestViewSignature_TracksCISuppression(t *testing.T) {
 		t.Error("signature unchanged on the expiry out of suppression")
 	}
 }
+
+// The launcher marker renders once in the desktop session cell and once in the
+// phone card's .tmuxname (CSS shows only one per layout), even without a tmux
+// session, and not at all when the launcher is unknown.
+func TestContentTemplate_LauncherMarker(t *testing.T) {
+	for _, tc := range []struct{ launcher, marker string }{
+		{"nono", `<span aria-hidden="true">[n]</span><span class="ck-sr">nono sandbox,</span>`},
+		{"claude", `<span aria-hidden="true">[c]</span><span class="ck-sr">plain claude,</span>`},
+	} {
+		d := dashboardData{Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting, Branch: "fix-152", Launcher: tc.launcher,
+		}}}
+		var buf bytes.Buffer
+		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+			t.Fatal(err)
+		}
+		html := buf.String()
+		if n := strings.Count(html, tc.marker); n != 2 {
+			t.Errorf("%s: marker rendered %d times, want 2 (session cell + .tmuxname):\n%s", tc.launcher, n, html)
+		}
+		if !strings.Contains(html, `<span class="tmuxname"><span title=`) {
+			t.Errorf("%s: .tmuxname must carry the marker with no tmux session:\n%s", tc.launcher, html)
+		}
+	}
+
+	d := dashboardData{Agents: []Agent{{SessionID: "s1", SourceApp: "app", Status: statusWaiting, Branch: "fix-152"}}}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+		t.Fatal(err)
+	}
+	if html := buf.String(); strings.Contains(html, "[n]") || strings.Contains(html, "[c]") || strings.Contains(html, "tmuxname") {
+		t.Errorf("unknown launcher must render no marker:\n%s", html)
+	}
+}
