@@ -121,10 +121,10 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
 - **Schema migrations** append to the `migrations` slice in `store.go` and run
   best-effort (an already-applied `ALTER` errors harmlessly and is ignored).
 - **CI status** (`server.go`) shells out to one `gh pr view --json
-  mergeStateStatus,statusCheckRollup` per cwd, memoised in `cwdCache` (60s TTL;
-  `/api/state?force=1`, the "refresh CI" button, calls `expire`, throttled to once
-  per `ciForceMinInterval`; concurrent `get`s for one cwd share one lookup)
-  and fetched concurrently across worktrees. The rollup drives the state and fail
+  mergeStateStatus,statusCheckRollup` per cwd, memoised in `cwdCache` (60s TTL)
+  and fetched concurrently across worktrees. The "refresh CI" button sends
+  `/api/state?force=1`, which calls `expire` (throttled to once per
+  `ciForceMinInterval`); concurrent `get`s for one cwd share one lookup. The rollup drives the state and fail
   count (`classifyRollup`); `mergeStateStatus` only refines it (UNSTABLE →
   "soft-failing", DIRTY → merge conflict); `parsePRView`'s doc comment says why
   BLOCKED is deliberately not mapped. Like `gitBranch`, it is strictly

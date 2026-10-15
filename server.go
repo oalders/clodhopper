@@ -540,13 +540,18 @@ func (c *cwdCache[T]) get(cwd string, now time.Time) T {
 	}
 	c.inflight[cwd] = f
 	c.mu.Unlock()
+	// Deferred so a panicking lookup cannot leave waiters, and every later get for cwd, blocked forever.
+	defer func() {
+		c.mu.Lock()
+		delete(c.inflight, cwd)
+		c.mu.Unlock()
+		close(f.done)
+	}()
 
 	f.val = c.lookup(cwd)
 	c.mu.Lock()
 	c.m[cwd] = cwdEntry[T]{val: f.val, at: now}
-	delete(c.inflight, cwd)
 	c.mu.Unlock()
-	close(f.done)
 	return f.val
 }
 

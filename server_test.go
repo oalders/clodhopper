@@ -833,6 +833,31 @@ func TestCwdCacheGetSingleFlight(t *testing.T) {
 }
 
 // /api/state?force=1 bypasses a fresh CI entry; a plain poll serves it cached.
+// A panicking lookup must not wedge its cwd: the next get runs a fresh lookup.
+func TestCwdCacheGetSurvivesPanickingLookup(t *testing.T) {
+	var calls atomic.Int32
+	c := &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: func(string) string {
+		if calls.Add(1) == 1 {
+			panic("boom")
+		}
+		return "ok"
+	}}
+	func() {
+		defer func() { _ = recover() }()
+		c.get("/wt", time.Now())
+	}()
+	got := make(chan string, 1)
+	go func() { got <- c.get("/wt", time.Now()) }()
+	select {
+	case v := <-got:
+		if v != "ok" {
+			t.Errorf("get after panic = %q, want ok", v)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("get after a panicking lookup hung")
+	}
+}
+
 func TestHandleStateForceRefreshesCI(t *testing.T) {
 	db := openTestDB(t)
 	cwd := "/home/me/wt/fix-168"
@@ -845,7 +870,7 @@ func TestHandleStateForceRefreshesCI(t *testing.T) {
 	for _, tc := range []struct {
 		target string
 		want   int32
-	}{{"/api/state", 0}, {"/api/state?force=1", 1}} {
+	}{{"/api/state", 0}, {"/api/state?force=1", 1}, {"/api/state?force=1", 1}} { // the repeat is throttled
 		rec := httptest.NewRecorder()
 		handleState(rec, httptest.NewRequest(http.MethodGet, tc.target, nil), db, ci, &peekConfig{cache: newPaneCache()}, &actionConfig{})
 		if rec.Code != http.StatusOK {
