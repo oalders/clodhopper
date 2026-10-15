@@ -979,13 +979,23 @@ type SourceCount struct {
 // concurrent tmux session / worktree shows up as its own row — the signal that
 // tells you which session is busy, and which disambiguates look-alike branches.
 // Rebasing is MAX-aggregated per group, so a row is flagged when any of its
-// events was captured mid-rebase. now is passed in (not read from the clock) so
-// the result is deterministic under test, matching agentRoster.
+// events was captured mid-rebase. A blank tmux_session capture inherits the
+// latest non-blank one from the same session_id (as agentRoster does, #114), so
+// a flaky capture doesn't split one session into two rows. Like agentRoster, it
+// only looks inside the window, so a session whose only named capture is older
+// stays blank. now is passed in (not read from the clock) so the result is
+// deterministic under test, matching agentRoster.
 func activeCounts(db *sql.DB, window time.Duration, now time.Time) ([]SourceCount, error) {
 	since := now.UTC().Add(-window).Format(time.RFC3339)
 	rows, err := db.Query(
-		`SELECT COALESCE(tmux_session,''), source_app, COALESCE(branch, ''), COALESCE(MAX(rebasing), 0), COUNT(*) FROM events WHERE ts >= ?
-		 GROUP BY tmux_session, source_app, branch ORDER BY COUNT(*) DESC`,
+		`WITH w AS (
+		   SELECT source_app, branch, rebasing, COALESCE(NULLIF(tmux_session, ''),
+		     CASE WHEN COALESCE(session_id, '') <> '' THEN FIRST_VALUE(NULLIF(tmux_session, '')) OVER (
+		       PARTITION BY session_id ORDER BY NULLIF(tmux_session, '') IS NULL, id DESC) END,
+		     '') AS tmux
+		   FROM events WHERE ts >= ?)
+		 SELECT tmux, source_app, COALESCE(branch, ''), COALESCE(MAX(rebasing), 0), COUNT(*) FROM w
+		 GROUP BY tmux, source_app, branch ORDER BY COUNT(*) DESC`,
 		since,
 	)
 	if err != nil {
