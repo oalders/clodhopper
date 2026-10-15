@@ -85,6 +85,36 @@ func TestDropDeadPanes(t *testing.T) {
 	}
 }
 
+// Group flags are recomputed after rows are dropped (#177): a branch whose only
+// surviving row had a dead sibling loses its accent bar, and the next group's
+// first row still gets its divider.
+func TestDropDeadPanesRegroups(t *testing.T) {
+	agents := []Agent{
+		{SessionID: "a1", SourceApp: "app", Branch: "a", TmuxPane: "%1"},
+		{SessionID: "a2", SourceApp: "app", Branch: "a", TmuxPane: "%2"},
+		{SessionID: "b1", SourceApp: "app", Branch: "b", TmuxPane: "%3"},
+		{SessionID: "c1", SourceApp: "app", Branch: "c", TmuxPane: "%4"},
+	}
+	markGroups(agents)
+	if !agents[0].Grouped || !agents[1].Grouped {
+		t.Fatal("setup: branch a rows should start Grouped")
+	}
+	got := dropDeadPanes(agents, map[string]livePane{"%1": {}, "%4": {}})
+	var ids []string
+	for _, a := range got {
+		ids = append(ids, a.SessionID)
+	}
+	if !slices.Equal(ids, []string{"a1", "c1"}) {
+		t.Fatalf("kept %q, want [a1 c1]", ids)
+	}
+	if got[0].Grouped || got[0].GroupStart {
+		t.Errorf("a1: Grouped=%v GroupStart=%v, want false/false", got[0].Grouped, got[0].GroupStart)
+	}
+	if got[1].Grouped || !got[1].GroupStart {
+		t.Errorf("c1: Grouped=%v GroupStart=%v, want false/true", got[1].Grouped, got[1].GroupStart)
+	}
+}
+
 // listPanes maps each pane id to its session name in the form ingest stores, so
 // a messy real-world name compares equal to the row's recorded tmux_session, plus
 // its foreground command and path (last, so a tab in it survives).
