@@ -479,10 +479,16 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 	ins(at(20), "s-mixed", "SubagentStart", "a1", "")
 	ins(at(3), "s-mixed", "SubagentStart", "a2", "")
 	ins(at(1), "s-mixed", "Stop", "", "{}")
-	// Deliberate tradeoff: a subagent's tool events after Stop still drive status.
+	// A subagent's tool events after Stop must not flip the session to working.
 	ins(at(4), "s-late", "SubagentStart", "a1", "")
 	ins(at(3), "s-late", "Stop", "", "{}")
 	ins(at(1), "s-late", "PreToolUse", "a1", "")
+	ins(at(1), "s-late", "PostToolUse", "a1", "")
+	// A main agent blocked on a foreground subagent stays working while the
+	// subagent is active, even though the main agent itself has been quiet.
+	ins(at(10), "s-fg", "PreToolUse", "", `{}`)
+	ins(at(10), "s-fg", "SubagentStart", "a1", "")
+	ins(at(1), "s-fg", "PreToolUse", "a1", "")
 	// A subagent asking permission is urgent, outranking the outstanding subagent.
 	ins(at(4), "s-perm", "SubagentStart", "a1", "")
 	ins(at(3), "s-perm", "Stop", "", "{}")
@@ -509,7 +515,8 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 		{"s-done", statusWaiting, 0, 0, ""},
 		{"s-orphan", statusWaiting, 0, 0, ""},
 		{"s-stale", statusWaiting, 0, 0, ""},
-		{"s-late", statusWorking, 0, 0, ""},
+		{"s-late", statusSubagents, 1, 4, "4m"},
+		{"s-fg", statusWorking, 0, 0, ""},
 		{"s-perm", statusApproval, 0, 0, ""},
 	} {
 		a := got[c.sess]

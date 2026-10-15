@@ -625,6 +625,16 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 				sub.lastSeen = t
 			}
 		}
+		// A subagent's own tool events are activity, not the main agent's state:
+		// letting them set LastEvent flips a parked session between "working" and
+		// "waiting for you" on every background tool call. They keep the session
+		// fresh (lastTS) so a main agent blocked on a foreground subagent does not
+		// go stale; only a subagent permission request, which genuinely blocks on
+		// the user, moves the status.
+		if agentID != "" && etype != "PermissionRequest" {
+			s.lastTS = ts
+			continue
+		}
 		s.a.LastEvent = etype
 		s.lastTS = ts
 		// notifType mirrors LastEvent (last-write-wins); deriveStatus only reads it
