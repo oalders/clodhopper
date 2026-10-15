@@ -10,30 +10,38 @@ import (
 	"time"
 )
 
-// cleanSessionName keeps only the text after the LAST unrenderable Nerd Font /
-// devicon glyph (Unicode Private Use Area) — these glyphs are decorative
-// prefixes/separators, so the meaningful name follows the final one — then drops
-// control characters and collapses alignment padding. A name with no PUA glyph
-// is left intact (a real emoji is not PUA, so it survives).
+// cleanSessionName keeps the FIRST non-blank segment between unrenderable Nerd
+// Font / devicon glyphs (Unicode Private Use Area) — the leading segment is the
+// short handle, later ones are window titles — then drops control characters
+// and collapses alignment padding. A name with no PUA glyph is left intact (a
+// real emoji is not PUA, so it survives).
 func TestCleanSessionName(t *testing.T) {
 	cases := []struct{ name, in, want string }{
 		{
-			"drops everything up to and including the PUA glyph (even a leading emoji)",
-			"👟  fix-2482             Blog post funniest / cleverest / most [in progress]",
-			"Blog post funniest / cleverest / most [in progress]",
+			"keeps the handle before the PUA glyph (with its leading emoji), drops the title",
+			"👟  fix-2482            \uf418 Blog post funniest / cleverest / most [in progress]",
+			"👟 fix-2482",
 		},
 		{
 			// The user's real session: an icon, the name, more padding, a second
-			// icon, the name again. Keeping the tail after the LAST glyph yields the
-			// single clean name (not the doubled "name name" the old strip produced).
-			"repeated icon-prefixed name keeps only the tail after the last glyph",
-			"  tmux-session-name    tmux-session-name",
+			// icon, the name again. Keeping only the first segment yields the single
+			// clean name (not the doubled "name name" the old strip produced).
+			"repeated icon-prefixed name keeps only the first segment",
+			"\ue627  tmux-session-name   \uf418 tmux-session-name",
 			"tmux-session-name",
+		},
+		{
+			// #115: a glyph separates a short branch handle from a long window
+			// title; the handle is the useful label.
+			"infix glyph keeps the leading handle, not the trailing title",
+			"\ue627  fix-113    \uf418  Roster blanks the tmux session label when",
+			"fix-113",
 		},
 		{"emoji is not PUA, so it and the text after it are kept", "👟 fix-2482", "👟 fix-2482"},
 		{"plain name unchanged", "my-session", "my-session"},
 		{"collapses whitespace and drops control chars", "  hi\tthere\n", "hi there"},
-		{"all-glyph name becomes empty", "", ""},
+		{"blank leading segment is skipped", "\ue627 \uf418fix-115\uf418title", "fix-115"},
+		{"all-glyph name becomes empty", "\uf418\ue0b0", ""},
 	}
 	for _, c := range cases {
 		if got := cleanSessionName(c.in); got != c.want {
