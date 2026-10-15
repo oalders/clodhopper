@@ -508,14 +508,33 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 	ins(at(3), "s-perm-notif", "Stop", "", "{}")
 	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-127", SessionID: "s-perm-notif", EventType: "Notification",
 		PayloadJSON: `{"agent_id":"a1","notification_type":"permission_prompt"}`})
-	// A subagent's AskUserQuestion reads "needs input", even after the trailing
-	// tool-less permission_prompt Notification.
+	// The held request keeps its tool across the trailing tool-less
+	// permission_prompt Notification, so AskUserQuestion still reads "needs input".
 	ins(at(4), "s-ask", "SubagentStart", "a1", "")
 	ins(at(3), "s-ask", "Stop", "", "{}")
 	insertEvent(db, Event{TS: at(2), SourceApp: "myapp", Branch: "fix-127", SessionID: "s-ask", EventType: "PermissionRequest",
 		ToolName: "AskUserQuestion", PayloadJSON: `{"agent_id":"a1"}`})
 	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-127", SessionID: "s-ask", EventType: "Notification",
 		PayloadJSON: `{"agent_id":"a1","notification_type":"permission_prompt"}`})
+	// A subagent stopped while its request is pending clears it.
+	ins(at(4), "s-perm-killed", "SubagentStart", "a1", "")
+	ins(at(3), "s-perm-killed", "Stop", "", "{}")
+	ins(at(2), "s-perm-killed", "PermissionRequest", "a1", "")
+	ins(at(1), "s-perm-killed", "SubagentStop", "a1", "")
+	// An abandoned request (no further subagent event) is cleared once the user
+	// submits a new prompt: the dialog cannot still be open.
+	ins(at(4), "s-perm-abandoned", "SubagentStart", "a1", "")
+	ins(at(3), "s-perm-abandoned", "PermissionRequest", "a1", "")
+	ins(at(2), "s-perm-abandoned", "UserPromptSubmit", "", "{}")
+	ins(at(1), "s-perm-abandoned", "Stop", "", "{}")
+	// An approval pending on one subagent outranks a question on another.
+	ins(at(4), "s-perm-mixed", "SubagentStart", "a1", "")
+	ins(at(4), "s-perm-mixed", "SubagentStart", "a2", "")
+	ins(at(3), "s-perm-mixed", "Stop", "", "{}")
+	insertEvent(db, Event{TS: at(2), SourceApp: "myapp", Branch: "fix-127", SessionID: "s-perm-mixed", EventType: "PermissionRequest",
+		ToolName: "AskUserQuestion", PayloadJSON: `{"agent_id":"a1"}`})
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-127", SessionID: "s-perm-mixed", EventType: "PermissionRequest",
+		ToolName: "Bash", PayloadJSON: `{"agent_id":"a2"}`})
 
 	agents, err := agentRoster(db, 16*time.Hour, now)
 	if err != nil {
@@ -545,6 +564,9 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 		{"s-perm-main", statusApproval, 0, 0, ""},
 		{"s-perm-notif", statusApproval, 0, 0, ""},
 		{"s-ask", statusInput, 0, 0, ""},
+		{"s-perm-killed", statusWaiting, 0, 0, ""},
+		{"s-perm-abandoned", statusSubagents, 1, 4, "4m"},
+		{"s-perm-mixed", statusApproval, 0, 0, ""},
 	} {
 		a := got[c.sess]
 		if a.Status != c.status || a.Subagents != c.count {
@@ -560,6 +582,19 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 		}
 		if c.status == statusApproval && a.StatusRank != 1 {
 			t.Errorf("%s: a subagent permission request must rank urgent (1), got %d", c.sess, a.StatusRank)
+		}
+	}
+	// Map iteration order is randomised; re-fold so a lucky order cannot mask an
+	// order-dependent pick between the pending approval and question.
+	for range 20 {
+		agents, err := agentRoster(db, 16*time.Hour, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, a := range agents {
+			if a.SessionID == "s-perm-mixed" && a.Status != statusApproval {
+				t.Fatalf("s-perm-mixed: want %q regardless of map order, got %q", statusApproval, a.Status)
+			}
 		}
 	}
 }

@@ -639,16 +639,25 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		// event could ever clear it.
 		if agentID != "" {
 			s.lastTS = ts
-			if etype == "PermissionRequest" || (etype == "Notification" && notifType == "permission_prompt") {
-				// The trailing Notification carries no tool_name; keep the request's
-				// tool so AskUserQuestion still reads "needs input".
-				if _, ok := s.subPerms[agentID]; !ok || tool != "" {
+			switch {
+			case etype == "PermissionRequest":
+				s.subPerms[agentID] = tool
+			case etype == "Notification" && notifType == "permission_prompt":
+				// The Notification trailing a request carries no tool_name; keep the
+				// request's tool so AskUserQuestion still reads "needs input".
+				if _, ok := s.subPerms[agentID]; !ok {
 					s.subPerms[agentID] = tool
 				}
-			} else {
+			default:
 				delete(s.subPerms, agentID)
 			}
 			continue
+		}
+		// The user cannot submit a prompt while a permission dialog is open, so a
+		// new prompt means any subagent request still held was dismissed (an
+		// interrupt fires no further subagent event to clear it).
+		if etype == "UserPromptSubmit" {
+			clear(s.subPerms)
 		}
 		s.a.LastEvent = etype
 		s.lastTS = ts
