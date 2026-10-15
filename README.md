@@ -170,10 +170,10 @@ board used to expose.
   **loopback or Tailscale peer** — `127.0.0.0/8`, `::1`, `100.64.0.0/10`, or
   `fd7a:115c:a1e0::/48`. A LAN peer reaching a `--host 0.0.0.0` dashboard (by an
   allowed `Host`) gets the read-only board and a `403` for anything else: no
-  action buttons are rendered for it, and the CSRF token is not emitted into its page either, so
-  even the exec-free **end** action is out of reach. The peer address is taken
-  from the connection only — forwarding headers such as `X-Forwarded-For` are
-  never consulted — and there is no override flag.
+  action buttons are rendered for it, and the CSRF token is not emitted into its
+  page either, so even the exec-free **end** action is out of reach. The peer
+  address is taken from the connection only — forwarding headers such as
+  `X-Forwarded-For` are never consulted — and there is no override flag.
 
   A request that *carries* a forwarding header (`X-Forwarded-For`, `X-Real-IP`,
   `Forwarded`, `X-Forwarded-Host`) is refused outright, whether or not it would
