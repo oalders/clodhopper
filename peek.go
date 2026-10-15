@@ -111,6 +111,9 @@ func listPanes() map[string]livePane {
 	return set
 }
 
+// launcherCommands are the pane foreground commands of a running agent (Agent.Launcher's values).
+var launcherCommands = map[string]bool{"claude": true, "nono": true}
+
 // dropDeadPanes filters out roster rows whose tmux pane is gone: the pane was
 // closed or the tmux server restarted, so the session never sent SessionEnd. A
 // pane listed under a different session than the row recorded is gone too (pane
@@ -119,11 +122,35 @@ func listPanes() map[string]livePane {
 // is hidden unless at least one row matches the listing — an empty or unrelated
 // listing (tmux missing, or serve on another socket) is not evidence of death.
 // A live pane back at a shell in the row's launch directory is hidden too: claude
-// exited without SessionEnd (a crash) and the pane survived.
+// exited without SessionEnd (a crash) and the pane survived. A pane in the row's
+// launch directory counts as the row's even under another session label: the
+// stored label goes stale when the name or its normalisation changes (#173) —
+// but only while the pane runs an agent launcher and no other row claims the
+// pane, by label or by this same fallback: a reused pane id holding some other
+// process is not this row's, and two candidates cannot be told apart.
 func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
+	fallback := func(a Agent, p livePane) bool {
+		dir := a.launchCwd()
+		return launcherCommands[p.command] && p.path != "" && dir != "" && cwdKey(p.path) == cwdKey(dir)
+	}
+	claimed, candidates := map[string]bool{}, map[string]int{}
+	for _, a := range agents {
+		p, ok := panes[a.TmuxPane]
+		switch {
+		case !ok:
+		case a.TmuxSession != "" && a.TmuxSession == p.session:
+			claimed[a.TmuxPane] = true
+		case fallback(a, p):
+			candidates[a.TmuxPane]++
+		}
+	}
 	alive := func(a Agent) bool {
 		p, ok := panes[a.TmuxPane]
-		return ok && (a.TmuxSession == "" || a.TmuxSession == p.session)
+		if !ok {
+			return false
+		}
+		return a.TmuxSession == "" || a.TmuxSession == p.session ||
+			(!claimed[a.TmuxPane] && candidates[a.TmuxPane] == 1 && fallback(a, p))
 	}
 	if !slices.ContainsFunc(agents, alive) {
 		return agents

@@ -52,6 +52,7 @@ func TestDropDeadPanes(t *testing.T) {
 	reused := Agent{SessionID: "reused", TmuxSession: "work", TmuxPane: "%3"}
 	noSess := Agent{SessionID: "nosess", TmuxPane: "%3"}
 	noPane := Agent{SessionID: "nopane", TmuxSession: "work"}
+	relabelled := Agent{SessionID: "relabelled", TmuxSession: "old label", TmuxPane: "%5", LaunchCwd: "/src/repo"}
 	cases := []struct {
 		name   string
 		agents []Agent
@@ -66,6 +67,11 @@ func TestDropDeadPanes(t *testing.T) {
 		{"listing unrelated to the roster hides nothing", []Agent{gone, reused}, map[string]livePane{"%3": {session: "other"}, "%9": {session: "x"}}, []string{"gone", "reused"}},
 		{"pane back at a shell in the launch dir is hidden", []Agent{live, exited}, map[string]livePane{"%1": w, "%4": {session: "work", command: "zsh", path: "/src/repo/"}}, []string{"live"}},
 		{"pane at a shell elsewhere is kept", []Agent{live, exited}, map[string]livePane{"%1": w, "%4": {session: "work", command: "zsh", path: "/elsewhere"}}, []string{"live", "exited"}},
+		{"pane in the launch dir under a stale label is kept", []Agent{live, relabelled}, map[string]livePane{"%1": w, "%5": {session: "new label", command: "nono", path: "/src/repo"}}, []string{"live", "relabelled"}},
+		{"pane in the launch dir claimed by another row's label is hidden", []Agent{live, relabelled, {SessionID: "current", TmuxSession: "new label", TmuxPane: "%5", LaunchCwd: "/src/repo"}}, map[string]livePane{"%1": w, "%5": {session: "new label", command: "nono", path: "/src/repo"}}, []string{"live", "current"}},
+		{"pane in the launch dir under two stale labels is hidden for both", []Agent{live, relabelled, {SessionID: "older", TmuxSession: "older label", TmuxPane: "%5", LaunchCwd: "/src/repo"}}, map[string]livePane{"%1": w, "%5": {session: "new label", command: "nono", path: "/src/repo"}}, []string{"live"}},
+		{"pane in the launch dir under a stale label running another tool is hidden", []Agent{live, relabelled}, map[string]livePane{"%1": w, "%5": {session: "new label", command: "vim", path: "/src/repo"}}, []string{"live"}},
+		{"pane elsewhere under a stale label is hidden", []Agent{live, relabelled}, map[string]livePane{"%1": w, "%5": {session: "new label", command: "nono", path: "/elsewhere"}}, []string{"live"}},
 		{"pane still running claude is kept", []Agent{live, exited}, map[string]livePane{"%1": w, "%4": {session: "work", command: "claude", path: "/src/repo"}}, []string{"live", "exited"}},
 	}
 	for _, c := range cases {
