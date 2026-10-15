@@ -877,17 +877,12 @@ func TestBuildDashboardDataPeerGatesExecAndPeek(t *testing.T) {
 	}
 }
 
-// Both routes carry the hardening headers. The framing one has teeth: the
-// clipboard fallback used on a non-secure origin still copies inside a frame,
-// so a framed dashboard is a usable decoy.
-// serveMuxFor builds the real routed handler (as runServe does) over a DB
-// holding one identifiable roster row, bound to 100.64.0.2 with one extra name.
+// serveMuxFor builds the real routed handler (as runServe does), bound to
+// 100.64.0.2 with one extra allowed name.
 func serveMuxFor(t *testing.T) http.Handler {
 	t.Helper()
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	t.Cleanup(func() { db.Close() })
-	now := time.Now().UTC().Format(time.RFC3339)
-	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "secret-branch", Cwd: "/home/u/secret-worktree", SessionID: "s1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 	t.Setenv("CLODHOPPER_ALLOWED_HOSTS", "board.tailnet.ts.net")
 	peek, act := newServeConfigs("100.64.0.2", false, paneLinesDefault, false)
 	return newServeMux(db, newCICache(), peek, act)
