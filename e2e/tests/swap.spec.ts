@@ -3,7 +3,7 @@ import { test, expect, abortUnstubbedExec } from './fixtures';
 
 // What swapContent carries across a poll's #content repaint. Runs against
 // serve.sh's exec server (the "exec desktop 1440" project), whose stub tmux
-// gives the waiting row a peek. Every /api/state answer gets a fresh signature,
+// gives the waiting row and its twin (same worktree, same pane %9001) a peek. Every /api/state answer gets a fresh signature,
 // so each one-second poll repaints; the page counts repaints off the
 // ch:contentswap event swapContent fires, and since swapContent is synchronous
 // a repaint is finished by the time the count moves.
@@ -16,8 +16,8 @@ declare global {
 }
 
 const sess = 'e2e-waiting-0000-1111-2222-333333333333';
-const peekBtn = `#content button.peek[data-peek="${sess}"]`;
-const peekRow = `#content tr.panerow[data-peek-row="${sess}"]`;
+const peekBtn = (s: string) => `#content button.peek[data-peek="${s}"]`;
+const peekRow = (s: string) => `#content tr.panerow[data-peek-row="${s}"]`;
 const capture = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n');
 // Mid-capture: neither the top nor the bottom openPane() lands on.
 const scrolled = 500;
@@ -49,6 +49,13 @@ test.afterEach(async ({ page }) => {
 
 const swaps = (page: Page) => page.evaluate(() => window.__swaps);
 
+// later returns attr of the second of the two elements matching sel: the one a
+// restore keyed on what they share (cwd or pane) would miss, landing on the first.
+async function later(page: Page, sel: string, attr: string) {
+  await expect(page.locator(sel)).toHaveCount(2);
+  return (await page.locator(sel).nth(1).getAttribute(attr))!;
+}
+
 // repaint waits for the next swap and checks it really replaced el.
 async function repaint(page: Page, el: string) {
   const old = await page.locator(el).elementHandle();
@@ -60,10 +67,10 @@ async function repaint(page: Page, el: string) {
 // openPeek opens the peek, scrolls its capture mid-way and focuses it. The busy
 // flag holds polls off meanwhile: a repaint before the fetch lands would carry
 // the "loading…" placeholder over instead of the capture.
-async function openPeek(page: Page) {
+async function openPeek(page: Page, s: string) {
   await page.evaluate(() => { window.__ckActionBusy = 1; });
-  await page.locator(peekBtn).click();
-  const cap = page.locator(`${peekRow} .panecap`);
+  await page.locator(peekBtn(s)).click();
+  const cap = page.locator(`${peekRow(s)} .panecap`);
   await expect(cap).toContainText('line 199');
   await cap.evaluate((el, top) => { el.scrollTop = top; }, scrolled);
   await cap.focus();
@@ -78,11 +85,16 @@ for (const pin of [false, true]) {
       await page.locator('#ck-pin').click();
       await expect(page.locator('#ck-pin')).toHaveAttribute('aria-pressed', 'true');
     }
-    const cap = await openPeek(page);
-    await repaint(page, `${peekRow} .panecap`);
+    const shared = '#content button.peek[data-pane="%9001"]';
+    const s = await later(page, shared, 'data-peek');
+    const other = (await page.locator(shared).first().getAttribute('data-peek'))!;
+    const cap = await openPeek(page, s);
+    await repaint(page, `${peekRow(s)} .panecap`);
 
-    await expect(page.locator(peekRow)).toBeVisible();
-    await expect(page.locator(peekBtn)).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator(peekRow(s))).toBeVisible();
+    await expect(page.locator(peekBtn(s))).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator(peekRow(other))).toBeHidden();
+    await expect(page.locator(peekBtn(other))).toHaveAttribute('aria-expanded', 'false');
     expect(await cap.textContent()).toBe(capture);
     expect(await cap.evaluate((el) => el.scrollTop)).toBe(scrolled);
     await expect(cap).toBeFocused();
@@ -100,7 +112,8 @@ test('an open actions panel stays open across a repaint', async ({ page }) => {
 });
 
 test('a focused copy button is focused again after a repaint', async ({ page }) => {
-  const copy = `#content .copycwd[data-session="${sess}"]`;
+  const s = await later(page, '#content .copycwd[data-cwd$="/worktree-waiting"]', 'data-session');
+  const copy = `#content .copycwd[data-session="${s}"]`;
   await page.locator(copy).focus();
   await repaint(page, copy);
   await expect(page.locator(copy)).toBeFocused();
@@ -111,8 +124,8 @@ test('a busy action holds repaints off until it settles', async ({ page }) => {
   const before = await swaps(page);
   const seen = polls;
   const roster = await page.locator('#content table.roster').elementHandle();
-  // Each of these answers carries a changed signature.
-  await expect.poll(() => polls).toBeGreaterThan(seen + 2);
+  // Each of these answers carries a changed signature. Paced by the page's 1s poll interval, not the test.
+  await expect.poll(() => polls, { timeout: 10_000 }).toBeGreaterThan(seen + 2);
   expect(await swaps(page)).toBe(before);
   expect(await roster!.evaluate((n) => n.isConnected)).toBe(true);
 

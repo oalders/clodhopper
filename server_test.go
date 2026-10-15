@@ -558,11 +558,10 @@ func TestHandleDashboard_ShipsThePathAllowlist(t *testing.T) {
 // (Enter does not collapse a selection made earlier elsewhere, so a
 // document-wide guard would swallow the copy with no flash and no
 // announcement), and the poller must carry focus across its #content swap
-// rather than drop it to <body> mid-interaction. The refocus key is the session
-// id (a cluster shares one cwd, so a path key would restore to the wrong row)
-// and the focus call must pass preventScroll (rows move between polls, and
-// refocusing must not yank a viewport the user did not scroll). The refocus
-// itself is exercised in e2e/tests/swap.spec.ts.
+// rather than drop it to <body> mid-interaction. The focus call must pass
+// preventScroll (rows move between polls, and refocusing must not yank a
+// viewport the user did not scroll). The session-keyed refocus itself is
+// exercised in e2e/tests/swap.spec.ts.
 func TestHandleDashboard_CopyButtonSurvivesKeyboardUseAndRefresh(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
@@ -570,7 +569,7 @@ func TestHandleDashboard_CopyButtonSurvivesKeyboardUseAndRefresh(t *testing.T) {
 	for _, frag := range []string{
 		`if (ev.detail !== 0) {`,
 		`sel.containsNode(btn, true)`,
-		`if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return true; }`,
+		`btns[i].focus({ preventScroll: true });`,
 		`document.dispatchEvent(new CustomEvent('ch:contentswap'))`,
 		`document.addEventListener('ch:contentswap', unflash);`,
 		`if (swapContent(d.html)) {`,
@@ -2140,23 +2139,15 @@ func TestDashboardPinSortWiring(t *testing.T) {
 	}
 }
 
-// e2e/tests/swap.spec.ts checks that a focused peek capsule is focused again
-// after a repaint, pinned or not. This pins what it cannot see: the refocus
-// keys on the row's data-peek-row (the session id), never on the tmux pane id,
-// which two sessions attached to one pane share, and matches by scanning
+// e2e/tests/swap.spec.ts checks the session-keyed peek refocus in Chromium,
+// which has CSS.escape, so it cannot see this: the refocus matches by scanning
 // rather than by an interpolated selector (CSS.escape is absent on older engines).
-func TestDashboardPeekRefocusKeysOnSessionByScanning(t *testing.T) {
+func TestDashboardPeekRefocusScansRatherThanBuildingASelector(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
 	body := getBody(t, db, "/")
-	for _, gone := range []string{
-		`pkeep.getAttribute('data-pane')`,
-		`prows2[pr].getAttribute('data-pane')`,
-		`'#content .panerow[data-peek-row="'`,
-	} {
-		if strings.Contains(body, gone) {
-			t.Errorf("peek refocus must key on data-peek-row by scanning, not: %s", gone)
-		}
+	if gone := `'#content .panerow[data-peek-row="'`; strings.Contains(body, gone) {
+		t.Errorf("peek refocus must match data-peek-row by scanning, not: %s", gone)
 	}
 }
 

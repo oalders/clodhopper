@@ -477,17 +477,19 @@ cd e2e && npm ci && npx playwright test   # rendered-page layout + behavior test
 The Playwright suite in `e2e/` builds `clodhopper` from the working tree, seeds a
 throwaway database with worst-case fixtures (`e2e_seed_test.go`, build tag
 `e2eseed`, so plain `go test ./...` skips it), and serves it on
-`127.0.0.1:9324` with no tmux, no write path, and no host `CLODHOPPER_*`
-config. It checks that status badges and time cells are never clipped and the
-page never scrolls sideways at 1440, 641 and 390px wide, plus the theme toggle
-and filter strip. `restart.spec.ts` and `swap.spec.ts` run against a second
-server on `127.0.0.1:9325` started with `--enable-merge --pane-peek`, covering
-the restart (all) arm/confirm, Escape and report table, and what a poll's
-repaint carries over (open peeks and their scroll, open actions panels, focus,
-and the hold-off while an action is busy). That server is just as isolated: a
-stub `tmux` only lists the seeded panes and fails everything else, and the
-specs stub every `/api/action` and `/api/pane` request with canned responses,
-so nothing reaches the real write path. JetBrains
+`127.0.0.1:9324` with no write path and no host `CLODHOPPER_*` config. Both
+servers put a stub `tmux` on `PATH` that only lists the seeded panes and fails
+everything else, so no real tmux is ever reached. The suite checks that status
+badges and time cells are never clipped and the page never scrolls sideways at
+1440, 641 and 390px wide, plus the theme toggle and filter strip.
+`restart.spec.ts` and `swap.spec.ts` run against a second server on
+`127.0.0.1:9325` started with `--enable-merge --pane-peek`, covering the
+restart (all) arm/confirm, Escape and report table, and what a poll's repaint
+carries over (open peeks and their scroll, open actions panels, focus, and the
+hold-off while an action is busy). That server is just as isolated:
+`restart.spec.ts` answers `/api/action` with a canned report, `swap.spec.ts`
+stubs `/api/pane`, and any exec request a test didn't stub is aborted and fails
+the test, so nothing reaches the real write path. JetBrains
 Mono comes from `@fontsource/jetbrains-mono`, so the measurements match on
 every machine. CI runs it as the blocking `e2e` job and uploads the HTML
 report on failure.
