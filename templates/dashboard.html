@@ -1821,8 +1821,8 @@
       }
       return lines.join('\n');
     }
-    // Paint a capture as text, linking only a footer-shaped "PR #N" (a whole line
-    // or " · "-separated segment, so prose like "see PR #12." stays text) to the
+    // Paint a capture as text, linking a footer-shaped "PR #N" (a whole line or
+    // " · "-separated segment; in prose like "see PR #12." only "#12" links) to the
     // row's server-resolved repo, plus a bare "#N" not glued to a word, "/" or
     // "&" (so abc#12, foo/#12, #12abc and &#12 stay text). Text nodes only.
     function renderCapture(pre, text, repo) {

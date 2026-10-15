@@ -30,6 +30,16 @@ test('links bare #N and footer PR #N to the repo, leaving other text alone', asy
     text: footer,
   });
 
+  const mixed = 'main · PR #12 · ctx 40%\n- #1235 and #0, see PR #7.';
+  expect(await render(page, mixed, 'o/r')).toEqual({
+    links: [
+      ['PR #12', 'https://github.com/o/r/pull/12'],
+      ['#1235', 'https://github.com/o/r/issues/1235'],
+      ['#7', 'https://github.com/o/r/issues/7'],
+    ],
+    text: mixed,
+  });
+
   for (const t of ['abc#12', '#12abc', 'foo/#12', '#0', '&#12;']) {
     expect((await render(page, t, 'o/r')).links, t).toEqual([]);
   }
