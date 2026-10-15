@@ -291,10 +291,10 @@ func exitCode(err error) int {
 	return -1
 }
 
-// hostAllowed defends the write endpoint against DNS-rebinding: even with the
-// custom-header CSRF token, a page on attacker.example that rebinds its name to
-// the dashboard's IP becomes same-origin and could read the token, so we also
-// require the Host header to name this dashboard. Loopback is always allowed;
+// hostAllowed defends every route against DNS-rebinding: a page on
+// attacker.example that rebinds its name to the dashboard's IP becomes
+// same-origin and could read the roster and the CSRF token, so we require the
+// Host header to name this dashboard. Loopback is always allowed;
 // bindHost covers the --host/--tailscale address; extra carries operator-declared
 // names (CLODHOPPER_ALLOWED_HOSTS) such as a Tailscale magicDNS name.
 func hostAllowed(hostHeader, bindHost string, extra []string) bool {
@@ -926,7 +926,6 @@ func randomToken() (string, error) {
 // is deterministic in tests. Every early return uses a plain http status; only a
 // completed run writes the JSON body.
 func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actionConfig, now time.Time) {
-	setSecurityHeaders(w)
 	if !cfg.enabled {
 		http.Error(w, "PR actions disabled", http.StatusForbidden)
 		return

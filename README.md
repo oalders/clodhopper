@@ -105,6 +105,9 @@ By default the dashboard binds `127.0.0.1` (loopback only). If your browser runs
 on a different machine or namespace than the server (e.g. inside a container or
 VM), bind all interfaces with `clodhopper serve --host 0.0.0.0` (or `CLODHOPPER_HOST=0.0.0.0`)
 and reach it via that host's IP — note this exposes the dashboard to your LAN.
+Add that IP or hostname to `CLODHOPPER_ALLOWED_HOSTS`: every route answers `421`
+to a `Host` header other than loopback or the bind address, and `0.0.0.0` never
+matches one.
 A bind that resolves to a public IP is refused unless `CLODHOPPER_ALLOW_PUBLIC=1`
 (or `--allow-public`) is set, since the dashboard has no auth or TLS.
 
@@ -124,7 +127,8 @@ non-zero rather than silently bind elsewhere.
 This listens only on the tailnet interface, so the dashboard is reachable from
 any device on your tailnet (subject to your ACLs) but not from the local
 network. Reach it at `http://<this-host's-tailscale-ip>:4555`, or by the host's
-MagicDNS name.
+MagicDNS name once that name is listed in `CLODHOPPER_ALLOWED_HOSTS` (otherwise
+it answers `421`).
 
 ### Peeking at a live pane
 
@@ -164,12 +168,12 @@ board used to expose.
   Whatever address the server is bound to, every action that runs a command
   (the PR actions, the session actions, and **rebase**) is accepted only from a
   **loopback or Tailscale peer** — `127.0.0.0/8`, `::1`, `100.64.0.0/10`, or
-  `fd7a:115c:a1e0::/48`. A LAN peer reaching a `--host 0.0.0.0` dashboard gets
-  the read-only board and a `403` for anything else: no action buttons are
-  rendered for it, and the CSRF token is not emitted into its page either, so
-  even the exec-free **end** action is out of reach. The peer address is taken
-  from the connection only — forwarding headers such as `X-Forwarded-For` are
-  never consulted — and there is no override flag.
+  `fd7a:115c:a1e0::/48`. A LAN peer reaching a `--host 0.0.0.0` dashboard (by an
+  allowed `Host`) gets the read-only board and a `403` for anything else: no
+  action buttons are rendered for it, and the CSRF token is not emitted into its
+  page either, so even the exec-free **end** action is out of reach. The peer
+  address is taken from the connection only — forwarding headers such as
+  `X-Forwarded-For` are never consulted — and there is no override flag.
 
   A request that *carries* a forwarding header (`X-Forwarded-For`, `X-Real-IP`,
   `Forwarded`, `X-Forwarded-Host`) is refused outright, whether or not it would
@@ -385,7 +389,7 @@ pane's `SIGHUP` usually kills it before cleanup runs.
 | `CLODHOPPER_PORT` | `4555` | Dashboard port. |
 | `CLODHOPPER_HOST` | `127.0.0.1` | Dashboard bind address. Set `0.0.0.0` for container/LAN access. |
 | `CLODHOPPER_ALLOW_PUBLIC` | unset | Set to `1` to allow `serve` to bind a public IP (refused by default; the dashboard has no auth or TLS). Also settable per-run with `--allow-public`. |
-| `CLODHOPPER_ALLOWED_HOSTS` | unset | Comma-separated extra `Host:` header values accepted by the PR-action endpoint (e.g. a Tailscale MagicDNS name), beyond loopback and the bind host, which are always allowed. Only consulted when `--enable-merge` is set. It widens the accepted `Host:` header, NOT the accepted peer: actions that run commands still require a loopback or Tailscale peer address. |
+| `CLODHOPPER_ALLOWED_HOSTS` | unset | Comma-separated extra `Host:` header values accepted on every route, beyond loopback and the bind host, which are always allowed; any other `Host` gets `421` (the DNS-rebinding defence). Add any other name you browse to: a Tailscale MagicDNS name, or the LAN IP or hostname used to reach a `--host 0.0.0.0` bind, since a wildcard bind address never matches a `Host` header. It widens the accepted `Host:` header, NOT the accepted peer: actions that run commands still require a loopback or Tailscale peer address. |
 | `CLODHOPPER_WAITING_RETAIN_HOURS` | `720` (30 days) | How long a session with no `SessionEnd` stays on the roster. The default is generous on purpose so a long-idle but still-alive agent (overnight, a weekend, a multi-day pause) stays visible. In practice this window is also bounded by `CLODHOPPER_RETAIN_DAYS` (default 14): pruned events leave the roster regardless, so raise both to keep a session visible beyond two weeks. Reap finished or hard-killed sessions explicitly with `clodhopper end` rather than relying on this timeout. The dashboard's **roster window** dropdown narrows the board per-view (e.g. to the last day) without changing this configured cap. |
 | `CLODHOPPER_DEBUG` | unset | If set, `ingest` writes errors to stderr. |
 

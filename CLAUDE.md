@@ -45,7 +45,11 @@ Three subcommands, dispatched in `main.go`:
   runs a fixed `git` sequence (fetch / pull --rebase / push --force-with-lease,
   explicit refspec, lease pinned to a pre-fetch SHA) onto the server-derived
   default branch, plus an `end` action that runs
-  no subprocess at all and just calls `endSessions` to drop the row. Every action
+  no subprocess at all and just calls `endSessions` to drop the row. Before any
+  of that, middleware around the whole mux (`newServeMux`) applies the security
+  headers and the Host allowlist (`hostAllowed`, 421 on a miss) to every route,
+  so a DNS-rebinding page cannot even read the read-only board (this is in
+  addition to, not instead of, `execPeerAllowed`'s own Host check). Every action
   that DOES exec is additionally gated on the peer's address (`remoteAllowed`):
   loopback or Tailscale only, whatever `--host` binds to, with no override — and
   the request is refused outright when a forwarding header (`X-Forwarded-For`,
