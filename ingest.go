@@ -146,18 +146,20 @@ func buildEvent(raw []byte, sourceApp string) Event {
 		// The dashboard offers this path for copying into a terminal, and
 		// html/template does NOT escape a newline inside an attribute value, so a
 		// control character here would survive to the clipboard as a command
-		// terminator. A real path has none, so all of them go. scrubString still
-		// applies — the scrub layer's fail-closed bias holds for every retained
+		// terminator. A real path has none, so one containing any is refused
+		// (stored as ""), not repaired: a stripped path names a directory that
+		// does not exist, and this value is used as an exec working dir.
+		// scrubString still applies — the scrub layer's fail-closed bias holds for every retained
 		// field — but the length cap is maxPathLen, not maxFieldLen: this value is
 		// used as a path, and a truncated path is a wrong path (see maxPathLen).
-		// The unstripped cwd above is what git is asked about — that is the path
+		// The raw cwd above is what git is asked about — that is the path
 		// the hook actually reported. Pure string work: nothing here can fail,
 		// which is the rule for anything on the ingest path.
-		Cwd:         truncate(scrubString(stripControl(cwd)), maxPathLen),
+		Cwd:         truncate(scrubString(refuseControl(cwd)), maxPathLen),
 		TmuxSession: tmuxSess,
 		TmuxPane:    tmuxPane,
 		Launcher:    launcher(),
-		SessionID:   str(p, "session_id"),
+		SessionID:   cleanSessionID(str(p, "session_id")),
 		EventType:   str(p, "hook_event_name"),
 		ToolName:    str(p, "tool_name"),
 		PayloadJSON: scrubPayload(raw),
@@ -382,11 +384,32 @@ func cleanSessionName(s string) string {
 	return ""
 }
 
+// cleanSessionID refuses (returns "") an over-long or control-bearing id rather
+// than truncating it, so two distinct ids can never collide on the grouping key.
+// An empty id is already excluded from the roster and from end.
+func cleanSessionID(id string) string {
+	if len(id) > maxSessionIDLen {
+		return ""
+	}
+	return refuseControl(id)
+}
+
+// refuseControl returns "" if s contains any control rune, else s unchanged.
+// Used for cwd and session ids, where a stripped value would silently name
+// something else (for cwd, a nonexistent exec working dir); see stripControl.
+func refuseControl(s string) string {
+	if strings.ContainsFunc(s, unicode.IsControl) {
+		return ""
+	}
+	return s
+}
+
 // stripControl drops every control rune from s. No field the dashboard renders
 // has a legitimate use for one, and they are not neutralised downstream:
 // html/template escapes <, >, " and ' in an attribute value but not a newline,
 // and the HTML parser hands it back intact. Callers that need whitespace as a
-// separator normalise it to a space first (see cleanSessionName).
+// separator normalise it to a space first (see cleanSessionName). cwd is the
+// exception: it is refused outright instead (see refuseControl).
 //
 // This is only about control characters. Shell-active characters ($, `, ;, |,
 // &, parentheses, redirections) are legal in a POSIX directory name and are NOT
