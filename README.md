@@ -481,7 +481,7 @@ throwaway database with worst-case fixtures (`e2e_seed_test.go`, build tag
 servers put a stub `tmux` on `PATH` that only lists the seeded panes and fails
 everything else, so no real tmux is ever reached. The suite checks that status
 badges and time cells are never clipped and the page never scrolls sideways at
-1440, 641 and 390px wide, plus the theme toggle and filter strip.
+1440, 641 and 390px wide, plus the theme toggle, filter strip and refresh CI button.
 `restart.spec.ts` and `swap.spec.ts` run against a second server on
 `127.0.0.1:9325` started with `--enable-merge --pane-peek`, covering the
 restart (all) arm/confirm, Escape and report table, and what a poll's repaint

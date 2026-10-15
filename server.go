@@ -460,11 +460,13 @@ func runServe(args []string) int {
 
 // cwdCache memoises per-cwd lookups (CI status; the peek's GitHub repo) so the
 // dashboard (which auto-refreshes) does not shell out on every render. Keyed by
-// cwd; entries expire after cwdTTL.
+// cwd; entries expire after cwdTTL, or early once expire marks them stale.
 type cwdCache[T any] struct {
-	mu     sync.Mutex
-	m      map[string]cwdEntry[T]
-	lookup func(cwd string) T
+	mu       sync.Mutex
+	m        map[string]cwdEntry[T]
+	lookup   func(cwd string) T
+	forcedAt time.Time             // entries stamped before this are stale
+	inflight map[string]*flight[T] // one lookup per cwd; concurrent gets wait on it
 }
 
 type cwdEntry[T any] struct {
@@ -472,7 +474,16 @@ type cwdEntry[T any] struct {
 	at  time.Time
 }
 
-const cwdTTL = 60 * time.Second
+type flight[T any] struct {
+	done chan struct{}
+	val  T
+}
+
+const (
+	cwdTTL = 60 * time.Second
+	// ciForceMinInterval caps how often a client's "refresh CI" can bypass the cache.
+	ciForceMinInterval = 10 * time.Second
+)
 
 func newCICache() *cwdCache[ciResult] {
 	return &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{}, lookup: lookupCI}
@@ -482,10 +493,27 @@ func newRepoCache() *cwdCache[string] {
 	return &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: lookupRepo}
 }
 
+// expire marks every current entry stale so the next get re-runs its lookup,
+// unless the last expire was under ciForceMinInterval ago; it reports whether
+// it took effect. now is injected for testing.
+func (c *cwdCache[T]) expire(now time.Time) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.forcedAt.IsZero() && now.Sub(c.forcedAt) < ciForceMinInterval {
+		return false
+	}
+	c.forcedAt = now
+	return true
+}
+
 // get returns the cached lookup result for cwd (e.g. the CI summary for the
 // PR on its branch), refreshing it when stale. now is injected for testing. A nil
 // cache yields the zero value, so a config built without one simply never
 // resolves; a cache with no lookup serves what it holds and yields zero on a miss.
+// Concurrent gets for one stale cwd share a single lookup.
 func (c *cwdCache[T]) get(cwd string, now time.Time) T {
 	var zero T
 	if c == nil || cwd == "" {
@@ -493,18 +521,33 @@ func (c *cwdCache[T]) get(cwd string, now time.Time) T {
 	}
 	c.mu.Lock()
 	e, ok := c.m[cwd]
-	c.mu.Unlock()
-	if ok && now.Sub(e.at) < cwdTTL {
+	if ok && now.Sub(e.at) < cwdTTL && !e.at.Before(c.forcedAt) {
+		c.mu.Unlock()
 		return e.val
 	}
 	if c.lookup == nil {
+		c.mu.Unlock()
 		return zero
 	}
-	v := c.lookup(cwd)
-	c.mu.Lock()
-	c.m[cwd] = cwdEntry[T]{val: v, at: now}
+	if f, ok := c.inflight[cwd]; ok {
+		c.mu.Unlock()
+		<-f.done
+		return f.val
+	}
+	f := &flight[T]{done: make(chan struct{})}
+	if c.inflight == nil {
+		c.inflight = map[string]*flight[T]{}
+	}
+	c.inflight[cwd] = f
 	c.mu.Unlock()
-	return v
+
+	f.val = c.lookup(cwd)
+	c.mu.Lock()
+	c.m[cwd] = cwdEntry[T]{val: f.val, at: now}
+	delete(c.inflight, cwd)
+	c.mu.Unlock()
+	close(f.done)
+	return f.val
 }
 
 // ciResult is one PR's CI verdict: State is "", "pending", "green", "failing" or
@@ -669,6 +712,11 @@ func handleDashboard(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *cwd
 // last rendered and only swaps the DOM when it differs, so a quiet board never
 // repaints.
 func handleState(w http.ResponseWriter, r *http.Request, db *sql.DB, ci *cwdCache[ciResult], peek *peekConfig, act *actionConfig) {
+	// The "refresh CI" button: no gate beyond the Host allowlist, since it only
+	// re-runs the read-only gh lookup every poll already does, and expire is throttled.
+	if r.URL.Query().Get("force") == "1" {
+		ci.expire(time.Now())
+	}
 	data, err := buildDashboardData(r, db, ci, peek, act)
 	if err != nil {
 		http.Error(w, "dashboard error", http.StatusInternalServerError)

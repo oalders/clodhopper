@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -768,6 +769,91 @@ func TestCwdCacheGet(t *testing.T) {
 	}
 	if got := c.get("/wt", now.Add(cwdTTL)); got != "val:/wt" || calls != 2 {
 		t.Errorf("at TTL: got %q after %d lookups, want refreshed after 2", got, calls)
+	}
+}
+
+// expire makes a fresh entry stale so the next get re-runs lookup, but a second
+// expire inside ciForceMinInterval is a no-op, bounding how often clients can force gh.
+func TestCwdCacheExpire(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	calls := 0
+	c := &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: func(cwd string) string {
+		calls++
+		return "val:" + cwd
+	}}
+	c.get("/wt", now)
+	if !c.expire(now.Add(time.Second)) {
+		t.Fatal("first expire: want it to take effect")
+	}
+	if c.get("/wt", now.Add(time.Second)); calls != 2 {
+		t.Fatalf("after expire: %d lookups, want 2", calls)
+	}
+	if c.expire(now.Add(time.Second + ciForceMinInterval - time.Nanosecond)) {
+		t.Error("second expire inside the interval: want a no-op")
+	}
+	if c.get("/wt", now.Add(2*time.Second)); calls != 2 {
+		t.Errorf("after throttled expire: %d lookups, want still 2", calls)
+	}
+	if !c.expire(now.Add(time.Second + ciForceMinInterval)) {
+		t.Error("expire once the interval has passed: want it to take effect")
+	}
+}
+
+// Concurrent gets for one cwd share a single in-flight lookup.
+func TestCwdCacheGetSingleFlight(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	var calls atomic.Int32
+	started, release := make(chan struct{}), make(chan struct{})
+	c := &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: func(cwd string) string {
+		if calls.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		return "val:" + cwd
+	}}
+	const n = 8
+	got := make(chan string, n)
+	go func() { got <- c.get("/wt", now) }()
+	<-started
+	for range n - 1 {
+		go func() { got <- c.get("/wt", now) }()
+	}
+	// Give the waiters time to reach the in-flight lookup; without single-flight
+	// each would start its own, and a late one just hits the cached entry.
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	for range n {
+		if v := <-got; v != "val:/wt" {
+			t.Errorf("got %q, want val:/wt", v)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Errorf("%d lookups, want 1", calls.Load())
+	}
+}
+
+// /api/state?force=1 bypasses a fresh CI entry; a plain poll serves it cached.
+func TestHandleStateForceRefreshesCI(t *testing.T) {
+	db := openTestDB(t)
+	cwd := "/home/me/wt/fix-168"
+	insertEvent(db, Event{TS: time.Now().UTC().Format(time.RFC3339), SourceApp: "x", SessionID: "s1", Cwd: cwd, EventType: "Stop", PayloadJSON: "{}"})
+	var calls atomic.Int32
+	ci := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{cwd: {val: ciResult{State: "pending"}, at: time.Now()}}, lookup: func(string) ciResult {
+		calls.Add(1)
+		return ciResult{State: "green"}
+	}}
+	for _, tc := range []struct {
+		target string
+		want   int32
+	}{{"/api/state", 0}, {"/api/state?force=1", 1}} {
+		rec := httptest.NewRecorder()
+		handleState(rec, httptest.NewRequest(http.MethodGet, tc.target, nil), db, ci, &peekConfig{cache: newPaneCache()}, &actionConfig{})
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d", tc.target, rec.Code)
+		}
+		if got := calls.Load(); got != tc.want {
+			t.Errorf("%s: %d CI lookups, want %d", tc.target, got, tc.want)
+		}
 	}
 }
 
