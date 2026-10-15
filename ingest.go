@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 	"unicode"
-	"unicode/utf8"
 )
 
 // runIngest reads a single Claude Code hook event as JSON on stdin, scrubs it,
@@ -362,26 +361,25 @@ func tmuxSessionLabel(raw string) string {
 // dashboard. tmux names routinely carry Nerd Font / devicon glyphs (Unicode
 // Private Use Area) that a browser without that font draws as a tofu box, plus
 // control characters and alignment padding. These glyphs show up as decorative
-// prefixes and separators (e.g. "<icon>  branch  <icon> name"), so when any are
-// present the meaningful name is whatever follows the LAST one — we keep only
-// that tail. Remaining control characters are dropped and whitespace runs are
-// collapsed to single spaces (trimming the ends). Ordinary text and real emoji
-// are kept. A blank or all-glyph name becomes "".
+// prefixes and separators (e.g. "<icon>  branch  <icon> window title"), so the
+// name is split on them and the FIRST segment that is non-blank after cleaning
+// is kept: the leading segment is the short handle, later ones are titles.
+// Control characters are dropped and whitespace runs are collapsed to single
+// spaces (trimming the ends). Ordinary text and real emoji are kept. A blank or
+// all-glyph name becomes "".
 func cleanSessionName(s string) string {
-	if i := afterLastPUA(s); i >= 0 {
-		s = s[i:]
-	}
-	cleaned := strings.Map(func(r rune) rune {
-		switch {
-		case isPUA(r):
-			return -1 // Nerd Font / devicon glyph — unrenderable tofu in a browser
-		case unicode.IsSpace(r):
-			return ' ' // normalise tabs/newlines to a space so stripControl leaves a separator
-		default:
+	for _, seg := range strings.FieldsFunc(s, isPUA) {
+		cleaned := strings.Map(func(r rune) rune {
+			if unicode.IsSpace(r) {
+				return ' ' // normalise tabs/newlines to a space so stripControl leaves a separator
+			}
 			return r
+		}, seg)
+		if name := strings.Join(strings.Fields(stripControl(cleaned)), " "); name != "" {
+			return name
 		}
-	}, s)
-	return strings.Join(strings.Fields(stripControl(cleaned)), " ")
+	}
+	return ""
 }
 
 // stripControl drops every control rune from s. No field the dashboard renders
@@ -403,19 +401,6 @@ func stripControl(s string) string {
 		}
 		return r
 	}, s)
-}
-
-// afterLastPUA returns the byte index just past the last Private Use Area glyph
-// in s, or -1 if s contains none. Slicing s at this index yields the text that
-// follows the final decorative icon/separator.
-func afterLastPUA(s string) int {
-	idx := -1
-	for i, r := range s {
-		if isPUA(r) {
-			idx = i + utf8.RuneLen(r)
-		}
-	}
-	return idx
 }
 
 // isPUA reports whether r lies in a Unicode Private Use Area, where Nerd Fonts
