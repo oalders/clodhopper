@@ -403,3 +403,18 @@ func TestRunIngest_DisabledStillStamps(t *testing.T) {
 		t.Errorf("expected no DB created when disabled, stat err=%v", err)
 	}
 }
+
+// buildEvent records only a launcher label, keyed on whether nono's
+// $NONO_CAP_FILE is set; set both ways explicitly since `go test` may itself
+// run inside nono.
+func TestBuildEvent_Launcher(t *testing.T) {
+	raw := []byte(`{"hook_event_name":"Stop","session_id":"s"}`)
+	t.Setenv("NONO_CAP_FILE", "/run/nono/caps.json")
+	if got := buildEvent(raw, "app").Launcher; got != "nono" {
+		t.Errorf("with NONO_CAP_FILE set: launcher = %q, want nono", got)
+	}
+	t.Setenv("NONO_CAP_FILE", "")
+	if got := buildEvent(raw, "app").Launcher; got != "claude" {
+		t.Errorf("with NONO_CAP_FILE empty: launcher = %q, want claude", got)
+	}
+}

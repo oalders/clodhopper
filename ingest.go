@@ -157,6 +157,7 @@ func buildEvent(raw []byte, sourceApp string) Event {
 		Cwd:         truncate(scrubString(stripControl(cwd)), maxPathLen),
 		TmuxSession: tmuxSess,
 		TmuxPane:    tmuxPane,
+		Launcher:    launcher(),
 		SessionID:   str(p, "session_id"),
 		EventType:   str(p, "hook_event_name"),
 		ToolName:    str(p, "tool_name"),
@@ -302,6 +303,16 @@ func rebaseBranch(dir string) string {
 		}
 	}
 	return ""
+}
+
+// launcher reports how claude was started: nono sets $NONO_CAP_FILE for every
+// sandboxed process and hooks inherit claude's environment. A pure env read, so
+// it cannot fail; only the label is stored, never the variable's value.
+func launcher() string {
+	if os.Getenv("NONO_CAP_FILE") != "" {
+		return "nono"
+	}
+	return "claude"
 }
 
 // tmuxContext returns the current tmux session name (cleaned for display) and the
