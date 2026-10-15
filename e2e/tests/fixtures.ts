@@ -51,3 +51,19 @@ export async function fontsReady(page: Page) {
 }
 
 export { expect };
+
+// abortUnstubbedExec aborts every /api/action and /api/pane request that no
+// test stub answered, so none reaches the exec server's real handlers, and
+// returns their URLs for an afterEach to assert empty. Register it before a
+// test's own stubs: Playwright tries the newest matching route first.
+export async function abortUnstubbedExec(page: Page): Promise<string[]> {
+  const aborted: string[] = [];
+  await page.route(
+    (url) => url.pathname === '/api/action' || url.pathname === '/api/pane',
+    (route) => {
+      aborted.push(route.request().url());
+      return route.abort();
+    },
+  );
+  return aborted;
+}

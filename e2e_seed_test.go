@@ -76,10 +76,20 @@ func TestE2ESeed(t *testing.T) {
 	add(10*time.Hour, appB, "main", "worktree-background", "e2e-background-0000-1111-2222-333333333333", "PreToolUse", "ScheduleWakeup", "")
 	add(9*time.Hour, appB, "main", "worktree-background", "e2e-background-0000-1111-2222-333333333333", "Notification", "", `{"notification_type":"idle_prompt"}`)
 	add(22*time.Hour, appA, "main", "worktree-waiting", "e2e-waiting-0000-1111-2222-333333333333", "Stop", "", "")
+	// A second session in the same worktree and tmux pane, so swap.spec.ts can tell a
+	// session-keyed restore from a cwd- or pane-keyed one.
+	add(21*time.Hour, appA, "main", "worktree-waiting", "e2e-twin-0000-1111-2222-333333333333", "Stop", "", "")
 	// Idle with a two-digit hour count; branchless, so the cwd basename stands in.
 	add(23*time.Hour, appB, "", "a-very-long-worktree-directory-name-standing-in-for-the-branch", "e2e-idle-0000-1111-2222-333333333333", "PreToolUse", "Read", "")
 
+	// Peek-able rows for swap.spec.ts: e2e/serve.sh's stub tmux lists exactly these pane ids.
+	panes := map[string]string{
+		"e2e-waiting-0000-1111-2222-333333333333": "%9001",
+		"e2e-twin-0000-1111-2222-333333333333":    "%9001",
+		"e2e-needs-0000-1111-2222-333333333333":   "%9002",
+	}
 	for _, ev := range evs {
+		ev.TmuxPane = panes[ev.SessionID]
 		if err := insertEvent(db, ev); err != nil {
 			t.Fatal(err)
 		}

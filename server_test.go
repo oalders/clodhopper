@@ -558,10 +558,10 @@ func TestHandleDashboard_ShipsThePathAllowlist(t *testing.T) {
 // (Enter does not collapse a selection made earlier elsewhere, so a
 // document-wide guard would swallow the copy with no flash and no
 // announcement), and the poller must carry focus across its #content swap
-// rather than drop it to <body> mid-interaction. The refocus key is the session
-// id (a cluster shares one cwd, so a path key would restore to the wrong row)
-// and the focus call must pass preventScroll (rows move between polls, and
-// refocusing must not yank a viewport the user did not scroll).
+// rather than drop it to <body> mid-interaction. The focus call must pass
+// preventScroll (rows move between polls, and refocusing must not yank a
+// viewport the user did not scroll). The session-keyed refocus itself is
+// exercised in e2e/tests/swap.spec.ts.
 func TestHandleDashboard_CopyButtonSurvivesKeyboardUseAndRefresh(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
@@ -569,10 +569,7 @@ func TestHandleDashboard_CopyButtonSurvivesKeyboardUseAndRefresh(t *testing.T) {
 	for _, frag := range []string{
 		`if (ev.detail !== 0) {`,
 		`sel.containsNode(btn, true)`,
-		`function swapContent(html) {`,
-		`active.closest('#content .copycwd')`,
-		`var key = keep ? keep.getAttribute('data-session') : null;`,
-		`if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return true; }`,
+		`btns[i].focus({ preventScroll: true });`,
 		`document.dispatchEvent(new CustomEvent('ch:contentswap'))`,
 		`document.addEventListener('ch:contentswap', unflash);`,
 		`if (swapContent(d.html)) {`,
@@ -2105,39 +2102,6 @@ func TestDashboardWiresEndIntoActionScript(t *testing.T) {
 	}
 }
 
-// "Pin order" reorders the roster by re-appending group blocks, and moving a
-// <tr> detaches and reinserts it — which costs a descendant scroll container its
-// offset. An open peek scrolled to the bottom therefore snapped back to the top
-// on every poll, undoing the restore swapContent had just done a few lines
-// earlier. apply() saves each visible capsule's scrollTop and writes it back
-// after the whole re-append pass, so the compensation stays with the loop that
-// causes it and survives any future caller.
-func TestDashboardPinReorderPreservesPeekScroll(t *testing.T) {
-	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
-	defer db.Close()
-	body := getBody(t, db, "/")
-	// One contiguous fragment: it pins the save, the re-append it compensates
-	// for, and — crucially — that the restore runs after that loop, not before.
-	frag := `      var caps = [];
-      var prows = document.querySelectorAll('#content .panerow');
-      for (var k = 0; k < prows.length; k++) {
-        if (prows[k].hidden) continue;
-        var pc = prows[k].querySelector('.panecap');
-        if (pc) caps.push({ el: pc, top: pc.scrollTop });
-      }
-`
-	if !strings.Contains(body, frag) {
-		t.Errorf("pin reorder no longer saves open peek scroll offsets before re-appending:\n%s", frag)
-	}
-	restore := `          for (var c = 0; c < bl[b].length; c++) tbody.appendChild(bl[b][c]);
-        }
-      }
-      for (var s = 0; s < caps.length; s++) caps[s].el.scrollTop = caps[s].top;`
-	if !strings.Contains(body, restore) {
-		t.Errorf("pin reorder no longer restores peek scroll offsets after the re-append loop:\n%s", restore)
-	}
-}
-
 // Sorting the pinned roster by status (issue #142) orders by urgency, and the
 // urgency ranking is the server's: the status cell carries StatusRank so the JS
 // compares that number and never keeps a second ranking table of its own. The
@@ -2175,79 +2139,26 @@ func TestDashboardPinSortWiring(t *testing.T) {
 	}
 }
 
-// A peek capsule the reader has keyboard focus on must survive the ~5s poll.
-// swapContent replaces #content wholesale, so the focused <pre class="panecap">
-// is destroyed and rebuilt; before this it matched no refocus branch and the
-// generic fallback parked the reading cursor on #content, silently losing the
-// reader's place in the capture on every refresh. The capsule carries no id of
-// its own, so the refocus keys on the parent row's data-peek-row — the session
-// id, unique per roster row — and never on the tmux pane id, which two sessions
-// attached to one pane share.
-func TestDashboardRestoresFocusToOpenPeekAcrossSwap(t *testing.T) {
+// e2e/tests/swap.spec.ts checks the session-keyed peek refocus in Chromium,
+// which has CSS.escape, so it cannot see this: the refocus matches by scanning
+// rather than by an interpolated selector (CSS.escape is absent on older engines).
+func TestDashboardPeekRefocusScansRatherThanBuildingASelector(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
 	body := getBody(t, db, "/")
-
-	capture := `      var pkeep = active && active.closest ? active.closest('#content .panerow') : null;
-      var pkey = pkeep ? pkeep.getAttribute('data-peek-row') : null;`
-	if !strings.Contains(body, capture) {
-		t.Errorf("swapContent no longer captures the focused peek row before the swap:\n%s", capture)
-	}
-	// One contiguous fragment: the scan, the data-peek-row match, and the
-	// preventScroll refocus that ends the branch.
-	restore := `      if (pkey) {
-        var prows2 = document.querySelectorAll('#content .panerow');
-        for (var pr = 0; pr < prows2.length; pr++) {
-          if (prows2[pr].getAttribute('data-peek-row') !== pkey) continue;
-          var pcap = prows2[pr].querySelector('.panecap');
-          if (pcap) { pcap.focus({ preventScroll: true }); return; }`
-	if !strings.Contains(body, restore) {
-		t.Errorf("swapContent no longer refocuses the carried-over peek capsule:\n%s", restore)
-	}
-	// Keyed on the session id, never on the shared pane id, and matched by
-	// scanning rather than by an interpolated selector (no CSS.escape here).
-	for _, gone := range []string{
-		`pkeep.getAttribute('data-pane')`,
-		`prows2[pr].getAttribute('data-pane')`,
-		`'#content .panerow[data-peek-row="'`,
-	} {
-		if strings.Contains(body, gone) {
-			t.Errorf("peek refocus must key on data-peek-row by scanning, not: %s", gone)
-		}
-	}
-
-	// Ordering: capture before the innerHTML swap; refocus after the carry-over
-	// scroll restore AND after the pin-order apply, so the row is already in its
-	// final position and preventScroll has nothing left to fight.
-	iCap := strings.Index(body, capture)
-	iSwap := strings.Index(body, `content.replaceChildren(tpl.content);`)
-	iScroll := strings.Index(body, `if (typeof op.scroll === 'number') c.scrollTop = op.scroll;`)
-	iPin := strings.Index(body, `if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply();`)
-	iRestore := strings.Index(body, restore)
-	if iCap < 0 || iSwap < 0 || iScroll < 0 || iPin < 0 || iRestore < 0 {
-		t.Fatalf("swapContent landmarks missing: cap=%d swap=%d scroll=%d pin=%d restore=%d", iCap, iSwap, iScroll, iPin, iRestore)
-	}
-	if iCap > iSwap || iSwap > iScroll || iScroll > iPin || iPin > iRestore {
-		t.Errorf("peek refocus must run after the scroll restore and the pin apply: cap=%d swap=%d scroll=%d pin=%d restore=%d",
-			iCap, iSwap, iScroll, iPin, iRestore)
+	if gone := `'#content .panerow[data-peek-row="'`; strings.Contains(body, gone) {
+		t.Errorf("peek refocus must match data-peek-row by scanning, not: %s", gone)
 	}
 }
 
-// A peek capsule the reader has focus on survives the poll even when "pin
-// order" reshuffles the roster — but NOT because the pin apply() restores focus.
-// It cannot: its only caller is swapContent, which reaches it after replacing
-// #content wholesale, so the pre-swap focused node is already detached and
-// document.activeElement has fallen to <body>. The behaviour comes from
-// swapContent's own data-peek-row refocus, which is why the pin apply must run
-// BEFORE that branch (the row lands in its final position first, so preventScroll
-// is honest) and the scroll restore must run before both. This pins that
-// ordering, and pins the dead activeElement capture out of apply() for good.
-func TestDashboardPinReorderRestoresPeekFocus(t *testing.T) {
+// The pin apply() runs only from swapContent, after #content was replaced
+// wholesale, so the pre-swap focused node is already detached by then and a
+// focus restore inside apply() can never fire; swapContent refocuses the
+// capsule itself. Keep that dead idiom from creeping back.
+func TestDashboardPinApplyHasNoDeadFocusRestore(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
 	body := getBody(t, db, "/")
-
-	// The unreachable idiom must not creep back into the pin apply().
 	for _, gone := range []string{
 		`var pfocus = document.activeElement;`,
 		`pfocus.closest('#content .panecap')`,
@@ -2256,24 +2167,6 @@ func TestDashboardPinReorderRestoresPeekFocus(t *testing.T) {
 		if strings.Contains(body, gone) {
 			t.Errorf("pin apply() runs after the innerHTML swap, so this focus restore can never fire: %s", gone)
 		}
-	}
-
-	// Source order inside swapContent is execution order: carry-over scroll
-	// restore, then the pin apply, then the .panecap refocus branch.
-	iScroll := strings.Index(body, `if (typeof op.scroll === 'number') c.scrollTop = op.scroll;`)
-	iPin := strings.Index(body, `if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply();`)
-	iRefocus := strings.Index(body, `          var pcap = prows2[pr].querySelector('.panecap');`)
-	if iScroll < 0 || iPin < 0 || iRefocus < 0 {
-		t.Fatalf("landmarks missing: scroll=%d pin=%d refocus=%d", iScroll, iPin, iRefocus)
-	}
-	if iScroll > iPin || iPin > iRefocus {
-		t.Errorf("swapContent must run the pin apply after the scroll restore and before the peek refocus: scroll=%d pin=%d refocus=%d",
-			iScroll, iPin, iRefocus)
-	}
-	// And inside apply() itself the capsule offsets are still saved and put back
-	// around the re-append loop — that half IS load-bearing and stays.
-	if !strings.Contains(body, `      for (var s = 0; s < caps.length; s++) caps[s].el.scrollTop = caps[s].top;`) {
-		t.Error("pin apply() must still restore capsule scroll offsets after re-appending")
 	}
 }
 
