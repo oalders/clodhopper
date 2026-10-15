@@ -119,11 +119,18 @@ func listPanes() map[string]livePane {
 // is hidden unless at least one row matches the listing — an empty or unrelated
 // listing (tmux missing, or serve on another socket) is not evidence of death.
 // A live pane back at a shell in the row's launch directory is hidden too: claude
-// exited without SessionEnd (a crash) and the pane survived.
+// exited without SessionEnd (a crash) and the pane survived. A pane in the row's
+// launch directory counts as the row's even under another session label: the
+// stored label goes stale when the name or its normalisation changes (#173).
 func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
 	alive := func(a Agent) bool {
 		p, ok := panes[a.TmuxPane]
-		return ok && (a.TmuxSession == "" || a.TmuxSession == p.session)
+		if !ok {
+			return false
+		}
+		dir := a.launchCwd()
+		return a.TmuxSession == "" || a.TmuxSession == p.session ||
+			(p.path != "" && dir != "" && cwdKey(p.path) == cwdKey(dir))
 	}
 	if !slices.ContainsFunc(agents, alive) {
 		return agents
