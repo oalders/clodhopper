@@ -57,4 +57,15 @@ test.describe('filter strip', () => {
     await expect(page.locator('#ck-filters')).toBeHidden();
     await expect(page.locator('#ck-fbadge')).toHaveText('1');
   });
+
+  test('controls are 44px tap targets on a phone', async ({ page }) => {
+    test.skip(page.viewportSize()!.width > 640, 'the tap-target rule is phone-only');
+    await page.goto('/?refresh=0&source_app=clodhopper');
+    const controls = page.locator('#ck-filters select, #ck-filters input, #ck-filters button');
+    await expect(controls).toHaveCount(6);
+    const short = await controls.evaluateAll((els) =>
+      els.filter((el) => el.getBoundingClientRect().height < 44).map((el) => el.id || el.textContent?.trim()),
+    );
+    expect(short).toEqual([]);
+  });
 });
