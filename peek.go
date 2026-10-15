@@ -125,13 +125,23 @@ var launcherCommands = map[string]bool{"claude": true, "nono": true}
 // exited without SessionEnd (a crash) and the pane survived. A pane in the row's
 // launch directory counts as the row's even under another session label: the
 // stored label goes stale when the name or its normalisation changes (#173) —
-// but only while the pane runs an agent launcher, and no other row claims the
-// pane by label: a reused pane id holding some other process is not this row's.
+// but only while the pane runs an agent launcher and no other row claims the
+// pane, by label or by this same fallback: a reused pane id holding some other
+// process is not this row's, and two candidates cannot be told apart.
 func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
-	claimed := map[string]bool{}
+	fallback := func(a Agent, p livePane) bool {
+		dir := a.launchCwd()
+		return launcherCommands[p.command] && p.path != "" && dir != "" && cwdKey(p.path) == cwdKey(dir)
+	}
+	claimed, candidates := map[string]bool{}, map[string]int{}
 	for _, a := range agents {
-		if p, ok := panes[a.TmuxPane]; ok && a.TmuxSession != "" && a.TmuxSession == p.session {
+		p, ok := panes[a.TmuxPane]
+		switch {
+		case !ok:
+		case a.TmuxSession != "" && a.TmuxSession == p.session:
 			claimed[a.TmuxPane] = true
+		case fallback(a, p):
+			candidates[a.TmuxPane]++
 		}
 	}
 	alive := func(a Agent) bool {
@@ -139,9 +149,8 @@ func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
 		if !ok {
 			return false
 		}
-		dir := a.launchCwd()
 		return a.TmuxSession == "" || a.TmuxSession == p.session ||
-			(!claimed[a.TmuxPane] && launcherCommands[p.command] && p.path != "" && dir != "" && cwdKey(p.path) == cwdKey(dir))
+			(!claimed[a.TmuxPane] && candidates[a.TmuxPane] == 1 && fallback(a, p))
 	}
 	if !slices.ContainsFunc(agents, alive) {
 		return agents
