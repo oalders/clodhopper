@@ -111,6 +111,9 @@ func listPanes() map[string]livePane {
 	return set
 }
 
+// launcherCommands are the pane foreground commands of a running agent (Agent.Launcher's values).
+var launcherCommands = map[string]bool{"claude": true, "nono": true}
+
 // dropDeadPanes filters out roster rows whose tmux pane is gone: the pane was
 // closed or the tmux server restarted, so the session never sent SessionEnd. A
 // pane listed under a different session than the row recorded is gone too (pane
@@ -122,7 +125,8 @@ func listPanes() map[string]livePane {
 // exited without SessionEnd (a crash) and the pane survived. A pane in the row's
 // launch directory counts as the row's even under another session label: the
 // stored label goes stale when the name or its normalisation changes (#173) —
-// unless another row claims that pane by label, which makes this row the stale one.
+// but only while the pane runs an agent launcher, and no other row claims the
+// pane by label: a reused pane id holding some other process is not this row's.
 func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
 	claimed := map[string]bool{}
 	for _, a := range agents {
@@ -137,7 +141,7 @@ func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
 		}
 		dir := a.launchCwd()
 		return a.TmuxSession == "" || a.TmuxSession == p.session ||
-			(!claimed[a.TmuxPane] && p.path != "" && dir != "" && cwdKey(p.path) == cwdKey(dir))
+			(!claimed[a.TmuxPane] && launcherCommands[p.command] && p.path != "" && dir != "" && cwdKey(p.path) == cwdKey(dir))
 	}
 	if !slices.ContainsFunc(agents, alive) {
 		return agents
