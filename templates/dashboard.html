@@ -113,7 +113,8 @@
       border-radius: 1px; align-self: center; animation: ck-blink 1.1s steps(1) infinite;
     }
     .ck-tagline { font-size: var(--fs-sm); color: var(--text-3); }
-    .ck-headright { display: flex; align-items: center; gap: 14px; }
+    /* Wraps so the header controls never push a phone-width page sideways. */
+    .ck-headright { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
 
     /* --- Buttons ----------------------------------------------------------- */
     .ck-btn {
@@ -126,6 +127,7 @@
     .ck-btn:hover { background: var(--surface-3); }
     .ck-btn:active { transform: translateY(1px); }
     .ck-btn[aria-pressed="true"] { background: var(--surface-3); border-color: var(--brand); color: var(--text-1); }
+    .ck-btn[disabled] { opacity: 0.55; cursor: wait; }
     .ck-btn-primary { background: var(--brand); border-color: transparent; color: var(--text-invert); }
     .ck-btn-primary:hover { background: var(--brand-strong); }
     .ck-fbadge {
@@ -718,6 +720,7 @@
       <button type="button" id="ck-filtersbtn" class="ck-btn" aria-controls="ck-filters">filters <span id="ck-fbadge" class="ck-fbadge"></span></button>
       <button type="button" id="ck-debug" class="ck-btn" aria-pressed="false" title="show the Activity + Recent-events diagnostics">debug</button>
       <button type="button" id="ck-pin" class="ck-btn" aria-pressed="false" title="freeze the roster's group order so a row can't re-sort away while you act on it — data still updates live">pin order</button>
+      <button type="button" id="ck-ciforce" class="ck-btn" title="re-check PR/CI status now instead of waiting for the cache (up to a minute)">refresh CI</button>
       <button type="button" id="ck-theme" class="ck-btn" aria-pressed="false">☾ dark</button>
     </div>
   </header>
@@ -1088,30 +1091,49 @@
       return true;
     }
 
+    function poll(qs) {
+      return fetch('/api/state' + qs, { headers: { 'Accept': 'application/json' } })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          // Don't advance sig while an action is busy: swapContent will
+          // no-op this poll, and if we recorded the new signature anyway
+          // the stale board would never get repainted once the action
+          // clears (the next poll would see d.signature === sig and skip).
+          // swapContent can decline for its own reasons too, so sig only
+          // advances when it reports that it actually painted — same failure
+          // mode, one guard.
+          if (d.signature !== sig && !window.__ckActionBusy) {
+            if (swapContent(d.html)) {
+              sig = d.signature;
+              tickIdle();
+            }
+          }
+        })
+        .catch(function () {}); // best-effort, like everything else here
+    }
+
+    // "refresh CI" polls once with force=1, which makes the server re-check
+    // PR/CI now; it is independent of the interval, so it works with auto-refresh off.
+    var ciBtn = document.getElementById('ck-ciforce');
+    if (ciBtn) ciBtn.addEventListener('click', function () {
+      var params = new URLSearchParams(location.search);
+      params.set('force', '1');
+      // Disabling a focused button drops focus to <body>; hand it back after.
+      var hadFocus = document.activeElement === ciBtn;
+      ciBtn.disabled = true;
+      ciBtn.setAttribute('aria-busy', 'true');
+      poll('?' + params.toString()).finally(function () {
+        ciBtn.disabled = false;
+        ciBtn.removeAttribute('aria-busy');
+        if (hadFocus) ciBtn.focus();
+      });
+    });
+
     if (refresh > 0) {
       // Idle is shown in minutes once past 60s, so a 30s cadence keeps the
       // displayed value within ~30s of true without per-second churn.
       setInterval(tickIdle, 30000);
-      setInterval(function () {
-        fetch('/api/state' + location.search, { headers: { 'Accept': 'application/json' } })
-          .then(function (r) { return r.json(); })
-          .then(function (d) {
-            // Don't advance sig while an action is busy: swapContent will
-            // no-op this poll, and if we recorded the new signature anyway
-            // the stale board would never get repainted once the action
-            // clears (the next poll would see d.signature === sig and skip).
-            // swapContent can decline for its own reasons too, so sig only
-            // advances when it reports that it actually painted — same failure
-            // mode, one guard.
-            if (d.signature !== sig && !window.__ckActionBusy) {
-              if (swapContent(d.html)) {
-                sig = d.signature;
-                tickIdle();
-              }
-            }
-          })
-          .catch(function () {}); // best-effort, like everything else here
-      }, refresh * 1000);
+      setInterval(function () { poll(location.search); }, refresh * 1000);
     }
   })();
 
