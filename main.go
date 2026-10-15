@@ -142,8 +142,8 @@ func waitingRetainHours() int {
 }
 
 // allowedHosts reads CLODHOPPER_ALLOWED_HOSTS (comma-separated) — extra Host
-// header values accepted by the PR-action endpoint, e.g. a Tailscale magicDNS
-// name. Loopback and the bind host are always allowed without listing.
+// header values accepted on every route (see newServeMux), e.g. a Tailscale
+// magicDNS name. Loopback and the bind host are always allowed without listing.
 func allowedHosts() []string {
 	v := os.Getenv("CLODHOPPER_ALLOWED_HOSTS")
 	if v == "" {

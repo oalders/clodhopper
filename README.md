@@ -127,7 +127,8 @@ non-zero rather than silently bind elsewhere.
 This listens only on the tailnet interface, so the dashboard is reachable from
 any device on your tailnet (subject to your ACLs) but not from the local
 network. Reach it at `http://<this-host's-tailscale-ip>:4555`, or by the host's
-MagicDNS name once that name is listed in `CLODHOPPER_ALLOWED_HOSTS`.
+MagicDNS name once that name is listed in `CLODHOPPER_ALLOWED_HOSTS` (otherwise
+it answers `421`).
 
 ### Peeking at a live pane
 
@@ -168,8 +169,8 @@ board used to expose.
   (the PR actions, the session actions, and **rebase**) is accepted only from a
   **loopback or Tailscale peer** — `127.0.0.0/8`, `::1`, `100.64.0.0/10`, or
   `fd7a:115c:a1e0::/48`. A LAN peer reaching a `--host 0.0.0.0` dashboard (by an
-  allowed `Host`) gets the read-only board and a `403` for anything else: no action buttons are
-  rendered for it, and the CSRF token is not emitted into its page either, so
+  allowed `Host`) gets the read-only board and a `403` for anything else: no
+  action buttons are rendered for it, and the CSRF token is not emitted into its page either, so
   even the exec-free **end** action is out of reach. The peer address is taken
   from the connection only — forwarding headers such as `X-Forwarded-For` are
   never consulted — and there is no override flag.
