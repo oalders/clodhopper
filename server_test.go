@@ -765,7 +765,7 @@ func TestBuildDashboardDataDropsDeadPane(t *testing.T) {
 	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "dead", TmuxSession: "work", TmuxPane: "%80", EventType: "Stop", PayloadJSON: "{}"})
 	// buildDashboardData reads its own clock, so stamp the seeded listing an hour
 	// ahead: paneTTL can never lapse mid-test and real tmux is never run.
-	peek := &peekConfig{cache: &paneCache{set: map[string]string{"%1": "work"}, at: now.Add(time.Hour)}}
+	peek := &peekConfig{cache: &paneCache{set: map[string]livePane{"%1": {session: "work"}}, at: now.Add(time.Hour)}}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.RemoteAddr = "127.0.0.1:5555"
 	r.Host = "127.0.0.1:4555"
@@ -825,7 +825,7 @@ func TestBuildDashboardDataRepoOnlyForLivePane(t *testing.T) {
 	// Both caches are stamped an hour ahead so neither tmux nor git ever runs.
 	peek := &peekConfig{
 		enabled: true,
-		cache:   &paneCache{set: map[string]string{"%1": "work"}, at: now.Add(time.Hour)},
+		cache:   &paneCache{set: map[string]livePane{"%1": {session: "work"}}, at: now.Add(time.Hour)},
 		repos: &cwdCache{m: map[string]cwdEntry{cwd: {val: "o/r", at: now.Add(time.Hour)}}, lookup: func(string) string {
 			t.Error("unexpected lookup")
 			return ""

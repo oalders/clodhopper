@@ -49,12 +49,16 @@ func clampPaneLines(n int) int {
 	return n
 }
 
-// paneCache memoises the live tmux panes (pane id → normalised session name) so
-// the dashboard (which polls) does not shell out to tmux on every render. now is
-// injected so the TTL is testable, matching cwdCache.
+// livePane is one listed tmux pane: its normalised session name, foreground
+// command and current directory.
+type livePane struct{ session, command, path string }
+
+// paneCache memoises the live tmux panes (pane id → livePane) so the dashboard
+// (which polls) does not shell out to tmux on every render. now is injected so
+// the TTL is testable, matching cwdCache.
 type paneCache struct {
 	mu  sync.Mutex
-	set map[string]string
+	set map[string]livePane
 	at  time.Time
 }
 
@@ -64,7 +68,7 @@ func newPaneCache() *paneCache { return &paneCache{} }
 // unset or older than paneTTL. A tmux failure caches an empty listing for the
 // TTL — the peek is simply unavailable, never an error. A nil cache lists
 // nothing, so a config built without one hides no rows.
-func (c *paneCache) panes(now time.Time) map[string]string {
+func (c *paneCache) panes(now time.Time) map[string]livePane {
 	if c == nil {
 		return nil
 	}
@@ -84,23 +88,24 @@ func (c *paneCache) live(pane string, now time.Time) bool {
 }
 
 // listPanes returns every live tmux pane id across all sessions, mapped to its
-// session name normalised exactly as ingest stores tmux_session, or an empty map
-// if tmux is missing, unreachable (different socket / container / not running),
-// or times out. Best-effort, like lookupCI.
-func listPanes() map[string]string {
-	set := map[string]string{}
+// session name (normalised exactly as ingest stores tmux_session), foreground
+// command and current path, or an empty map if tmux is missing, unreachable
+// (different socket / container / not running), or times out. Best-effort, like lookupCI.
+func listPanes() map[string]livePane {
+	set := map[string]livePane{}
 	if _, err := exec.LookPath("tmux"); err != nil {
 		return set
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{session_name}").Output()
+	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{session_name}\t#{pane_current_command}\t#{pane_current_path}").Output()
 	if err != nil {
 		return set
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if pane, sess, ok := strings.Cut(line, "\t"); ok {
-			set[pane] = tmuxSessionLabel(sess)
+		// Path last, and SplitN, so a tab inside it cannot shift the other fields.
+		if f := strings.SplitN(line, "\t", 4); len(f) == 4 {
+			set[f[0]] = livePane{session: tmuxSessionLabel(f[1]), command: f[2], path: f[3]}
 		}
 	}
 	return set
@@ -113,16 +118,26 @@ func listPanes() map[string]string {
 // mistake, so it fails safe: rows without a pane id are always kept, and nothing
 // is hidden unless at least one row matches the listing — an empty or unrelated
 // listing (tmux missing, or serve on another socket) is not evidence of death.
-func dropDeadPanes(agents []Agent, panes map[string]string) []Agent {
+// A live pane back at a shell in the row's launch directory is hidden too: claude
+// exited without SessionEnd (a crash) and the pane survived.
+func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
 	alive := func(a Agent) bool {
-		sess, ok := panes[a.TmuxPane]
-		return ok && (a.TmuxSession == "" || a.TmuxSession == sess)
+		p, ok := panes[a.TmuxPane]
+		return ok && (a.TmuxSession == "" || a.TmuxSession == p.session)
 	}
 	if !slices.ContainsFunc(agents, alive) {
 		return agents
 	}
 	return slices.DeleteFunc(agents, func(a Agent) bool {
-		return paneIDRe.MatchString(a.TmuxPane) && !alive(a)
+		if !paneIDRe.MatchString(a.TmuxPane) {
+			return false
+		}
+		if !alive(a) {
+			return true
+		}
+		// Requiring the launch dir guards against a reused pane id holding an unrelated shell.
+		p, dir := panes[a.TmuxPane], a.launchCwd()
+		return shellCommands[p.command] && p.path != "" && dir != "" && cwdKey(p.path) == cwdKey(dir)
 	})
 }
 

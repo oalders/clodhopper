@@ -2761,7 +2761,7 @@ func TestHandleActionBroadcastReloadSkipsDeadPane(t *testing.T) {
 	cfg := newActionCfg("/bin/true", "/bin/true")
 	cfg.tmux = stub
 	now := time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC)
-	cfg.panes = &paneCache{set: map[string]string{"%1": ""}, at: now}
+	cfg.panes = &paneCache{set: map[string]livePane{"%1": {}}, at: now}
 
 	w := httptest.NewRecorder()
 	handleAction(w, actionReq("", "broadcast-reload", false, "secret", "127.0.0.1"), db, cfg, now)
