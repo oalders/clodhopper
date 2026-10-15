@@ -1484,7 +1484,7 @@
       timer = setTimeout(unflash, 1200);
     }
 
-    // Defence in depth for rows stored before ingest started stripping these:
+    // Defence in depth for rows stored before ingest started refusing these:
     // html/template does not escape a newline in an attribute value and the
     // parser hands it back intact, so a crafted cwd could put a newline-
     // terminated shell command on the clipboard of someone about to paste into

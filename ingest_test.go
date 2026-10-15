@@ -52,6 +52,7 @@ func TestBuildEvent_SessionIDBounded(t *testing.T) {
 	for name, tc := range map[string]struct{ in, want string }{
 		"uuid kept":        {uuid, uuid},
 		"over cap refused": {strings.Repeat("a", maxSessionIDLen+1), ""},
+		"at cap kept":      {strings.Repeat("a", maxSessionIDLen), strings.Repeat("a", maxSessionIDLen)},
 		"control refused":  {uuid + `\n`, ""},
 	} {
 		t.Run(name, func(t *testing.T) {

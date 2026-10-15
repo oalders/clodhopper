@@ -27,6 +27,7 @@ const maxPathLen = 4096
 
 // maxSessionIDLen bounds session_id, the roster grouping key. Real ids are
 // 36-char UUIDs; longer ones are refused, not truncated, so ids never collide.
+// Counted in bytes, unlike maxPathLen: it bounds page weight, and ids are ASCII.
 const maxSessionIDLen = 128
 
 // payloadAllow is the set of top-level hook-payload keys we are willing to
