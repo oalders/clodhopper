@@ -175,7 +175,7 @@ func TestHandleDashboard_EscapesCwd(t *testing.T) {
 
 // The button carries the accessibility contract for the copy affordance: a name
 // of its own (it replaces its inner text for assistive tech), a decorative glyph
-// hidden from it, and a live region to announce into.
+// hidden from it, and a status element outside #content.
 func TestHandleDashboard_CopyButtonAccessibility(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
@@ -190,8 +190,8 @@ func TestHandleDashboard_CopyButtonAccessibility(t *testing.T) {
 	if !strings.Contains(body, `<span class="copyicon" aria-hidden="true">`) {
 		t.Errorf("the ⧉ glyph must be hidden from assistive tech:\n%s", body)
 	}
-	if !strings.Contains(body, `id="ck-copystatus" class="ck-sr" role="status"`) {
-		t.Errorf("copy live region missing:\n%s", body)
+	if !strings.Contains(body, `<div id="ck-copystatus" class="ck-sr"></div>`) {
+		t.Errorf("copy status element missing:\n%s", body)
 	}
 	// The path is on hover too — issue #71 asks for it explicitly.
 	if !strings.Contains(body, `title="/home/me/wt/fix-71"`) {
@@ -723,11 +723,10 @@ func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
 	if strings.Contains(resp.HTML, "<form") || strings.Contains(resp.HTML, "<script") {
 		t.Errorf("fragment leaked page chrome:\n%s", resp.HTML)
 	}
-	// The copy live region must stay OUTSIDE #content, which this fragment
-	// replaces wholesale. A re-created live region is a NEW region to assistive
-	// tech and its text is not announced — a silent, invisible regression.
+	// The copy status element must stay OUTSIDE #content, which this fragment
+	// replaces wholesale.
 	if strings.Contains(resp.HTML, "ck-copystatus") {
-		t.Errorf("copy live region moved inside the swapped region:\n%s", resp.HTML)
+		t.Errorf("copy status element moved inside the swapped region:\n%s", resp.HTML)
 	}
 }
 
@@ -2271,21 +2270,8 @@ func TestDashboardPinReorderRestoresPeekFocus(t *testing.T) {
 	}
 }
 
-// aria-live must not live in the server markup. The capsule is a one-shot
-// snapshot, but every signature-changing poll rebuilds #content and swapContent
-// writes the carried-over, UNCHANGED text onto a fresh node — a node that is
-// already a live region when its content lands, so screen readers re-announce
-// the same capture every refresh cycle. openPane arms the attribute at open
-// time instead: synchronously, before the pane fetch resolves, so the region is
-// live when the text it should announce arrives.
-//
-// Removing the attribute from the markup is necessary but NOT sufficient:
-// .panecap is a descendant of <main id="content" aria-live="polite">, and a
-// descendant belongs to its nearest live ancestor whether or not it carries
-// aria-live itself. The subtree has to opt out explicitly, so the poll restore
-// stamps aria-live="off" on the rebuilt capsule and openPane stamps "polite"
-// back on for a genuine user-initiated open. Both halves are pinned here.
-func TestDashboardPeekLiveRegionArmedAtOpenNotInMarkup(t *testing.T) {
+// The capsule renders with its class, tab stop and static name.
+func TestDashboardPeekCapsuleMarkup(t *testing.T) {
 	d := dashboardData{
 		PeekEnabled: true,
 		Agents: []Agent{{
@@ -2294,45 +2280,29 @@ func TestDashboardPeekLiveRegionArmedAtOpenNotInMarkup(t *testing.T) {
 		}},
 	}
 	body := renderDashboard(t, d)
-
 	if !strings.Contains(body, `<pre class="panecap" tabindex="0" aria-label="pane capture"></pre>`) {
-		t.Error(`the capsule must render as <pre class="panecap" tabindex="0" aria-label="pane capture"></pre> — class, tabindex and a static name kept, aria-live dropped`)
+		t.Error(`the capsule must render as <pre class="panecap" tabindex="0" aria-label="pane capture"></pre>`)
 	}
-	if strings.Contains(body, `aria-live="polite" tabindex="0"`) {
-		t.Error("the capsule must not be a live region in the server markup — that is what re-announces on every poll")
-	}
-	arm := `pre.setAttribute('aria-live', 'polite');`
-	if !strings.Contains(body, arm) {
-		t.Errorf("openPane must arm the live region when the row is opened: %s", arm)
-	}
-	// Dropping the attribute from the markup does NOT silence the capsule on its
-	// own: .panecap is a descendant of <main id="content" aria-live="polite">, so
-	// it inherits that region. Both directions must therefore be explicit — "off"
-	// where swapContent restores the carried-over text, "polite" in openPane —
-	// which is exactly two call sites, no more.
-	mute := `            c.setAttribute('aria-live', 'off');
-            if (window.__ckRenderCapture) window.__ckRenderCapture(c, op.text, repo);`
-	if !strings.Contains(body, mute) {
-		t.Errorf("swapContent must opt the rebuilt capsule out of #content's live region before writing the carried text:\n%s", mute)
-	}
-	if n := strings.Count(body, `setAttribute('aria-live'`); n != 2 {
-		t.Errorf("aria-live must be set at exactly two sites (openPane arms polite, swapContent restores off), got %d", n)
-	}
-	i := strings.Index(body, "function openPane(sess) {")
-	if i < 0 {
-		t.Fatal("openPane missing")
-	}
-	win := body[i:min(i+2500, len(body))]
-	iArm := strings.Index(win, arm)
-	iHide := strings.Index(win, "row.hidden = false;")
-	iFetch := strings.Index(win, `fetch('/api/pane?pane='`)
-	iText := strings.Index(win, `if (t) renderCapture(pre, collapseRules(t),`)
-	if iArm < 0 || iHide < 0 || iFetch < 0 || iText < 0 {
-		t.Fatalf("openPane landmarks missing: arm=%d hide=%d fetch=%d text=%d", iArm, iHide, iFetch, iText)
-	}
-	if iHide > iArm || iArm > iFetch || iFetch > iText {
-		t.Errorf("aria-live must be armed where the row is un-hidden, before the fetch writes the text: hide=%d arm=%d fetch=%d text=%d",
-			iHide, iArm, iFetch, iText)
+}
+
+// The dashboard carries no live-region machinery at all (#108): its sole user
+// runs no assistive tech, and live regions were implicated in tab memory growth
+// (#119). Render every optional surface and make sure none comes back, in
+// markup or in script.
+func TestDashboardHasNoLiveRegions(t *testing.T) {
+	body := renderDashboard(t, dashboardData{
+		PeekEnabled: true,
+		ExecEnabled: true,
+		CSRFToken:   "tok",
+		Agents: []Agent{{
+			SessionID: "s1", SourceApp: "app", Branch: "feature", Status: statusWaiting,
+			TmuxSession: "sess", TmuxPane: "%3", LiveTmux: true,
+		}},
+	})
+	for _, bad := range []string{"aria-live", "aria-atomic", `role="status"`} {
+		if strings.Contains(body, bad) {
+			t.Errorf("dashboard still contains %s", bad)
+		}
 	}
 }
 
@@ -2672,9 +2642,8 @@ func TestDashboardInnerHTMLOccurrencesAreAccountedFor(t *testing.T) {
 // swapContent must build the new subtree OFFLINE (parse into a disconnected
 // <template>, then attach it in one shot) on every engine that can, rather than
 // rebuild the live #content node in place with `#content.innerHTML = html`.
-// #content is a live aria-live region, and the old in-place rebuild made engines
-// do per-swap accessibility-tree work on the live node every poll, growing
-// renderer memory without bound over a long-lived tab (#119). This pins the
+// The old in-place rebuild of the live node every poll grew renderer memory
+// without bound over a long-lived tab (#119). This pins the
 // offline-swap mechanism, its <template>-support feature-detect, and guards the
 // old live-node default from creeping back. The legacy `content.innerHTML = html`
 // branch is a deliberate last resort for engines with no <template> at all (see
@@ -3392,36 +3361,6 @@ func TestDashboardArmFocusKindMapsEachControlToItsSelector(t *testing.T) {
 	}
 }
 
-// The expired-on-restore path is the ONE place the round-6 expiry actually
-// fires, and it writes its message into .actmsg while that region is muted for
-// the carry-over rewrite — so the un-mute lands with the text already present
-// and no screen reader ever announces it. The message must be blanked and
-// re-written after the un-mute, as a change to a live region.
-func TestDashboardArmRestoreAnnouncesTheExpiry(t *testing.T) {
-	html := renderDashboard(t, dashboardData{
-		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		ExecEnabled: true,
-		CSRFToken:   "tok",
-	})
-	for _, frag := range []string{
-		"if (!stillArmed && slot) {",
-		"var expiredMsg = slot.textContent;",
-		"slot.textContent = '';",
-		"setTimeout(function (el, m) { return function () { el.textContent = m; }; }(slot, expiredMsg), 0);",
-	} {
-		if !strings.Contains(html, frag) {
-			t.Errorf("the expiry announcement is missing a piece: %s", frag)
-		}
-	}
-	// ORDER: the un-mute must already be QUEUED when the re-write is queued, so
-	// the region is polite again by the time the text goes back in.
-	unmuteAt := strings.Index(html, "setTimeout(function (el) { return function () { el.setAttribute('aria-live', 'polite'); }; }(slot), 0);")
-	rewriteAt := strings.Index(html, "setTimeout(function (el, m) { return function () { el.textContent = m; }; }(slot, expiredMsg), 0);")
-	if unmuteAt < 0 || rewriteAt < unmuteAt {
-		t.Error("the expiry re-write is queued before the aria-live un-mute; it would still land muted")
-	}
-}
-
 // __ckDisarm leaves an explanatory message behind so the reader is told WHY the
 // confirmation went away rather than finding a silently blank row. The branch
 // that writes it — not just the constant and its call sites — is what matters.
@@ -3504,9 +3443,8 @@ func TestDashboardActionGroupsFallBackToTheBranchGuess(t *testing.T) {
 
 // Two smaller consequences of the focus restore living in unlock: collapsing an
 // actions panel disarms it first, which can move focus ONTO a button inside the
-// row we are about to hide, and the restored caveat must not make an AT re-read
-// the whole thing on every repaint.
-func TestDashboardArmedConfirmFocusAndLiveRegionHousekeeping(t *testing.T) {
+// row we are about to hide.
+func TestDashboardArmedConfirmFocusHousekeeping(t *testing.T) {
 	html := renderDashboard(t, dashboardData{
 		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
 		ExecEnabled: true, PeekEnabled: true,
@@ -3517,10 +3455,6 @@ func TestDashboardArmedConfirmFocusAndLiveRegionHousekeeping(t *testing.T) {
 		// what the caller asked for.
 		"var hadFocus = !!(document.activeElement && row.contains(document.activeElement));",
 		"if (focusBtn || hadFocus) btn.focus({ preventScroll: true });",
-		// .actmsg is aria-live; mute it while the carried-over caveat goes back in.
-		"slot.setAttribute('aria-live', 'off');",
-		"el.setAttribute('aria-live', 'polite');",
-		"if (msg.textContent !== caveat) msg.textContent = caveat;",
 	} {
 		if !strings.Contains(html, frag) {
 			t.Errorf("missing: %s", frag)
@@ -3544,14 +3478,6 @@ func TestDashboardArmedConfirmFocusAndLiveRegionHousekeeping(t *testing.T) {
 	focusAt := strings.Index(html, "content.focus({ preventScroll: true });")
 	if tabAt < 0 || focusAt < tabAt {
 		t.Error("closeAct focuses #content without first making the <div> focusable; the focus() is a no-op")
-	}
-	// The live region's re-enable is scheduled BEFORE the work that could throw,
-	// so a mid-restore failure cannot mute the row permanently.
-	muteAt := strings.Index(html, "slot.setAttribute('aria-live', 'off');")
-	reEnableAt := strings.Index(html, "el.setAttribute('aria-live', 'polite');")
-	armAt := strings.Index(html, "armConfirm(g, btn, st.left);")
-	if muteAt < 0 || reEnableAt < muteAt || armAt < reEnableAt {
-		t.Error("the aria-live re-enable is not scheduled immediately after the mute; a throw would strand it")
 	}
 }
 

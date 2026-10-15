@@ -162,8 +162,8 @@
     .ck-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 16px; }
     /* .ck-bulkout is a broadcast's report region (reload plugins, restart). */
     .ck-bulkout { margin: 0; flex-basis: 100%; max-height: 30vh; overflow: auto; }
-    /* Collapsed, not hidden: it holds the live region, which must stay rendered to announce. */
-    .ck-bulkout:has(> [role="status"]:empty):not(:has(table)) { margin: 0; padding: 0; border: 0; }
+    /* Collapsed while its status span is empty and no table has been added. */
+    .ck-bulkout:has(> span:empty):not(:has(table)) { margin: 0; padding: 0; border: 0; }
     .ck-bulkout table { border-collapse: collapse; margin-top: 4px; color: var(--text-2); } /* .actmsg's --text-3 is under AA on light --bg */
     /* pre-wrap beats the card layout's td white-space:normal, keeping multi-line tmux errors. */
     .ck-bulkout th, .ck-bulkout td { text-align: left; vertical-align: top; padding: 2px 8px; overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -325,7 +325,7 @@
     .copycwd:hover .copyicon { color: var(--text-1); }
     .copycwd:focus-visible .copyicon { color: var(--brand); }
     .copycwd.copied .copyicon { color: var(--ok); }
-    /* A failed copy needs a visible state too, not just the live region: the
+    /* A failed copy needs a visible state: the
        clipboard silently keeps its old contents, so a sighted user who sees
        nothing happen would paste the wrong path. */
     .copycwd.copyfail .copyicon { color: var(--fail); }
@@ -449,8 +449,7 @@
     .actforce input:disabled { cursor: default; }
     label.actforce:has(input:disabled) { opacity: 0.45; cursor: default; }
 
-    /* Visually hidden but still announced — the copy confirmation and the
-       cluster suffix live here. clip-path is the modern rule; the deprecated
+    /* Visually hidden — the copy confirmation and the cluster suffix live here. clip-path is the modern rule; the deprecated
        clip stays for browsers that only honour it. */
     .ck-sr {
       position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
@@ -784,27 +783,25 @@
     <label class="actforce"><input type="checkbox" id="ck-reloadbusy" aria-describedby="ck-reloadbusy-hint"> include working</label>
     <button type="button" id="ck-reloadclear" class="ck-btn" title="empty the reload plugins report below" aria-controls="ck-reloadout" hidden>clear report</button>
     <span id="ck-reloadbusy-hint" class="actmsg">also sends to mid-turn sessions (queued); a session that reaches a prompt mid-send may have that prompt answered</span>
-    <!-- Only the short text is live; the table sits outside it so a run isn't read out row by row. -->
-    <div id="ck-reloadout" class="actmsg ck-bulkout" role="region" aria-label="reload plugins report"><span id="ck-reloadmsg" role="status" aria-live="polite" aria-atomic="true"></span></div>
+    <div id="ck-reloadout" class="actmsg ck-bulkout" role="region" aria-label="reload plugins report"><span id="ck-reloadmsg"></span></div>
   </div>
   <!-- Outside #content for the same reason as the reload block above. -->
   <div class="ck-bulk" role="group" aria-label="restart all sessions">
     <!-- An .actgroup so the roster's two-step arm/confirm guards it: /exit kills every target's process. -->
     <span class="actgroup">
       <button type="button" id="ck-restartall" class="ck-btn pract" data-action="broadcast-restart" title="exit and resume every idle or waiting tmux session on the roster">restart (all)</button>
-      <span class="actmsg" aria-live="polite"></span>
+      <span class="actmsg"></span>
     </span>
     <button type="button" id="ck-restartclear" class="ck-btn" title="empty the restart report below" aria-controls="ck-restartout" hidden>clear report</button>
-    <div id="ck-restartout" class="actmsg ck-bulkout" role="region" aria-label="restart report"><span id="ck-restartmsg" role="status" aria-live="polite" aria-atomic="true"></span></div>
+    <div id="ck-restartout" class="actmsg ck-bulkout" role="region" aria-label="restart report"><span id="ck-restartmsg"></span></div>
   </div>
   {{ end }}
 
-  <main id="content" aria-live="polite" aria-atomic="false">{{ template "content" . }}</main>
+  <main id="content">{{ template "content" . }}</main>
 
-  <!-- Copy confirmations announce here. It lives OUTSIDE #content because the
-       poller replaces that element's innerHTML wholesale, which would wipe a
-       live region mid-announcement. -->
-  <div id="ck-copystatus" class="ck-sr" role="status" aria-live="polite"></div>
+  <!-- Copy and pin confirmations are written here. It lives OUTSIDE #content
+       because the poller replaces that element wholesale. -->
+  <div id="ck-copystatus" class="ck-sr"></div>
 
   <footer class="ck-footer">
     clodhopper <span class="ck-ver" title="{{ .VersionDetail }}">{{ .Version }}</span> · read-only · <span class="host" id="ck-host">127.0.0.1:4555</span> — best-effort, like everything else here.
@@ -931,17 +928,11 @@
       }
       try { document.dispatchEvent(new CustomEvent('ch:contentswap')); } catch (e) {}
       // Build the new subtree in a disconnected <template>, then swap it into the
-      // live #content in one shot. #content is itself an aria-live region: the old
-      // form assigned html straight to the live node's innerHTML on every signature
-      // change, and on a long-lived, high-churn tab the renderer's detached-DOM /
-      // accessibility retention grew without bound (#119). Per the HTML spec the
-      // innerHTML setter already parses into a detached fragment and replaces all
-      // children atomically, so this is NOT about "parsing in place" — the parse
-      // was always offline. The difference is WHERE it lands: a <template>'s
-      // .content fragment is inert and outside the a11y tree, so nothing live
-      // observes the transition, which sidesteps the per-swap a11y-tree work
-      // engines do when the target is a connected aria-live element. The parsed
-      // string is the SAME html/template-escaped server markup as before — never
+      // live #content in one shot. The old form assigned html straight to the
+      // live node's innerHTML on every signature change, and on a long-lived,
+      // high-churn tab renderer memory grew without bound (#119). A <template>'s
+      // .content fragment is inert, so nothing connected observes the parse. The
+      // parsed string is the SAME html/template-escaped server markup as before — never
       // subprocess output — so the primary innerHTML assignment just moves off the
       // live node onto the inert template (see the wantInnerHTML invariant test).
       var content = document.getElementById('content');
@@ -988,17 +979,6 @@
             // The saved text is plain, so re-link its footer PR from the new
             // row's server-resolved repo (window.__ckRenderCapture, the peek IIFE).
             var repo = pbtn ? pbtn.getAttribute('data-repo') : '';
-            // Silence this restore. The text is the SAME capture the reader
-            // already heard; re-announcing it every 5s is noise. Dropping
-            // aria-live from the server markup is not enough on its own, because
-            // .panecap sits inside <main id="content" aria-live="polite">: per
-            // the live-region model a descendant belongs to its nearest live
-            // ancestor whether or not it carries the attribute itself. The only
-            // way out of an ancestor region is to opt out explicitly, so set
-            // aria-live="off" here — before the text lands, since the value in
-            // force at mutation time is what decides. openPane sets it back to
-            // "polite" when the reader genuinely opens the row.
-            c.setAttribute('aria-live', 'off');
             if (window.__ckRenderCapture) window.__ckRenderCapture(c, op.text, repo);
             else c.textContent = op.text;
             // Restore the reader's scroll position when we captured one (even 0,
@@ -1454,7 +1434,7 @@
       // Off drops only the in-memory sort and the header affordance; ch-pin-sort
       // stays saved, so re-pinning restores it exactly as a page load does.
       if (enabled) { snapshot(); sort = loadSort(); apply(); } else { order = []; sort = null; decorate(); }
-      // Announce via the out-of-#content live region (the poller can't wipe it).
+      // Note it in #ck-copystatus, outside #content (the poller can't wipe it).
       // Off just lets the next poll repaint in fresh server order.
       if (live) live.textContent = enabled ? 'roster order pinned' : 'roster order live';
     });
@@ -1478,31 +1458,20 @@
   //   1. The listener is DELEGATED from document. The poller swaps #content
   //      wholesale, so per-button listeners bound in a loop would be discarded
   //      on the first repaint and every click after it would do nothing.
-  //   2. The #ck-copystatus live region must stay OUTSIDE #content. A live
-  //      region re-created by that swap is a NEW region to assistive tech, and
-  //      text present when a region appears is not announced.
+  //   2. The #ck-copystatus element must stay OUTSIDE #content, or the swap
+  //      wipes it.
   //
   // navigator.clipboard is absent on a plain-HTTP origin (serve --tailscale is
   // not a secure context), so an execCommand fallback carries those hosts; unlike
   // the network calls here, a copy that quietly no-ops is a bug, so a failure
-  // gets both an announcement and a visible ✗.
+  // gets a visible ✗.
   (function () {
     var live = document.getElementById('ck-copystatus');
     var flashed = null; // the one button currently showing a transient state
     var timer = null;
-    var liveTimer = null; // pending delayed set, so a second call can cancel it
 
-    // Clear, then set on a later tick: a live region whose text is unchanged may
-    // not be re-announced, and copying the same path twice must still speak.
-    // Two calls inside that window would otherwise both clear before either set
-    // ran, leaving the same text set twice with no clear between — precisely the
-    // non-announcement the clear exists to prevent. So the pending set is
-    // cancelled first, the same way unflash owns the flash timeout.
-    function announce(msg) {
-      if (!live) return;
-      if (liveTimer) { clearTimeout(liveTimer); liveTimer = null; }
-      live.textContent = '';
-      liveTimer = setTimeout(function () { liveTimer = null; live.textContent = msg; }, 60);
+    function note(msg) {
+      if (live) live.textContent = msg;
     }
 
     // The single owner of the revert, shared by the timeout and the pre-empt
@@ -1524,7 +1493,7 @@
       var icon = btn.querySelector('.copyicon');
       btn.classList.add(ok ? 'copied' : 'copyfail');
       if (icon) icon.textContent = ok ? '✓' : '✗';
-      announce(msg);
+      note(msg);
       flashed = btn;
       timer = setTimeout(unflash, 1200);
     }
@@ -1640,9 +1609,8 @@
       // to mouse activation (detail 0 means keyboard) and to a selection that
       // actually covers THIS button: pressing Enter on a focused button does not
       // collapse a selection made earlier elsewhere on the page, so a
-      // document-wide guard would silently no-op the copy — no flash, no
-      // announcement — for exactly the keyboard and screen-reader users the
-      // button, its aria-label and the live region were added for.
+      // document-wide guard would silently no-op the copy — no flash — for
+      // exactly the keyboard users the button was added for.
       if (ev.detail !== 0) {
         try {
           var sel = window.getSelection();
@@ -1856,20 +1824,6 @@
       var btn = paneButton(sess);
       if (btn) btn.setAttribute('aria-expanded', 'true');
       row.hidden = false;
-      // Arm the live region here rather than baking it into the server markup.
-      // The capsule is a one-shot snapshot, but the 5s poll replaces #content and
-      // swapContent writes the carried-over, UNCHANGED text onto a fresh node —
-      // a node that is live when its content lands gets announced, so a
-      // permanently live capsule re-reads the same capture on every refresh.
-      // Note the attribute alone never governs: .panecap is a descendant of
-      // <main id="content" aria-live="polite">, so it inherits that region
-      // regardless. That is why the two directions are BOTH explicit — the poll
-      // restore in swapContent sets aria-live="off" to opt the subtree out, and
-      // this line sets "polite" to opt it back in for a real user-initiated
-      // open, also clearing any stale "off" a previous swap left on a reopened
-      // row. Set synchronously, before the fetch below resolves, so the region
-      // is live when the text it should announce arrives.
-      pre.setAttribute('aria-live', 'polite');
       // The pane id rides on the button, not the row: it is the capture target,
       // not the row's identity.
       var pane = btn ? btn.getAttribute('data-pane') : '';
@@ -2210,10 +2164,8 @@
       btn.insertAdjacentElement('afterend', cancel);
       if (msg) {
         clearMsgNote(group);
-        // Only write when the text actually changes: .actmsg is an aria-live
-        // region, and a no-op rewrite is still a mutation an AT may announce.
         var caveat = caveatFor(group, action);
-        if (msg.textContent !== caveat) msg.textContent = caveat;
+        msg.textContent = caveat;
       }
       startArmTimer(group, resumeMs);
     }
@@ -2353,7 +2305,7 @@
         out.replaceChildren(msg);
         msg.textContent = 'working…';
         // Focusable only once it has content, so an empty report is not a dead
-        // tab stop; it stays rendered so the live region announces reliably.
+        // tab stop.
         out.tabIndex = 0;
         fetch('/api/action', {
           method: 'POST',
@@ -2716,33 +2668,11 @@
           // Keep scanning rather than abandoning the entry: giving up here would
           // silently drop the arm the moment anything else matched first.
           if (!btn) continue;
-          // .actmsg is aria-live and was just recreated by the swap. Writing the
-          // caveat into a live region an AT already noticed makes it re-read the
-          // whole thing on every repaint, so mute the region for the rewrite and
-          // let it go live again on the next task.
           var slot = g.querySelector('.actmsg');
-          if (slot) {
-            slot.setAttribute('aria-live', 'off');
-            // Schedule the re-enable IMMEDIATELY, before the work that could
-            // throw: a failure in armConfirm/syncForm between the two would
-            // otherwise leave this row's status permanently non-live.
-            setTimeout(function (el) { return function () { el.setAttribute('aria-live', 'polite'); }; }(slot), 0);
-          }
           armConfirm(g, btn, st.left);
           // armConfirm disarms outright when the resumed deadline had already
           // lapsed; leave that expiry message (and the idle group) alone.
           var stillArmed = g.classList.contains('confirm');
-          // The disarm above wrote ARM_EXPIRED_MSG into .actmsg while the region
-          // was MUTED, and the un-mute scheduled before it lands a tick later
-          // with that text already in place — so an AT would never announce the
-          // one path where the expiry actually fires. Blank it now and re-write
-          // it after the un-mute (that timeout was queued first, so it runs
-          // first), making the text appear as a change to a LIVE region.
-          if (!stillArmed && slot) {
-            var expiredMsg = slot.textContent;
-            slot.textContent = '';
-            setTimeout(function (el, m) { return function () { el.textContent = m; }; }(slot, expiredMsg), 0);
-          }
           // armConfirm writes a freshly derived caveat; keep whatever the reader
           // was actually part-way through reading when the poll landed.
           if (stillArmed && st.msg && slot && slot.textContent !== st.msg) slot.textContent = st.msg;
@@ -2883,7 +2813,7 @@
                 <button type="button" class="pract" data-action="monitor-ci" title="/clear then /monitor-ci in the running pane">monitor ci</button>
                 <button type="button" class="pract" data-action="new-monitor" data-noconfirm="true" title="split a new pane running /monitor-ci">+ watcher</button>
                 <button type="button" class="pract" data-action="reload-plugins" data-noconfirm="true" title="send /reload-plugins to the running pane">reload plugins</button>
-                <span class="actmsg" aria-live="polite"></span>
+                <span class="actmsg"></span>
               </span>
             </div>
             {{ end }}
@@ -2897,9 +2827,9 @@
                 </span>
                 <label class="actforce" title="merge-pr --admin: bypass branch protection (squash only)"><input type="checkbox" class="practadmin"> --admin</label>
                 <label class="actforce" title="--force: merge even with uncommitted changes (squash only)"><input type="checkbox" class="practforce"> --force</label>
-                <code class="prcmd" id="prcmd-{{ .SessionID }}" aria-live="polite">merge-pr --squash</code>
+                <code class="prcmd" id="prcmd-{{ .SessionID }}">merge-pr --squash</code>
                 <button type="button" class="pract prrun" data-action="squash" title="run the selected PR action" aria-describedby="prcmd-{{ .SessionID }}">run</button>
-                <span class="actmsg" aria-live="polite"></span>
+                <span class="actmsg"></span>
               </span>
             </div>
             <div class="actcol rowcol" role="group" aria-label="row actions">
@@ -2907,7 +2837,7 @@
               <span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}">
                 <button type="button" class="pract" data-action="rebase" aria-label="rebase{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} onto the default branch and force-push" title="git pull --rebase onto the default branch, then git push --force-with-lease">rebase</button>
                 <button type="button" class="pract" data-action="end" aria-label="end{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button>
-                <span class="actmsg" aria-live="polite"></span>
+                <span class="actmsg"></span>
               </span>
             </div>
           </div></td></tr>{{ end }}
