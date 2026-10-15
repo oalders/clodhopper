@@ -118,9 +118,11 @@ test('confirming restart (all) renders the report, and clear empties it', async 
   const msg = page.locator('#ck-restartmsg');
   const clear = page.locator('#ck-restartclear');
 
+  await expect(out).toHaveCSS('display', 'none'); // toBeHidden would pass on a zero-height box too
   await btn.click();
   await btn.click();
   await expect(msg).toHaveText('1 error · 1 skipped · 1 sent');
+  await expect(out).toBeVisible();
   expect(posts).toHaveLength(1);
   expect(posts[0].method()).toBe('POST');
   expect(posts[0].postData()).toBe('action=broadcast-restart');
@@ -144,6 +146,7 @@ test('confirming restart (all) renders the report, and clear empties it', async 
   await clear.click();
   await expect(msg).toHaveText('');
   await expect(out.locator('table')).toHaveCount(0);
+  await expect(out).toHaveCSS('display', 'none');
   await expect(out).not.toHaveAttribute('tabindex');
   await expect(clear).toBeHidden();
   await expect(btn).toBeFocused();

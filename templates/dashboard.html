@@ -162,8 +162,8 @@
     .ck-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 16px; }
     /* .ck-bulkout is a broadcast's report region (reload plugins, restart). */
     .ck-bulkout { margin: 0; flex-basis: 100%; max-height: 30vh; overflow: auto; }
-    /* Collapsed while its status span is empty and no table has been added. */
-    .ck-bulkout:has(> span:empty):not(:has(table)) { margin: 0; padding: 0; border: 0; }
+    /* Hidden until there is a report, so it adds no empty flex line plus row gap. */
+    .ck-bulkout:has(> span:empty):not(:has(table)) { display: none; }
     .ck-bulkout table { border-collapse: collapse; margin-top: 4px; color: var(--text-2); } /* .actmsg's --text-3 is under AA on light --bg */
     /* pre-wrap beats the card layout's td white-space:normal, keeping multi-line tmux errors. */
     .ck-bulkout th, .ck-bulkout td { text-align: left; vertical-align: top; padding: 2px 8px; overflow-wrap: anywhere; white-space: pre-wrap; }
