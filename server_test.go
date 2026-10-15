@@ -174,8 +174,8 @@ func TestHandleDashboard_EscapesCwd(t *testing.T) {
 }
 
 // The button carries the accessibility contract for the copy affordance: a name
-// of its own (it replaces its inner text for assistive tech), a decorative glyph
-// hidden from it, and a status element outside #content.
+// of its own (it replaces its inner text for assistive tech) and a decorative
+// glyph hidden from it.
 func TestHandleDashboard_CopyButtonAccessibility(t *testing.T) {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	defer db.Close()
@@ -453,7 +453,9 @@ func TestHandleDashboard_RedactedCwdIsRefusedByTheCopyGuard(t *testing.T) {
 		`if (pathAllow.test(s)) return 'unsafe';`,
 		`var path = btn.getAttribute('data-cwd') || '';`,
 		`var why = ctrlChars.test(path) ? 'unsafe' : unusableReason(path);`,
-		`flash(btn, false);`,
+		// The return is what keeps a refused path off the clipboard; the ✗ alone
+		// would still show if it were dropped.
+		"flash(btn, false);\n        return;",
 	} {
 		if !strings.Contains(body, frag) {
 			t.Errorf("copy guard fragment missing from the page: %s", frag)

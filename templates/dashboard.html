@@ -448,8 +448,9 @@
     .actforce input:disabled { cursor: default; }
     label.actforce:has(input:disabled) { opacity: 0.45; cursor: default; }
 
-    /* Visually hidden — the cluster suffix and other screen-reader text live here. clip-path is the modern rule; the deprecated
-       clip stays for browsers that only honour it. */
+    /* Visually hidden — the cluster suffix and other screen-reader text live
+       here. clip-path is the modern rule; the deprecated clip stays for
+       browsers that only honour it. */
     .ck-sr {
       position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
       overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%);
