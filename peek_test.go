@@ -108,6 +108,7 @@ func TestListPanes(t *testing.T) {
 func TestCapturePane_TrimsTrailingBlankRows(t *testing.T) {
 	cases := []struct{ name, printed, want string }{
 		{"content", `\nfirst\n\nsecond  \n\n   \n\t\n\n\n`, "\nfirst\n\nsecond\n"},
+		{"no padding", `first\nsecond\n`, "first\nsecond\n"},
 		{"all blank", `\n  \n\n\n`, "\n"},
 	}
 	for _, c := range cases {
