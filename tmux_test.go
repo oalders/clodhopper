@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -197,7 +198,9 @@ func TestActiveCounts_GroupsByTmuxSession(t *testing.T) {
 }
 
 // A session whose tmux_session capture is sometimes blank must not split into a
-// second, unlabelled activity row (#116): blanks inherit the session's name.
+// second, unlabelled activity row (#116): blanks inherit the session's latest
+// name (s1's blank joins "new", not "old"), non-blank rows keep their own label,
+// and the carry never crosses session_id (s2, never named, stays blank).
 func TestActiveCounts_CarriesTmuxSessionAcrossBlankCaptures(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {
@@ -206,19 +209,22 @@ func TestActiveCounts_CarriesTmuxSessionAcrossBlankCaptures(t *testing.T) {
 	defer db.Close()
 	now := time.Date(2026, 5, 17, 12, 0, 0, 0, time.UTC)
 	at := func(minAgo int) string { return now.Add(-time.Duration(minAgo) * time.Minute).Format(time.RFC3339) }
-	insertEvent(db, Event{TS: at(5), SourceApp: "myapp", Branch: "fix-116", SessionID: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
-	insertEvent(db, Event{TS: at(3), SourceApp: "myapp", Branch: "fix-116", TmuxSession: "alpha", SessionID: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
-	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-116", SessionID: "s1", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(5), SourceApp: "myapp", Branch: "fix-116", TmuxSession: "old", SessionID: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(3), SourceApp: "myapp", Branch: "fix-116", SessionID: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-116", TmuxSession: "new", SessionID: "s1", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: at(2), SourceApp: "myapp", Branch: "fix-116", SessionID: "s2", EventType: "PreToolUse", PayloadJSON: "{}"})
 
 	counts, err := activeCounts(db, time.Hour, now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(counts) != 1 {
-		t.Fatalf("want 1 group, got %d: %+v", len(counts), counts)
+	got := map[string]int{}
+	for _, c := range counts {
+		got[c.TmuxSession] = c.Count
 	}
-	if counts[0].TmuxSession != "alpha" || counts[0].Count != 3 {
-		t.Errorf("want alpha with 3 events, got %+v", counts[0])
+	want := map[string]int{"new": 2, "old": 1, "": 1}
+	if !maps.Equal(got, want) {
+		t.Errorf("tmux_session -> count = %v, want %v (blank should join the latest name, and not cross session_id)", got, want)
 	}
 }
 

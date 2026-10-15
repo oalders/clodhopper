@@ -981,8 +981,10 @@ type SourceCount struct {
 // Rebasing is MAX-aggregated per group, so a row is flagged when any of its
 // events was captured mid-rebase. A blank tmux_session capture inherits the
 // latest non-blank one from the same session_id (as agentRoster does, #114), so
-// a flaky capture doesn't split one session into two rows. now is passed in (not read from the clock) so
-// the result is deterministic under test, matching agentRoster.
+// a flaky capture doesn't split one session into two rows. Like agentRoster, it
+// only looks inside the window, so a session whose only named capture is older
+// stays blank. now is passed in (not read from the clock) so the result is
+// deterministic under test, matching agentRoster.
 func activeCounts(db *sql.DB, window time.Duration, now time.Time) ([]SourceCount, error) {
 	since := now.UTC().Add(-window).Format(time.RFC3339)
 	rows, err := db.Query(
