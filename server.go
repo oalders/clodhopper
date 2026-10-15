@@ -898,6 +898,7 @@ func suppressWatchedCI(agents []Agent, now time.Time) {
 		if age < 0 || age >= ciWatchSecs {
 			continue
 		}
+		// CIFails/CIConflict stay: the count only renders when failing, and a conflict is independent of the run.
 		agents[i].CI = "pending"
 	}
 }

@@ -3605,7 +3605,7 @@ func TestSuppressWatchedCI_RowIsolation(t *testing.T) {
 	ins(2, "other", "UserPromptSubmit", "/code-review")
 	ins(1, "other", "Stop", "")
 
-	ci := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{cwd: {val: ciResult{State: "failing"}, at: time.Now()}}}
+	ci := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{cwd: {val: ciResult{State: "failing", Fails: 2, Conflict: true}, at: time.Now()}}}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	data, err := buildDashboardData(r, db, ci, &peekConfig{}, &actionConfig{})
 	if err != nil {
@@ -3620,6 +3620,9 @@ func TestSuppressWatchedCI_RowIsolation(t *testing.T) {
 	}
 	if got := byID["other"].CI; got != "failing" {
 		t.Errorf("other CI = %q, want failing (same cwd, but it ran no CI-watch command)", got)
+	}
+	if o := byID["other"]; o.CIFails != 2 || !o.CIConflict {
+		t.Errorf("other CIFails/CIConflict = %d/%t, want 2/true (copied by enrichCI)", o.CIFails, o.CIConflict)
 	}
 }
 
