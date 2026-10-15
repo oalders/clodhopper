@@ -398,6 +398,7 @@ type Agent struct {
 	Rebasing         bool   // true if the session's latest event was captured mid-rebase, so Branch was recovered from rebase state
 	BranchGuess      string // basename of Cwd, shown (italicised) ONLY when Branch is unknown, as a hint for locating the worktree/tmux session; "" when Branch is known or Cwd is empty
 	Cwd              string
+	LaunchCwd        string // cwd of the session's earliest in-window event: where it was launched, which `claude --resume` looks a session up by, whereas Cwd follows a later `cd`
 	TmuxSession      string // tmux session name, the disambiguating label
 	TmuxPane         string // tmux pane id ("%N") of the latest event's Claude pane; targets the live pane peek, "" if unknown
 	HasPane          bool   // true when the session recorded a tmux pane id (TmuxPane != ""); gates the session-action buttons under --enable-merge, decoupled from --pane-peek (LiveTmux is only set when peek is on)
@@ -591,6 +592,9 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 			s.a.TmuxPane = tmuxPane
 		}
 		s.a.Cwd = truncate(stripControl(cwd), maxPathLen)
+		if s.a.LaunchCwd == "" {
+			s.a.LaunchCwd = s.a.Cwd // first non-empty wins, unlike the last-write Cwd
+		}
 		// Branch is a stable property of the worktree, but gitBranch is best-effort
 		// and transiently returns "" under concurrent-worktree load (a timed-out
 		// `git symbolic-ref`). An empty capture must not clobber a branch the

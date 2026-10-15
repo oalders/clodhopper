@@ -252,12 +252,32 @@ actions** that drive that pane directly (they do not touch a PR):
 
 A **reload plugins (all)** button above the roster sends `/reload-plugins` to
 every session at once and reports, per row, what it sent or skipped and why,
-with errors and skips listed first and highlighted.
+with errors and skips listed first and highlighted. Each row names the session
+by project, branch and short id, plus the directory it was launched from.
 The targets are re-derived server-side: rows not in tmux are listed for a manual
 reload, rows sharing a pane are sent to once (via the newest session), working
 rows are skipped unless **include working** is ticked, and a row blocked on a
 permission prompt or question is **never** sent to (the Enter would answer it).
 Once a run finishes, a **clear report** button dismisses its report.
+
+A **restart (all)** button beside it exits and resumes every eligible session
+(for example to pick up a new Claude Code build), reporting per row the same
+way. Because `/exit` kills the process, it uses the two-step confirm and is
+stricter than reload: only **idle** and **waiting for you** rows are restarted;
+working rows, rows waiting on background work or subagents (they would be
+killed), and prompt-blocked rows are skipped, with no override. For each target
+it sends `/exit`, waits (up to ~15s, plus a few seconds if nono's review must be
+cancelled) for the pane to be back at a shell (`bash`,
+`zsh`, `fish` or `sh`) — if `nono`'s exit-time denied-paths review is the last
+thing on screen instead, it sends a fixed Escape key to cancel that and waits
+again — then checks that shell is in the directory the session was launched
+from, then types `nn --resume <session id>` — never `--continue`
+or `--fork-session`. A pane that never reaches a shell, or whose shell is
+somewhere else, is reported as an error and nothing more is typed into it, and a
+pane already at a shell (a stale row) gets nothing at all (no
+`cd` is ever sent); a resume that has not left the shell after a few seconds is
+reported as "exited but did not resume". Only UUID session ids are restarted,
+and each run writes one audit line to serve's stderr.
 
 Every row — pane or no pane — also gains an **end** button. It is the dashboard
 equivalent of `clodhopper end --session <id>`: it writes the synthetic
@@ -451,9 +471,14 @@ throwaway database with worst-case fixtures (`e2e_seed_test.go`, build tag
 `127.0.0.1:9324` with no tmux, no write path, and no host `CLODHOPPER_*`
 config. It checks that status badges and time cells are never clipped and the
 page never scrolls sideways at 1440, 641 and 390px wide, plus the theme toggle
-and filter strip. JetBrains Mono comes from `@fontsource/jetbrains-mono`, so the
-measurements match on every machine. CI runs it as the blocking `e2e` job and
-uploads the HTML report on failure.
+and filter strip. `restart.spec.ts` runs against a second server on
+`127.0.0.1:9325` started with `--enable-merge`, so the restart (all) arm/confirm,
+Escape and report table render. That server is just as isolated (still no
+tmux), and the spec stubs every `/api/action` request with canned JSON in the
+handler's response shape, so nothing reaches the real write path. JetBrains
+Mono comes from `@fontsource/jetbrains-mono`, so the measurements match on
+every machine. CI runs it as the blocking `e2e` job and uploads the HTML
+report on failure.
 
 Locally the suite uses the browsers already in `PLAYWRIGHT_BROWSERS_PATH` (the
 shared host bundle in `~/.cache/ms-playwright`); don't run `playwright install`

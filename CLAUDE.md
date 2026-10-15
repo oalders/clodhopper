@@ -101,7 +101,13 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   `session_id` travels only as a bound SQL parameter. `rebase` DOES exec, so it
   goes through `actionArgv`; its one varying argv element is the default branch,
   derived server-side from git refs and validated against `branchNameRe` before
-  it can reach a command line.)
+  it can reach a command line. `broadcast-restart` is a separate path that never
+  reaches `actionArgv`: it sends `/exit`, then — only if nono's denied-paths
+  review is the last thing on screen (`nonoReviewOnScreen`) — a fixed Escape key
+  to cancel it, then types the fixed prefix `nn --resume ` plus the session id,
+  all via tmux send-keys; the id comes from a fresh `agentRoster()` call inside
+  the request (never client input) and must match `sessionIDRe` (a UUID) before
+  `/exit` is even sent.)
 
 ### Other conventions
 

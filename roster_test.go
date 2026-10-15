@@ -564,6 +564,60 @@ func TestAgentRoster_StaleWorkingBecomesIdle(t *testing.T) {
 	}
 }
 
+// broadcast-restart's /exit fires SessionEnd, and the resumed process sends
+// SessionStart under the SAME id: the row must come back live, not stay ended.
+func TestAgentRoster_ResumeAfterEndIsLive(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	for _, e := range []struct {
+		mins  int
+		etype string
+	}{{3, "Stop"}, {2, "SessionEnd"}, {1, "SessionStart"}} {
+		insertEvent(db, Event{TS: at(e.mins), SourceApp: "myapp", Branch: "fix-1", SessionID: "s-resumed", EventType: e.etype, PayloadJSON: "{}"})
+	}
+
+	agents, err := agentRoster(db, 30*time.Minute, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].SessionID != "s-resumed" || agents[0].Status == statusEnded {
+		t.Fatalf("roster = %+v, want s-resumed live after SessionEnd then SessionStart", agents)
+	}
+}
+
+// The hook cwd follows a `cd`, but `claude --resume` looks a session up by
+// where it was launched: LaunchCwd keeps the earliest cwd while Cwd moves on.
+func TestAgentRoster_LaunchCwdKeepsFirstCwd(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	for _, e := range []struct {
+		mins int
+		cwd  string
+	}{{3, ""}, {2, "/work/repo"}, {1, "/work/repo/.tmp/scratch"}} {
+		insertEvent(db, Event{TS: at(e.mins), SourceApp: "myapp", Branch: "fix-1", Cwd: e.cwd, SessionID: "s-cd", EventType: "PreToolUse", PayloadJSON: "{}"})
+	}
+
+	agents, err := agentRoster(db, 30*time.Minute, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].LaunchCwd != "/work/repo" || agents[0].Cwd != "/work/repo/.tmp/scratch" {
+		t.Fatalf("roster = %+v, want LaunchCwd /work/repo and Cwd the later scratch dir", agents)
+	}
+}
+
 func TestAgentRoster_SurfacesRebasing(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {
