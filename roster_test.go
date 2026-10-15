@@ -901,8 +901,7 @@ func TestHandleDashboard_FlagsRebasingSession(t *testing.T) {
 // Recent events feed — not just the roster. A single mid-rebase session produces
 // exactly one marker in each, so the whole dashboard reads consistently.
 func TestHandleDashboard_FlagsRebasingEverywhere(t *testing.T) {
-	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
-	defer db.Close()
+	db := openTestDB(t)
 	now := time.Now().UTC()
 	recent := now.Add(-2 * time.Minute).Format(time.RFC3339)
 	// One mid-rebase session and one plain one, each its own tmux session so they
