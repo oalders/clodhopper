@@ -981,6 +981,13 @@ func TestViewSignature_IgnoresIdleButTracksEvents(t *testing.T) {
 	if viewSignature(oneSub) == viewSignature(moved) {
 		t.Error("signature unchanged after the subagent start anchor moved")
 	}
+
+	// A resume under a different launcher flips the [n]/[c] marker in place.
+	relaunched := base
+	relaunched.Agents = []Agent{{SessionID: "s1", Status: statusWorking, IdleSecs: 10, IdleSince: 100, Launcher: "nono"}}
+	if viewSignature(base) == viewSignature(relaunched) {
+		t.Error("signature unchanged after a launcher change")
+	}
 }
 
 func TestSessColor(t *testing.T) {
