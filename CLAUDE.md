@@ -124,9 +124,10 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   mergeStateStatus,statusCheckRollup` per cwd, memoised in `cwdCache` (60s TTL)
   and fetched concurrently across worktrees. The rollup drives the state and fail
   count (`classifyRollup`); `mergeStateStatus` only refines it (UNSTABLE →
-  "soft-failing", DIRTY → merge conflict), since BLOCKED also covers a missing
-  review. Like `gitBranch`, it is strictly best-effort: missing `gh`, no PR, or a
-  timeout yields "". The same generic `cwdCache` type also backs the pane peek's GitHub owner/repo for the
+  "soft-failing", DIRTY → merge conflict); `parsePRView`'s doc comment says why
+  BLOCKED is deliberately not mapped. Like `gitBranch`, it is strictly
+  best-effort: missing `gh`, no PR, or a timeout yields "".
+  The same generic `cwdCache` type also backs the pane peek's GitHub owner/repo for the
   footer's PR #N link (`newRepoCache`/`lookupRepo`, via `git remote get-url origin`),
   resolved per live-pane row (not concurrently) and likewise best-effort: a
   non-GitHub remote or any error yields "".
