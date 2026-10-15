@@ -31,7 +31,7 @@ func TestClampPaneLines(t *testing.T) {
 func TestPaneCache_TTL(t *testing.T) {
 	c := newPaneCache()
 	base := time.Unix(1_700_000_000, 0)
-	c.set = map[string]string{"%3": "sess"}
+	c.set = map[string]livePane{"%3": {session: "sess"}}
 	c.at = base
 	if !c.live("%3", base.Add(paneTTL-time.Second)) {
 		t.Error("within TTL: %3 should read live from the cached set")
@@ -46,6 +46,8 @@ func TestPaneCache_TTL(t *testing.T) {
 // tmux server (empty, or sharing none of its live panes).
 func TestDropDeadPanes(t *testing.T) {
 	live := Agent{SessionID: "live", TmuxSession: "work", TmuxPane: "%1"}
+	exited := Agent{SessionID: "exited", TmuxSession: "work", TmuxPane: "%4", LaunchCwd: "/src/repo"}
+	w := livePane{session: "work"}
 	gone := Agent{SessionID: "gone", TmuxSession: "work", TmuxPane: "%2"}
 	reused := Agent{SessionID: "reused", TmuxSession: "work", TmuxPane: "%3"}
 	noSess := Agent{SessionID: "nosess", TmuxPane: "%3"}
@@ -53,15 +55,18 @@ func TestDropDeadPanes(t *testing.T) {
 	cases := []struct {
 		name   string
 		agents []Agent
-		panes  map[string]string
+		panes  map[string]livePane
 		want   []string
 	}{
-		{"pane absent is hidden", []Agent{live, gone}, map[string]string{"%1": "work"}, []string{"live"}},
-		{"pane reused by another session is hidden", []Agent{live, reused}, map[string]string{"%1": "work", "%3": "other"}, []string{"live"}},
-		{"row without a recorded session matches on pane alone", []Agent{live, noSess}, map[string]string{"%1": "work", "%3": "other"}, []string{"live", "nosess"}},
-		{"row without a pane is kept", []Agent{live, noPane}, map[string]string{"%1": "work"}, []string{"live", "nopane"}},
-		{"empty listing hides nothing", []Agent{live, gone}, map[string]string{}, []string{"live", "gone"}},
-		{"listing unrelated to the roster hides nothing", []Agent{gone, reused}, map[string]string{"%3": "other", "%9": "x"}, []string{"gone", "reused"}},
+		{"pane absent is hidden", []Agent{live, gone}, map[string]livePane{"%1": w}, []string{"live"}},
+		{"pane reused by another session is hidden", []Agent{live, reused}, map[string]livePane{"%1": w, "%3": {session: "other"}}, []string{"live"}},
+		{"row without a recorded session matches on pane alone", []Agent{live, noSess}, map[string]livePane{"%1": w, "%3": {session: "other"}}, []string{"live", "nosess"}},
+		{"row without a pane is kept", []Agent{live, noPane}, map[string]livePane{"%1": w}, []string{"live", "nopane"}},
+		{"empty listing hides nothing", []Agent{live, gone}, map[string]livePane{}, []string{"live", "gone"}},
+		{"listing unrelated to the roster hides nothing", []Agent{gone, reused}, map[string]livePane{"%3": {session: "other"}, "%9": {session: "x"}}, []string{"gone", "reused"}},
+		{"pane back at a shell in the launch dir is hidden", []Agent{live, exited}, map[string]livePane{"%1": w, "%4": {session: "work", command: "zsh", path: "/src/repo/"}}, []string{"live"}},
+		{"pane at a shell elsewhere is kept", []Agent{live, exited}, map[string]livePane{"%1": w, "%4": {session: "work", command: "zsh", path: "/elsewhere"}}, []string{"live", "exited"}},
+		{"pane still running claude is kept", []Agent{live, exited}, map[string]livePane{"%1": w, "%4": {session: "work", command: "claude", path: "/src/repo"}}, []string{"live", "exited"}},
 	}
 	for _, c := range cases {
 		var got []string
@@ -75,21 +80,25 @@ func TestDropDeadPanes(t *testing.T) {
 }
 
 // listPanes maps each pane id to its session name in the form ingest stores, so
-// a messy real-world name compares equal to the row's recorded tmux_session.
+// a messy real-world name compares equal to the row's recorded tmux_session, plus
+// its foreground command and path (last, so a tab in it survives).
 func TestListPanes(t *testing.T) {
 	dir := t.TempDir()
 	messy := "\ue0a0  fix-2482     Blog post [in progress]"
-	script := "#!/bin/sh\nprintf '%s\\t%s\\n' '%1' 'my-session' '%7' '" + messy + "'\n"
+	script := "#!/bin/sh\nprintf '%s\\t%s\\t%s\\t%s\\n' '%1' 'my-session' 'zsh' '/src/a\tb' '%7' '" + messy + "' 'claude' '/src/c'\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
-	want := map[string]string{"%1": "my-session", "%7": tmuxSessionLabel(messy)}
+	want := map[string]livePane{
+		"%1": {session: "my-session", command: "zsh", path: "/src/a\tb"},
+		"%7": {session: tmuxSessionLabel(messy), command: "claude", path: "/src/c"},
+	}
 	if got := listPanes(); !maps.Equal(got, want) {
 		t.Fatalf("listPanes() = %q, want %q", got, want)
 	}
-	if want["%7"] != "fix-2482 Blog post [in progress]" {
-		t.Errorf("messy name stored as %q, want the cleaned name", want["%7"])
+	if want["%7"].session != "fix-2482 Blog post [in progress]" {
+		t.Errorf("messy name stored as %q, want the cleaned name", want["%7"].session)
 	}
 }
 
@@ -131,7 +140,7 @@ func TestHandlePane_RejectsBadPane(t *testing.T) {
 func TestHandlePane_UnknownPaneNotFound(t *testing.T) {
 	peek := &peekConfig{enabled: true, lines: 40, cache: newPaneCache(), bindHost: "127.0.0.1"}
 	// Prime an empty live set that will not expire during the test.
-	peek.cache.set = map[string]string{}
+	peek.cache.set = map[string]livePane{}
 	peek.cache.at = time.Unix(1_700_000_000, 0)
 	rec := httptest.NewRecorder()
 	// %99 encoded, from a peer that passes the gate.
@@ -160,7 +169,7 @@ func TestHandlePane_GatedOnPeer(t *testing.T) {
 
 	newPeek := func() *peekConfig {
 		p := &peekConfig{enabled: true, lines: 40, cache: newPaneCache(), bindHost: "127.0.0.1"}
-		p.cache.set = map[string]string{"%3": "sess"}
+		p.cache.set = map[string]livePane{"%3": {session: "sess"}}
 		p.cache.at = time.Unix(1_700_000_000, 0)
 		return p
 	}
@@ -232,7 +241,7 @@ func TestHandlePane_HostAndProxyGated(t *testing.T) {
 
 	newPeek := func() *peekConfig {
 		p := &peekConfig{enabled: true, lines: 40, cache: newPaneCache(), bindHost: "127.0.0.1"}
-		p.cache.set = map[string]string{"%3": "sess"}
+		p.cache.set = map[string]livePane{"%3": {session: "sess"}}
 		p.cache.at = time.Unix(1_700_000_000, 0)
 		return p
 	}
