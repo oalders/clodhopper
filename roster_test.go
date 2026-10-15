@@ -493,6 +493,29 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 	ins(at(4), "s-perm", "SubagentStart", "a1", "")
 	ins(at(3), "s-perm", "Stop", "", "{}")
 	ins(at(1), "s-perm", "PermissionRequest", "a1", "")
+	// Once answered, the subagent's next event clears the request: the session
+	// is back to waiting on that subagent, not stuck on "needs approval".
+	ins(at(4), "s-perm-done", "SubagentStart", "a1", "")
+	ins(at(3), "s-perm-done", "Stop", "", "{}")
+	ins(at(2), "s-perm-done", "PermissionRequest", "a1", "")
+	ins(at(1), "s-perm-done", "PreToolUse", "a1", "")
+	// A main-agent event does not answer a subagent's pending request.
+	ins(at(4), "s-perm-main", "SubagentStart", "a1", "")
+	ins(at(3), "s-perm-main", "PermissionRequest", "a1", "")
+	ins(at(1), "s-perm-main", "Stop", "", "{}")
+	// A subagent's permission_prompt Notification blocks on the user too.
+	ins(at(4), "s-perm-notif", "SubagentStart", "a1", "")
+	ins(at(3), "s-perm-notif", "Stop", "", "{}")
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-127", SessionID: "s-perm-notif", EventType: "Notification",
+		PayloadJSON: `{"agent_id":"a1","notification_type":"permission_prompt"}`})
+	// A subagent's AskUserQuestion reads "needs input", even after the trailing
+	// tool-less permission_prompt Notification.
+	ins(at(4), "s-ask", "SubagentStart", "a1", "")
+	ins(at(3), "s-ask", "Stop", "", "{}")
+	insertEvent(db, Event{TS: at(2), SourceApp: "myapp", Branch: "fix-127", SessionID: "s-ask", EventType: "PermissionRequest",
+		ToolName: "AskUserQuestion", PayloadJSON: `{"agent_id":"a1"}`})
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-127", SessionID: "s-ask", EventType: "Notification",
+		PayloadJSON: `{"agent_id":"a1","notification_type":"permission_prompt"}`})
 
 	agents, err := agentRoster(db, 16*time.Hour, now)
 	if err != nil {
@@ -518,6 +541,10 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 		{"s-late", statusSubagents, 1, 4, "4m"},
 		{"s-fg", statusWorking, 0, 0, ""},
 		{"s-perm", statusApproval, 0, 0, ""},
+		{"s-perm-done", statusSubagents, 1, 4, "4m"},
+		{"s-perm-main", statusApproval, 0, 0, ""},
+		{"s-perm-notif", statusApproval, 0, 0, ""},
+		{"s-ask", statusInput, 0, 0, ""},
 	} {
 		a := got[c.sess]
 		if a.Status != c.status || a.Subagents != c.count {
