@@ -127,7 +127,8 @@ var launcherCommands = map[string]bool{"claude": true, "nono": true}
 // stored label goes stale when the name or its normalisation changes (#173) —
 // but only while the pane runs an agent launcher and no other row claims the
 // pane, by label or by this same fallback: a reused pane id holding some other
-// process is not this row's, and two candidates cannot be told apart.
+// process is not this row's, and two candidates cannot be told apart. Group
+// flags (GroupStart, Grouped) are recomputed over the surviving rows (#177).
 func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
 	fallback := func(a Agent, p livePane) bool {
 		dir := a.launchCwd()
@@ -155,7 +156,7 @@ func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
 	if !slices.ContainsFunc(agents, alive) {
 		return agents
 	}
-	return slices.DeleteFunc(agents, func(a Agent) bool {
+	kept := slices.DeleteFunc(agents, func(a Agent) bool {
 		if !paneIDRe.MatchString(a.TmuxPane) {
 			return false
 		}
@@ -166,6 +167,8 @@ func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
 		p, dir := panes[a.TmuxPane], a.launchCwd()
 		return shellCommands[p.command] && p.path != "" && dir != "" && cwdKey(p.path) == cwdKey(dir)
 	})
+	markGroups(kept)
+	return kept
 }
 
 // capturePane returns the last `lines` rows of pane, scrubbed for secret-shaped

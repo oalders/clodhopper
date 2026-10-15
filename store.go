@@ -777,26 +777,14 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	// Branchless sessions (Branch == "") get a per-session-unique key so they are
 	// NOT clumped into one pseudo-group; each behaves as its own group ordered by
 	// its own idle, preserving the old per-session placement for them.
-	groupKey := func(a Agent) string {
-		// Two disjoint key-spaces with a leading discriminator byte so a branchless
-		// session can never collide with a real (app, branch) group: "u" = unbranched
-		// (one group per session, so they aren't clumped), "b" = branched.
-		if a.Branch == "" {
-			return "u\x00" + a.SessionID
-		}
-		return "b\x00" + a.SourceApp + "\x00" + a.Branch
-	}
 	// groupMin holds each group's freshest member (its smallest IdleSecs), the
-	// value the group sorts by; groupCount holds its membership so we can mark the
-	// rows of a multi-session cluster (2+ members) for the binding left accent bar.
+	// value the group sorts by.
 	groupMin := map[string]int{}
-	groupCount := map[string]int{}
 	for _, a := range out {
 		k := groupKey(a)
 		if m, ok := groupMin[k]; !ok || a.IdleSecs < m {
 			groupMin[k] = a.IdleSecs
 		}
-		groupCount[k]++
 	}
 	sort.Slice(out, func(i, j int) bool {
 		gi, gj := groupKey(out[i]), groupKey(out[j])
@@ -816,21 +804,43 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		// 4. Final deterministic tiebreak.
 		return out[i].SessionID < out[j].SessionID
 	})
+	markGroups(out)
+	return out, nil
+}
+
+// groupKey is the roster row's grouping key. Two disjoint key-spaces with a
+// leading discriminator byte so a branchless session can never collide with a
+// real (app, branch) group: "u" = unbranched (one group per session, so they
+// aren't clumped), "b" = branched.
+func groupKey(a Agent) string {
+	if a.Branch == "" {
+		return "u\x00" + a.SessionID
+	}
+	return "b\x00" + a.SourceApp + "\x00" + a.Branch
+}
+
+// markGroups sets the group flags on an already-sorted roster. It tallies over
+// exactly the rows given, so a caller that later drops rows (dropDeadPanes) must
+// call it again on the survivors.
+func markGroups(out []Agent) {
+	// groupCount holds each group's membership so we can mark the rows of a
+	// multi-session cluster (2+ members) for the binding left accent bar.
+	groupCount := map[string]int{}
+	for _, a := range out {
+		groupCount[groupKey(a)]++
+	}
 	// Mark each group's first row so the dashboard can draw a divider between
 	// branch groups (the very first row overall stays false — no leading divider),
 	// and flag every row of a 2+ member group so it gets the left accent bar that
 	// binds the cluster.
 	for k := range out {
-		if k > 0 && groupKey(out[k]) != groupKey(out[k-1]) {
-			out[k].GroupStart = true
-		}
+		out[k].GroupStart = k > 0 && groupKey(out[k]) != groupKey(out[k-1])
 		out[k].Grouped = groupCount[groupKey(out[k])] >= 2
 		// Hex so the raw key's \x00 separator can't emit an invalid NUL into the
 		// data-group attribute; stable across polls since it is a pure function of
 		// (SourceApp, Branch) / SessionID.
 		out[k].GroupKey = hex.EncodeToString([]byte(groupKey(out[k])))
 	}
-	return out, nil
 }
 
 // idleSeconds returns whole seconds between an RFC3339 timestamp and now, clamped
