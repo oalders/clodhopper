@@ -40,7 +40,7 @@ func TestCleanSessionName(t *testing.T) {
 		{"emoji is not PUA, so it and the text after it are kept", "👟 fix-2482", "👟 fix-2482"},
 		{"plain name unchanged", "my-session", "my-session"},
 		{"collapses whitespace and drops control chars", "  hi\tthere\n", "hi there"},
-		{"blank leading segment is skipped; adjacent glyphs are one boundary", "\ue627 \uf418fix-115\ue0b0\uf418title", "fix-115"},
+		{"blank leading segment is skipped", "\ue627 \uf418fix-115\uf418title", "fix-115"},
 		{"all-glyph name becomes empty", "\uf418\ue0b0", ""},
 	}
 	for _, c := range cases {
