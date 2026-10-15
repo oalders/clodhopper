@@ -51,7 +51,7 @@ func TestBuildEvent_StripsControlCharsFromCwd(t *testing.T) {
 }
 
 // cwd is used as a path, not just displayed: the operator pastes it into a
-// terminal and lookupCI shells `gh pr checks -C <cwd>` at it. maxFieldLen (300)
+// terminal and lookupCI runs `gh pr view` in it. maxFieldLen (300)
 // sits well inside the range of real nested worktree paths, and a value cut
 // there — with a "…" appended — names a directory that does not exist while
 // looking like it might. So this field gets maxPathLen instead, above any real

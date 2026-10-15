@@ -16,7 +16,7 @@ const maxFieldLen = 300
 // maxPathLen caps a retained filesystem path. Paths get their own, far larger
 // cap because cwd is the one retained field that is used FUNCTIONALLY rather
 // than just displayed: the dashboard hands it to the operator to paste into a
-// terminal, and lookupCI shells `gh pr checks -C <cwd>` at that literal path. A
+// terminal, and lookupCI runs `gh pr view` in that literal path. A
 // value cut at maxFieldLen (and given a trailing "…") names a directory that
 // does not exist, so the cap has to sit above any real path instead of near it.
 // The cap counts RUNES, not bytes (truncate slices []rune), so 4096 admits up

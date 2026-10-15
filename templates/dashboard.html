@@ -494,10 +494,11 @@
       box-shadow: 0 0 0 3px color-mix(in srgb, var(--attention) 22%, transparent);
     }
 
-    /* CI is just a fixed-width status dot (emoji), so it gets a snug, centered
-       column. */
-    td.ci, th.ci { padding-left: 4px; padding-right: 4px; text-align: center; }
+    /* CI is a status dot (emoji), plus a fail count on red/orange and a 🔀 on a
+       merge conflict, so it gets a snug, centered, single-line column. */
+    td.ci, th.ci { padding-left: 4px; padding-right: 4px; text-align: center; white-space: nowrap; }
     .ci.none { color: var(--none); }
+    .ci .cifails { color: var(--text-3); font-size: var(--fs-xs); }
 
     /* Per-session colour key: a small swatch whose colour comes from SessColors
        (server-assigned). Pairs with the row tint on Recent events to link a
@@ -2778,7 +2779,7 @@
       <tbody>
         {{ range .Agents }}
         <tr data-group="{{ .GroupKey }}"{{ with rowClass . }} class="{{ . }}"{{ end }}>
-          <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if eq .CI "green" }}<span role="img" aria-label="CI passing">🟢</span>{{ else if eq .CI "pending" }}<span role="img" aria-label="CI pending">🟡</span>{{ else if eq .CI "failing" }}<span role="img" aria-label="CI failing">🔴</span>{{ else }}<span role="img" aria-label="no CI">—</span>{{ end }}</td>
+          <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if eq .CI "green" }}<span role="img" aria-label="CI passing">🟢</span>{{ else if eq .CI "pending" }}<span role="img" aria-label="CI pending">🟡</span>{{ else if eq .CI "failing" }}<span role="img" aria-label="CI failing">🔴</span> <span class="cifails">{{ .CIFails }} failed</span>{{ else if eq .CI "soft-failing" }}<span role="img" aria-label="non-required check failing">🟠</span> <span class="cifails">{{ .CIFails }} failed</span>{{ else }}<span role="img" aria-label="no CI">—</span>{{ end }}{{ if .CIConflict }} <span role="img" aria-label="merge conflict with base">🔀</span>{{ end }}</td>
           {{ template "branchcellroster" . }}
           <td data-label="app">{{ .SourceApp }}</td>
           <td data-label="status" data-rank="{{ .StatusRank }}" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if or (eq .Status "waiting") (eq .Status "waiting on agents") }}background{{ else if eq .Status "working" }}working{{ else if eq .Status "idle" }}idle{{ else if eq .Status "ended" }}ended{{ end }}"><span class="ck-badge"><span class="ck-dot"></span>{{ if eq .Status "waiting on agents" }}waiting on {{ .Subagents }} agent{{ if ne .Subagents 1 }}s{{ end }} <span aria-hidden="true">·</span> <span class="ck-sr">running </span><span data-since="{{ .SubagentSince }}">{{ .SubagentAge }}</span>{{ else }}{{ .Status }}{{ end }}</span></td>
