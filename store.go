@@ -422,7 +422,8 @@ type Agent struct {
 	SubagentSince    int64  // unix seconds of the earliest of those subagents' starts, so the client can tick their running time in place
 	SubagentAge      string // humanised time since SubagentSince, the initial value the client then ticks
 	CI               string // merge-readiness ("", "pending", "green", "failing", "soft-failing"); filled by the server layer via gh
-	CIFails          int    // failed checks on the PR, shown beside a red/orange dot
+	CIFails          int    // failed checks on the PR, shown inside the red/orange badge
+	CIPasses         int    // passed checks on the PR, shown inside the green badge
 	CIConflict       bool   // the PR has a merge conflict with its base branch
 	GroupStart       bool   // true on the first roster row of each (SourceApp, Branch) group except the very first row overall; drives the divider between branch groups in the dashboard
 	Grouped          bool   // true when this row's (SourceApp, Branch) group has 2+ live members; drives the left accent bar that binds a multi-session branch cluster (a worktree with several agents). Singleton branches stay false (no bar)

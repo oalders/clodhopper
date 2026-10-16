@@ -3613,23 +3613,28 @@ func TestDashboardRendersSuppressedCIAsPending(t *testing.T) {
 	if !strings.Contains(html, `aria-label="CI pending"`) {
 		t.Errorf("suppressed row should render the pending dot:\n%s", html)
 	}
-	if !strings.Contains(html, `aria-label="CI failing"`) {
+	if !strings.Contains(html, `aria-label="CI failing, `) {
 		t.Errorf("the unsuppressed row must still render the failing dot:\n%s", html)
 	}
 }
 
-// The soft-failing dot, the fail count on red and orange, and the conflict
+// The soft-failing badge, the counts inside the green, red and orange badges
+// (a green with every check skipped keeps the plain dot), and the conflict
 // marker, which co-renders even with no CI state at all.
 func TestDashboardRendersCIDetail(t *testing.T) {
 	html := renderDashboard(t, dashboardData{Agents: []Agent{
 		{SessionID: "red", Branch: "a", CI: "failing", CIFails: 3},
 		{SessionID: "orange", Branch: "b", CI: "soft-failing", CIFails: 1, CIConflict: true},
 		{SessionID: "none", Branch: "c", CIConflict: true},
+		{SessionID: "green", Branch: "d", CI: "green", CIPasses: 7},
+		{SessionID: "allskipped", Branch: "e", CI: "green"},
 	}})
 	for _, want := range []string{
-		`<span role="img" aria-label="CI failing">🔴</span> <span class="cifails">3 failed</span>`,
-		`<td data-label="CI" class="ci soft-failing"><span role="img" aria-label="non-required check failing">🟠</span> <span class="cifails">1 failed</span> <span role="img" aria-label="merge conflict with base">🔀</span></td>`,
-		`<span role="img" aria-label="no CI">—</span> <span role="img" aria-label="merge conflict with base">🔀</span>`,
+		`<span class="cibadge fail" role="img" aria-label="CI failing, 3 failed" title="3 failed">3</span>`,
+		`<td data-label="CI" class="ci soft-failing"><span class="cibadge soft" role="img" aria-label="non-required check failing, 1 failed" title="1 non-required failed">1</span> <span role="img" aria-label="merge conflict with base" title="merge conflict with base">🔀</span></td>`,
+		`<span role="img" aria-label="no CI">—</span> <span role="img" aria-label="merge conflict with base" title="merge conflict with base">🔀</span>`,
+		`<span class="cibadge ok" role="img" aria-label="CI passing, 7 passed" title="7 passed">7</span>`,
+		`<td data-label="CI" class="ci green"><span role="img" aria-label="CI passing">🟢</span></td>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %s in:\n%s", want, html)
@@ -3637,13 +3642,17 @@ func TestDashboardRendersCIDetail(t *testing.T) {
 	}
 }
 
-// A change in fail count or conflict alone must repaint.
+// A change in fail count, pass count or conflict alone must repaint.
 func TestViewSignature_TracksCIDetail(t *testing.T) {
 	base := dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1}}}
 	more := dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 2}}}
 	conflict := dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1, CIConflict: true}}}
+	passes := dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1, CIPasses: 4}}}
 	if viewSignature(base) == viewSignature(more) {
 		t.Error("signature unchanged when the fail count changed")
+	}
+	if viewSignature(base) == viewSignature(passes) {
+		t.Error("signature unchanged when the pass count changed")
 	}
 	if viewSignature(base) == viewSignature(conflict) {
 		t.Error("signature unchanged when a conflict appeared")

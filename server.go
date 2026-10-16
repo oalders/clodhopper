@@ -556,10 +556,12 @@ func (c *cwdCache[T]) get(cwd string, now time.Time) T {
 }
 
 // ciResult is one PR's CI verdict: State is "", "pending", "green", "failing" or
-// "soft-failing" (only non-required checks failed); Fails counts failed checks.
+// "soft-failing" (only non-required checks failed); Fails and Passes count
+// failed and passed checks (skips are neither).
 type ciResult struct {
 	State    string
 	Fails    int
+	Passes   int
 	Conflict bool // merge conflict with the base branch
 }
 
@@ -625,6 +627,8 @@ func classifyRollup(nodes []rollupNode) ciResult {
 			r.Fails++
 		case "pending":
 			pending = true
+		case "pass":
+			r.Passes++
 		}
 	}
 	switch {
@@ -883,7 +887,7 @@ func viewSignature(d dashboardData) string {
 		// Subagents and SubagentSince feed the "waiting on N agents" badge: the
 		// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
 		// Launcher feeds the [n]/[c] marker, which a resume can flip in place.
-		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%t:%q:%d:%d", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIConflict, a.Launcher, a.Subagents, a.SubagentSince)
+		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%q:%d:%d", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.Launcher, a.Subagents, a.SubagentSince)
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)
@@ -951,7 +955,7 @@ func suppressWatchedCI(agents []Agent, now time.Time) {
 		if age < 0 || age >= ciWatchSecs {
 			continue
 		}
-		// CIFails/CIConflict stay: the count only renders when failing, and a conflict is independent of the run.
+		// CIFails/CIPasses/CIConflict stay: the counts only render on red/orange/green, and a conflict is independent of the run.
 		agents[i].CI = "pending"
 	}
 }
@@ -1031,6 +1035,6 @@ func enrichCI(agents []Agent, ci *cwdCache[ciResult], now time.Time) {
 	wg.Wait()
 	for i := range agents {
 		r := results[agents[i].Cwd]
-		agents[i].CI, agents[i].CIFails, agents[i].CIConflict = r.State, r.Fails, r.Conflict
+		agents[i].CI, agents[i].CIFails, agents[i].CIPasses, agents[i].CIConflict = r.State, r.Fails, r.Passes, r.Conflict
 	}
 }

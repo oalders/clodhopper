@@ -496,11 +496,22 @@
       box-shadow: 0 0 0 3px color-mix(in srgb, var(--attention) 22%, transparent);
     }
 
-    /* CI is a status dot (emoji), plus a fail count on red/orange and a 🔀 on a
-       merge conflict, so it gets a snug, centered, single-line column. */
+    /* CI is a status dot (emoji) — on green/red/orange a CSS circle with the
+       passed/failed count inside, spelled out in its aria-label and title — plus a 🔀 on a merge
+       conflict, so it gets a snug, centered, single-line column. The column is
+       just wide enough for a two-digit badge and a 🔀; anything longer is clipped
+       to "…" by the th,td overflow rule, which is why the count is not "N failed". */
     td.ci, th.ci { padding-left: 4px; padding-right: 4px; text-align: center; white-space: nowrap; }
     .ci.none { color: var(--none); }
-    .ci .cifails { color: var(--text-2); font-size: var(--fs-xs); }
+    .ci .cibadge {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 1.6em; height: 1.6em; padding: .12em .35em 0; box-sizing: border-box; /* top pad: mono digits sit high */
+      border-radius: var(--radius-pill); font-size: var(--fs-xs); font-weight: 700;
+      line-height: 1; color: var(--text-invert); vertical-align: middle;
+    }
+    .ci .cibadge.ok { background: var(--ok); }
+    .ci .cibadge.fail { background: var(--fail); }
+    .ci .cibadge.soft { background: var(--attention); }
 
     /* Per-session colour key: a small swatch whose colour comes from SessColors
        (server-assigned). Pairs with the row tint on Recent events to link a
@@ -564,7 +575,7 @@
       }
       table.roster td.status   { grid-area: 1 / 1 / auto / 3; }
       table.roster td.idle     { grid-area: 1 / 3; justify-self: end; }
-      table.roster td.ci       { grid-area: 2 / 1; white-space: normal; } /* "🔴 12 failed 🔀" must wrap: nothing scrolls here */
+      table.roster td.ci       { grid-area: 2 / 1; white-space: normal; } /* a badge and its 🔀 may wrap: nothing scrolls here */
       table.roster td.branch   { grid-area: 2 / 2 / auto / 4; font-size: var(--fs-md); }
       table.roster td.summary  { grid-area: 3 / 1 / auto / 4; }
       table.roster td[data-label="app"] { grid-area: 4 / 1; }
@@ -2794,7 +2805,7 @@
     <table class="roster">
       {{/* status is 32ch: the nowrap "waiting on N agents · age" badge is ~24ch of text plus ~46px of dot, gaps and padding; recheck when the badge gains a child. Keep the min-width calc() in sync. */}}
       <colgroup>
-        <col style="width: 5ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 32ch">
+        <col style="width: 7ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 32ch">
         <col style="width: 36ch"><col style="width: 8ch">{{ if .Debug }}<col style="width: 10ch">{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<col style="width: 10ch">{{ end }}<col>
       </colgroup>
       <thead>
@@ -2803,7 +2814,7 @@
       <tbody>
         {{ range .Agents }}
         <tr data-group="{{ .GroupKey }}"{{ with rowClass . }} class="{{ . }}"{{ end }}>
-          <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if eq .CI "green" }}<span role="img" aria-label="CI passing">🟢</span>{{ else if eq .CI "pending" }}<span role="img" aria-label="CI pending">🟡</span>{{ else if eq .CI "failing" }}<span role="img" aria-label="CI failing">🔴</span> <span class="cifails">{{ .CIFails }} failed</span>{{ else if eq .CI "soft-failing" }}<span role="img" aria-label="non-required check failing">🟠</span> <span class="cifails">{{ .CIFails }} failed</span>{{ else }}<span role="img" aria-label="no CI">—</span>{{ end }}{{ if .CIConflict }} <span role="img" aria-label="merge conflict with base">🔀</span>{{ end }}</td>
+          <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if and (eq .CI "green") .CIPasses }}<span class="cibadge ok" role="img" aria-label="CI passing, {{ .CIPasses }} passed" title="{{ .CIPasses }} passed">{{ .CIPasses }}</span>{{ else if eq .CI "green" }}<span role="img" aria-label="CI passing">🟢</span>{{ else if eq .CI "pending" }}<span role="img" aria-label="CI pending">🟡</span>{{ else if eq .CI "failing" }}<span class="cibadge fail" role="img" aria-label="CI failing, {{ .CIFails }} failed" title="{{ .CIFails }} failed">{{ .CIFails }}</span>{{ else if eq .CI "soft-failing" }}<span class="cibadge soft" role="img" aria-label="non-required check failing, {{ .CIFails }} failed" title="{{ .CIFails }} non-required failed">{{ .CIFails }}</span>{{ else }}<span role="img" aria-label="no CI">—</span>{{ end }}{{ if .CIConflict }} <span role="img" aria-label="merge conflict with base" title="merge conflict with base">🔀</span>{{ end }}</td>
           {{ template "branchcellroster" . }}
           <td data-label="app">{{ .SourceApp }}</td>
           <td data-label="status" data-rank="{{ .StatusRank }}" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if or (eq .Status "waiting") (eq .Status "waiting on agents") }}background{{ else if eq .Status "working" }}working{{ else if eq .Status "idle" }}idle{{ else if eq .Status "ended" }}ended{{ end }}"><span class="ck-badge"><span class="ck-dot"></span>{{ if eq .Status "waiting on agents" }}waiting on {{ .Subagents }} agent{{ if ne .Subagents 1 }}s{{ end }} <span aria-hidden="true">·</span> <span class="ck-sr">running </span><span data-since="{{ .SubagentSince }}">{{ .SubagentAge }}</span>{{ else }}{{ .Status }}{{ end }}</span></td>
