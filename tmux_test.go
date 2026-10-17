@@ -255,8 +255,8 @@ func TestActiveCounts_LiveLabels(t *testing.T) {
 	ts := now.Add(-time.Minute).Format(time.RFC3339)
 	for _, e := range []Event{
 		{SessionID: "s1"}, {SessionID: "s1"},
-		{SessionID: "s2", TmuxSession: "old", Rebasing: true},
-		{SessionID: "s3", TmuxSession: "kept"},
+		{SessionID: "s2", TmuxSession: "old", Rebasing: true}, {SessionID: "s2", TmuxSession: "old"},
+		{SessionID: "s3", TmuxSession: "kept"}, {SessionID: "s3", TmuxSession: "kept"}, {SessionID: "s3", TmuxSession: "kept"},
 	} {
 		e.TS, e.SourceApp, e.Branch, e.EventType, e.PayloadJSON = ts, "myapp", "fix-180", "PreToolUse", "{}"
 		insertEvent(db, e)
@@ -270,8 +270,13 @@ func TestActiveCounts_LiveLabels(t *testing.T) {
 	for _, c := range counts {
 		got[c.TmuxSession], rebasing[c.TmuxSession] = c.Count, c.Rebasing
 	}
-	if want := map[string]int{"work": 3, "kept": 1}; !maps.Equal(got, want) || len(counts) != 2 {
+	if want := map[string]int{"work": 4, "kept": 3}; !maps.Equal(got, want) || len(counts) != 2 {
 		t.Errorf("tmux_session -> count = %v (%d rows), want %v", got, len(counts), want)
+	}
+	// SQL order is kept(3) ahead of the split s1/s2 rows (2 each); only the
+	// post-merge re-sort puts the summed work row (4) first.
+	if len(counts) > 0 && counts[0].TmuxSession != "work" {
+		t.Errorf("counts[0] = %q, want work (re-sort after merge)", counts[0].TmuxSession)
 	}
 	if !rebasing["work"] {
 		t.Error("merged work row lost Rebasing from s2")
