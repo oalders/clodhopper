@@ -255,7 +255,7 @@ func TestActiveCounts_LiveLabels(t *testing.T) {
 	ts := now.Add(-time.Minute).Format(time.RFC3339)
 	for _, e := range []Event{
 		{SessionID: "s1"}, {SessionID: "s1"},
-		{SessionID: "s2", TmuxSession: "old"},
+		{SessionID: "s2", TmuxSession: "old", Rebasing: true},
 		{SessionID: "s3", TmuxSession: "kept"},
 	} {
 		e.TS, e.SourceApp, e.Branch, e.EventType, e.PayloadJSON = ts, "myapp", "fix-180", "PreToolUse", "{}"
@@ -266,12 +266,15 @@ func TestActiveCounts_LiveLabels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := map[string]int{}
+	got, rebasing := map[string]int{}, map[string]bool{}
 	for _, c := range counts {
-		got[c.TmuxSession] = c.Count
+		got[c.TmuxSession], rebasing[c.TmuxSession] = c.Count, c.Rebasing
 	}
 	if want := map[string]int{"work": 3, "kept": 1}; !maps.Equal(got, want) || len(counts) != 2 {
 		t.Errorf("tmux_session -> count = %v (%d rows), want %v", got, len(counts), want)
+	}
+	if !rebasing["work"] {
+		t.Error("merged work row lost Rebasing from s2")
 	}
 }
 
