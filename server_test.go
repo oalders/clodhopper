@@ -889,28 +889,36 @@ func TestSetWorktrees(t *testing.T) {
 		{Branch: "fix-12", Cwd: "/wt/fix-12/x"},
 		{Branch: "fix-1288", Cwd: "/wt/gh-1308/x"},
 		{BranchGuess: "x", Cwd: "/wt/gh-1308/x"},
+		{Branch: "feature/foo", Cwd: "/wt/foo/x"},
 	}
 	setWorktrees(agents, roots, time.Now())
-	for i, want := range []string{"", "gh-1308", ""} {
+	for i, want := range []string{"", "gh-1308", "", ""} {
 		if agents[i].Worktree != want {
 			t.Errorf("agents[%d].Worktree = %q, want %q", i, agents[i].Worktree, want)
 		}
 	}
 }
 
-// An activity row takes the Worktree of the roster row on its (app, branch).
+// An activity row takes the Worktree of the roster rows on its (app, branch), or
+// none when they disagree (two clones of app y both on main).
 func TestBuildDashboardDataActivityWorktree(t *testing.T) {
 	db := openTestDB(t)
-	now := time.Now()
-	insertEvent(db, Event{TS: now.UTC().Format(time.RFC3339), SourceApp: "x", SessionID: "s", Branch: "fix-1288", Cwd: "/wt/gh-1308/internal", EventType: "Stop", PayloadJSON: "{}"})
-	peek := &peekConfig{roots: &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: func(string) string { return "/wt/gh-1308" }}}
+	ts := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "s", Branch: "fix-1288", Cwd: "/wt/gh-1308/internal", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "y", SessionID: "t", Branch: "main", Cwd: "/a/one/internal", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "y", SessionID: "u", Branch: "main", Cwd: "/b/two/internal", EventType: "Stop", PayloadJSON: "{}"})
+	peek := &peekConfig{roots: &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: filepath.Dir}}
 	ci := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{}}
 	data, err := buildDashboardData(httptest.NewRequest(http.MethodGet, "/", nil), db, ci, peek, &actionConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(data.Activity) != 1 || data.Activity[0].Worktree != "gh-1308" {
-		t.Errorf("Activity = %+v, want one row with Worktree gh-1308", data.Activity)
+	got := map[string]string{}
+	for _, c := range data.Activity {
+		got[c.SourceApp] = c.Worktree
+	}
+	if len(data.Activity) != 2 || got["x"] != "gh-1308" || got["y"] != "" {
+		t.Errorf("Activity = %+v, want x with Worktree gh-1308 and y with none", data.Activity)
 	}
 }
 
@@ -927,8 +935,12 @@ func TestContentTemplate_WorktreeSuffix(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := buf.String()
+	// One roster cell plus one activity cell.
 	if n := strings.Count(html, `fix-1288/gh-1308<`); n != 2 {
 		t.Errorf("want fix-1288/gh-1308 in the roster and activity branch cells, got %d:\n%s", n, html)
+	}
+	if !strings.Contains(html, `aria-label="fix-1288, worktree directory gh-1308`) {
+		t.Errorf("aria-label must read the dir as a separate phrase:\n%s", html)
 	}
 	if !strings.Contains(html, `data-branch="fix-1288"`) {
 		t.Errorf("data-branch must stay the bare branch:\n%s", html)

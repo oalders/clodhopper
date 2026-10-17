@@ -74,8 +74,11 @@ func paneTitle(raw string) string {
 // session may be named after), else the handle. A decorated handle ("👟 fix-12")
 // still counts as repeating it.
 func paneLabel(p livePane, shown ...string) string {
+	if p.title == "" {
+		return p.session
+	}
 	for _, s := range shown {
-		if p.title != "" && s != "" && (p.session == s || strings.HasSuffix(p.session, " "+s)) {
+		if s != "" && (p.session == s || strings.HasSuffix(p.session, " "+s)) {
 			return p.title
 		}
 	}

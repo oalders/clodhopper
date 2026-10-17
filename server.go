@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -831,15 +832,20 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("activity: %w", err)
 	}
-	// Git allows a branch in only one worktree, so (app, branch) finds the row's dir.
-	worktrees := map[[2]string]string{}
+	// (app, branch) finds the row's dir unless separate clones share both, so a
+	// key whose roster rows disagree gets no suffix rather than a wrong one.
+	worktrees, mixed := map[[2]string]string{}, map[[2]string]bool{}
 	for _, a := range agents {
-		if a.Worktree != "" {
-			worktrees[[2]string{a.SourceApp, a.Branch}] = a.Worktree
+		k := [2]string{a.SourceApp, a.Branch}
+		if w, ok := worktrees[k]; ok && w != a.Worktree {
+			mixed[k] = true
 		}
+		worktrees[k] = a.Worktree
 	}
 	for i, c := range activity {
-		activity[i].Worktree = worktrees[[2]string{c.SourceApp, c.Branch}]
+		if k := [2]string{c.SourceApp, c.Branch}; !mixed[k] {
+			activity[i].Worktree = worktrees[k]
+		}
 	}
 
 	events, err := queryEvents(db, EventFilter{SourceApp: source, Branch: branch, EventType: etype, Limit: 300})
@@ -1036,21 +1042,23 @@ func demotePendingCI(agents []Agent) {
 // that differs from the branch, so the branch column can show both (#184). Rows
 // with no known branch are skipped: their BranchGuess already names the dir.
 func setWorktrees(agents []Agent, roots *cwdCache[string], now time.Time) {
+	found := lookupCwds(agents, roots, now)
 	for i, a := range agents {
 		if a.Branch == "" {
 			continue
 		}
-		// Guarded: filepath.Base("") is ".", not "".
-		if root := roots.get(a.Cwd, now); root != "" && filepath.Base(root) != a.Branch {
+		// Guarded: filepath.Base("") is ".", not "". Comparing to the branch's last
+		// segment keeps feature/foo in dir foo from reading feature/foo/foo.
+		if root := found[a.Cwd]; root != "" && filepath.Base(root) != path.Base(a.Branch) {
 			agents[i].Worktree = filepath.Base(root)
 		}
 	}
 }
 
-// enrichCI fills each agent's CI fields, fetching distinct cwds concurrently so a
-// roster of N worktrees costs one slow gh round-trip, not N sequential ones.
-func enrichCI(agents []Agent, ci *cwdCache[ciResult], now time.Time) {
-	results := make(map[string]ciResult)
+// lookupCwds resolves each distinct non-empty cwd through c concurrently, so a
+// roster of N worktrees costs one slow round-trip, not N sequential ones.
+func lookupCwds[T any](agents []Agent, c *cwdCache[T], now time.Time) map[string]T {
+	results := make(map[string]T)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 6)
@@ -1065,13 +1073,19 @@ func enrichCI(agents []Agent, ci *cwdCache[ciResult], now time.Time) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			s := ci.get(cwd, now)
+			s := c.get(cwd, now)
 			mu.Lock()
 			results[cwd] = s
 			mu.Unlock()
 		}(a.Cwd)
 	}
 	wg.Wait()
+	return results
+}
+
+// enrichCI fills each agent's CI fields.
+func enrichCI(agents []Agent, ci *cwdCache[ciResult], now time.Time) {
+	results := lookupCwds(agents, ci, now)
 	for i := range agents {
 		r := results[agents[i].Cwd]
 		agents[i].CI, agents[i].CIFails, agents[i].CIPasses, agents[i].CIConflict = r.State, r.Fails, r.Passes, r.Conflict
