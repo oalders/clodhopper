@@ -2891,7 +2891,7 @@
       <tbody>
         {{ range .Activity }}
         <tr>
-          <td class="branch" data-label="branch">{{ template "branchinner" . }}{{ with .Worktree }}/{{ . }}{{ end }}</td>
+          <td class="branch" data-label="branch">{{ template "branchinner" . }}{{ with .Worktree }}<span aria-hidden="true">/</span><span class="ck-sr">, worktree directory </span>{{ . }}{{ end }}</td>
           <td data-label="app">{{ .SourceApp }}</td>
           <td class="count" data-label="events">{{ .Count }}</td>
           <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>

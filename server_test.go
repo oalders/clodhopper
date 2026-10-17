@@ -935,9 +935,11 @@ func TestContentTemplate_WorktreeSuffix(t *testing.T) {
 		t.Fatal(err)
 	}
 	html := buf.String()
-	// One roster cell plus one activity cell.
-	if n := strings.Count(html, `fix-1288/gh-1308<`); n != 2 {
-		t.Errorf("want fix-1288/gh-1308 in the roster and activity branch cells, got %d:\n%s", n, html)
+	if !strings.Contains(html, `>fix-1288/gh-1308<`) {
+		t.Errorf("roster branch cell must show fix-1288/gh-1308:\n%s", html)
+	}
+	if !strings.Contains(html, `fix-1288<span aria-hidden="true">/</span><span class="ck-sr">, worktree directory </span>gh-1308</td>`) {
+		t.Errorf("activity branch cell must show fix-1288/gh-1308 and announce the dir:\n%s", html)
 	}
 	if !strings.Contains(html, `aria-label="fix-1288, worktree directory gh-1308`) {
 		t.Errorf("aria-label must read the dir as a separate phrase:\n%s", html)

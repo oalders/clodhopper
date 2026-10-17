@@ -125,16 +125,18 @@ func TestDropDeadPanesRelabels(t *testing.T) {
 		{SessionID: "stale", TmuxSession: "old label", TmuxPane: "%2", LaunchCwd: "/src/repo"},
 		{SessionID: "reused", TmuxPane: "%3", LaunchCwd: "/src/b"},
 		{SessionID: "worktree", TmuxSession: "fix-12", TmuxPane: "%4", Branch: "fix-12"},
+		{SessionID: "dir", TmuxSession: "gh-1308", TmuxPane: "%5", Branch: "fix-1288", Worktree: "gh-1308"},
 	}
 	panes := map[string]livePane{
 		"%1": {session: "work", command: "nono", path: "/src/a"},
 		"%2": {session: "new label", command: "claude", path: "/src/repo"},
 		"%3": {session: "unrelated", command: "vim", path: "/src/c"},
 		"%4": {session: "fix-12", title: "Fix the thing", command: "nono"},
+		"%5": {session: "gh-1308", title: "Fix it", command: "nono"},
 	}
 	got := dropDeadPanes(agents, panes)
-	if len(got) != 4 || got[0].TmuxSession != "work" || got[1].TmuxSession != "new label" || got[2].TmuxSession != "" || got[3].TmuxSession != "Fix the thing" {
-		t.Errorf("got %+v, want labels [work, new label, \"\", Fix the thing]", got)
+	if len(got) != 5 || got[0].TmuxSession != "work" || got[1].TmuxSession != "new label" || got[2].TmuxSession != "" || got[3].TmuxSession != "Fix the thing" || got[4].TmuxSession != "Fix it" {
+		t.Errorf("got %+v, want labels [work, new label, \"\", Fix the thing, Fix it]", got)
 	}
 }
 

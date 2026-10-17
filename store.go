@@ -985,7 +985,7 @@ type SourceCount struct {
 	SourceApp   string
 	Branch      string
 	Rebasing    bool   // true if any event in the group was captured mid-rebase, so Branch was recovered from rebase state
-	Worktree    string // the matching roster row's Worktree, filled by the server layer; display only
+	Worktree    string // the matching roster rows' Worktree, filled by the server layer; "" when they disagree; display only
 	Count       int
 }
 
