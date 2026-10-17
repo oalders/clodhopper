@@ -882,6 +882,59 @@ func TestHandleStateForceRefreshesCI(t *testing.T) {
 	}
 }
 
+// setWorktrees names the worktree dir only when it differs from a known branch.
+func TestSetWorktrees(t *testing.T) {
+	roots := &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: filepath.Dir}
+	agents := []Agent{
+		{Branch: "fix-12", Cwd: "/wt/fix-12/x"},
+		{Branch: "fix-1288", Cwd: "/wt/gh-1308/x"},
+		{BranchGuess: "x", Cwd: "/wt/gh-1308/x"},
+	}
+	setWorktrees(agents, roots, time.Now())
+	for i, want := range []string{"", "gh-1308", ""} {
+		if agents[i].Worktree != want {
+			t.Errorf("agents[%d].Worktree = %q, want %q", i, agents[i].Worktree, want)
+		}
+	}
+}
+
+// An activity row takes the Worktree of the roster row on its (app, branch).
+func TestBuildDashboardDataActivityWorktree(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+	insertEvent(db, Event{TS: now.UTC().Format(time.RFC3339), SourceApp: "x", SessionID: "s", Branch: "fix-1288", Cwd: "/wt/gh-1308/internal", EventType: "Stop", PayloadJSON: "{}"})
+	peek := &peekConfig{roots: &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: func(string) string { return "/wt/gh-1308" }}}
+	ci := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{}}
+	data, err := buildDashboardData(httptest.NewRequest(http.MethodGet, "/", nil), db, ci, peek, &actionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Activity) != 1 || data.Activity[0].Worktree != "gh-1308" {
+		t.Errorf("Activity = %+v, want one row with Worktree gh-1308", data.Activity)
+	}
+}
+
+// The branch cells show "branch/dir" while the actions' data-branch stays bare.
+func TestContentTemplate_WorktreeSuffix(t *testing.T) {
+	d := dashboardData{
+		Debug:       true, // the activity table renders only under debug
+		ExecEnabled: true,
+		Agents:      []Agent{{SessionID: "s1", Branch: "fix-1288", Worktree: "gh-1308", Cwd: "/wt/gh-1308", HasPane: true}},
+		Activity:    []SourceCount{{SourceApp: "x", Branch: "fix-1288", Worktree: "gh-1308", Count: 1}},
+	}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	if n := strings.Count(html, `fix-1288/gh-1308<`); n != 2 {
+		t.Errorf("want fix-1288/gh-1308 in the roster and activity branch cells, got %d:\n%s", n, html)
+	}
+	if !strings.Contains(html, `data-branch="fix-1288"`) {
+		t.Errorf("data-branch must stay the bare branch:\n%s", html)
+	}
+}
+
 // Repo (which the PR link needs) is resolved only for a row with a live pane: a
 // pane-less row at the same cwd never has a capture to link.
 func TestBuildDashboardDataRepoOnlyForLivePane(t *testing.T) {

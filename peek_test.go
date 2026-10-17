@@ -159,6 +159,10 @@ func TestPaneLabel(t *testing.T) {
 			t.Errorf("%s: paneLabel(%+v, %q) = %q, want %q", c.name, c.p, c.branch, got, c.want)
 		}
 	}
+	// A handle repeating the worktree dir, not the branch, gives way too (#184).
+	if got := paneLabel(livePane{session: "gh-1308", title: "Fix it"}, "fix-1288", "gh-1308"); got != "Fix it" {
+		t.Errorf("handle is the dir: paneLabel = %q, want %q", got, "Fix it")
+	}
 }
 
 // listPanes maps each pane id to its session name in the form ingest stores, so
@@ -435,5 +439,27 @@ func TestLookupRepoRealRepo(t *testing.T) {
 	runGit(t, bare, "init", "--quiet")
 	if got := lookupRepo(bare); got != "" {
 		t.Errorf("no origin: lookupRepo = %q, want empty", got)
+	}
+}
+
+// Against real git, an agent cd'd into a subdirectory of a worktree whose dir
+// differs from its branch gets the worktree ROOT's basename, not the subdir's.
+func TestSetWorktreesRealWorktree(t *testing.T) {
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitInitOnBranch(t, repo, "main")
+	wt := filepath.Join(base, "gh-1308")
+	gitAddWorktree(t, repo, wt, "fix-1288")
+	sub := filepath.Join(wt, "internal")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agents := []Agent{{Branch: "fix-1288", Cwd: sub}}
+	setWorktrees(agents, newRootCache(), time.Now())
+	if agents[0].Worktree != "gh-1308" {
+		t.Errorf("Worktree = %q, want gh-1308", agents[0].Worktree)
 	}
 }

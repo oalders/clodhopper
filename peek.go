@@ -34,6 +34,7 @@ type peekConfig struct {
 	lines   int
 	cache   *paneCache
 	repos   *cwdCache[string] // cwd → GitHub "owner/repo" for linking the footer's PR #N; nil resolves nothing
+	roots   *cwdCache[string] // cwd → its worktree root, for the branch column's dir suffix; nil resolves nothing
 	// bindHost/allowedHosts mirror actionConfig's: /api/pane execs tmux and
 	// streams live transcript text, so it runs the SAME gate the exec-backed
 	// actions do (execPeerAllowed), which needs the Host allowlist too.
@@ -68,12 +69,15 @@ func paneTitle(raw string) string {
 }
 
 // paneLabel is the label a live row shows: the session's title instead of its
-// leading handle when that handle only repeats the row's branch (a worktree
-// session named after its branch, which the branch column already shows), else
-// the handle. A decorated handle ("👟 fix-12") still counts as repeating it.
-func paneLabel(p livePane, branch string) string {
-	if p.title != "" && branch != "" && (p.session == branch || strings.HasSuffix(p.session, " "+branch)) {
-		return p.title
+// leading handle when that handle only repeats something the branch column already
+// shows (shown: the row's branch and worktree dir, either of which a worktree
+// session may be named after), else the handle. A decorated handle ("👟 fix-12")
+// still counts as repeating it.
+func paneLabel(p livePane, shown ...string) string {
+	for _, s := range shown {
+		if p.title != "" && s != "" && (p.session == s || strings.HasSuffix(p.session, " "+s)) {
+			return p.title
+		}
 	}
 	return p.session
 }
@@ -201,7 +205,7 @@ func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
 	// After DeleteFunc, so every row was judged by its stored label; a blank label alone is no match.
 	for i := range kept {
 		if p := panes[kept[i].TmuxPane]; p.session != "" && matched(kept[i]) {
-			kept[i].TmuxSession = paneLabel(p, cmp.Or(kept[i].Branch, kept[i].BranchGuess))
+			kept[i].TmuxSession = paneLabel(p, cmp.Or(kept[i].Branch, kept[i].BranchGuess), kept[i].Worktree)
 		}
 	}
 	markGroups(kept)
@@ -277,4 +281,11 @@ func parseGitHubRepo(remote string) string {
 func lookupRepo(cwd string) string {
 	out, _ := gitProbe("git", cwd, "remote", "get-url", "origin")
 	return parseGitHubRepo(out)
+}
+
+// lookupWorktreeRoot returns the top-level directory of cwd's worktree, or "" when
+// git fails. Best-effort, like lookupRepo.
+func lookupWorktreeRoot(cwd string) string {
+	out, _ := gitProbe("git", cwd, "rev-parse", "--show-toplevel")
+	return out
 }

@@ -2752,12 +2752,12 @@
      basename) fills that gap, rendered italic-and-muted via .branch-guess so it
      reads as "a hint, possibly not the branch" — the last path segment can be a
      subdirectory. It is roster-only because only Agent carries a cwd to guess
-     from; SourceCount (activity, recent events) has none, so branchcell keeps
-     using plain branchinner. */}}
-{{ define "branchinnerroster" }}{{ if .Branch }}{{ template "branchinner" . }}{{ else if .BranchGuess }}<span class="branch-guess" title="worktree directory — branch name unknown">{{ .BranchGuess }}</span>{{ else }}—{{ end }}{{ end }}
+     from; SourceCount (activity) and EventRow (recent events) have none. A known
+     branch is suffixed "/dir" when its worktree dir differs (Worktree, #184). */}}
+{{ define "branchinnerroster" }}{{ if .Branch }}{{ template "branchinner" . }}{{ with .Worktree }}/{{ . }}{{ end }}{{ else if .BranchGuess }}<span class="branch-guess" title="worktree directory — branch name unknown">{{ .BranchGuess }}</span>{{ else }}—{{ end }}{{ end }}
 
-{{/* branchcell is the plain branch <td> used by the activity and recent-events
-     tables. */}}
+{{/* branchcell is the plain branch <td> used by the recent-events table; the
+     activity table inlines it plus its Worktree suffix, which EventRow lacks. */}}
 {{ define "branchcell" }}<td class="branch" data-label="branch">{{ template "branchinner" . }}</td>{{ end }}
 
 {{/* branchcellroster is the roster's branch <td>. Grouped rows carry a
@@ -2786,7 +2786,7 @@
      keep the span, which is the only carrier they have. Never an aria-label on
      the <td>: a cell supports name-from-author, so a label there would REPLACE
      the cell's contents for assistive tech instead of composing with them. */}}
-{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}{{ if .TmuxSession }}<span class="tmuxname"><span class="ck-sr">session </span>{{ .TmuxSession }}</span>{{ end }}</td>{{ end }}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ with .Worktree }}/{{ . }}{{ end }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}{{ if .TmuxSession }}<span class="tmuxname"><span class="ck-sr">session </span>{{ .TmuxSession }}</span>{{ end }}</td>{{ end }}
 
 {{/* launcher marks how the session was started (#152) in its own unheaded
      column between CI and branch: 🔒 for the nono sandbox, 🤖 for plain claude. */}}
@@ -2891,7 +2891,7 @@
       <tbody>
         {{ range .Activity }}
         <tr>
-          {{ template "branchcell" . }}
+          <td class="branch" data-label="branch">{{ template "branchinner" . }}{{ with .Worktree }}/{{ . }}{{ end }}</td>
           <td data-label="app">{{ .SourceApp }}</td>
           <td class="count" data-label="events">{{ .Count }}</td>
           <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>

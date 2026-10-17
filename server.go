@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -319,7 +320,7 @@ func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool
 	allowed := allowedHosts()
 	peek := &peekConfig{
 		enabled: panePeek, lines: clampPaneLines(paneLines), cache: newPaneCache(),
-		repos: newRepoCache(), bindHost: host, allowedHosts: allowed,
+		repos: newRepoCache(), roots: newRootCache(), bindHost: host, allowedHosts: allowed,
 	}
 	act := &actionConfig{
 		enabled:           enableMerge,
@@ -491,6 +492,10 @@ func newCICache() *cwdCache[ciResult] {
 
 func newRepoCache() *cwdCache[string] {
 	return &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: lookupRepo}
+}
+
+func newRootCache() *cwdCache[string] {
+	return &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: lookupWorktreeRoot}
 }
 
 // expire marks every current entry stale so the next get re-runs its lookup,
@@ -799,6 +804,8 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("roster: %w", err)
 	}
+	// Before dropDeadPanes, whose paneLabel compares the handle against Worktree too.
+	setWorktrees(agents, peek.roots, now)
 	// Before enrichCI, so no CI is fetched for a row that will not render.
 	agents = dropDeadPanes(agents, peek.cache.panes(now))
 	enrichCI(agents, ci, now)
@@ -823,6 +830,16 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	activity, err := activeCounts(db, agentWindow, now, labels)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("activity: %w", err)
+	}
+	// Git allows a branch in only one worktree, so (app, branch) finds the row's dir.
+	worktrees := map[[2]string]string{}
+	for _, a := range agents {
+		if a.Worktree != "" {
+			worktrees[[2]string{a.SourceApp, a.Branch}] = a.Worktree
+		}
+	}
+	for i, c := range activity {
+		activity[i].Worktree = worktrees[[2]string{c.SourceApp, c.Branch}]
 	}
 
 	events, err := queryEvents(db, EventFilter{SourceApp: source, Branch: branch, EventType: etype, Limit: 300})
@@ -894,7 +911,7 @@ func viewSignature(d dashboardData) string {
 		// Subagents and SubagentSince feed the "waiting on N agents" badge: the
 		// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
 		// Launcher feeds the 🔒/🤖 marker, which a resume can flip in place.
-		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%q:%d:%d", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.Launcher, a.Subagents, a.SubagentSince)
+		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%q:%d:%d:%q", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.Launcher, a.Subagents, a.SubagentSince, a.Worktree)
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)
@@ -908,7 +925,7 @@ func viewSignature(d dashboardData) string {
 		return activity[i].TmuxSession < activity[j].TmuxSession
 	})
 	for _, c := range activity {
-		fmt.Fprintf(h, "|c:%q:%q:%q:%d", c.TmuxSession, c.SourceApp, c.Branch, c.Count)
+		fmt.Fprintf(h, "|c:%q:%q:%q:%d:%q", c.TmuxSession, c.SourceApp, c.Branch, c.Count, c.Worktree)
 	}
 
 	return strconv.FormatUint(h.Sum64(), 16)
@@ -1011,6 +1028,21 @@ func demotePendingCI(agents []Agent) {
 		if agents[i].Status == statusNeedsYou || agents[i].Status == statusWaiting {
 			agents[i].Status = statusBackground
 			agents[i].StatusRank = rankBackground
+		}
+	}
+}
+
+// setWorktrees sets each agent's Worktree to its cwd's worktree-root basename when
+// that differs from the branch, so the branch column can show both (#184). Rows
+// with no known branch are skipped: their BranchGuess already names the dir.
+func setWorktrees(agents []Agent, roots *cwdCache[string], now time.Time) {
+	for i, a := range agents {
+		if a.Branch == "" {
+			continue
+		}
+		// Guarded: filepath.Base("") is ".", not "".
+		if root := roots.get(a.Cwd, now); root != "" && filepath.Base(root) != a.Branch {
+			agents[i].Worktree = filepath.Base(root)
 		}
 	}
 }
