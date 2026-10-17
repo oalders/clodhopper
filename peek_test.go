@@ -124,15 +124,40 @@ func TestDropDeadPanesRelabels(t *testing.T) {
 		{SessionID: "blank", TmuxPane: "%1", LaunchCwd: "/src/a"},
 		{SessionID: "stale", TmuxSession: "old label", TmuxPane: "%2", LaunchCwd: "/src/repo"},
 		{SessionID: "reused", TmuxPane: "%3", LaunchCwd: "/src/b"},
+		{SessionID: "worktree", TmuxSession: "fix-12", TmuxPane: "%4", Branch: "fix-12"},
 	}
 	panes := map[string]livePane{
 		"%1": {session: "work", command: "nono", path: "/src/a"},
 		"%2": {session: "new label", command: "claude", path: "/src/repo"},
 		"%3": {session: "unrelated", command: "vim", path: "/src/c"},
+		"%4": {session: "fix-12", title: "Fix the thing", command: "nono"},
 	}
 	got := dropDeadPanes(agents, panes)
-	if len(got) != 3 || got[0].TmuxSession != "work" || got[1].TmuxSession != "new label" || got[2].TmuxSession != "" {
-		t.Errorf("got %+v, want labels [work, new label, \"\"]", got)
+	if len(got) != 4 || got[0].TmuxSession != "work" || got[1].TmuxSession != "new label" || got[2].TmuxSession != "" || got[3].TmuxSession != "Fix the thing" {
+		t.Errorf("got %+v, want labels [work, new label, \"\", Fix the thing]", got)
+	}
+}
+
+// A session handle that only repeats the row's branch gives way to the session's
+// title; any other handle, or one with no title, is kept.
+func TestPaneLabel(t *testing.T) {
+	cases := []struct {
+		name   string
+		p      livePane
+		branch string
+		want   string
+	}{
+		{"handle is the branch", livePane{session: "fix-1288", title: "commerce don't forward provider 4xx status"}, "fix-1288", "commerce don't forward provider 4xx status"},
+		{"decorated handle is the branch", livePane{session: "👟 fix-12", title: "Blog post"}, "fix-12", "Blog post"},
+		{"project handle, branch in title", livePane{session: "muevelo", title: "main"}, "main", "muevelo"},
+		{"handle is the branch but no title", livePane{session: "fix-12"}, "fix-12", "fix-12"},
+		{"unknown branch keeps the handle", livePane{session: "fix-12", title: "Fix it"}, "", "fix-12"},
+		{"branch only a suffix of a word", livePane{session: "hotfix-12", title: "Fix it"}, "fix-12", "hotfix-12"},
+	}
+	for _, c := range cases {
+		if got := paneLabel(c.p, c.branch); got != c.want {
+			t.Errorf("%s: paneLabel(%+v, %q) = %q, want %q", c.name, c.p, c.branch, got, c.want)
+		}
 	}
 }
 
@@ -142,7 +167,8 @@ func TestDropDeadPanesRelabels(t *testing.T) {
 func TestListPanes(t *testing.T) {
 	dir := t.TempDir()
 	messy := "\ue0a0  fix-2482     Blog post [in progress]"
-	script := "#!/bin/sh\nprintf '%s\\t%s\\t%s\\t%s\\n' '%1' 'my-session' 'zsh' '/src/a\tb' '%7' '" + messy + "' 'claude' '/src/c'\n"
+	titled := "\U000f0868  fix-1288            \uf418 commerce don't forward"
+	script := "#!/bin/sh\nprintf '%s\\t%s\\t%s\\t%s\\n' '%1' 'my-session' 'zsh' '/src/a\tb' '%7' '" + messy + "' 'claude' '/src/c' '%9' \"" + titled + "\" 'nono' '/src/d'\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -150,6 +176,7 @@ func TestListPanes(t *testing.T) {
 	want := map[string]livePane{
 		"%1": {session: "my-session", command: "zsh", path: "/src/a\tb"},
 		"%7": {session: tmuxSessionLabel(messy), command: "claude", path: "/src/c"},
+		"%9": {session: "fix-1288", title: "commerce don't forward", command: "nono", path: "/src/d"},
 	}
 	if got := listPanes(); !maps.Equal(got, want) {
 		t.Fatalf("listPanes() = %q, want %q", got, want)

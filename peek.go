@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"io"
 	"net/http"
@@ -49,9 +50,33 @@ func clampPaneLines(n int) int {
 	return n
 }
 
-// livePane is one listed tmux pane: its normalised session name, foreground
-// command and current directory.
-type livePane struct{ session, command, path string }
+// livePane is one listed tmux pane: its normalised session name (the matching
+// key, in ingest's tmux_session form), the session name's trailing title segment
+// ("" if it has none; see paneLabel), foreground command and current directory.
+type livePane struct{ session, title, command, path string }
+
+// paneTitle returns the last PUA-delimited segment of a raw tmux session name
+// when there is more than one ("<icon> fix-12 <icon> Fix the thing" → "Fix the
+// thing"), else "". Read by serve from its own pane listing, so a sandboxed
+// ingest needs no extra tmux access for it.
+func paneTitle(raw string) string {
+	segs := sessionNameSegments(raw)
+	if len(segs) < 2 {
+		return ""
+	}
+	return truncate(scrubString(segs[len(segs)-1]), maxFieldLen)
+}
+
+// paneLabel is the label a live row shows: the session's title instead of its
+// leading handle when that handle only repeats the row's branch (a worktree
+// session named after its branch, which the branch column already shows), else
+// the handle. A decorated handle ("👟 fix-12") still counts as repeating it.
+func paneLabel(p livePane, branch string) string {
+	if p.title != "" && branch != "" && (p.session == branch || strings.HasSuffix(p.session, " "+branch)) {
+		return p.title
+	}
+	return p.session
+}
 
 // paneCache memoises the live tmux panes (pane id → livePane) so the dashboard
 // (which polls) does not shell out to tmux on every render. now is injected so
@@ -105,7 +130,7 @@ func listPanes() map[string]livePane {
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		// Path last, and SplitN, so a tab inside it cannot shift the other fields.
 		if f := strings.SplitN(line, "\t", 4); len(f) == 4 {
-			set[f[0]] = livePane{session: tmuxSessionLabel(f[1]), command: f[2], path: f[3]}
+			set[f[0]] = livePane{session: tmuxSessionLabel(f[1]), title: paneTitle(f[1]), command: f[2], path: f[3]}
 		}
 	}
 	return set
@@ -130,7 +155,7 @@ var launcherCommands = map[string]bool{"claude": true, "nono": true}
 // process is not this row's, and two candidates cannot be told apart. Group
 // flags (GroupStart, Grouped) are recomputed over the surviving rows (#177).
 // A surviving row matched to its pane (by label or the launch-dir fallback) takes
-// the pane's current session name as its label (#180).
+// the pane's current session name as its label (#180), shown via paneLabel.
 func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
 	fallback := func(a Agent, p livePane) bool {
 		dir := a.launchCwd()
@@ -176,7 +201,7 @@ func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
 	// After DeleteFunc, so every row was judged by its stored label; a blank label alone is no match.
 	for i := range kept {
 		if p := panes[kept[i].TmuxPane]; p.session != "" && matched(kept[i]) {
-			kept[i].TmuxSession = p.session
+			kept[i].TmuxSession = paneLabel(p, cmp.Or(kept[i].Branch, kept[i].BranchGuess))
 		}
 	}
 	markGroups(kept)

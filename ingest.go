@@ -370,6 +370,16 @@ func tmuxSessionLabel(raw string) string {
 // spaces (trimming the ends). Ordinary text and real emoji are kept. A blank or
 // all-glyph name becomes "".
 func cleanSessionName(s string) string {
+	if segs := sessionNameSegments(s); len(segs) > 0 {
+		return segs[0]
+	}
+	return ""
+}
+
+// sessionNameSegments splits a raw tmux session name on PUA glyphs and returns
+// each segment that is non-blank after cleaning (see cleanSessionName), in order.
+func sessionNameSegments(s string) []string {
+	var out []string
 	for _, seg := range strings.FieldsFunc(s, isPUA) {
 		cleaned := strings.Map(func(r rune) rune {
 			if unicode.IsSpace(r) {
@@ -378,10 +388,10 @@ func cleanSessionName(s string) string {
 			return r
 		}, seg)
 		if name := strings.Join(strings.Fields(stripControl(cleaned)), " "); name != "" {
-			return name
+			out = append(out, name)
 		}
 	}
-	return ""
+	return out
 }
 
 // cleanSessionID refuses (returns "") an over-long or control-bearing id rather
