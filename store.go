@@ -996,19 +996,21 @@ type SourceCount struct {
 // latest non-blank one from the same session_id (as agentRoster does, #114), so
 // a flaky capture doesn't split one session into two rows. Like agentRoster, it
 // only looks inside the window, so a session whose only named capture is older
-// stays blank. now is passed in (not read from the clock) so the result is
-// deterministic under test, matching agentRoster.
-func activeCounts(db *sql.DB, window time.Duration, now time.Time) ([]SourceCount, error) {
+// stays blank. labels (session_id → live tmux label, from dropDeadPanes; nil for
+// none) overrides the stored label, merging rows that then coincide (#180). now is
+// passed in (not read from the clock) so the result is deterministic under test,
+// matching agentRoster.
+func activeCounts(db *sql.DB, window time.Duration, now time.Time, labels map[string]string) ([]SourceCount, error) {
 	since := now.UTC().Add(-window).Format(time.RFC3339)
 	rows, err := db.Query(
 		`WITH w AS (
-		   SELECT source_app, branch, rebasing, COALESCE(NULLIF(tmux_session, ''),
+		   SELECT COALESCE(session_id, '') AS sid, source_app, branch, rebasing, COALESCE(NULLIF(tmux_session, ''),
 		     CASE WHEN COALESCE(session_id, '') <> '' THEN FIRST_VALUE(NULLIF(tmux_session, '')) OVER (
 		       PARTITION BY session_id ORDER BY NULLIF(tmux_session, '') IS NULL, id DESC) END,
 		     '') AS tmux
 		   FROM events WHERE ts >= ?)
-		 SELECT tmux, source_app, COALESCE(branch, ''), COALESCE(MAX(rebasing), 0), COUNT(*) FROM w
-		 GROUP BY tmux, source_app, branch ORDER BY COUNT(*) DESC`,
+		 SELECT sid, tmux, source_app, COALESCE(branch, ''), COALESCE(MAX(rebasing), 0), COUNT(*) FROM w
+		 GROUP BY sid, tmux, source_app, branch ORDER BY COUNT(*) DESC`,
 		since,
 	)
 	if err != nil {
@@ -1016,12 +1018,27 @@ func activeCounts(db *sql.DB, window time.Duration, now time.Time) ([]SourceCoun
 	}
 	defer rows.Close()
 	var out []SourceCount
+	type key struct{ tmux, app, branch string }
+	idx := map[key]int{} // → index in out
 	for rows.Next() {
+		var sid string
 		var sc SourceCount
-		if err := rows.Scan(&sc.TmuxSession, &sc.SourceApp, &sc.Branch, &sc.Rebasing, &sc.Count); err != nil {
+		if err := rows.Scan(&sid, &sc.TmuxSession, &sc.SourceApp, &sc.Branch, &sc.Rebasing, &sc.Count); err != nil {
 			return nil, err
 		}
+		if l := labels[sid]; l != "" {
+			sc.TmuxSession = l
+		}
+		k := key{sc.TmuxSession, sc.SourceApp, sc.Branch}
+		if i, ok := idx[k]; ok {
+			out[i].Count += sc.Count
+			out[i].Rebasing = out[i].Rebasing || sc.Rebasing
+			continue
+		}
+		idx[k] = len(out)
 		out = append(out, sc)
 	}
+	// Re-sort: grouping by session_id split rows that merging has now summed.
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Count > out[j].Count })
 	return out, rows.Err()
 }

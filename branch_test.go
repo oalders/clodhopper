@@ -194,7 +194,7 @@ func TestActiveCountsSurfacesRebasing(t *testing.T) {
 	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-7", Rebasing: false, TmuxSession: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-8", TmuxSession: "s2", EventType: "PreToolUse", PayloadJSON: "{}"})
 
-	counts, err := activeCounts(db, time.Hour, now)
+	counts, err := activeCounts(db, time.Hour, now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestBranchRoundTripAndFilter(t *testing.T) {
 		t.Errorf("distinct branches: want 2, got %v", branches)
 	}
 
-	counts, _ := activeCounts(db, time.Hour, time.Now())
+	counts, _ := activeCounts(db, time.Hour, time.Now(), nil)
 	if len(counts) != 2 {
 		t.Fatalf("active counts: want 2 source/branch groups, got %+v", counts)
 	}

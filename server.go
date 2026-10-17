@@ -813,7 +813,14 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 		}
 	}
 
-	activity, err := activeCounts(db, agentWindow, now)
+	// Live labels from dropDeadPanes, so activity rows match the roster's (#180).
+	labels := map[string]string{}
+	for _, a := range agents {
+		if a.TmuxSession != "" {
+			labels[a.SessionID] = a.TmuxSession
+		}
+	}
+	activity, err := activeCounts(db, agentWindow, now, labels)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("activity: %w", err)
 	}
