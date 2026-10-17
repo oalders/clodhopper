@@ -1067,7 +1067,7 @@ func TestViewSignature_IgnoresIdleButTracksEvents(t *testing.T) {
 		t.Error("signature unchanged after the subagent start anchor moved")
 	}
 
-	// A resume under a different launcher flips the [n]/[c] marker in place.
+	// A resume under a different launcher flips the 🔒/🤖 marker in place.
 	relaunched := base
 	relaunched.Agents = []Agent{{SessionID: "s1", Status: statusWorking, IdleSecs: 10, IdleSince: 100, Launcher: "nono"}}
 	if viewSignature(base) == viewSignature(relaunched) {
@@ -1921,7 +1921,7 @@ func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 	// wantColspan asserts the panel rows carry exactly `n` and no other colspan.
 	wantColspan := func(t *testing.T, got string, n int, ctx string) {
 		t.Helper()
-		for _, c := range []int{7, 8, 9} {
+		for _, c := range []int{8, 9, 10} {
 			marker := fmt.Sprintf(`colspan="%d"`, c)
 			if c == n {
 				if !strings.Contains(got, marker) {
@@ -1933,24 +1933,24 @@ func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 		}
 	}
 
-	// Peek on, merge off: 7 base cols + controls col (holds the peek button) →
-	// panerow spans 8 at rest.
+	// Peek on, merge off: 8 base cols (incl. the launcher col) + controls col
+	// (holds the peek button) → panerow spans 9 at rest.
 	off := base
 	off.ExecEnabled = false
-	wantColspan(t, render(off), 8, "peek on, merge off")
+	wantColspan(t, render(off), 9, "peek on, merge off")
 
-	// Debug adds the id column, so the same row spans 9.
+	// Debug adds the id column, so the same row spans 10.
 	dbg := off
 	dbg.Debug = true
-	wantColspan(t, render(dbg), 9, "peek on, merge off, debug")
+	wantColspan(t, render(dbg), 10, "peek on, merge off, debug")
 
-	// Peek on + merge on: both panerow and actrow span 8 at rest.
+	// Peek on + merge on: both panerow and actrow span 9 at rest.
 	on := base
 	on.ExecEnabled = true
-	wantColspan(t, render(on), 8, "peek on + merge on")
+	wantColspan(t, render(on), 9, "peek on + merge on")
 
 	// Peek OFF + merge on: no panerow (peek gates it), but the merge actrow still
-	// spans 8 — the controls column is present under merge alone.
+	// spans 9 — the controls column is present under merge alone.
 	mergeOnly := dashboardData{
 		ExecEnabled: true,
 		PeekEnabled: false,
@@ -1958,7 +1958,7 @@ func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 			SessionID: "s1", SourceApp: "app", Status: statusWaiting, HasPane: true,
 		}},
 	}
-	wantColspan(t, render(mergeOnly), 8, "merge on, peek off")
+	wantColspan(t, render(mergeOnly), 9, "merge on, peek off")
 }
 
 // The peek button's accessible name must carry the tmux session, not just the
@@ -3673,36 +3673,38 @@ func TestViewSignature_TracksCISuppression(t *testing.T) {
 	}
 }
 
-// The launcher marker renders once in the desktop session cell and once in the
-// phone card's .tmuxname (CSS shows only one per layout), even without a tmux
-// session, and not at all when the launcher is unknown.
+// The launcher marker renders once, in its own cell between CI and branch, and
+// never in the session cell or the phone card's .tmuxname; an unknown launcher
+// leaves that cell empty.
 func TestContentTemplate_LauncherMarker(t *testing.T) {
-	for _, tc := range []struct{ launcher, marker string }{
-		{"nono", `<span aria-hidden="true">[n]</span><span class="ck-sr">nono sandbox,</span>`},
-		{"claude", `<span aria-hidden="true">[c]</span><span class="ck-sr">plain claude,</span>`},
-	} {
+	render := func(launcher string) string {
 		d := dashboardData{Agents: []Agent{{
-			SessionID: "s1", SourceApp: "app", Status: statusWaiting, Branch: "fix-152", Launcher: tc.launcher,
+			SessionID: "s1", SourceApp: "app", Status: statusWaiting, Branch: "fix-152", TmuxSession: "work", Launcher: launcher,
 		}}}
 		var buf bytes.Buffer
 		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
 			t.Fatal(err)
 		}
-		html := buf.String()
-		if n := strings.Count(html, tc.marker); n != 2 {
-			t.Errorf("%s: marker rendered %d times, want 2 (session cell + .tmuxname):\n%s", tc.launcher, n, html)
+		return buf.String()
+	}
+	for _, tc := range []struct{ launcher, marker string }{
+		{"nono", `<td class="launcher" data-label="launcher"><span role="img" aria-label="nono sandbox" title="launched in the nono sandbox">🔒</span></td>`},
+		{"claude", `<td class="launcher" data-label="launcher"><span role="img" aria-label="plain claude" title="launched as plain claude">🤖</span></td>`},
+	} {
+		html := render(tc.launcher)
+		if n := strings.Count(html, tc.marker); n != 1 {
+			t.Errorf("%s: launcher cell rendered %d times, want 1:\n%s", tc.launcher, n, html)
 		}
-		if !strings.Contains(html, `<span class="tmuxname"><span title=`) {
-			t.Errorf("%s: .tmuxname must carry the marker with no tmux session:\n%s", tc.launcher, html)
+		ci, launcher, branch := strings.Index(html, `class="ci `), strings.Index(html, `<td class="launcher"`), strings.Index(html, `<td class="branch"`)
+		if ci < 0 || ci >= launcher || launcher >= branch {
+			t.Errorf("%s: launcher cell must sit between CI and branch:\n%s", tc.launcher, html)
+		}
+		if !strings.Contains(html, `<span class="tmuxname"><span class="ck-sr">session </span>work</span>`) ||
+			!strings.Contains(html, `title="work">work</td>`) {
+			t.Errorf("%s: session name must render bare, without the marker:\n%s", tc.launcher, html)
 		}
 	}
-
-	d := dashboardData{Agents: []Agent{{SessionID: "s1", SourceApp: "app", Status: statusWaiting, Branch: "fix-152"}}}
-	var buf bytes.Buffer
-	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
-		t.Fatal(err)
-	}
-	if html := buf.String(); strings.Contains(html, "[n]") || strings.Contains(html, "[c]") || strings.Contains(html, "tmuxname") {
-		t.Errorf("unknown launcher must render no marker:\n%s", html)
+	if html := render(""); !strings.Contains(html, `<td class="launcher" data-label="launcher"></td>`) {
+		t.Errorf("unknown launcher must leave the launcher cell empty:\n%s", html)
 	}
 }

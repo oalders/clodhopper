@@ -234,6 +234,7 @@
     /* The flexible session column ellipsizes (th,td already sets overflow:hidden
        + text-overflow:ellipsis) so a long name never breaks the fixed layout. */
     td.tmux { white-space: nowrap; color: var(--text-2); }
+    td.launcher, th.launcher { padding-left: 0; padding-right: 0; text-align: center; }
     /* The roster's shared controls cell (class "actions") holds the live-pane
        peek toggle and the merge "⋯ actions" toggle as inline siblings. The flex
        lives on an inner .ctrlwrap wrapper, NOT the <td>: a display:flex <td> stops
@@ -540,7 +541,7 @@
       .ck-tablewrap { overflow-x: auto; }
       table.events { min-width: 118ch; }
       /* sum of the fixed cols (123ch, plus 10ch each for the debug id and actions cols when present) + 20ch reserved for the flexible session-name column */
-      table.roster { min-width: calc(143ch{{ if .Debug }} + 10ch{{ end }}{{ if or .PeekEnabled .ExecEnabled }} + 10ch{{ end }}); }
+      table.roster { min-width: calc(147ch{{ if .Debug }} + 10ch{{ end }}{{ if or .PeekEnabled .ExecEnabled }} + 10ch{{ end }}); }
       table.counts { min-width: 48ch; }
     }
 
@@ -580,6 +581,8 @@
       table.roster td.summary  { grid-area: 3 / 1 / auto / 4; }
       table.roster td[data-label="app"] { grid-area: 4 / 1; }
       table.roster td.sess     { grid-area: 4 / 2; }
+      table.roster td.launcher { grid-area: 4 / 3; justify-self: end; }
+      table.roster td.launcher:empty { display: none; }
       table.roster td.actions  { grid-area: 5 / 1 / auto / 4; }
       /* The footer line is context, not content. */
       table.roster td[data-label="app"],
@@ -2783,11 +2786,11 @@
      keep the span, which is the only carrier they have. Never an aria-label on
      the <td>: a cell supports name-from-author, so a label there would REPLACE
      the cell's contents for assistive tech instead of composing with them. */}}
-{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}{{ if or .Launcher .TmuxSession }}<span class="tmuxname">{{ template "launcher" . }}{{ if .TmuxSession }}<span class="ck-sr">session </span>{{ .TmuxSession }}{{ end }}</span>{{ end }}</td>{{ end }}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}{{ if .TmuxSession }}<span class="tmuxname"><span class="ck-sr">session </span>{{ .TmuxSession }}</span>{{ end }}</td>{{ end }}
 
-{{/* launcher marks how the session was started (#152); rendered in the desktop
-     session column and the phone card's .tmuxname, only one of which is shown. */}}
-{{ define "launcher" }}{{ if eq .Launcher "nono" }}<span title="launched in the nono sandbox"><span aria-hidden="true">[n]</span><span class="ck-sr">nono sandbox,</span></span> {{ else if eq .Launcher "claude" }}<span title="launched as plain claude"><span aria-hidden="true">[c]</span><span class="ck-sr">plain claude,</span></span> {{ end }}{{ end }}
+{{/* launcher marks how the session was started (#152) in its own unheaded
+     column between CI and branch: 🔒 for the nono sandbox, 🤖 for plain claude. */}}
+{{ define "launcher" }}<td class="launcher" data-label="launcher">{{ if eq .Launcher "nono" }}<span role="img" aria-label="nono sandbox" title="launched in the nono sandbox">🔒</span>{{ else if eq .Launcher "claude" }}<span role="img" aria-label="plain claude" title="launched as plain claude">🤖</span>{{ end }}</td>{{ end }}
 
 {{ define "content" }}
   <div class="ck-meta">
@@ -2805,16 +2808,17 @@
     <table class="roster">
       {{/* status is 32ch: the nowrap "waiting on N agents · age" badge is ~24ch of text plus ~46px of dot, gaps and padding; recheck when the badge gains a child. Keep the min-width calc() in sync. */}}
       <colgroup>
-        <col style="width: 7ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 32ch">
+        <col style="width: 7ch"><col style="width: 4ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 32ch">
         <col style="width: 36ch"><col style="width: 8ch">{{ if .Debug }}<col style="width: 10ch">{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<col style="width: 10ch">{{ end }}<col>
       </colgroup>
       <thead>
-        <tr><th class="ci">CI</th><th>branch</th><th data-sort="app">app</th><th data-sort="status">status</th><th>doing</th><th data-sort="idle">idle</th>{{ if .Debug }}<th>id</th>{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<th>actions</th>{{ end }}<th>session</th></tr>
+        <tr><th class="ci">CI</th><th class="launcher"><span class="ck-sr">launcher</span></th><th>branch</th><th data-sort="app">app</th><th data-sort="status">status</th><th>doing</th><th data-sort="idle">idle</th>{{ if .Debug }}<th>id</th>{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<th>actions</th>{{ end }}<th>session</th></tr>
       </thead>
       <tbody>
         {{ range .Agents }}
         <tr data-group="{{ .GroupKey }}"{{ with rowClass . }} class="{{ . }}"{{ end }}>
           <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if and (eq .CI "green") .CIPasses }}<span class="cibadge ok" role="img" aria-label="CI passing, {{ .CIPasses }} passed" title="{{ .CIPasses }} passed">{{ .CIPasses }}</span>{{ else if eq .CI "green" }}<span role="img" aria-label="CI passing">🟢</span>{{ else if eq .CI "pending" }}<span role="img" aria-label="CI pending">🟡</span>{{ else if eq .CI "failing" }}<span class="cibadge fail" role="img" aria-label="CI failing, {{ .CIFails }} failed" title="{{ .CIFails }} failed">{{ .CIFails }}</span>{{ else if eq .CI "soft-failing" }}<span class="cibadge soft" role="img" aria-label="non-required check failing, {{ .CIFails }} failed" title="{{ .CIFails }} non-required failed">{{ .CIFails }}</span>{{ else }}<span role="img" aria-label="no CI">—</span>{{ end }}{{ if .CIConflict }} <span role="img" aria-label="merge conflict with base" title="merge conflict with base">🔀</span>{{ end }}</td>
+          {{ template "launcher" . }}
           {{ template "branchcellroster" . }}
           <td data-label="app">{{ .SourceApp }}</td>
           <td data-label="status" data-rank="{{ .StatusRank }}" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if or (eq .Status "waiting") (eq .Status "waiting on agents") }}background{{ else if eq .Status "working" }}working{{ else if eq .Status "idle" }}idle{{ else if eq .Status "ended" }}ended{{ end }}"><span class="ck-badge"><span class="ck-dot"></span>{{ if eq .Status "waiting on agents" }}waiting on {{ .Subagents }} agent{{ if ne .Subagents 1 }}s{{ end }} <span aria-hidden="true">·</span> <span class="ck-sr">running </span><span data-since="{{ .SubagentSince }}">{{ .SubagentAge }}</span>{{ else }}{{ .Status }}{{ end }}</span></td>
@@ -2822,10 +2826,10 @@
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>{{ end }}
           {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" data-peek="{{ .SessionID }}"{{ with .Repo }} data-repo="{{ . }}"{{ end }} aria-expanded="false" aria-controls="panerow-{{ .SessionID }}" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · reload plugins · squash · admin · close · ready · rebase · end"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
-          <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ template "launcher" . }}{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
+          <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
-        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
-        {{ if and $.ExecEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}9{{ else }}8{{ end }}"><div class="actpanel">
+        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}10{{ else }}9{{ end }}"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
+        {{ if and $.ExecEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}10{{ else }}9{{ end }}"><div class="actpanel">
             {{ if .HasPane }}
             <div class="actcol" role="group" aria-label="session actions">
               <span class="acteyebrow">session</span>
