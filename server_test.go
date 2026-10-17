@@ -938,8 +938,8 @@ func TestContentTemplate_WorktreeSuffix(t *testing.T) {
 	if !strings.Contains(html, `>fix-1288/gh-1308<`) {
 		t.Errorf("roster branch cell must show fix-1288/gh-1308:\n%s", html)
 	}
-	if !strings.Contains(html, `fix-1288<span aria-hidden="true">/</span><span class="ck-sr">, worktree directory </span>gh-1308</td>`) {
-		t.Errorf("activity branch cell must show fix-1288/gh-1308 and announce the dir:\n%s", html)
+	if !strings.Contains(html, `<td class="branch" data-label="branch"><span>fix-1288<span aria-hidden="true">/</span><span class="ck-sr">, worktree directory </span>gh-1308</span></td>`) {
+		t.Errorf("activity branch cell must show fix-1288/gh-1308 in ONE wrapping span (a phone-width flex td) and announce the dir:\n%s", html)
 	}
 	if !strings.Contains(html, `aria-label="fix-1288, worktree directory gh-1308`) {
 		t.Errorf("aria-label must read the dir as a separate phrase:\n%s", html)

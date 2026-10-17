@@ -2891,7 +2891,9 @@
       <tbody>
         {{ range .Activity }}
         <tr>
-          <td class="branch" data-label="branch">{{ template "branchinner" . }}{{ with .Worktree }}<span aria-hidden="true">/</span><span class="ck-sr">, worktree directory </span>{{ . }}{{ end }}</td>
+          {{/* One wrapping <span>: phone-width cards make every td a flex row, so
+               bare branch / "/" / dir siblings would each become a column. */}}
+          <td class="branch" data-label="branch"><span>{{ template "branchinner" . }}{{ with .Worktree }}<span aria-hidden="true">/</span><span class="ck-sr">, worktree directory </span>{{ . }}{{ end }}</span></td>
           <td data-label="app">{{ .SourceApp }}</td>
           <td class="count" data-label="events">{{ .Count }}</td>
           <td class="namecell" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
