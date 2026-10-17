@@ -129,6 +129,7 @@ var launcherCommands = map[string]bool{"claude": true, "nono": true}
 // pane, by label or by this same fallback: a reused pane id holding some other
 // process is not this row's, and two candidates cannot be told apart. Group
 // flags (GroupStart, Grouped) are recomputed over the surviving rows (#177).
+// A surviving live row takes its pane's current session name as its label (#180).
 func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
 	fallback := func(a Agent, p livePane) bool {
 		dir := a.launchCwd()
@@ -167,6 +168,12 @@ func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
 		p, dir := panes[a.TmuxPane], a.launchCwd()
 		return shellCommands[p.command] && p.path != "" && dir != "" && cwdKey(p.path) == cwdKey(dir)
 	})
+	// After DeleteFunc, so alive judged every row by its stored label.
+	for i := range kept {
+		if p := panes[kept[i].TmuxPane]; p.session != "" && alive(kept[i]) {
+			kept[i].TmuxSession = p.session
+		}
+	}
 	markGroups(kept)
 	return kept
 }

@@ -115,6 +115,21 @@ func TestDropDeadPanesRegroups(t *testing.T) {
 	}
 }
 
+// A live row is labelled from its pane, not its capture (#180): a blank capture
+// (nono) and a stale label kept by the launch-dir fallback both take the pane's
+// current session name.
+func TestDropDeadPanesRelabels(t *testing.T) {
+	agents := []Agent{
+		{SessionID: "blank", TmuxPane: "%1"},
+		{SessionID: "stale", TmuxSession: "old label", TmuxPane: "%2", LaunchCwd: "/src/repo"},
+	}
+	panes := map[string]livePane{"%1": {session: "work"}, "%2": {session: "new label", command: "claude", path: "/src/repo"}}
+	got := dropDeadPanes(agents, panes)
+	if len(got) != 2 || got[0].TmuxSession != "work" || got[1].TmuxSession != "new label" {
+		t.Errorf("got %+v, want labels [work, new label]", got)
+	}
+}
+
 // listPanes maps each pane id to its session name in the form ingest stores, so
 // a messy real-world name compares equal to the row's recorded tmux_session, plus
 // its foreground command and path (last, so a tab in it survives).

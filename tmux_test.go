@@ -189,7 +189,7 @@ func TestActiveCounts_GroupsByTmuxSession(t *testing.T) {
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "fix-1710", TmuxSession: "alpha", EventType: "PreToolUse", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: now, SourceApp: "myapp", Branch: "fix-1710", TmuxSession: "beta", EventType: "PreToolUse", PayloadJSON: "{}"})
 
-	counts, err := activeCounts(db, time.Hour, time.Now())
+	counts, err := activeCounts(db, time.Hour, time.Now(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestActiveCounts_CarriesTmuxSessionAcrossBlankCaptures(t *testing.T) {
 	insertEvent(db, Event{TS: at(4), SourceApp: "myapp", Branch: "legacy", TmuxSession: "stray", EventType: "PreToolUse", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: at(2), SourceApp: "myapp", Branch: "legacy", EventType: "PreToolUse", PayloadJSON: "{}"})
 
-	counts, err := activeCounts(db, time.Hour, now)
+	counts, err := activeCounts(db, time.Hour, now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -240,6 +240,38 @@ func TestActiveCounts_CarriesTmuxSessionAcrossBlankCaptures(t *testing.T) {
 	}
 	if !maps.Equal(got, want) {
 		t.Errorf("(branch, tmux_session) -> count = %v, want %v (blank should join the latest name, and not cross session_id)", got, want)
+	}
+}
+
+// Live labels override stored ones (#180): two sessions relabelled to the same
+// name on one branch merge into one summed row; an unmapped session keeps its own.
+func TestActiveCounts_LiveLabels(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
+	ts := now.Add(-time.Minute).Format(time.RFC3339)
+	for _, e := range []Event{
+		{SessionID: "s1"}, {SessionID: "s1"},
+		{SessionID: "s2", TmuxSession: "old"},
+		{SessionID: "s3", TmuxSession: "kept"},
+	} {
+		e.TS, e.SourceApp, e.Branch, e.EventType, e.PayloadJSON = ts, "myapp", "fix-180", "PreToolUse", "{}"
+		insertEvent(db, e)
+	}
+
+	counts, err := activeCounts(db, time.Hour, now, map[string]string{"s1": "work", "s2": "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]int{}
+	for _, c := range counts {
+		got[c.TmuxSession] = c.Count
+	}
+	if want := map[string]int{"work": 3, "kept": 1}; !maps.Equal(got, want) || len(counts) != 2 {
+		t.Errorf("tmux_session -> count = %v (%d rows), want %v", got, len(counts), want)
 	}
 }
 
