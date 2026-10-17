@@ -540,7 +540,7 @@
     @media (min-width: 641px) {
       .ck-tablewrap { overflow-x: auto; }
       table.events { min-width: 118ch; }
-      /* sum of the fixed cols (123ch, plus 10ch each for the debug id and actions cols when present) + 20ch reserved for the flexible session-name column */
+      /* sum of the fixed cols (127ch, plus 10ch each for the debug id and actions cols when present) + 20ch reserved for the flexible session-name column */
       table.roster { min-width: calc(147ch{{ if .Debug }} + 10ch{{ end }}{{ if or .PeekEnabled .ExecEnabled }} + 10ch{{ end }}); }
       table.counts { min-width: 48ch; }
     }

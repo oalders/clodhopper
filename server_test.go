@@ -1896,12 +1896,13 @@ func TestContentTemplate_SessionNamePreservedInPeekTitle(t *testing.T) {
 }
 
 // The peek panerow and merge actrow span the whole roster width with a colspan.
-// The base roster is 7 always-on columns (CI, branch, app, status, doing, idle,
-// session) plus one shared controls column whenever peek OR merge is on. The id
-// column is debug-gated, so it adds a column only under ?debug=1. A panerow only
-// exists when peek is on, so the controls column is always present: the panerow
-// spans 8 at rest and 9 in debug mode. Likewise the actrow (merge-only). A stale
-// colspan would mis-span the table.
+// The base roster is 8 always-on columns (CI, launcher, branch, app, status,
+// doing, idle, session) plus one shared controls column whenever peek OR merge is
+// on. The id column is debug-gated, so it adds a column only under ?debug=1. A
+// panerow only exists when peek is on, so the controls column is always present:
+// the panerow spans 9 at rest and 10 in debug mode. Likewise the actrow
+// (merge-only). A stale colspan would mis-span the table, so each expected count
+// is also checked against the rendered header row's <th> count.
 func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 	render := func(d dashboardData) string {
 		var buf bytes.Buffer
@@ -1918,9 +1919,15 @@ func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 		}},
 	}
 
-	// wantColspan asserts the panel rows carry exactly `n` and no other colspan.
+	// wantColspan asserts the panel rows carry exactly `n` and no other colspan,
+	// and that `n` is the number of header cells the roster actually renders.
 	wantColspan := func(t *testing.T, got string, n int, ctx string) {
 		t.Helper()
+		_, rest, _ := strings.Cut(got, `<table class="roster">`)
+		head, _, _ := strings.Cut(rest, "</thead>")
+		if ths := strings.Count(head, "<th>") + strings.Count(head, "<th "); ths != n {
+			t.Errorf("%s: roster renders %d header cells, want %d", ctx, ths, n)
+		}
 		for _, c := range []int{8, 9, 10} {
 			marker := fmt.Sprintf(`colspan="%d"`, c)
 			if c == n {

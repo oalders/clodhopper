@@ -893,7 +893,7 @@ func viewSignature(d dashboardData) string {
 		// happens — a stale board, and now a stale copy target.
 		// Subagents and SubagentSince feed the "waiting on N agents" badge: the
 		// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
-		// Launcher feeds the [n]/[c] marker, which a resume can flip in place.
+		// Launcher feeds the 🔒/🤖 marker, which a resume can flip in place.
 		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%q:%d:%d", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.Launcher, a.Subagents, a.SubagentSince)
 	}
 

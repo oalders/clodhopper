@@ -399,7 +399,7 @@ Each event row holds: timestamp, `source_app`, `cwd`, `session_id`,
 `event_type`, `tool_name`, a short human `summary`, and the full **scrubbed**
 event JSON.
 It also records a `launcher` label (`nono` when `$NONO_CAP_FILE` is set, else
-`claude`), shown as `[n]` / `[c]` on the roster; no environment value is stored.
+`claude`), shown as 🔒 / 🤖 in its own roster column; no environment value is stored.
 
 Privacy guarantees:
 
