@@ -2279,7 +2279,7 @@ func TestDashboardWiresEndIntoActionScript(t *testing.T) {
 	// substring: that also appears in other branches of the action handler, so a
 	// loose match still passes when end is dropped from the clears set — the very
 	// regression this guards.
-	if !strings.Contains(html, "var clears = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'end');") {
+	if !strings.Contains(html, "var clears = (action === 'end');") {
 		t.Error("end is not included in the row-clearing (clears) set")
 	}
 }
@@ -2818,7 +2818,7 @@ func TestDashboardWiresRebaseIntoActionScript(t *testing.T) {
 	}
 	// A timed-out force-push may or may not have landed, so rebase needs wording
 	// that says WHAT to check rather than the generic "verify before retrying".
-	if !strings.Contains(html, "action === 'rebase'\n                ? 'timed out — the rebase/push may have partially completed; check the branch on GitHub before retrying'") {
+	if !strings.Contains(html, "action === 'rebase'\n              ? 'timed out — the rebase/push may have partially completed; check the branch on GitHub before retrying'") {
 		t.Error("rebase has no timeout-specific wording")
 	}
 	if !strings.Contains(html, "action === 'rebase' ? 'rebased onto the default branch and force-pushed'") {
@@ -2826,7 +2826,7 @@ func TestDashboardWiresRebaseIntoActionScript(t *testing.T) {
 	}
 	// Assert the whole declaration: rebase must NOT have been added to it, and a
 	// substring match on 'rebase' alone would not prove that.
-	if !strings.Contains(html, "var clears = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'end');") {
+	if !strings.Contains(html, "var clears = (action === 'end');") {
 		t.Error("clears set changed; rebase must not clear the row")
 	}
 }
@@ -3023,7 +3023,7 @@ func TestDashboardArmedConfirmAutoDisarms(t *testing.T) {
 		t.Error("fire does not cancel the idle disarm timer on confirm")
 	}
 	// The row-clearing action list must still exclude rebase (it leaves the row up).
-	if !strings.Contains(html, "var clears = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'end');") {
+	if !strings.Contains(html, "var clears = (action === 'end');") {
 		t.Error("the row-clearing action list changed (rebase must stay out of it)")
 	}
 }

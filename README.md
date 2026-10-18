@@ -159,11 +159,15 @@ board used to expose.
 - `--enable-merge` (default off): turn on the roster's **PR-action buttons**.
   When set, each roster row gains squash / squash + admin / close / ready
   buttons — plus a **rebase** button and an **end** button that just dismisses
-  the row — behind a two-step confirm. Clicking one runs your local `merge-pr`,
-  `gh pr ready`, or `git` in that row's worktree — merging or closing the real PR,
-  removing the worktree, and killing the row's tmux session, same as if you'd
-  typed the command yourself. `--squash --admin` bypasses branch protection
-  using your own `gh` authentication.
+  the row — behind a two-step confirm. **ready** and **rebase** run `gh pr ready`
+  or `git` in that row's worktree. **squash** and **close** start your local
+  `merge-pr` in a new `merge-pr` window of the row's own tmux session and return
+  at once, so a merge queue can take as long as it needs: merge-pr merges or
+  closes the real PR, removes the worktree, and kills that tmux session, same
+  as if you'd typed the command yourself, and the row clears once the session
+  is gone. They need the row to be in a live tmux pane; if merge-pr fails, its
+  window stays open with the error. `--squash --admin` bypasses branch
+  protection using your own `gh` authentication.
 
   Whatever address the server is bound to, every action that runs a command
   (the PR actions, the session actions, and **rebase**) is accepted only from a

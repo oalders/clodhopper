@@ -2254,11 +2254,13 @@
       })
         .then(function (resp) { return resp.json().catch(function () { return { ok: false, output: 'HTTP ' + resp.status }; }); })
         .then(function (d) {
-          // A merge/close hard-kills the session, so its row clears on the next
-          // poll; ready and the session actions leave the row in place.
-          // 'end' clears the row the same way: it writes a synthetic SessionEnd,
-          // so the next /api/state poll no longer lists the session.
-          var clears = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'end');
+          // Only 'end' clears the row: it writes a synthetic SessionEnd, so the
+          // next /api/state poll no longer lists the session. A merge/close only
+          // STARTS merge-pr in a tmux window (its row drops later, once merge-pr
+          // kills the session), so it leaves the row in place like ready and the
+          // session actions.
+          var clears = (action === 'end');
+          var merges = (action === 'squash' || action === 'squash-admin' || action === 'close');
           // IMPORTANT: assign result via textContent, never innerHTML — output is
           // raw git/gh text; scrubString removed secrets but not HTML.
           // Only the results the reader must not miss — failure, timeout — are
@@ -2267,7 +2269,7 @@
           if (msg) {
             msg.textContent = d.ok
               ? (action === 'end' ? 'dismissed — row will clear'
-                 : clears ? 'done — row will clear'
+                 : merges ? d.output
                  : action === 'ready' ? 'PR marked ready'
                  : action === 'monitor-ci' ? 'sent /monitor-ci'
                  : action === 'new-monitor' ? 'watcher started'
@@ -2278,15 +2280,13 @@
             // A rebase gets its own wording: the deadline can fire after the
             // force-push started, so "verify before retrying" has to say WHAT to
             // verify — a blind retry could rebase on top of a push that landed.
-            if (d.timedOut) msg.textContent = clears
-              ? 'timed out — teardown may be incomplete; verify before retrying'
-              : action === 'rebase'
-                ? 'timed out — the rebase/push may have partially completed; check the branch on GitHub before retrying'
-                : 'timed out — verify before retrying';
+            if (d.timedOut) msg.textContent = action === 'rebase'
+              ? 'timed out — the rebase/push may have partially completed; check the branch on GitHub before retrying'
+              : 'timed out — verify before retrying';
             if (!d.ok || d.timedOut) noteMsg(group, msg.textContent);
           }
           // A successful row-clearing action is followed by the row disappearing
-          // on the next poll (session/worktree gone); leave it locked so nothing
+          // on the next poll (session ended); leave it locked so nothing
           // flashes back to life first. Anything else — failure, or an action that
           // leaves the row in place — unlocks the buttons for a retry.
           if (!d.ok || !clears) {
