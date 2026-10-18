@@ -1109,14 +1109,14 @@ func isCIWatchCommand(cmd string) bool {
 }
 
 // demotePendingCI relaxes a "needs you"/"waiting for you" row to the non-urgent
-// statusBackground when its CI is still running, or only non-required checks
-// failed (the PR is still mergeable). A pending check means the agent
-// most likely pushed and is waiting on that run, not blocked on the user — so the
-// alert styling would be misleading (issue #31). This runs in the server layer,
-// not in deriveStatus, because CI is fetched here via gh and is deliberately kept
-// out of the deterministic roster. A PR sitting in the merge queue is likewise
-// waiting on the queue, not the user (issue #193); "queue-failing" is not
-// relaxed, since an imminent ejection needs attention.
+// statusBackground when its CI is still running, only non-required checks
+// failed (the PR is still mergeable), or its PR is in the merge queue. A pending
+// check means the agent most likely pushed and is waiting on that run, not
+// blocked on the user — so the alert styling would be misleading (issue #31); a
+// queued PR likewise waits on the queue (issue #193). "queue-failing" is not
+// relaxed, since an imminent ejection needs attention. This runs in the server
+// layer, not in deriveStatus, because CI is fetched here via gh and is
+// deliberately kept out of the deterministic roster.
 //
 // Tradeoff (intentional, matching the roster's other heuristics): an agent that
 // genuinely finished and is awaiting you, but whose earlier push still has CI in
