@@ -69,7 +69,18 @@ var toolInputAllow = map[string]bool{
 	"limit":         true,
 	"offset":        true,
 	"timeout":       true,
+	"task_id":       true, // TaskStop's target: ends a tracked background shell
+	"shell_id":      true, // the same, from KillShell (older Claude Code)
 }
+
+// taskNotificationRe matches the prompt Claude Code submits when a background
+// task finishes and captures its id. Anchored: the id must open the prompt, so
+// a user merely quoting the markup is not read as a notification.
+var taskNotificationRe = regexp.MustCompile(`^\s*<task-notification>\s*<task-id>([A-Za-z0-9_-]{1,64})</task-id>`)
+
+// taskIDRe bounds a background-task id ("bmrjj0byy") lifted out of a field we
+// otherwise drop; anything else is refused rather than stored.
+var taskIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 // Secret-shaped patterns applied to any free-text we retain (summaries and
 // allowlisted free-text fields). Each keeps enough context to stay readable.
@@ -161,6 +172,19 @@ func scrubPayload(raw []byte) string {
 		}
 		if sv, keep := sanitizeScalar(v); keep {
 			out[k] = sv
+		}
+	}
+	// Two opaque ids pair a background shell's start with its end for the
+	// roster. Each lives inside a field that is otherwise dropped whole (the
+	// tool's output; the prompt), so it alone is hoisted to its own key.
+	if tr, ok := p["tool_response"].(map[string]any); ok {
+		if id, ok := tr["backgroundTaskId"].(string); ok && taskIDRe.MatchString(id) {
+			out["background_task_id"] = id
+		}
+	}
+	if prompt, ok := p["prompt"].(string); ok {
+		if m := taskNotificationRe.FindStringSubmatch(prompt); m != nil {
+			out["task_notification_id"] = m[1]
 		}
 	}
 	b, err := json.Marshal(out)

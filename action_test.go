@@ -2915,7 +2915,7 @@ func TestRestartSkipReason(t *testing.T) {
 		// Anything in flight would be lost to /exit.
 		{"%1", statusWorking, restartUUID, dir, "working — its turn would be cut off"},
 		{"%1", statusBackground, restartUUID, dir, "waiting on background work — it would be lost"},
-		{"%1", statusSubagents, restartUUID, dir, "waiting on agents — /exit would kill them"},
+		{"%1", statusSubagents, restartUUID, dir, "waiting on agents or shells — /exit would kill them"},
 		{"%1", statusApproval, restartUUID, dir, promptBlockedReason},
 		{"%1", statusInput, restartUUID, dir, promptBlockedReason},
 		{"%1", statusNeedsYou, restartUUID, dir, promptBlockedReason},

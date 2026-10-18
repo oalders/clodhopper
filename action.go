@@ -1376,7 +1376,7 @@ func restartSkipReason(a Agent) string {
 	case statusBackground:
 		return "waiting on background work — it would be lost"
 	case statusSubagents:
-		return "waiting on agents — /exit would kill them"
+		return "waiting on agents or shells — /exit would kill them"
 	default:
 		return "status " + strconv.Quote(a.Status) + " — not restarted"
 	}

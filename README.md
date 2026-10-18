@@ -275,7 +275,7 @@ A **restart (all)** button beside it exits and resumes every eligible session
 (for example to pick up a new Claude Code build), reporting per row the same
 way. Because `/exit` kills the process, it uses the two-step confirm and is
 stricter than reload: only **idle** and **waiting for you** rows are restarted;
-working rows, rows waiting on background work or subagents (they would be
+working rows, rows waiting on background work, subagents or shells (they would be
 killed), and prompt-blocked rows are skipped, with no override. For each target
 it sends `/exit`, waits (up to ~15s, plus a few seconds if nono's review must be
 cancelled) for the pane to be back at a shell (`bash`,

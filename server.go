@@ -1009,11 +1009,11 @@ func viewSignature(d dashboardData) string {
 		// next field's head (branch "main:/w" + cwd "one" hashing the same as
 		// branch "main" + cwd "/w/one"). A collision here is a repaint that never
 		// happens — a stale board, and now a stale copy target.
-		// Subagents and SubagentSince feed the "waiting on N agents" badge: the
+		// Subagents, Shells and SubagentSince feed the "waiting on N agents" badge: the
 		// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
 		// Launcher feeds the 🔒/🤖 marker, which a resume can flip in place.
 		// Likewise the queue pill's anchors are hashed, its ticking CIQueueLabel is not.
-		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%q:%d:%d:%d:%q:%q:%d:%d:%q", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.SubagentSince, a.Worktree)
+		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%q:%d:%d:%d:%q:%q:%d:%d:%d:%q", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree)
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)

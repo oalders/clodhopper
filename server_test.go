@@ -1159,6 +1159,13 @@ func TestViewSignature_IgnoresIdleButTracksEvents(t *testing.T) {
 		t.Error("signature unchanged after the subagent start anchor moved")
 	}
 
+	// A shell joining the subagent changes the badge from "1 agent" to "2 tasks".
+	plusShell := oneSub
+	plusShell.Agents = []Agent{{SessionID: "s1", Status: statusSubagents, IdleSecs: 10, IdleSince: 100, Subagents: 1, Shells: 1}}
+	if viewSignature(oneSub) == viewSignature(plusShell) {
+		t.Error("signature unchanged after a shell count change")
+	}
+
 	// A resume under a different launcher flips the 🔒/🤖 marker in place.
 	relaunched := base
 	relaunched.Agents = []Agent{{SessionID: "s1", Status: statusWorking, IdleSecs: 10, IdleSince: 100, Launcher: "nono"}}
@@ -2135,10 +2142,10 @@ func TestDashboardRendersVersionInFooter(t *testing.T) {
 // (singular/plural) and a ticking running time, the separator hidden from AT.
 func TestDashboardRendersWaitingOnSubagents(t *testing.T) {
 	for _, c := range []struct {
-		n    int
-		text string
-	}{{1, "waiting on 1 agent"}, {2, "waiting on 2 agents"}} {
-		d := dashboardData{Agents: []Agent{{SessionID: "s1", Status: statusSubagents, Subagents: c.n, SubagentSince: 1700000000, SubagentAge: "6m"}}}
+		n, shells int
+		text      string
+	}{{1, 0, "waiting on 1 agent"}, {2, 0, "waiting on 2 agents"}, {0, 1, "waiting on 1 shell"}, {0, 2, "waiting on 2 shells"}, {1, 1, "waiting on 2 tasks"}} {
+		d := dashboardData{Agents: []Agent{{SessionID: "s1", Status: statusSubagents, Subagents: c.n, Shells: c.shells, WaitingOn: waitingOn(c.n, c.shells), SubagentSince: 1700000000, SubagentAge: "6m"}}}
 		html := renderDashboard(t, d)
 		// The trailing space keeps "waiting on 1 agent" from matching the plural.
 		for _, want := range []string{c.text + " ", `class="status background"`, `<span aria-hidden="true">·</span>`, `<span class="ck-sr">running </span>`, `<span data-since="1700000000">6m</span>`} {

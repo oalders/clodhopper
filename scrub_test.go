@@ -135,3 +135,41 @@ func TestScrubPayload_UnparseableDropped(t *testing.T) {
 		t.Errorf("expected omission note, got: %s", out)
 	}
 }
+
+// A background shell's task id is the one piece of tool_response (and of a
+// task-notification prompt) the roster needs; it is hoisted to its own key
+// while the rest of both stays dropped, and a malformed id is refused.
+func TestScrubPayload_HoistsBackgroundTaskIDs(t *testing.T) {
+	for _, c := range []struct {
+		name, raw, key, want string
+	}{
+		{
+			"started", `{"hook_event_name":"PostToolUse","tool_name":"Bash",
+				"tool_response":{"stdout":"private output","backgroundTaskId":"bmrjj0byy"}}`,
+			"background_task_id", "bmrjj0byy",
+		},
+		{
+			"finished", `{"hook_event_name":"UserPromptSubmit",
+				"prompt":"<task-notification>\n<task-id>bmrjj0byy</task-id>\n<summary>private summary</summary>"}`,
+			"task_notification_id", "bmrjj0byy",
+		},
+		{
+			"malformed id", `{"tool_response":{"backgroundTaskId":"b x\"y"}}`,
+			"background_task_id", "",
+		},
+		{
+			"not a notification", `{"prompt":"please read <task-notification><task-id>bmrjj0byy</task-id>"}`,
+			"task_notification_id", "",
+		},
+	} {
+		out := scrubPayload([]byte(c.raw))
+		mustNotContain(t, out, "private output", "private summary", "stdout", "prompt")
+		var p map[string]any
+		if err := json.Unmarshal([]byte(out), &p); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got, _ := p[c.key].(string); got != c.want {
+			t.Errorf("%s: %s = %q, want %q (payload %s)", c.name, c.key, got, c.want, out)
+		}
+	}
+}

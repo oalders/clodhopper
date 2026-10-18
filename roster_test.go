@@ -670,6 +670,101 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 	}
 }
 
+// A background shell (run_in_background, or a Bash call that timed out into
+// the background) re-invokes the main agent when it finishes, so a turn that
+// ended with one still running is waiting on it, not on the user. Shells emit
+// no events while they run, so unlike subagents they are not aged out.
+func TestAgentRoster_WaitingOnShells(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, sess, etype, tool, payload string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-1323", SessionID: sess, EventType: etype, ToolName: tool, PayloadJSON: payload})
+	}
+	started := func(ts, sess, id string) { ins(ts, sess, "PostToolUse", "Bash", `{"background_task_id":"`+id+`"}`) }
+	notified := func(ts, sess, id string) { ins(ts, sess, "UserPromptSubmit", "", `{"task_notification_id":"`+id+`"}`) }
+
+	// One shell outstanding, started well past staleWorkingSecs: still counts.
+	started(at(30), "s-one", "b1")
+	ins(at(29), "s-one", "Stop", "", "{}")
+	ins(at(28), "s-one", "Notification", "", `{"notification_type":"idle_prompt"}`)
+	// Its notification re-invoked the agent, which then stopped: waiting for you.
+	started(at(9), "s-done", "b1")
+	ins(at(8), "s-done", "Stop", "", "{}")
+	notified(at(3), "s-done", "b1")
+	ins(at(2), "s-done", "Stop", "", "{}")
+	// Two shells, one finished: the other still holds it, from its own start.
+	started(at(9), "s-two", "b1")
+	started(at(7), "s-two", "b2")
+	notified(at(3), "s-two", "b1")
+	ins(at(2), "s-two", "Stop", "", "{}")
+	// TaskStop sends no notification; its task_id ends the shell.
+	started(at(9), "s-killed", "b1")
+	ins(at(3), "s-killed", "PostToolUse", "TaskStop", `{"tool_input":{"task_id":"b1"}}`)
+	ins(at(2), "s-killed", "Stop", "", "{}")
+	// A restarted session (nn --resume keeps the id) lost its shells.
+	started(at(9), "s-resumed", "b1")
+	ins(at(4), "s-resumed", "SessionStart", "", `{"source":"resume"}`)
+	ins(at(2), "s-resumed", "Stop", "", "{}")
+	// A compaction does not kill them.
+	started(at(9), "s-compact", "b1")
+	ins(at(4), "s-compact", "SessionStart", "", `{"source":"compact"}`)
+	ins(at(2), "s-compact", "Stop", "", "{}")
+	// A shell and a subagent together: both count, the earliest start wins.
+	started(at(6), "s-both", "b1")
+	insertEvent(db, Event{TS: at(5), SourceApp: "myapp", SessionID: "s-both", EventType: "SubagentStart", PayloadJSON: `{"agent_id":"a1"}`})
+	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", SessionID: "s-both", EventType: "PreToolUse", PayloadJSON: `{"agent_id":"a1"}`})
+	ins(at(2), "s-both", "Stop", "", "{}")
+	// A subagent's own background shell is the subagent's to wait on.
+	ins(at(9), "s-sub-shell", "PostToolUse", "Bash", `{"agent_id":"a1","background_task_id":"b1"}`)
+	ins(at(2), "s-sub-shell", "Stop", "", "{}")
+	// A working agent stays working: the shell only matters once the turn ends.
+	started(at(2), "s-working", "b1")
+	ins(at(1), "s-working", "PreToolUse", "Bash", "{}")
+
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Agent{}
+	for _, a := range agents {
+		got[a.SessionID] = a
+	}
+	for _, c := range []struct {
+		sess         string
+		status       string
+		shells, subs int
+		since        int // minutes ago of the earliest start; checked only for statusSubagents
+		waitingOn    string
+	}{
+		{"s-one", statusSubagents, 1, 0, 30, "1 shell"},
+		{"s-done", statusWaiting, 0, 0, 0, ""},
+		{"s-two", statusSubagents, 1, 0, 7, "1 shell"},
+		{"s-killed", statusWaiting, 0, 0, 0, ""},
+		{"s-resumed", statusWaiting, 0, 0, 0, ""},
+		{"s-compact", statusSubagents, 1, 0, 9, "1 shell"},
+		{"s-both", statusSubagents, 1, 1, 6, "2 tasks"},
+		{"s-sub-shell", statusWaiting, 0, 0, 0, ""},
+		{"s-working", statusWorking, 0, 0, 0, ""},
+	} {
+		a := got[c.sess]
+		if a.Status != c.status || a.Shells != c.shells || a.Subagents != c.subs || a.WaitingOn != c.waitingOn {
+			t.Errorf("%s: want %q with %d shells, %d subagents, %q; got %q with %d, %d, %q",
+				c.sess, c.status, c.shells, c.subs, c.waitingOn, a.Status, a.Shells, a.Subagents, a.WaitingOn)
+		}
+		if c.status == statusSubagents {
+			if want := now.Add(time.Duration(-c.since) * time.Minute).Unix(); a.SubagentSince != want {
+				t.Errorf("%s: want SubagentSince %d, got %d", c.sess, want, a.SubagentSince)
+			}
+		}
+	}
+}
+
 func TestAgentRoster_StaleWorkingBecomesIdle(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {

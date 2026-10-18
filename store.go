@@ -420,7 +420,9 @@ type Agent struct {
 	IdleSecs         int
 	IdleSince        int64  // unix seconds of the last event, so the client can tick idle in place
 	Subagents        int    // background subagents still running while the main agent waits; set only for statusSubagents
-	SubagentSince    int64  // unix seconds of the earliest of those subagents' starts, so the client can tick their running time in place
+	Shells           int    // background shells still running while the main agent waits; set only for statusSubagents
+	WaitingOn        string // the badge's count text for Subagents and Shells ("1 agent", "2 shells", "3 tasks"); see waitingOn
+	SubagentSince    int64  // unix seconds of the earliest start among those subagents and shells, so the client can tick their running time in place
 	SubagentAge      string // humanised time since SubagentSince, the initial value the client then ticks
 	CI               string // merge-readiness ("", "pending", "green", "failing", "soft-failing", "ejected"); filled by the server layer via gh
 	CIFails          int    // failed checks on the PR, shown inside the red/orange badge
@@ -445,7 +447,7 @@ const (
 	statusApproval   = "needs approval"
 	statusInput      = "needs input"       // AskUserQuestion: a question to answer, not an action to approve
 	statusBackground = "waiting"           // parked on background work, not blocked on the user
-	statusSubagents  = "waiting on agents" // turn ended but background subagents are still running
+	statusSubagents  = "waiting on agents" // turn ended but background subagents or shells are still running
 	statusWorking    = "working"
 	statusIdle       = "idle"
 	statusEnded      = "ended"
@@ -547,7 +549,11 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(rebasing,0), COALESCE(cwd,''), COALESCE(tmux_session,''), COALESCE(tmux_pane,''), COALESCE(launcher,''), COALESCE(session_id,''),
 		        event_type, COALESCE(tool_name,''), COALESCE(summary,''), COALESCE(slash_command,''),
 		        COALESCE(CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.notification_type') END,''),
-		        COALESCE(CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.agent_id') END,'')
+		        COALESCE(CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.agent_id') END,''),
+		        COALESCE(CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.source') END,''),
+		        COALESCE(CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.background_task_id') END,''),
+		        COALESCE(CASE WHEN json_valid(payload_json) THEN COALESCE(json_extract(payload_json,'$.task_notification_id'),
+		                 json_extract(payload_json,'$.tool_input.task_id'), json_extract(payload_json,'$.tool_input.shell_id')) END,'')
 		 FROM events WHERE ts >= ? AND session_id IS NOT NULL AND session_id <> ''
 		 ORDER BY id ASC`, since)
 	if err != nil {
@@ -565,18 +571,19 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		lastNotif string
 		subs      map[string]*subagent // running subagents by agent_id
 		subPerms  map[string]string    // subagents blocked on a permission request: agent_id -> tool
+		shells    map[string]time.Time // the main agent's running background shells: task id -> start
 	}
 	byID := map[string]*state{}
 	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
 	for rows.Next() {
-		var ts, app, branch, cwd, tmuxSess, tmuxPane, launcher, sess, etype, tool, summary, slashCmd, notifType, agentID string
+		var ts, app, branch, cwd, tmuxSess, tmuxPane, launcher, sess, etype, tool, summary, slashCmd, notifType, agentID, source, shellStart, shellEnd string
 		var rebasing bool
-		if err := rows.Scan(&ts, &app, &branch, &rebasing, &cwd, &tmuxSess, &tmuxPane, &launcher, &sess, &etype, &tool, &summary, &slashCmd, &notifType, &agentID); err != nil {
+		if err := rows.Scan(&ts, &app, &branch, &rebasing, &cwd, &tmuxSess, &tmuxPane, &launcher, &sess, &etype, &tool, &summary, &slashCmd, &notifType, &agentID, &source, &shellStart, &shellEnd); err != nil {
 			return nil, err
 		}
 		s := byID[sess]
 		if s == nil {
-			s = &state{a: Agent{SessionID: sess, firstSeq: nextSeq}, subs: map[string]*subagent{}, subPerms: map[string]string{}}
+			s = &state{a: Agent{SessionID: sess, firstSeq: nextSeq}, subs: map[string]*subagent{}, subPerms: map[string]string{}, shells: map[string]time.Time{}}
 			byID[sess] = s
 			nextSeq++
 		}
@@ -672,6 +679,25 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 			}
 			continue
 		}
+		// Background shells: a Bash result naming a backgroundTaskId (explicit
+		// run_in_background, or a call that timed out into the background) starts
+		// one; the task-notification prompt it sends on finishing, or a TaskStop
+		// naming it, ends it. A restart kills them all, so a SessionStart other
+		// than a compaction (nn --resume keeps the session id) clears the set.
+		// Ending only on those signals, with no staleness cutoff, means a lost
+		// notification holds the row until waitingCap; a shell emits no events
+		// while it runs, so aging it out would drop every long CI watch instead.
+		if shellStart != "" {
+			if t, err := time.Parse(time.RFC3339, ts); err == nil {
+				s.shells[shellStart] = t
+			}
+		}
+		if shellEnd != "" && (etype == "UserPromptSubmit" || tool == "TaskStop" || tool == "KillShell") {
+			delete(s.shells, shellEnd)
+		}
+		if etype == "SessionStart" && source != "compact" {
+			clear(s.shells)
+		}
 		s.a.LastEvent = etype
 		s.lastTS = ts
 		// notifType mirrors LastEvent (last-write-wins); deriveStatus only reads it
@@ -712,8 +738,8 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		}
 		a := s.a
 		a.Status, a.StatusRank = label, rank
-		// A turn that ended with subagents still running is not waiting on the
-		// user yet; only subagents heard from within staleWorkingSecs count.
+		// A turn that ended with subagents or shells still running is not waiting
+		// on the user yet; only subagents heard from within staleWorkingSecs count.
 		if label == statusWaiting {
 			var earliest time.Time
 			for _, sub := range s.subs {
@@ -726,8 +752,15 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 				}
 				a.Subagents++
 			}
-			if a.Subagents > 0 {
+			for _, start := range s.shells {
+				if earliest.IsZero() || start.Before(earliest) {
+					earliest = start
+				}
+				a.Shells++
+			}
+			if a.Subagents+a.Shells > 0 {
 				a.Status, a.StatusRank = statusSubagents, rankBackground
+				a.WaitingOn = waitingOn(a.Subagents, a.Shells)
 				a.SubagentSince = earliest.Unix()
 				a.SubagentAge = humanizeSeconds(int(max(0, now.Unix()-a.SubagentSince)))
 			}
@@ -973,6 +1006,23 @@ func foldToolEvents(events []Event) []EventRow {
 }
 
 // humanizeSeconds renders a compact age like "12s", "4m", or "1h".
+// waitingOn is the count text of the "waiting on …" badge: "1 agent", "2 shells",
+// or, when both kinds are running, their sum as "tasks" (Claude Code's own word
+// for either) so the nowrap badge stays within the status column's width.
+func waitingOn(subagents, shells int) string {
+	n, noun := subagents+shells, "task"
+	switch {
+	case shells == 0:
+		noun = "agent"
+	case subagents == 0:
+		noun = "shell"
+	}
+	if n != 1 {
+		noun += "s"
+	}
+	return fmt.Sprintf("%d %s", n, noun)
+}
+
 func humanizeSeconds(s int) string {
 	switch {
 	case s < 60:
