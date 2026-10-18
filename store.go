@@ -426,7 +426,11 @@ type Agent struct {
 	CIFails          int    // failed checks on the PR, shown inside the red/orange badge
 	CIPasses         int    // passed checks on the PR, shown inside the green badge
 	CIConflict       bool   // the PR has a merge conflict with its base branch
-	CIQueue          string // merge-queue position ("", "queued", "queue-failing"), shown as a marker after the badge
+	CIQueue          string // merge-queue state ("", "queued", "queue-failing"), the colour of the position pill after the badge
+	CIQueuePos       int    // 1-based merge-queue position shown in that pill
+	CIQueueETA       int64  // unix seconds the PR is expected to merge; 0 when unknown
+	CIQueueSince     int64  // unix seconds the PR entered the queue; 0 when unknown
+	CIQueueLabel     string // the pill's title/aria-label, built from the three above at render time
 	CIQueueReason    string // why GitHub removed an "ejected" PR from the merge queue, shown in the badge's label
 	GroupStart       bool   // true on the first roster row of each (SourceApp, Branch) group except the very first row overall; drives the divider between branch groups in the dashboard
 	Grouped          bool   // true when this row's (SourceApp, Branch) group has 2+ live members; drives the left accent bar that binds a multi-session branch cluster (a worktree with several agents). Singleton branches stay false (no bar)

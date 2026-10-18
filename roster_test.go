@@ -75,6 +75,7 @@ func TestParsePRViewIDOnlyWhenOpen(t *testing.T) {
 // A live entry marks the row queued; with none, a removal as the newest event
 // is an ejection that overrides the head commit's green.
 func TestApplyMergeQueue(t *testing.T) {
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
 	green := ciResult{State: "green", Passes: 4}
 	const added = `{"__typename":"AddedToMergeQueueEvent"}`
 	const removed = `{"__typename":"RemovedFromMergeQueueEvent","reason":"merge\n conflict\u0007"}`
@@ -86,7 +87,8 @@ func TestApplyMergeQueue(t *testing.T) {
 		out  string
 		want ciResult
 	}{
-		{"queued", out(`{"state":"QUEUED"}`, added), ciResult{State: "green", Passes: 4, Queue: "queued"}},
+		{"queued", out(`{"state":"QUEUED","position":2,"estimatedTimeToMerge":360,"enqueuedAt":"2026-10-18T11:48:00Z"}`, added), ciResult{State: "green", Passes: 4, Queue: "queued", QueuePos: 2, QueueETA: now.Add(6 * time.Minute), QueueSince: now.Add(-12 * time.Minute)}},
+		{"queued, no estimate", out(`{"state":"QUEUED","position":1,"estimatedTimeToMerge":null,"enqueuedAt":"2026-10-18T11:48:00Z"}`, added), ciResult{State: "green", Passes: 4, Queue: "queued", QueuePos: 1, QueueSince: now.Add(-12 * time.Minute)}},
 		{"queued but unmergeable", out(`{"state":"UNMERGEABLE"}`, added), ciResult{State: "green", Passes: 4, Queue: "queue-failing"}},
 		{"ejected, reason stripped of controls", out(`null`, added+","+removed), ciResult{State: "ejected", Passes: 4, QueueReason: "merge conflict"}},
 		{"ejected then re-queued", out(`{"state":"AWAITING_CHECKS"}`, removed+","+added), ciResult{State: "green", Passes: 4, Queue: "queued"}},
@@ -95,7 +97,7 @@ func TestApplyMergeQueue(t *testing.T) {
 		{"malformed", `not json`, green},
 	}
 	for _, c := range cases {
-		if got := applyMergeQueue(green, []byte(c.out)); got != c.want {
+		if got := applyMergeQueue(green, []byte(c.out), now); got != c.want {
 			t.Errorf("%s: applyMergeQueue = %+v, want %+v", c.name, got, c.want)
 		}
 	}

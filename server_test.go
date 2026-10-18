@@ -3744,7 +3744,7 @@ func TestDashboardRendersCIDetail(t *testing.T) {
 	}
 }
 
-// A change in fail count, pass count or conflict alone must repaint.
+// A change in fail count, pass count, conflict or queue position alone must repaint.
 func TestViewSignature_TracksCIDetail(t *testing.T) {
 	base := dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1}}}
 	more := dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 2}}}
@@ -3762,27 +3762,48 @@ func TestViewSignature_TracksCIDetail(t *testing.T) {
 	if viewSignature(base) == viewSignature(dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1, CIQueue: "queued"}}}) {
 		t.Error("signature unchanged when the PR joined the merge queue")
 	}
+	queued := dashboardData{Agents: []Agent{{SessionID: "s1", CI: "green", CIQueue: "queued", CIQueuePos: 2}}}
+	if viewSignature(queued) == viewSignature(dashboardData{Agents: []Agent{{SessionID: "s1", CI: "green", CIQueue: "queued", CIQueuePos: 1}}}) {
+		t.Error("signature unchanged when the merge-queue position changed")
+	}
 	if viewSignature(base) == viewSignature(dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1, CIQueueReason: "merge conflict"}}}) {
 		t.Error("signature unchanged when the queue removal reason changed")
 	}
 }
 
-// The ejected badge carries GitHub's reason; the queue marker sits after the badge.
+// The ejected badge carries GitHub's reason; the queue position pill sits after the badge.
 func TestDashboardRendersMergeQueue(t *testing.T) {
 	html := renderDashboard(t, dashboardData{Agents: []Agent{
 		{SessionID: "ejected", Branch: "a", CI: "ejected", CIQueueReason: "merge conflict"},
-		{SessionID: "queued", Branch: "b", CI: "green", CIQueue: "queued"},
+		{SessionID: "queued", Branch: "b", CI: "green", CIQueue: "queued", CIQueuePos: 2, CIQueueLabel: "merge queue position 2"},
 		{SessionID: "ejected-bare", Branch: "c", CI: "ejected"},
-		{SessionID: "queue-failing", Branch: "d", CI: "green", CIQueue: "queue-failing"},
+		{SessionID: "queue-failing", Branch: "d", CI: "green", CIQueue: "queue-failing", CIQueuePos: 12, CIQueueLabel: "merge queue position 12, failing"},
 	}})
 	for _, want := range []string{
 		`<td data-label="CI" class="ci ejected"><span class="ci-main"><span class="cibadge fail" role="img" aria-label="removed from merge queue: merge conflict" title="removed from merge queue: merge conflict">⏏</span></span><span class="ci-marks"></span></td>`,
-		`<span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"><span role="img" aria-label="in merge queue" title="in merge queue">🚦</span></span></td>`,
+		`<span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"><span class="cibadge queue" role="img" aria-label="merge queue position 2" title="merge queue position 2">#2</span></span></td>`,
 		`<span class="cibadge fail" role="img" aria-label="removed from merge queue" title="removed from merge queue">⏏</span></span><span class="ci-marks"></span></td>`,
-		`<span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"><span role="img" aria-label="in merge queue, failing" title="in merge queue, failing">🚨</span></span></td>`,
+		`<span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"><span class="cibadge queue failing" role="img" aria-label="merge queue position 12, failing" title="merge queue position 12, failing">#12</span></span></td>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %s in:\n%s", want, html)
+		}
+	}
+}
+
+// Each label clause drops out when GitHub left its field null.
+func TestQueueLabel(t *testing.T) {
+	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.Local)
+	for _, tc := range []struct {
+		r    ciResult
+		want string
+	}{
+		{ciResult{Queue: "queued", QueuePos: 2, QueueETA: now.Add(152 * time.Minute), QueueSince: now.Add(-12 * time.Minute)}, "merge queue position 2 · merge expected ~14:32 · queued 12m ago"},
+		{ciResult{Queue: "queue-failing", QueuePos: 1, QueueSince: now.Add(-90 * time.Second)}, "merge queue position 1, failing · queued 1m ago"},
+		{ciResult{Queue: "queued", QueuePos: 3}, "merge queue position 3"},
+	} {
+		if got := queueLabel(tc.r, now); got != tc.want {
+			t.Errorf("queueLabel(%+v) = %q, want %q", tc.r, got, tc.want)
 		}
 	}
 }
