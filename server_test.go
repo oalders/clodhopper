@@ -2543,11 +2543,13 @@ func TestDashboardActionMessageSurvivesContentSwap(t *testing.T) {
 }
 
 // Only results the reader must not miss are remembered: the failure, timeout and
-// network-error branches. A success either clears its row or needs no second
-// look, and remembering it would re-paint stale text over a live row. Equally,
+// network-error branches, and a merge/close's "started in tmux window" notice
+// (#188: the merge runs on out of sight, so the pointer to it must outlive the
+// next poll). Any other success either clears its row or needs no second look,
+// and remembering it would re-paint stale text over a live row. Equally,
 // a superseded message ('working…' on a retry) must drop its note so a stale
 // failure cannot resurrect.
-func TestDashboardActionMessagePersistsOnlyFailures(t *testing.T) {
+func TestDashboardActionMessagePersistsOnlyFailuresAndMerges(t *testing.T) {
 	on := dashboardData{
 		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
 		ExecEnabled: true,
@@ -2555,11 +2557,12 @@ func TestDashboardActionMessagePersistsOnlyFailures(t *testing.T) {
 	}
 	html := renderDashboard(t, on)
 
-	// Failure + timeout share one note() call, placed after both writes.
+	// Failure, timeout and a started merge share one note() call, placed after
+	// both writes.
 	fail := `              : 'timed out — verify before retrying';
-            if (!d.ok || d.timedOut) noteMsg(group, msg.textContent);`
+            if (!d.ok || d.timedOut || merges) noteMsg(group, msg.textContent);`
 	if !strings.Contains(html, fail) {
-		t.Errorf("failure/timeout results are no longer remembered across repaints:\n%s", fail)
+		t.Errorf("failure/timeout/merge-started results are no longer remembered across repaints:\n%s", fail)
 	}
 	// The rejected-fetch branch.
 	catchFrag := `          if (msg) { msg.textContent = 'request failed: ' + e; noteMsg(group, msg.textContent); }`
@@ -2572,13 +2575,13 @@ func TestDashboardActionMessagePersistsOnlyFailures(t *testing.T) {
 	}
 	// The success text is written in the same expression as the failure text, so a
 	// literal negative ("no note() next to 'done'") could never fail. Count the
-	// call sites instead: exactly two may exist — the guarded failure/timeout one
-	// asserted above and the .catch one — so ANY new noteMsg call, including one
-	// added to the ok branch, trips this.
+	// call sites instead: exactly two may exist — the guarded failure/timeout/merge
+	// one asserted above and the .catch one — so ANY new noteMsg call, including
+	// one added to the ok branch, trips this.
 	// 3 = the one declaration plus exactly those two call sites.
 	const wantNoteMentions = 3
 	if got := strings.Count(html, "noteMsg("); got != wantNoteMentions {
-		t.Errorf("noteMsg( appears %d time(s), want %d (its declaration, the failure/timeout guard and the .catch branch); a new call site — e.g. on the success branch — must not remember its result across repaints", got, wantNoteMentions)
+		t.Errorf("noteMsg( appears %d time(s), want %d (its declaration, the failure/timeout/merge guard and the .catch branch); a new call site — e.g. on the success branch — must not remember its result across repaints", got, wantNoteMentions)
 	}
 	// Keyed by group class as well as session: three .actgroups share a session.
 	if !strings.Contains(html, "var ACTMSG_GROUPS = ['actsession', 'prform', 'rowform'];") {

@@ -67,7 +67,10 @@ func actionArgv(action string, force bool) (binary string, args []string, inTmux
 
 // inflightSet tracks which sessions have an action currently running, so a
 // double-click or a second tab cannot start two actions racing on the same
-// worktree. Keyed by session id.
+// worktree. Keyed by session id. For the merge actions the lock covers only
+// startMergeWindow, not merge-pr's run in the new window: issue #188 accepts
+// that a second click starts a second merge-pr window, and merge-pr itself
+// handles a PR that is already merged or closed.
 type inflightSet struct {
 	mu sync.Mutex
 	m  map[string]bool
@@ -286,6 +289,7 @@ func startMergeWindow(tmuxBin, mergePR, pane, dir string, args []string) actionR
 		return actionResult{ExitCode: -1, Output: "worktree path contains '#', which tmux would expand; run merge-pr from the worktree"}
 	}
 	// The tmux server's PATH is not serve's, so hand it an absolute path.
+	// No '#' check: tmux format-expands -c's value, not the command argv.
 	bin, err := exec.LookPath(mergePR)
 	if err == nil {
 		bin, err = filepath.Abs(bin)
@@ -1186,7 +1190,7 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 			return
 		}
 		if !paneIDRe.MatchString(pane) {
-			writeActionResult(w, actionResult{ExitCode: -1, Output: "session is not in tmux; run merge-pr from its worktree"})
+			writeActionResult(w, actionResult{ExitCode: -1, Output: "session is not in tmux; run merge-pr from a terminal in its worktree"})
 			return
 		}
 		writeActionResult(w, startMergeWindow(cfg.tmux, cfg.mergePR, pane, cwd, args))

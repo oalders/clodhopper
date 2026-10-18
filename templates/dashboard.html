@@ -2263,9 +2263,11 @@
           var merges = (action === 'squash' || action === 'squash-admin' || action === 'close');
           // IMPORTANT: assign result via textContent, never innerHTML — output is
           // raw git/gh text; scrubString removed secrets but not HTML.
-          // Only the results the reader must not miss — failure, timeout — are
-          // handed to noteMsg for re-application across repaints (issue #98); a
-          // success either clears its row or needs no second look.
+          // Only the results the reader must not miss — failure, timeout, and a
+          // merge/close's "started in tmux window" notice (the work continues out
+          // of sight, so the pointer to it must outlive the next poll) — are
+          // handed to noteMsg for re-application across repaints (issue #98);
+          // any other success either clears its row or needs no second look.
           if (msg) {
             msg.textContent = d.ok
               ? (action === 'end' ? 'dismissed — row will clear'
@@ -2283,7 +2285,7 @@
             if (d.timedOut) msg.textContent = action === 'rebase'
               ? 'timed out — the rebase/push may have partially completed; check the branch on GitHub before retrying'
               : 'timed out — verify before retrying';
-            if (!d.ok || d.timedOut) noteMsg(group, msg.textContent);
+            if (!d.ok || d.timedOut || merges) noteMsg(group, msg.textContent);
           }
           // A successful row-clearing action is followed by the row disappearing
           // on the next poll (session ended); leave it locked so nothing

@@ -110,13 +110,15 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   window in the row's own session running merge-pr (it may wait minutes on a
   merge queue) and returns at once; its varying argv elements are the
   `display-message` session id (validated), the stored absolute cwd (refused if
-  it holds a tmux format `#`) and the `LookPath`'d merge-pr.
-  `broadcast-restart` is a separate path that never reaches `actionArgv`: it sends `/exit`, then — only if nono's denied-paths
-  review is the last thing on screen (`nonoReviewOnScreen`) — a fixed Escape key
-  to cancel it, then types the fixed prefix `nn --resume ` plus the session id,
-  all via tmux send-keys; the id comes from a fresh `agentRoster()` call inside
-  the request (never client input) and must match `sessionIDRe` (a UUID) before
-  `/exit` is even sent.)
+  it holds a tmux format `#`) and the `LookPath`'d merge-pr. The row drops
+  only once `dropDeadPanes` sees the pane gone (a lone row may need `end`).
+  `broadcast-restart` is a separate path that never reaches `actionArgv`: it
+  sends `/exit`, then — only if nono's denied-paths review is the last thing on
+  screen (`nonoReviewOnScreen`) — a fixed Escape key to cancel it, then types
+  the fixed prefix `nn --resume ` plus the session id, all via tmux send-keys;
+  the id comes from a fresh `agentRoster()` call inside the request (never
+  client input) and must match `sessionIDRe` (a UUID) before `/exit` is even
+  sent.)
 
 ### Other conventions
 

@@ -426,6 +426,24 @@ func TestHandleActionMergeRefusesFormatInCwd(t *testing.T) {
 	}
 }
 
+// A merge-pr that cannot be found is reported before tmux is touched, rather
+// than opening a window that would only show "command not found".
+func TestHandleActionMergePRNotFound(t *testing.T) {
+	db := openTestDB(t)
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-1", Cwd: t.TempDir(), TmuxPane: "%12", EventType: "Stop", PayloadJSON: "{}"})
+	logPath := filepath.Join(t.TempDir(), "ran.log")
+	cfg := newActionCfg(filepath.Join(t.TempDir(), "no-such-merge-pr"), "/bin/true")
+	cfg.tmux = logStub(t, "tmux", logPath)
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("live-1", "squash", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if got := decodeActionJSON(t, w); got.OK || !strings.Contains(got.Output, "merge-pr not found") {
+		t.Fatalf("resp = %+v", got)
+	}
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatal("tmux ran although merge-pr could not be found")
+	}
+}
+
 // A tmux that cannot open the window reports its own error, not success.
 func TestHandleActionMergeTmuxFailureSurfaced(t *testing.T) {
 	db := openTestDB(t)
@@ -2460,6 +2478,8 @@ func TestHandleActionWorktreeLockReleasedAfterWorktreeRemoved(t *testing.T) {
 
 	// merge-pr tears the worktree down, as the real one does; the stub tmux
 	// does it inside new-window, as a merge-pr that finishes at once would.
+	// The single-quoted '$1' is a literal stand-in tmux session id for
+	// display-message to print, not a shell parameter.
 	cfg := newActionCfg(writeStub(t, "merge-pr", "exit 0"), "/bin/true")
 	cfg.tmux = writeStub(t, "tmux", `if [ "$1" = "display-message" ]; then echo '$1'; exit 0; fi
 rm -rf `+strconv.Quote(link)+" "+strconv.Quote(realDir)+"; exit 0")
