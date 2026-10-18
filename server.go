@@ -29,11 +29,31 @@ var dashboardHTML string
 
 var dashboardTmpl = template.Must(
 	template.New("dashboard").Funcs(template.FuncMap{
-		"short":    shortID,
-		"shortTS":  shortTS,
-		"rowClass": rowClass,
+		"short":       shortID,
+		"shortTS":     shortTS,
+		"rowClass":    rowClass,
+		"ciMarkSlots": ciMarkSlots,
 	}).Parse(dashboardHTML),
 )
+
+// ciMarkSlots is the most 🔀/🚦/🚨 markers any one roster row carries (0–2).
+// The template turns it into a ci-mN class on the table, which sizes the CI
+// column to fit, so a board with no markers spends no width on them. It is
+// recomputed on every render, so the column follows /api/state polls.
+func ciMarkSlots(agents []Agent) int {
+	most := 0
+	for _, a := range agents {
+		n := 0
+		if a.CIConflict {
+			n++
+		}
+		if a.CIQueue != "" {
+			n++
+		}
+		most = max(most, n)
+	}
+	return most
+}
 
 // rowClass builds the space-separated CSS class list for a roster <tr> from the
 // row's flags: "alert" for an attention state, "group-start" for the divider

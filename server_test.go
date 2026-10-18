@@ -2015,7 +2015,7 @@ func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 	// and that `n` is the number of header cells the roster actually renders.
 	wantColspan := func(t *testing.T, got string, n int, ctx string) {
 		t.Helper()
-		_, rest, _ := strings.Cut(got, `<table class="roster">`)
+		_, rest, _ := strings.Cut(got, `<table class="roster`)
 		head, _, _ := strings.Cut(rest, "</thead>")
 		if ths := strings.Count(head, "<th>") + strings.Count(head, "<th "); ths != n {
 			t.Errorf("%s: roster renders %d header cells, want %d", ctx, ths, n)
@@ -3729,11 +3729,11 @@ func TestDashboardRendersCIDetail(t *testing.T) {
 		{SessionID: "allskipped", Branch: "e", CI: "green"},
 	}})
 	for _, want := range []string{
-		`<span class="cibadge fail" role="img" aria-label="CI failing, 3 failed" title="3 failed">3</span>`,
-		`<td data-label="CI" class="ci soft-failing"><span class="cibadge soft" role="img" aria-label="non-required check failing, 1 failed" title="1 non-required failed">1</span> <span role="img" aria-label="merge conflict with base" title="merge conflict with base">🔀</span></td>`,
-		`<span role="img" aria-label="no CI">—</span> <span role="img" aria-label="merge conflict with base" title="merge conflict with base">🔀</span>`,
+		`<span class="ci-main"><span class="cibadge fail" role="img" aria-label="CI failing, 3 failed" title="3 failed">3</span></span><span class="ci-marks"></span>`,
+		`<td data-label="CI" class="ci soft-failing"><span class="ci-main"><span class="cibadge soft" role="img" aria-label="non-required check failing, 1 failed" title="1 non-required failed">1</span></span><span class="ci-marks"><span role="img" aria-label="merge conflict with base" title="merge conflict with base">🔀</span></span></td>`,
+		`<span role="img" aria-label="no CI">—</span></span><span class="ci-marks"><span role="img" aria-label="merge conflict with base" title="merge conflict with base">🔀</span></span>`,
 		`<span class="cibadge ok" role="img" aria-label="CI passing, 7 passed" title="7 passed">7</span>`,
-		`<td data-label="CI" class="ci green"><span role="img" aria-label="CI passing">🟢</span></td>`,
+		`<td data-label="CI" class="ci green"><span class="ci-main"><span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"></span></td>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %s in:\n%s", want, html)
@@ -3773,14 +3773,39 @@ func TestDashboardRendersMergeQueue(t *testing.T) {
 		{SessionID: "queue-failing", Branch: "d", CI: "green", CIQueue: "queue-failing"},
 	}})
 	for _, want := range []string{
-		`<td data-label="CI" class="ci ejected"><span class="cibadge fail" role="img" aria-label="removed from merge queue: merge conflict" title="removed from merge queue: merge conflict">⏏</span></td>`,
-		`<span role="img" aria-label="CI passing">🟢</span> <span role="img" aria-label="in merge queue" title="in merge queue">🚂</span></td>`,
-		`<span class="cibadge fail" role="img" aria-label="removed from merge queue" title="removed from merge queue">⏏</span></td>`,
-		`<span role="img" aria-label="CI passing">🟢</span> <span role="img" aria-label="in merge queue, failing" title="in merge queue, failing">🚨</span></td>`,
+		`<td data-label="CI" class="ci ejected"><span class="ci-main"><span class="cibadge fail" role="img" aria-label="removed from merge queue: merge conflict" title="removed from merge queue: merge conflict">⏏</span></span><span class="ci-marks"></span></td>`,
+		`<span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"><span role="img" aria-label="in merge queue" title="in merge queue">🚦</span></span></td>`,
+		`<span class="cibadge fail" role="img" aria-label="removed from merge queue" title="removed from merge queue">⏏</span></span><span class="ci-marks"></span></td>`,
+		`<span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"><span role="img" aria-label="in merge queue, failing" title="in merge queue, failing">🚨</span></span></td>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %s in:\n%s", want, html)
 		}
+	}
+}
+
+// The CI column is sized by the most-marked row: a conflict and a queue marker
+// each take a slot, and the table carries the count as its ci-mN class.
+func TestCIMarkSlots(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		agents []Agent
+		want   int
+	}{
+		{"empty board", nil, 0},
+		{"no markers", []Agent{{CI: "failing", CIFails: 12}, {CI: "ejected"}}, 0},
+		{"conflict", []Agent{{}, {CIConflict: true}}, 1},
+		{"queued", []Agent{{CI: "green", CIQueue: "queued"}}, 1},
+		{"split across rows", []Agent{{CIConflict: true}, {CIQueue: "queue-failing"}}, 1},
+		{"both on one row", []Agent{{}, {CIConflict: true, CIQueue: "queued"}}, 2},
+	} {
+		if got := ciMarkSlots(tc.agents); got != tc.want {
+			t.Errorf("%s: ciMarkSlots = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+	html := renderDashboard(t, dashboardData{Agents: []Agent{{SessionID: "s", CIConflict: true, CIQueue: "queued"}}})
+	if !strings.Contains(html, `<table class="roster ci-m2">`) {
+		t.Errorf("roster table should carry ci-m2:\n%s", html)
 	}
 }
 

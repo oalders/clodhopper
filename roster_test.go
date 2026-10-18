@@ -894,7 +894,7 @@ func TestHandleDashboard_GroupClusterClasses(t *testing.T) {
 	// names also appear in the filter dropdown and the Recent-events table lower on
 	// the page, which would pollute a whole-document search.
 	roster := body
-	if i := strings.Index(roster, `<table class="roster">`); i >= 0 {
+	if i := strings.Index(roster, `<table class="roster`); i >= 0 {
 		if j := strings.Index(roster[i:], "</table>"); j >= 0 {
 			roster = roster[i : i+j]
 		}
