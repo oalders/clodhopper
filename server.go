@@ -1041,9 +1041,9 @@ func demotePendingCI(agents []Agent) {
 // setWorktrees sets each agent's Worktree to its cwd's worktree-root basename when
 // that differs from the branch, so the branch column can show both (#184). Rows
 // with no known branch are skipped: their BranchGuess already names the dir.
-// main is skipped too: it is the primary checkout, whose dir is just the repo's name.
+// main/master are skipped too: the primary checkout, whose dir is just the repo's name.
 func setWorktrees(agents []Agent, roots *cwdCache[string], now time.Time) {
-	noSuffix := func(a Agent) bool { return a.Branch == "" || a.Branch == "main" }
+	noSuffix := func(a Agent) bool { return a.Branch == "" || a.Branch == "main" || a.Branch == "master" }
 	found := lookupCwds(slices.DeleteFunc(slices.Clone(agents), noSuffix), roots, now)
 	for i, a := range agents {
 		if noSuffix(a) {

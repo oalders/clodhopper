@@ -900,19 +900,20 @@ func TestSetWorktrees(t *testing.T) {
 		{BranchGuess: "x", Cwd: "/wt/guess/x"},
 		{Branch: "feature/foo", Cwd: "/wt/foo/x"},
 		{Branch: "main", Cwd: "/wt/clodhopper/x"},
+		{Branch: "master", Cwd: "/wt/legacy/x"},
 	}
 	setWorktrees(agents, roots, time.Now())
-	for i, want := range []string{"", "gh-1308", "", "", ""} {
+	for i, want := range []string{"", "gh-1308", "", "", "", ""} {
 		if agents[i].Worktree != want {
 			t.Errorf("agents[%d].Worktree = %q, want %q", i, agents[i].Worktree, want)
 		}
 	}
-	for _, cwd := range []string{"/wt/guess/x", "/wt/clodhopper/x"} {
+	for _, cwd := range []string{"/wt/guess/x", "/wt/clodhopper/x", "/wt/legacy/x"} {
 		if looked[cwd] {
-			t.Errorf("looked up %s, whose row has no branch or is on main", cwd)
+			t.Errorf("looked up %s, whose row has no branch or is on main/master", cwd)
 		}
 	}
-	if len(agents) != 5 || agents[2].Cwd != "/wt/guess/x" || agents[4].Cwd != "/wt/clodhopper/x" {
+	if len(agents) != 6 || agents[2].Cwd != "/wt/guess/x" || agents[4].Cwd != "/wt/clodhopper/x" || agents[5].Cwd != "/wt/legacy/x" {
 		t.Errorf("setWorktrees reordered or dropped the caller's rows: %+v", agents)
 	}
 }
