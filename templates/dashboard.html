@@ -197,6 +197,13 @@
       margin: 0; font-size: var(--fs-lg); font-weight: 700; letter-spacing: -0.02em; color: var(--text-1);
     }
     .ck-cardmeta { font-size: var(--fs-sm); color: var(--text-3); white-space: nowrap; }
+    /* The merge-queue card folds; flex on the summary drops the native marker, so draw one. */
+    #ck-mq { margin-top: 20px; } /* the roster above is the last <section>, so .ck-card:last-of-type zeroed its gap */
+    #ck-mq > summary { cursor: pointer; justify-content: flex-start; gap: 8px; }
+    #ck-mq > summary::before { content: "▸"; color: var(--text-3); }
+    #ck-mq > summary::-webkit-details-marker { display: none; } /* older WebKit ignores display:flex here */
+    #ck-mq[open] > summary::before { content: "▾"; }
+    #ck-mq:not([open]) > summary { border-bottom: none; }
     .empty {
       color: var(--text-3); padding: 20px 16px; font-size: var(--fs-sm); line-height: 1.55;
     }
@@ -209,12 +216,12 @@
        chrome; the table sits flush inside it. */
     .ck-tablewrap table { margin: 0; }
     table { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: var(--fs-base); }
-    /* Both data tables fill their card; the last column (session) is left
+    /* The data tables fill their card; the last column (session, or actions) is left
        unconstrained so it soaks up leftover width and shows the full name,
        truncating only when the window is genuinely narrow. A leftover-absorbing
        column is safe under fixed layout: its width comes from the table width,
        not the cell content, so it never reflows on a swap. */
-    table.roster, table.counts { width: 100%; }
+    table.roster, table.counts, table.mq { width: 100%; }
     th, td {
       text-align: left; padding: var(--cell-pad-y) var(--cell-pad-x);
       border-bottom: 1px solid var(--border); vertical-align: top;
@@ -559,6 +566,8 @@
       /* sum of the fixed cols (122ch, plus the CI col's --ci-w, plus 10ch each for the debug id and actions cols when present) + 20ch reserved for the flexible session-name column */
       table.roster { min-width: calc(142ch + var(--ci-w){{ if .Debug }} + 10ch{{ end }}{{ if or .PeekEnabled .ExecEnabled }} + 10ch{{ end }}); }
       table.counts { min-width: 48ch; }
+      /* the fixed cols (92ch, plus 18ch for the session col when actions follow it) + 20ch for the last, flexible one */
+      table.mq { min-width: calc(112ch{{ if .ExecEnabled }} + 18ch{{ end }}); }
     }
 
     /* ≤640px (phones): the table shape can't fit, so each row becomes a card.
@@ -664,14 +673,14 @@
       .actrow .actpanel { flex-direction: column; gap: 16px; }
       .actrow .actcol { width: 100%; }
       .actpanel .actgroup { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
-      .actpanel button.pract { min-height: 44px; font-size: var(--fs-sm); border-radius: var(--radius-sm); }
+      .actpanel button.pract, table.mq button.pract { min-height: 44px; font-size: var(--fs-sm); border-radius: var(--radius-sm); }
       .actpanel .actforce { grid-column: 1 / -1; min-height: 44px; font-size: var(--fs-sm); }
       .actpanel .actforce input { width: 18px; height: 18px; }
       .ck-bulk .ck-btn, .ck-bulk .pract, .ck-bulk .actforce { min-height: 44px; font-size: var(--fs-sm); }
       .ck-bulk .actforce input { width: 18px; height: 18px; }
       .ck-filters select, .ck-filters input[type="text"], .ck-filters .ck-btn { min-height: 44px; }
       .actpanel .actmsg { grid-column: 1 / -1; font-size: var(--fs-sm); } /* the destructive-action result line skipped the mobile size bump the other controls got */
-      .ck-bulk .actmsg { font-size: var(--fs-sm); } /* .ck-bulk is flex, so grid-column would be a no-op here */
+      .ck-bulk .actmsg, table.mq .actmsg { font-size: var(--fs-sm); } /* .ck-bulk is flex, so grid-column would be a no-op here */
       /* The PR form's command preview, radio choices, and lone run button must
          span BOTH tracks or the nowrap command line overflows the row, the run
          button strands half-width, and the touch targets shrink. */
@@ -1061,6 +1070,8 @@
       // __ckActionBusy and unchanged-signature skips for free.
       try { if (window.__ckActMsgs) window.__ckActMsgs.restore(); } catch (e) {}
       try { if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply(); } catch (e) {}
+      // The fresh merge-queue <details> arrives closed; reopen it if this viewer had it open.
+      try { if (window.__ckMQ) window.__ckMQ(); } catch (e) {}
       // Re-arm whatever was armed before the swap, after the panel carry-over
       // (an armed group lives inside an actions panel that has just been
       // re-opened) and before focus restore.
@@ -1222,6 +1233,22 @@
       try { localStorage.setItem('ch-filters-open', open ? 'open' : 'closed'); } catch (e) {}
       apply();
     });
+  })();
+
+  // Merge-queue fold: collapsed unless this viewer opened it. Each poll swaps in a
+  // fresh (closed) <details>, so swapContent re-applies the stored state via __ckMQ.
+  (function () {
+    window.__ckMQ = function () {
+      var d = document.getElementById('ck-mq');
+      if (!d) return;
+      try { d.open = localStorage.getItem('ch-mq-open') === 'open'; } catch (e) {}
+    };
+    window.__ckMQ();
+    // toggle does not bubble, so listen in the capture phase.
+    document.addEventListener('toggle', function (ev) {
+      if (!ev.target || ev.target.id !== 'ck-mq') return;
+      try { localStorage.setItem('ch-mq-open', ev.target.open ? 'open' : 'closed'); } catch (e) {}
+    }, true);
   })();
 
   // Debug toggle: the Activity + Recent-events sections are diagnostics nobody
@@ -2892,6 +2919,35 @@
     <div class="empty">No agents working or waiting on you. (Detecting "waiting for you" needs the <code>Stop</code> and <code>Notification</code> hooks wired in <code>.claude/settings.json</code>; a waiting agent clears when its session ends — on <code>SessionEnd</code>, or via <code>clodhopper end</code> for hard-killed sessions.)</div>
     {{ end }}
   </section>
+
+  {{ if .QueuedAgents }}
+  {{/* Queued set-and-forget rows (splitQueued). The end button reuses the roster's rowform markup, so its delegated arm/confirm JS applies unchanged. */}}
+  <details id="ck-mq" class="ck-card">
+    <summary class="ck-cardhead"><h2>Merge queue ({{ len .QueuedAgents }}){{ with .QueueNextETA }} · next merge {{ . }}{{ end }}</h2></summary>
+    <div class="ck-tablewrap">
+    <table class="mq">
+      <colgroup>
+        <col style="width: 24ch"><col style="width: 18ch"><col style="width: 6ch"><col style="width: 44ch"><col{{ if .ExecEnabled }} style="width: 18ch"{{ end }}>{{ if .ExecEnabled }}<col>{{ end }}
+      </colgroup>
+      <thead>
+        <tr><th>branch</th><th>app</th><th class="ci">queue</th><th>detail</th><th>session</th>{{ if .ExecEnabled }}<th>actions</th>{{ end }}</tr>
+      </thead>
+      <tbody>
+        {{ range .QueuedAgents }}
+        <tr>
+          <td class="branch" data-label="branch">{{ template "branchinnerroster" . }}</td>
+          <td data-label="app">{{ .SourceApp }}</td>
+          <td class="ci" data-label="queue"><span class="cibadge queue" aria-hidden="true">{{ .CIQueuePos }}</span></td>
+          <td data-label="detail">{{ .CIQueueLabel }}</td>
+          <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
+          {{ if $.ExecEnabled }}<td data-label="actions">{{ if .SessionID }}<span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}"><button type="button" class="pract" data-action="end" aria-label="end{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button><span class="actmsg"></span></span>{{ else }}—{{ end }}</td>{{ end }}
+        </tr>
+        {{ end }}
+      </tbody>
+    </table>
+    </div>
+  </details>
+  {{ end }}
 
   {{ if and .Debug .Activity }}
   <section class="ck-card">

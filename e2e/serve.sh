@@ -38,6 +38,27 @@ cat >"$tmp/bin/tmux" <<'STUB'
 printf '%s\tseeded\tclaude\t/nonexistent\n' %9001 %9002
 STUB
 chmod +x "$tmp/bin/tmux"
+# A stub gh puts the seeded merge-queue rows (e2e_seed_test.go) in the queue or
+# ejects them, keyed on the row's cwd; every other cwd has no PR.
+export CLODHOPPER_E2E_REPOS="$tmp/repos"
+mkdir -p "$CLODHOPPER_E2E_REPOS/queued" "$CLODHOPPER_E2E_REPOS/ejected"
+cat >"$tmp/bin/gh" <<'STUB'
+#!/bin/sh
+dir=$(basename "$(pwd)")
+case "$dir" in queued | ejected) ;; *) exit 1 ;; esac
+case "${1-}" in
+pr) echo '{"id":"PR_e2e","state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}' ;;
+api)
+	if [ "$dir" = queued ]; then
+		echo '{"data":{"node":{"mergeQueueEntry":{"state":"QUEUED","position":1,"estimatedTimeToMerge":3600,"enqueuedAt":null},"timelineItems":{"nodes":[]}}}}'
+	else
+		echo '{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[{"__typename":"RemovedFromMergeQueueEvent","reason":"merge conflict"}]}}}}'
+	fi
+	;;
+*) exit 1 ;;
+esac
+STUB
+chmod +x "$tmp/bin/gh"
 export PATH="$tmp/bin:$PATH"
 
 cd "$repo"
