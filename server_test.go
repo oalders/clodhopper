@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -879,6 +880,97 @@ func TestHandleStateForceRefreshesCI(t *testing.T) {
 		if got := calls.Load(); got != tc.want {
 			t.Errorf("%s: %d CI lookups, want %d", tc.target, got, tc.want)
 		}
+	}
+}
+
+// setWorktrees names the worktree dir only when it differs from a known branch,
+// and never spends a lookup on a row that cannot show one.
+func TestSetWorktrees(t *testing.T) {
+	var mu sync.Mutex
+	looked := map[string]bool{}
+	roots := &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: func(cwd string) string {
+		mu.Lock()
+		looked[cwd] = true
+		mu.Unlock()
+		return filepath.Dir(cwd)
+	}}
+	agents := []Agent{
+		{Branch: "fix-12", Cwd: "/wt/fix-12/x"},
+		{Branch: "fix-1288", Cwd: "/wt/gh-1308/x"},
+		{BranchGuess: "x", Cwd: "/wt/guess/x"},
+		{Branch: "feature/foo", Cwd: "/wt/foo/x"},
+		{Branch: "main", Cwd: "/wt/clodhopper/x"},
+		{Branch: "master", Cwd: "/wt/legacy/x"},
+	}
+	setWorktrees(agents, roots, time.Now())
+	for i, want := range []string{"", "gh-1308", "", "", "", ""} {
+		if agents[i].Worktree != want {
+			t.Errorf("agents[%d].Worktree = %q, want %q", i, agents[i].Worktree, want)
+		}
+	}
+	for _, cwd := range []string{"/wt/guess/x", "/wt/clodhopper/x", "/wt/legacy/x"} {
+		if looked[cwd] {
+			t.Errorf("looked up %s, whose row has no branch or is on main/master", cwd)
+		}
+	}
+	if len(agents) != 6 || agents[2].Cwd != "/wt/guess/x" || agents[4].Cwd != "/wt/clodhopper/x" || agents[5].Cwd != "/wt/legacy/x" {
+		t.Errorf("setWorktrees reordered or dropped the caller's rows: %+v", agents)
+	}
+}
+
+// An activity row takes the Worktree of the roster rows on its (app, branch), or
+// none when they disagree (two clones of app y both on dev).
+func TestBuildDashboardDataActivityWorktree(t *testing.T) {
+	db := openTestDB(t)
+	ts := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "s", Branch: "fix-1288", Cwd: "/wt/gh-1308/internal", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "y", SessionID: "t", Branch: "dev", Cwd: "/a/one/internal", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "y", SessionID: "u", Branch: "dev", Cwd: "/b/two/internal", EventType: "Stop", PayloadJSON: "{}"})
+	peek := &peekConfig{roots: &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: filepath.Dir}}
+	ci := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{}}
+	data, err := buildDashboardData(httptest.NewRequest(http.MethodGet, "/", nil), db, ci, peek, &actionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, c := range data.Activity {
+		got[c.SourceApp] = c.Worktree
+	}
+	if len(data.Activity) != 2 {
+		t.Fatalf("Activity = %+v, want one row each for x and y", data.Activity)
+	}
+	if got["x"] != "gh-1308" {
+		t.Errorf("agreeing-dir case: x Worktree = %q, want gh-1308", got["x"])
+	}
+	if got["y"] != "" {
+		t.Errorf("disagreeing-clones case: y Worktree = %q, want none", got["y"])
+	}
+}
+
+// The branch cells show "branch / dir" while the actions' data-branch stays bare.
+func TestContentTemplate_WorktreeSuffix(t *testing.T) {
+	d := dashboardData{
+		Debug:       true, // the activity table renders only under debug
+		ExecEnabled: true,
+		Agents:      []Agent{{SessionID: "s1", Branch: "fix-1288", Worktree: "gh-1308", Cwd: "/wt/gh-1308", HasPane: true}},
+		Activity:    []SourceCount{{SourceApp: "x", Branch: "fix-1288", Worktree: "gh-1308", Count: 1}},
+	}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	if !strings.Contains(html, `>fix-1288<span class="worktree"> / gh-1308</span><`) {
+		t.Errorf("roster branch cell must show fix-1288 / gh-1308 with a muted suffix:\n%s", html)
+	}
+	if !strings.Contains(html, `<td class="branch" data-label="branch"><span>fix-1288<span class="worktree"><span aria-hidden="true"> / </span><span class="ck-sr">, worktree directory </span>gh-1308</span></span></td>`) {
+		t.Errorf("activity branch cell must show fix-1288 / gh-1308 (suffix muted) in ONE wrapping span (a phone-width flex td) and announce the dir:\n%s", html)
+	}
+	if !strings.Contains(html, `aria-label="fix-1288, worktree directory gh-1308`) {
+		t.Errorf("aria-label must read the dir as a separate phrase:\n%s", html)
+	}
+	if !strings.Contains(html, `data-branch="fix-1288"`) {
+		t.Errorf("data-branch must stay the bare branch:\n%s", html)
 	}
 }
 

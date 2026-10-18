@@ -125,16 +125,18 @@ func TestDropDeadPanesRelabels(t *testing.T) {
 		{SessionID: "stale", TmuxSession: "old label", TmuxPane: "%2", LaunchCwd: "/src/repo"},
 		{SessionID: "reused", TmuxPane: "%3", LaunchCwd: "/src/b"},
 		{SessionID: "worktree", TmuxSession: "fix-12", TmuxPane: "%4", Branch: "fix-12"},
+		{SessionID: "dir", TmuxSession: "gh-1308", TmuxPane: "%5", Branch: "fix-1288", Worktree: "gh-1308"},
 	}
 	panes := map[string]livePane{
 		"%1": {session: "work", command: "nono", path: "/src/a"},
 		"%2": {session: "new label", command: "claude", path: "/src/repo"},
 		"%3": {session: "unrelated", command: "vim", path: "/src/c"},
 		"%4": {session: "fix-12", title: "Fix the thing", command: "nono"},
+		"%5": {session: "gh-1308", title: "Fix it", command: "nono"},
 	}
 	got := dropDeadPanes(agents, panes)
-	if len(got) != 4 || got[0].TmuxSession != "work" || got[1].TmuxSession != "new label" || got[2].TmuxSession != "" || got[3].TmuxSession != "Fix the thing" {
-		t.Errorf("got %+v, want labels [work, new label, \"\", Fix the thing]", got)
+	if len(got) != 5 || got[0].TmuxSession != "work" || got[1].TmuxSession != "new label" || got[2].TmuxSession != "" || got[3].TmuxSession != "Fix the thing" || got[4].TmuxSession != "Fix it" {
+		t.Errorf("got %+v, want labels [work, new label, \"\", Fix the thing, Fix it]", got)
 	}
 }
 
@@ -158,6 +160,10 @@ func TestPaneLabel(t *testing.T) {
 		if got := paneLabel(c.p, c.branch); got != c.want {
 			t.Errorf("%s: paneLabel(%+v, %q) = %q, want %q", c.name, c.p, c.branch, got, c.want)
 		}
+	}
+	// A handle repeating the worktree dir, not the branch, gives way too (#184).
+	if got := paneLabel(livePane{session: "gh-1308", title: "Fix it"}, "fix-1288", "gh-1308"); got != "Fix it" {
+		t.Errorf("handle is the dir: paneLabel = %q, want %q", got, "Fix it")
 	}
 }
 
@@ -435,5 +441,27 @@ func TestLookupRepoRealRepo(t *testing.T) {
 	runGit(t, bare, "init", "--quiet")
 	if got := lookupRepo(bare); got != "" {
 		t.Errorf("no origin: lookupRepo = %q, want empty", got)
+	}
+}
+
+// Against real git, an agent cd'd into a subdirectory of a worktree whose dir
+// differs from its branch gets the worktree ROOT's basename, not the subdir's.
+func TestSetWorktreesRealWorktree(t *testing.T) {
+	base := t.TempDir()
+	repo := filepath.Join(base, "repo")
+	if err := os.MkdirAll(repo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitInitOnBranch(t, repo, "main")
+	wt := filepath.Join(base, "gh-1308")
+	gitAddWorktree(t, repo, wt, "fix-1288")
+	sub := filepath.Join(wt, "internal")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agents := []Agent{{Branch: "fix-1288", Cwd: sub}}
+	setWorktrees(agents, newRootCache(), time.Now())
+	if agents[0].Worktree != "gh-1308" {
+		t.Errorf("Worktree = %q, want gh-1308", agents[0].Worktree)
 	}
 }

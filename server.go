@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -319,7 +321,7 @@ func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool
 	allowed := allowedHosts()
 	peek := &peekConfig{
 		enabled: panePeek, lines: clampPaneLines(paneLines), cache: newPaneCache(),
-		repos: newRepoCache(), bindHost: host, allowedHosts: allowed,
+		repos: newRepoCache(), roots: newRootCache(), bindHost: host, allowedHosts: allowed,
 	}
 	act := &actionConfig{
 		enabled:           enableMerge,
@@ -491,6 +493,10 @@ func newCICache() *cwdCache[ciResult] {
 
 func newRepoCache() *cwdCache[string] {
 	return &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: lookupRepo}
+}
+
+func newRootCache() *cwdCache[string] {
+	return &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: lookupWorktreeRoot}
 }
 
 // expire marks every current entry stale so the next get re-runs its lookup,
@@ -799,6 +805,8 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("roster: %w", err)
 	}
+	// Before dropDeadPanes, whose paneLabel compares the handle against Worktree too.
+	setWorktrees(agents, peek.roots, now)
 	// Before enrichCI, so no CI is fetched for a row that will not render.
 	agents = dropDeadPanes(agents, peek.cache.panes(now))
 	enrichCI(agents, ci, now)
@@ -823,6 +831,21 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	activity, err := activeCounts(db, agentWindow, now, labels)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("activity: %w", err)
+	}
+	// (app, branch) finds the row's dir unless separate clones share both, so a
+	// key whose roster rows disagree gets no suffix rather than a wrong one.
+	worktrees, mixed := map[[2]string]string{}, map[[2]string]bool{}
+	for _, a := range agents {
+		k := [2]string{a.SourceApp, a.Branch}
+		if w, ok := worktrees[k]; ok && w != a.Worktree {
+			mixed[k] = true
+		}
+		worktrees[k] = a.Worktree
+	}
+	for i, c := range activity {
+		if k := [2]string{c.SourceApp, c.Branch}; !mixed[k] {
+			activity[i].Worktree = worktrees[k]
+		}
 	}
 
 	events, err := queryEvents(db, EventFilter{SourceApp: source, Branch: branch, EventType: etype, Limit: 300})
@@ -894,7 +917,7 @@ func viewSignature(d dashboardData) string {
 		// Subagents and SubagentSince feed the "waiting on N agents" badge: the
 		// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
 		// Launcher feeds the 🔒/🤖 marker, which a resume can flip in place.
-		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%q:%d:%d", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.Launcher, a.Subagents, a.SubagentSince)
+		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%q:%d:%d:%q", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.Launcher, a.Subagents, a.SubagentSince, a.Worktree)
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)
@@ -908,7 +931,7 @@ func viewSignature(d dashboardData) string {
 		return activity[i].TmuxSession < activity[j].TmuxSession
 	})
 	for _, c := range activity {
-		fmt.Fprintf(h, "|c:%q:%q:%q:%d", c.TmuxSession, c.SourceApp, c.Branch, c.Count)
+		fmt.Fprintf(h, "|c:%q:%q:%q:%d:%q", c.TmuxSession, c.SourceApp, c.Branch, c.Count, c.Worktree)
 	}
 
 	return strconv.FormatUint(h.Sum64(), 16)
@@ -1015,10 +1038,29 @@ func demotePendingCI(agents []Agent) {
 	}
 }
 
-// enrichCI fills each agent's CI fields, fetching distinct cwds concurrently so a
-// roster of N worktrees costs one slow gh round-trip, not N sequential ones.
-func enrichCI(agents []Agent, ci *cwdCache[ciResult], now time.Time) {
-	results := make(map[string]ciResult)
+// setWorktrees sets each agent's Worktree to its cwd's worktree-root basename when
+// that differs from the branch, so the branch column can show both (#184). Rows
+// with no known branch are skipped: their BranchGuess already names the dir.
+// main/master are skipped too: the primary checkout, whose dir is just the repo's name.
+func setWorktrees(agents []Agent, roots *cwdCache[string], now time.Time) {
+	noSuffix := func(a Agent) bool { return a.Branch == "" || a.Branch == "main" || a.Branch == "master" }
+	found := lookupCwds(slices.DeleteFunc(slices.Clone(agents), noSuffix), roots, now)
+	for i, a := range agents {
+		if noSuffix(a) {
+			continue
+		}
+		// Guarded: filepath.Base("") is ".", not "". Comparing to the branch's last
+		// segment keeps feature/foo in dir foo from reading feature/foo/foo.
+		if root := found[a.Cwd]; root != "" && filepath.Base(root) != path.Base(a.Branch) {
+			agents[i].Worktree = filepath.Base(root)
+		}
+	}
+}
+
+// lookupCwds resolves each distinct non-empty cwd through c concurrently, so a
+// roster of N worktrees costs one slow round-trip, not N sequential ones.
+func lookupCwds[T any](agents []Agent, c *cwdCache[T], now time.Time) map[string]T {
+	results := make(map[string]T)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 6)
@@ -1033,13 +1075,19 @@ func enrichCI(agents []Agent, ci *cwdCache[ciResult], now time.Time) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			s := ci.get(cwd, now)
+			s := c.get(cwd, now)
 			mu.Lock()
 			results[cwd] = s
 			mu.Unlock()
 		}(a.Cwd)
 	}
 	wg.Wait()
+	return results
+}
+
+// enrichCI fills each agent's CI fields.
+func enrichCI(agents []Agent, ci *cwdCache[ciResult], now time.Time) {
+	results := lookupCwds(agents, ci, now)
 	for i := range agents {
 		r := results[agents[i].Cwd]
 		agents[i].CI, agents[i].CIFails, agents[i].CIPasses, agents[i].CIConflict = r.State, r.Fails, r.Passes, r.Conflict
