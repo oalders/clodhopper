@@ -167,9 +167,10 @@ board used to expose.
   as if you'd typed the command yourself, and the row drops once the dashboard
   sees its pane gone. As with any session ended outside the dashboard, the
   dead-pane check keeps rows while no row matches a live pane, so a lone row
-  may need **end**. They need the row to be in a live tmux pane; if merge-pr
-  fails, its window stays open with the error. `--squash --admin` bypasses
-  branch protection using your own `gh` authentication.
+  may need **end**. **squash** and **close** need the row to be in a live tmux
+  pane. If merge-pr fails, its window stays open showing the error.
+  `--squash --admin` bypasses branch protection using your own `gh`
+  authentication.
 
   Whatever address the server is bound to, every action that runs a command
   (the PR actions, the session actions, and **rebase**) is accepted only from a

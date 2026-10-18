@@ -52,35 +52,67 @@ async function stubAction(page: Page, body: object): Promise<Request[]> {
   return seen;
 }
 
-// runSquash opens the row's actions panel and runs squash (arm, then confirm).
-// The busy flag holds repaints off until the caller releases it, so none lands
-// between the two clicks or before the result is asserted.
-async function runSquash(page: Page) {
+// runMerge opens the row's actions panel, lets choose() pick the mode and
+// modifiers, and runs it (arm, then confirm). The busy flag holds repaints off
+// until the caller releases it, so none lands between the clicks or before the
+// result is asserted.
+async function runMerge(page: Page, choose: (page: Page) => Promise<void> = async () => {}) {
   await page.evaluate(() => { window.__ckActionBusy = 1; });
   await page.locator(actBtn).click();
+  await choose(page);
   const run = page.locator(`${prform} .prrun`);
   await run.click();
   await expect(run).toHaveText('✓ confirm');
   await run.click();
 }
 
-async function expectUnlocked(page: Page) {
+// expectUnlocked checks the form is usable again. --admin and --force apply
+// to squash only, so syncForm greys them in any other mode.
+async function expectUnlocked(page: Page, squash = true) {
   await expect(page.locator(`${prform} .prrun`)).toBeEnabled();
   await expect(page.locator(`${prform} .prrun`)).toHaveText('run');
   const radios = page.locator(`${prform} .prmode`);
   await expect(radios).toHaveCount(3);
   for (const r of await radios.all()) await expect(r).toBeEnabled();
+  for (const cls of ['.practadmin', '.practforce']) {
+    const box = page.locator(`${prform} ${cls}`);
+    if (await box.count() === 0) continue;
+    if (squash) await expect(box).toBeEnabled();
+    else await expect(box).toBeDisabled();
+  }
 }
 
-test('a started merge reports the server text, unlocks, and keeps it across a repaint', async ({ page }) => {
+const cases: { name: string; want: string; squash: boolean; choose?: (page: Page) => Promise<void> }[] = [
+  { name: 'squash', want: 'squash', squash: true },
+  {
+    name: 'close', want: 'close', squash: false,
+    choose: (page) => page.locator(`${prform} .prmode[data-mode="close"]`).click(),
+  },
+  {
+    name: 'squash --admin', want: 'squash-admin', squash: true,
+    choose: (page) => page.locator(`${prform} .practadmin`).check(),
+  },
+];
+
+for (const c of cases) {
+  test(`a started ${c.name} posts ${c.want}, reports the server text, and unlocks`, async ({ page }) => {
+    const posts = await stubAction(page, { ok: true, exitCode: 0, timedOut: false, output: started });
+    await runMerge(page, c.choose);
+
+    await expect(page.locator(`${prform} .actmsg`)).toHaveText(started);
+    await expectUnlocked(page, c.squash);
+    expect(posts).toHaveLength(1);
+    expect(posts[0].postData()).toBe(`session_id=${sess}&action=${c.want}`);
+  });
+}
+
+test('a started merge keeps its server text across a repaint', async ({ page }) => {
   const posts = await stubAction(page, { ok: true, exitCode: 0, timedOut: false, output: started });
-  await runSquash(page);
+  await runMerge(page);
 
   const msg = page.locator(`${prform} .actmsg`);
   await expect(msg).toHaveText(started);
-  await expectUnlocked(page);
   expect(posts).toHaveLength(1);
-  expect(posts[0].postData()).toBe(`session_id=${sess}&action=squash`);
 
   // Release the hold-off and wait for a repaint that really replaced the line.
   const old = await msg.elementHandle();
@@ -95,9 +127,8 @@ test('a started merge reports the server text, unlocks, and keeps it across a re
 
 test('a failed merge reports the failure and unlocks', async ({ page }) => {
   await stubAction(page, { ok: false, exitCode: -1, timedOut: false, output: 'boom' });
-  await runSquash(page);
+  await runMerge(page);
 
   await expect(page.locator(`${prform} .actmsg`)).toHaveText('failed: boom');
   await expectUnlocked(page);
-  await page.evaluate(() => { window.__ckActionBusy = 0; });
 });
