@@ -3713,7 +3713,7 @@ func TestSuppressWatchedCI_RowIsolation(t *testing.T) {
 	ins(2, "other", "UserPromptSubmit", "/code-review")
 	ins(1, "other", "Stop", "")
 
-	ci := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{cwd: {val: ciResult{State: "failing", Fails: 2, Conflict: true}, at: time.Now()}}}
+	ci := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{cwd: {val: ciResult{State: "failing", Fails: 2, Conflict: true, Draft: true}, at: time.Now()}}}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	data, err := buildDashboardData(r, db, ci, &peekConfig{}, &actionConfig{})
 	if err != nil {
@@ -3729,8 +3729,8 @@ func TestSuppressWatchedCI_RowIsolation(t *testing.T) {
 	if got := byID["other"].CI; got != "failing" {
 		t.Errorf("other CI = %q, want failing (same cwd, but it ran no CI-watch command)", got)
 	}
-	if o := byID["other"]; o.CIFails != 2 || !o.CIConflict {
-		t.Errorf("other CIFails/CIConflict = %d/%t, want 2/true (copied by enrichCI)", o.CIFails, o.CIConflict)
+	if o := byID["other"]; o.CIFails != 2 || !o.CIConflict || !o.CIDraft {
+		t.Errorf("other CIFails/CIConflict/CIDraft = %d/%t/%t, want 2/true/true (copied by enrichCI)", o.CIFails, o.CIConflict, o.CIDraft)
 	}
 }
 
@@ -3752,7 +3752,7 @@ func TestDashboardRendersSuppressedCIAsPending(t *testing.T) {
 
 // The soft-failing badge, the counts inside the green, red and orange badges
 // (a green with every check skipped keeps the plain dot), and the conflict
-// marker, which co-renders even with no CI state at all.
+// marker, which co-renders even with no CI state at all, and the draft chip.
 func TestDashboardRendersCIDetail(t *testing.T) {
 	html := renderDashboard(t, dashboardData{Agents: []Agent{
 		{SessionID: "red", Branch: "a", CI: "failing", CIFails: 3},
@@ -3760,6 +3760,7 @@ func TestDashboardRendersCIDetail(t *testing.T) {
 		{SessionID: "none", Branch: "c", CIConflict: true},
 		{SessionID: "green", Branch: "d", CI: "green", CIPasses: 7},
 		{SessionID: "allskipped", Branch: "e", CI: "green"},
+		{SessionID: "draft", Branch: "f", CI: "pending", CIDraft: true},
 	}})
 	for _, want := range []string{
 		`<span class="ci-main"><span class="cibadge fail" role="img" aria-label="CI failing, 3 failed" title="3 failed">3</span></span><span class="ci-marks"></span>`,
@@ -3767,14 +3768,18 @@ func TestDashboardRendersCIDetail(t *testing.T) {
 		`<span role="img" aria-label="no CI">—</span></span><span class="ci-marks"><span role="img" aria-label="merge conflict with base" title="merge conflict with base">🔀</span></span>`,
 		`<span class="cibadge ok" role="img" aria-label="CI passing, 7 passed" title="7 passed">7</span>`,
 		`<td data-label="CI" class="ci green"><span class="ci-main"><span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"></span></td>`,
+		`<span role="img" aria-label="CI pending">🟡</span></span><span class="ci-marks"><span class="cibadge draft" role="img" aria-label="draft pull request" title="draft pull request">draft</span></span>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %s in:\n%s", want, html)
 		}
 	}
+	if n := strings.Count(html, `class="cibadge draft"`); n != 1 {
+		t.Errorf("draft chip rendered %d times, want only on the draft row", n)
+	}
 }
 
-// A change in fail count, pass count, conflict or queue position alone must repaint.
+// A change in fail count, pass count, conflict, draft or queue position alone must repaint.
 func TestViewSignature_TracksCIDetail(t *testing.T) {
 	base := dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1}}}
 	more := dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 2}}}
@@ -3788,6 +3793,9 @@ func TestViewSignature_TracksCIDetail(t *testing.T) {
 	}
 	if viewSignature(base) == viewSignature(conflict) {
 		t.Error("signature unchanged when a conflict appeared")
+	}
+	if viewSignature(base) == viewSignature(dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1, CIDraft: true}}}) {
+		t.Error("signature unchanged when the PR became a draft")
 	}
 	if viewSignature(base) == viewSignature(dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1, CIQueue: "queued"}}}) {
 		t.Error("signature unchanged when the PR joined the merge queue")
@@ -3982,8 +3990,8 @@ func TestQueueLabel(t *testing.T) {
 	}
 }
 
-// The CI column is sized by the most-marked row: a conflict and a queue marker
-// each take a slot, and the table carries the count as its ci-mN class.
+// The CI column is sized by the most-marked row: a conflict and a queue or draft
+// marker each take a slot, and the table carries the count as its ci-mN class.
 func TestCIMarkSlots(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -3994,8 +4002,10 @@ func TestCIMarkSlots(t *testing.T) {
 		{"no markers", []Agent{{CI: "failing", CIFails: 12}, {CI: "ejected"}}, 0},
 		{"conflict", []Agent{{}, {CIConflict: true}}, 1},
 		{"queued", []Agent{{CI: "green", CIQueue: "queued"}}, 1},
+		{"draft", []Agent{{CI: "green", CIDraft: true}}, 1},
 		{"split across rows", []Agent{{CIConflict: true}, {CIQueue: "queue-failing"}}, 1},
 		{"both on one row", []Agent{{}, {CIConflict: true, CIQueue: "queued"}}, 2},
+		{"conflict and draft on one row", []Agent{{CIConflict: true, CIDraft: true}}, 2},
 	} {
 		if got := ciMarkSlots(tc.agents); got != tc.want {
 			t.Errorf("%s: ciMarkSlots = %d, want %d", tc.name, got, tc.want)
