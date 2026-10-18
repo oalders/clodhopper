@@ -198,9 +198,10 @@
     }
     .ck-cardmeta { font-size: var(--fs-sm); color: var(--text-3); white-space: nowrap; }
     /* The merge-queue card folds; flex on the summary drops the native marker, so draw one. */
-    #ck-mq { margin-top: 20px; }
+    #ck-mq { margin-bottom: 20px; } /* .ck-card:last-of-type zeroes it: this is the only <details> */
     #ck-mq > summary { cursor: pointer; justify-content: flex-start; gap: 8px; }
     #ck-mq > summary::before { content: "▸"; color: var(--text-3); }
+    #ck-mq > summary::-webkit-details-marker { display: none; } /* older WebKit ignores display:flex here */
     #ck-mq[open] > summary::before { content: "▾"; }
     #ck-mq:not([open]) > summary { border-bottom: none; }
     .empty {
@@ -679,7 +680,7 @@
       .ck-bulk .actforce input { width: 18px; height: 18px; }
       .ck-filters select, .ck-filters input[type="text"], .ck-filters .ck-btn { min-height: 44px; }
       .actpanel .actmsg { grid-column: 1 / -1; font-size: var(--fs-sm); } /* the destructive-action result line skipped the mobile size bump the other controls got */
-      .ck-bulk .actmsg { font-size: var(--fs-sm); } /* .ck-bulk is flex, so grid-column would be a no-op here */
+      .ck-bulk .actmsg, table.mq .actmsg { font-size: var(--fs-sm); } /* .ck-bulk is flex, so grid-column would be a no-op here */
       /* The PR form's command preview, radio choices, and lone run button must
          span BOTH tracks or the nowrap command line overflows the row, the run
          button strands half-width, and the touch targets shrink. */
