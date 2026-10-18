@@ -400,7 +400,7 @@ type Agent struct {
 	Branch           string
 	Rebasing         bool   // true if the session's latest event was captured mid-rebase, so Branch was recovered from rebase state
 	BranchGuess      string // basename of Cwd, shown (italicised) ONLY when Branch is unknown, as a hint for locating the worktree/tmux session; "" when Branch is known or Cwd is empty
-	Worktree         string // basename of Cwd's worktree root, set by the server layer only when Branch is known and differs from it; display only
+	Worktree         string // basename of Cwd's worktree root, set by the server layer only when Branch is known, not main, and differs from it; display only
 	Cwd              string
 	LaunchCwd        string // cwd of the session's earliest in-window event: where it was launched, which `claude --resume` looks a session up by, whereas Cwd follows a later `cd`
 	TmuxSession      string // tmux session name, the disambiguating label

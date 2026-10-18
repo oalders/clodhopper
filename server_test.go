@@ -890,9 +890,10 @@ func TestSetWorktrees(t *testing.T) {
 		{Branch: "fix-1288", Cwd: "/wt/gh-1308/x"},
 		{BranchGuess: "x", Cwd: "/wt/gh-1308/x"},
 		{Branch: "feature/foo", Cwd: "/wt/foo/x"},
+		{Branch: "main", Cwd: "/wt/clodhopper/x"},
 	}
 	setWorktrees(agents, roots, time.Now())
-	for i, want := range []string{"", "gh-1308", "", ""} {
+	for i, want := range []string{"", "gh-1308", "", "", ""} {
 		if agents[i].Worktree != want {
 			t.Errorf("agents[%d].Worktree = %q, want %q", i, agents[i].Worktree, want)
 		}
@@ -900,13 +901,13 @@ func TestSetWorktrees(t *testing.T) {
 }
 
 // An activity row takes the Worktree of the roster rows on its (app, branch), or
-// none when they disagree (two clones of app y both on main).
+// none when they disagree (two clones of app y both on dev).
 func TestBuildDashboardDataActivityWorktree(t *testing.T) {
 	db := openTestDB(t)
 	ts := time.Now().UTC().Format(time.RFC3339)
 	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "s", Branch: "fix-1288", Cwd: "/wt/gh-1308/internal", EventType: "Stop", PayloadJSON: "{}"})
-	insertEvent(db, Event{TS: ts, SourceApp: "y", SessionID: "t", Branch: "main", Cwd: "/a/one/internal", EventType: "Stop", PayloadJSON: "{}"})
-	insertEvent(db, Event{TS: ts, SourceApp: "y", SessionID: "u", Branch: "main", Cwd: "/b/two/internal", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "y", SessionID: "t", Branch: "dev", Cwd: "/a/one/internal", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "y", SessionID: "u", Branch: "dev", Cwd: "/b/two/internal", EventType: "Stop", PayloadJSON: "{}"})
 	peek := &peekConfig{roots: &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: filepath.Dir}}
 	ci := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{}}
 	data, err := buildDashboardData(httptest.NewRequest(http.MethodGet, "/", nil), db, ci, peek, &actionConfig{})
