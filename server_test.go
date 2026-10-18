@@ -3791,13 +3791,13 @@ func TestDashboardRendersMergeQueue(t *testing.T) {
 	}
 }
 
-// enrichCI copies the queue fields and label only for a queued PR, so a stale position never leaks onto another row.
+// enrichCI fills the queue fields and label only for a queued PR, so no other row gets a "position 0" pill label.
 func TestEnrichCIQueueFields(t *testing.T) {
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.Local)
 	queued := ciResult{State: "green", Queue: "queued", QueuePos: 2, QueueETA: now.Add(30 * time.Minute), QueueSince: now.Add(-5 * time.Minute)}
 	ci := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{
 		"/q": {val: queued, at: now},
-		"/g": {val: ciResult{State: "green", QueuePos: 7, QueueSince: now}, at: now},
+		"/g": {val: ciResult{State: "green"}, at: now},
 	}}
 	agents := []Agent{{SessionID: "q", Cwd: "/q"}, {SessionID: "g", Cwd: "/g"}}
 	enrichCI(agents, ci, now)
