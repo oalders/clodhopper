@@ -1109,8 +1109,10 @@ func isCIWatchCommand(cmd string) bool {
 }
 
 // demotePendingCI relaxes a "needs you"/"waiting for you" row to the non-urgent
-// statusBackground when its CI is still running, or only non-required checks
-// failed (the PR is still mergeable). A pending check means the agent
+// statusBackground when its CI is still running, only non-required checks
+// failed (the PR is still mergeable), or the PR sits in the merge queue (the
+// queue, not the user, has the next move; a "queue-failing" entry is left alone,
+// as it will likely be ejected and need you). A pending check means the agent
 // most likely pushed and is waiting on that run, not blocked on the user — so the
 // alert styling would be misleading (issue #31). This runs in the server layer,
 // not in deriveStatus, because CI is fetched here via gh and is deliberately kept
@@ -1124,7 +1126,7 @@ func isCIWatchCommand(cmd string) bool {
 // on you regardless of CI.
 func demotePendingCI(agents []Agent) {
 	for i := range agents {
-		if agents[i].CI != "pending" && agents[i].CI != "soft-failing" {
+		if agents[i].CI != "pending" && agents[i].CI != "soft-failing" && agents[i].CIQueue != "queued" {
 			continue
 		}
 		if agents[i].Status == statusNeedsYou || agents[i].Status == statusWaiting {

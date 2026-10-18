@@ -1481,24 +1481,29 @@ func TestDemotePendingCI(t *testing.T) {
 	agents := []Agent{
 		{SessionID: "needs", Status: statusNeedsYou, StatusRank: 1, CI: "pending"},
 		{SessionID: "waiting", Status: statusWaiting, StatusRank: 0, CI: "pending"},
-		{SessionID: "soft", Status: statusWaiting, StatusRank: 0, CI: "soft-failing"},  // still mergeable
-		{SessionID: "approval", Status: statusApproval, StatusRank: 1, CI: "pending"},  // a real prompt: untouched
-		{SessionID: "needs-green", Status: statusNeedsYou, StatusRank: 1, CI: "green"}, // CI not pending: untouched
-		{SessionID: "working", Status: statusWorking, StatusRank: 5, CI: "pending"},    // not an alert: untouched
-		{SessionID: "needs-nocheck", Status: statusNeedsYou, StatusRank: 1, CI: ""},    // no CI info: untouched
+		{SessionID: "soft", Status: statusWaiting, StatusRank: 0, CI: "soft-failing"},                             // still mergeable
+		{SessionID: "approval", Status: statusApproval, StatusRank: 1, CI: "pending"},                             // a real prompt: untouched
+		{SessionID: "needs-green", Status: statusNeedsYou, StatusRank: 1, CI: "green"},                            // CI not pending: untouched
+		{SessionID: "working", Status: statusWorking, StatusRank: 5, CI: "pending"},                               // not an alert: untouched
+		{SessionID: "needs-nocheck", Status: statusNeedsYou, StatusRank: 1, CI: ""},                               // no CI info: untouched
+		{SessionID: "queued", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queued"},               // the queue has the next move
+		{SessionID: "queue-failing", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queue-failing"}, // likely needs you: untouched
 	}
 	demotePendingCI(agents)
 	got := map[string]Agent{}
 	for _, a := range agents {
 		got[a.SessionID] = a
 	}
-	for _, id := range []string{"needs", "waiting", "soft"} {
+	for _, id := range []string{"needs", "waiting", "soft", "queued"} {
 		if a := got[id]; a.Status != statusBackground || a.StatusRank != rankBackground {
 			t.Errorf("%s with pending CI should demote to %q rank %d, got %q rank %d", id, statusBackground, rankBackground, a.Status, a.StatusRank)
 		}
 	}
 	if a := got["approval"]; a.Status != statusApproval {
 		t.Errorf("a permission prompt must survive pending CI, got %q", a.Status)
+	}
+	if a := got["queue-failing"]; a.Status != statusWaiting {
+		t.Errorf("a failing queue entry must stay an alert, got %q", a.Status)
 	}
 	if a := got["needs-green"]; a.Status != statusNeedsYou {
 		t.Errorf("green CI must not demote, got %q", a.Status)
