@@ -3781,9 +3781,9 @@ func TestDashboardRendersMergeQueue(t *testing.T) {
 	}})
 	for _, want := range []string{
 		`<td data-label="CI" class="ci ejected"><span class="ci-main"><span class="cibadge fail" role="img" aria-label="removed from merge queue: merge conflict" title="removed from merge queue: merge conflict">⏏</span></span><span class="ci-marks"></span></td>`,
-		`<span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"><span class="cibadge queue" role="img" aria-label="merge queue position 2" title="merge queue position 2">#2</span></span></td>`,
+		`<span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"><span class="cibadge queue" role="img" aria-label="merge queue position 2" title="merge queue position 2">2</span></span></td>`,
 		`<span class="cibadge fail" role="img" aria-label="removed from merge queue" title="removed from merge queue">⏏</span></span><span class="ci-marks"></span></td>`,
-		`<span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"><span class="cibadge queue failing" role="img" aria-label="merge queue position 12, failing" title="merge queue position 12, failing">#12</span></span></td>`,
+		`<span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"><span class="cibadge queue failing" role="img" aria-label="merge queue position 12, failing" title="merge queue position 12, failing">12</span></span></td>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %s in:\n%s", want, html)

@@ -137,7 +137,7 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   BLOCKED is deliberately not mapped. For an OPEN PR, a second call (`gh api
   graphql`, `mergeQueueQuery`, sharing the same 4s deadline) reads the merge
   queue, because queue checks run on a temporary commit the rollup never sees;
-  `applyMergeQueue`'s doc comment says when that yields a queue-position pill (`#N`)
+  `applyMergeQueue`'s doc comment says when that yields a queue-position pill
   or the "ejected" state (⏏). Like `gitBranch`, it is strictly best-effort: missing `gh`, no PR, or a
   timeout yields "".
   The same generic `cwdCache` type also backs the pane peek's GitHub owner/repo for the
