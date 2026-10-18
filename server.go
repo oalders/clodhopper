@@ -36,7 +36,8 @@ var dashboardTmpl = template.Must(
 	}).Parse(dashboardHTML),
 )
 
-// ciMarkSlots is the most 🔀/queue-pill markers any one roster row carries (0–2).
+// ciMarkSlots is the most 🔀/draft-chip/queue-pill markers any one roster row
+// carries (0–2: GitHub never queues a draft, so the chip and pill share a slot).
 // The template turns it into a ci-mN class on the table, which sizes the CI
 // column to fit, so a board with no markers spends no width on them. It is
 // recomputed on every render, so the column follows /api/state polls.
@@ -47,7 +48,7 @@ func ciMarkSlots(agents []Agent) int {
 		if a.CIConflict {
 			n++
 		}
-		if a.CIQueue != "" {
+		if a.CIQueue != "" || a.CIDraft {
 			n++
 		}
 		most = max(most, n)
@@ -592,6 +593,7 @@ type ciResult struct {
 	Fails       int
 	Passes      int
 	Conflict    bool      // merge conflict with the base branch
+	Draft       bool      // the PR is a draft
 	Queue       string    // "", "queued" or "queue-failing" (the queue entry is UNMERGEABLE)
 	QueuePos    int       // 1-based merge-queue position, 0 when not queued
 	QueueETA    time.Time // expected merge time, zero when GitHub gave no estimate
@@ -608,7 +610,7 @@ func lookupCI(cwd string) ciResult {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", "--json", "id,state,mergeStateStatus,statusCheckRollup")
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", "--json", "id,state,isDraft,mergeStateStatus,statusCheckRollup")
 	cmd.Dir = cwd
 	out, err := cmd.Output()
 	if err != nil {
@@ -688,7 +690,7 @@ type rollupNode struct {
 	State      string `json:"state"`
 }
 
-// parsePRView turns `gh pr view --json id,state,mergeStateStatus,statusCheckRollup`
+// parsePRView turns `gh pr view --json id,state,isDraft,mergeStateStatus,statusCheckRollup`
 // output into a ciResult, plus the PR's node id when it is still OPEN (only an
 // open PR can be in the merge queue). The rollup drives the state;
 // mergeStateStatus only refines it, because BLOCKED also means "review missing"
@@ -698,6 +700,7 @@ func parsePRView(out []byte) (ciResult, string) {
 	var pr struct {
 		ID                string       `json:"id"`
 		State             string       `json:"state"`
+		IsDraft           bool         `json:"isDraft"`
 		MergeStateStatus  string       `json:"mergeStateStatus"`
 		StatusCheckRollup []rollupNode `json:"statusCheckRollup"`
 	}
@@ -709,6 +712,7 @@ func parsePRView(out []byte) (ciResult, string) {
 		r.State = "soft-failing" // GitHub says only non-required checks failed
 	}
 	r.Conflict = pr.MergeStateStatus == "DIRTY"
+	r.Draft = pr.IsDraft
 	if pr.State != "OPEN" {
 		return r, ""
 	}
@@ -1029,7 +1033,7 @@ func viewSignature(d dashboardData) string {
 			// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
 			// Launcher feeds the 🔒/🤖 marker, which a resume can flip in place.
 			// Likewise the queue pill's anchors are hashed, its ticking CIQueueLabel is not.
-			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%q:%d:%d:%d:%q:%q:%d:%d:%d:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree)
+			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%t:%q:%d:%d:%d:%q:%q:%d:%d:%d:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIDraft, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree)
 		}
 	}
 
@@ -1271,6 +1275,7 @@ func enrichCI(agents []Agent, ci *cwdCache[ciResult], now time.Time) {
 	for i := range agents {
 		r := results[agents[i].Cwd]
 		agents[i].CI, agents[i].CIFails, agents[i].CIPasses, agents[i].CIConflict = r.State, r.Fails, r.Passes, r.Conflict
+		agents[i].CIDraft = r.Draft
 		agents[i].CIQueue, agents[i].CIQueueReason = r.Queue, r.QueueReason
 		if r.Queue != "" {
 			agents[i].CIQueuePos, agents[i].CIQueueETA, agents[i].CIQueueSince = r.QueuePos, unixOrZero(r.QueueETA), unixOrZero(r.QueueSince)

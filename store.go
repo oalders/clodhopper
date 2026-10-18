@@ -429,6 +429,7 @@ type Agent struct {
 	CIFails          int    // failed checks on the PR, shown inside the red/orange badge
 	CIPasses         int    // passed checks on the PR, shown inside the green badge
 	CIConflict       bool   // the PR has a merge conflict with its base branch
+	CIDraft          bool   // the PR is a draft, shown as a muted chip after the badge
 	CIQueue          string // merge-queue state ("", "queued", "queue-failing"), the colour of the position pill after the badge
 	CIQueuePos       int    // 1-based merge-queue position shown in that pill
 	CIQueueETA       int64  // unix seconds the PR is expected to merge; 0 when unknown

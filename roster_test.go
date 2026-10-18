@@ -39,7 +39,7 @@ func TestClassifyRollup(t *testing.T) {
 }
 
 // mergeStateStatus only refines the rollup's verdict: UNSTABLE softens a red,
-// DIRTY (and only DIRTY) flags a conflict, and junk output yields no CI.
+// DIRTY (and only DIRTY) flags a conflict, isDraft passes through, and junk output yields no CI.
 func TestParsePRView(t *testing.T) {
 	const failed = `{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}`
 	const passed = `{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}`
@@ -54,6 +54,7 @@ func TestParsePRView(t *testing.T) {
 		{"dirty is a conflict", `{"mergeStateStatus":"DIRTY","statusCheckRollup":[` + passed + `]}`, ciResult{State: "green", Passes: 1, Conflict: true}},
 		{"conflict without checks", `{"mergeStateStatus":"DIRTY","statusCheckRollup":[]}`, ciResult{Conflict: true}},
 		{"unknown is no conflict", `{"mergeStateStatus":"UNKNOWN","statusCheckRollup":[` + failed + `]}`, ciResult{State: "failing", Fails: 1}},
+		{"draft", `{"isDraft":true,"statusCheckRollup":[` + passed + `]}`, ciResult{State: "green", Passes: 1, Draft: true}},
 		{"malformed", `not json`, ciResult{}},
 	}
 	for _, c := range cases {
