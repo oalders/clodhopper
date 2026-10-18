@@ -1172,9 +1172,9 @@ func queueStuck(a Agent, now time.Time) bool {
 
 // splitQueued folds set-and-forget rows — queued; waiting for you, waiting or
 // idle (not "needs you"); not stuck — off the roster into the merge-queue
-// section, so only rows needing you stay. Run it before demotePendingCI. It
-// stably partitions agents in place and returns views of it, so later edits
-// through agents (demotion, live-pane flags) reach both halves.
+// section, so only rows needing you stay, ordered by ETA (unknown last). Run it
+// before demotePendingCI. It partitions agents in place and returns views of it,
+// so later edits through agents (demotion, live-pane flags) reach both halves.
 func splitQueued(agents []Agent, now time.Time) (roster, queued []Agent) {
 	var q []Agent
 	n := 0
@@ -1186,6 +1186,11 @@ func splitQueued(agents []Agent, now time.Time) (roster, queued []Agent) {
 			n++
 		}
 	}
+	// Positions are per repo, so only the ETA orders rows across repos.
+	sort.SliceStable(q, func(i, j int) bool {
+		ei, ej := q[i].CIQueueETA, q[j].CIQueueETA
+		return ei != 0 && (ej == 0 || ei < ej)
+	})
 	copy(agents[n:], q)
 	return agents[:n], agents[n:]
 }

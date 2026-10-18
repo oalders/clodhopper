@@ -3859,6 +3859,26 @@ func TestSplitQueued_BeforeDemotion(t *testing.T) {
 	}
 }
 
+// Queued rows run earliest ETA first, rows without one last; the roster keeps its order.
+func TestSplitQueued_OrdersByETA(t *testing.T) {
+	now := time.Unix(100_000, 0)
+	t0 := now.Unix()
+	agents := []Agent{
+		{SessionID: "none", CIQueue: "queued", Status: statusIdle, CIQueueSince: t0},
+		{SessionID: "late", CIQueue: "queued", Status: statusIdle, CIQueueETA: t0 + 600},
+		{SessionID: "roster", Status: statusWorking},
+		{SessionID: "soon", CIQueue: "queued", Status: statusIdle, CIQueueETA: t0 + 60},
+	}
+	roster, queued := splitQueued(agents, now)
+	var got []string
+	for _, a := range queued {
+		got = append(got, a.SessionID)
+	}
+	if strings.Join(got, ",") != "soon,late,none" || len(roster) != 1 || roster[0].SessionID != "roster" {
+		t.Errorf("queued = %v, roster = %+v; want soon,late,none and roster", got, roster)
+	}
+}
+
 func TestQueueNextETA(t *testing.T) {
 	now := time.Date(2026, 1, 2, 9, 5, 0, 0, time.Local)
 	for _, tc := range []struct {
