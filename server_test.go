@@ -1479,15 +1479,17 @@ func TestDemotePendingCI(t *testing.T) {
 		{SessionID: "needs-green", Status: statusNeedsYou, StatusRank: 1, CI: "green"}, // CI not pending: untouched
 		{SessionID: "working", Status: statusWorking, StatusRank: 5, CI: "pending"},    // not an alert: untouched
 		{SessionID: "needs-nocheck", Status: statusNeedsYou, StatusRank: 1, CI: ""},    // no CI info: untouched
+		{SessionID: "queued", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queued"},
+		{SessionID: "queue-failing", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queue-failing"}, // about to be ejected: untouched
 	}
 	demotePendingCI(agents)
 	got := map[string]Agent{}
 	for _, a := range agents {
 		got[a.SessionID] = a
 	}
-	for _, id := range []string{"needs", "waiting", "soft"} {
+	for _, id := range []string{"needs", "waiting", "soft", "queued"} {
 		if a := got[id]; a.Status != statusBackground || a.StatusRank != rankBackground {
-			t.Errorf("%s with pending CI should demote to %q rank %d, got %q rank %d", id, statusBackground, rankBackground, a.Status, a.StatusRank)
+			t.Errorf("%s with pending CI or a queued PR should demote to %q rank %d, got %q rank %d", id, statusBackground, rankBackground, a.Status, a.StatusRank)
 		}
 	}
 	if a := got["approval"]; a.Status != statusApproval {
@@ -1501,6 +1503,9 @@ func TestDemotePendingCI(t *testing.T) {
 	}
 	if a := got["needs-nocheck"]; a.Status != statusNeedsYou {
 		t.Errorf("row with no CI info must be untouched, got %q", a.Status)
+	}
+	if a := got["queue-failing"]; a.Status != statusWaiting {
+		t.Errorf("queue-failing PR must not demote, got %q", a.Status)
 	}
 }
 

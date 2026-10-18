@@ -1114,7 +1114,9 @@ func isCIWatchCommand(cmd string) bool {
 // most likely pushed and is waiting on that run, not blocked on the user — so the
 // alert styling would be misleading (issue #31). This runs in the server layer,
 // not in deriveStatus, because CI is fetched here via gh and is deliberately kept
-// out of the deterministic roster.
+// out of the deterministic roster. A PR sitting in the merge queue is likewise
+// waiting on the queue, not the user (issue #193); "queue-failing" is not
+// relaxed, since an imminent ejection needs attention.
 //
 // Tradeoff (intentional, matching the roster's other heuristics): an agent that
 // genuinely finished and is awaiting you, but whose earlier push still has CI in
@@ -1124,7 +1126,7 @@ func isCIWatchCommand(cmd string) bool {
 // on you regardless of CI.
 func demotePendingCI(agents []Agent) {
 	for i := range agents {
-		if agents[i].CI != "pending" && agents[i].CI != "soft-failing" {
+		if agents[i].CI != "pending" && agents[i].CI != "soft-failing" && agents[i].CIQueue != "queued" {
 			continue
 		}
 		if agents[i].Status == statusNeedsYou || agents[i].Status == statusWaiting {
