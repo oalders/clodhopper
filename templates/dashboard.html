@@ -512,7 +512,7 @@
        .ci-main always starts at the same x and is wide enough for a two-digit badge, and .ci-marks
        follows it. The column is only as wide as the most-marked row needs: ciMarkSlots puts a
        ci-mN class on the table and --ci-w below is cell padding + .ci-main, plus for markers the
-       .ci-marks margin, ~1.3em for the emoji, ~3em for the draft chip (wider than a two-digit pill,
+       .ci-marks margin, ~1.3em for the emoji, ~3.2em for the draft chip (wider than a two-digit pill,
        and GitHub never queues a draft, so they share a slot) and the gap between them. Keep those
        sums in sync. Anything longer is clipped to "…" by the th,td overflow rule, which is why the
        count is not "N failed". */
@@ -523,8 +523,8 @@
     .ci .ci-marks > * + * { margin-left: .1em; }
     .ci .ci-marks:empty { display: none; }
     table.roster { --ci-w: calc(8px + 1.6em); }
-    table.roster.ci-m1 { --ci-w: calc(8px + 4.8em); }
-    table.roster.ci-m2 { --ci-w: calc(8px + 6.2em); }
+    table.roster.ci-m1 { --ci-w: calc(8px + 5em); }
+    table.roster.ci-m2 { --ci-w: calc(8px + 6.4em); }
     .ci.none { color: var(--none); }
     .ci .cibadge {
       display: inline-flex; align-items: center; justify-content: center;

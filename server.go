@@ -1102,7 +1102,7 @@ func suppressWatchedCI(agents []Agent, now time.Time) {
 		if age < 0 || age >= ciWatchSecs {
 			continue
 		}
-		// CIFails/CIPasses/CIConflict stay: the counts only render on red/orange/green, and a conflict is independent of the run.
+		// CIFails/CIPasses/CIConflict/CIDraft stay: the counts only render on red/orange/green, and a conflict or draft is independent of the run.
 		agents[i].CI = "pending"
 	}
 }
