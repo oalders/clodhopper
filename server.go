@@ -36,7 +36,7 @@ var dashboardTmpl = template.Must(
 	}).Parse(dashboardHTML),
 )
 
-// ciMarkSlots is the most 🔀/🚦/🚨 markers any one roster row carries (0–2).
+// ciMarkSlots is the most 🔀/queue-pill markers any one roster row carries (0–2).
 // The template turns it into a ci-mN class on the table, which sizes the CI
 // column to fit, so a board with no markers spends no width on them. It is
 // recomputed on every render, so the column follows /api/state polls.
@@ -589,9 +589,12 @@ type ciResult struct {
 	State       string
 	Fails       int
 	Passes      int
-	Conflict    bool   // merge conflict with the base branch
-	Queue       string // "", "queued" or "queue-failing" (the queue entry is UNMERGEABLE)
-	QueueReason string // GitHub's reason for an "ejected" PR's removal from the queue
+	Conflict    bool      // merge conflict with the base branch
+	Queue       string    // "", "queued" or "queue-failing" (the queue entry is UNMERGEABLE)
+	QueuePos    int       // 1-based merge-queue position, 0 when not queued
+	QueueETA    time.Time // expected merge time, zero when GitHub gave no estimate
+	QueueSince  time.Time // when the PR entered the queue, zero when not queued
+	QueueReason string    // GitHub's reason for an "ejected" PR's removal from the queue
 }
 
 // lookupCI shells out to `gh pr view` in cwd and summarises the result. It is
@@ -621,23 +624,27 @@ func lookupCI(cwd string) ciResult {
 	if err != nil {
 		return r // no queue signal, never an error
 	}
-	return applyMergeQueue(r, out)
+	return applyMergeQueue(r, out, time.Now())
 }
 
 // mergeQueueQuery fetches a PR's live merge-queue entry and its newest queue
 // add/remove events; the removal event is the only trace an ejection leaves.
-const mergeQueueQuery = `query($id:ID!){node(id:$id){... on PullRequest{mergeQueueEntry{state} timelineItems(last:5,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{__typename ... on RemovedFromMergeQueueEvent{reason}}}}}}`
+const mergeQueueQuery = `query($id:ID!){node(id:$id){... on PullRequest{mergeQueueEntry{state position estimatedTimeToMerge enqueuedAt} timelineItems(last:5,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{__typename ... on RemovedFromMergeQueueEvent{reason}}}}}}`
 
 // applyMergeQueue folds the mergeQueueQuery output into r. A live entry sets
 // Queue; with none, a removal as the newest event means the PR was ejected,
 // which overrides the head commit's (possibly green) state. Any other or
-// unparseable output leaves r unchanged.
-func applyMergeQueue(r ciResult, out []byte) ciResult {
+// unparseable output leaves r unchanged. The relative ETA is pinned to now, as
+// the result sits in cwdCache and a relative one would drift.
+func applyMergeQueue(r ciResult, out []byte, now time.Time) ciResult {
 	var resp struct {
 		Data struct {
 			Node struct {
 				MergeQueueEntry *struct {
-					State string `json:"state"`
+					State                string    `json:"state"`
+					Position             int       `json:"position"`
+					EstimatedTimeToMerge *int      `json:"estimatedTimeToMerge"`
+					EnqueuedAt           time.Time `json:"enqueuedAt"`
 				} `json:"mergeQueueEntry"`
 				TimelineItems struct {
 					Nodes []struct {
@@ -656,6 +663,10 @@ func applyMergeQueue(r ciResult, out []byte) ciResult {
 		r.Queue = "queued"
 		if e.State == "UNMERGEABLE" {
 			r.Queue = "queue-failing"
+		}
+		r.QueuePos, r.QueueSince = e.Position, e.EnqueuedAt
+		if s := e.EstimatedTimeToMerge; s != nil {
+			r.QueueETA = now.Add(time.Duration(*s) * time.Second)
 		}
 		return r
 	}
@@ -1001,7 +1012,8 @@ func viewSignature(d dashboardData) string {
 		// Subagents and SubagentSince feed the "waiting on N agents" badge: the
 		// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
 		// Launcher feeds the 🔒/🤖 marker, which a resume can flip in place.
-		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%q:%q:%q:%d:%d:%q", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIQueue, a.CIQueueReason, a.Launcher, a.Subagents, a.SubagentSince, a.Worktree)
+		// Likewise the queue pill's anchors are hashed, its ticking CIQueueLabel is not.
+		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%q:%d:%d:%d:%q:%q:%d:%d:%q", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.SubagentSince, a.Worktree)
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)
@@ -1176,5 +1188,33 @@ func enrichCI(agents []Agent, ci *cwdCache[ciResult], now time.Time) {
 		r := results[agents[i].Cwd]
 		agents[i].CI, agents[i].CIFails, agents[i].CIPasses, agents[i].CIConflict = r.State, r.Fails, r.Passes, r.Conflict
 		agents[i].CIQueue, agents[i].CIQueueReason = r.Queue, r.QueueReason
+		if r.Queue != "" {
+			agents[i].CIQueuePos, agents[i].CIQueueETA, agents[i].CIQueueSince = r.QueuePos, unixOrZero(r.QueueETA), unixOrZero(r.QueueSince)
+			agents[i].CIQueueLabel = queueLabel(r, now)
+		}
 	}
+}
+
+// unixOrZero is t in unix seconds, keeping a zero time as 0 ("unknown").
+func unixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+// queueLabel spells out the queue pill for its title and aria-label, dropping
+// each clause whose field GitHub left null.
+func queueLabel(r ciResult, now time.Time) string {
+	parts := []string{fmt.Sprintf("merge queue position %d", r.QueuePos)}
+	if r.Queue == "queue-failing" {
+		parts[0] += ", failing"
+	}
+	if !r.QueueETA.IsZero() {
+		parts = append(parts, "merge expected ~"+r.QueueETA.Local().Format("15:04"))
+	}
+	if !r.QueueSince.IsZero() {
+		parts = append(parts, "queued "+humanizeSeconds(int(max(0, now.Sub(r.QueueSince)/time.Second)))+" ago")
+	}
+	return strings.Join(parts, " · ")
 }
