@@ -936,8 +936,14 @@ func TestBuildDashboardDataActivityWorktree(t *testing.T) {
 	for _, c := range data.Activity {
 		got[c.SourceApp] = c.Worktree
 	}
-	if len(data.Activity) != 2 || got["x"] != "gh-1308" || got["y"] != "" {
-		t.Errorf("Activity = %+v, want x with Worktree gh-1308 and y with none", data.Activity)
+	if len(data.Activity) != 2 {
+		t.Fatalf("Activity = %+v, want one row each for x and y", data.Activity)
+	}
+	if got["x"] != "gh-1308" {
+		t.Errorf("agreeing-dir case: x Worktree = %q, want gh-1308", got["x"])
+	}
+	if got["y"] != "" {
+		t.Errorf("disagreeing-clones case: y Worktree = %q, want none", got["y"])
 	}
 }
 
