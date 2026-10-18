@@ -500,8 +500,8 @@
 
     /* CI is a status dot (emoji) — on green/red/orange a CSS circle with the
        passed/failed count inside, spelled out in its aria-label and title — plus a 🔀 on a merge
-       conflict, so it gets a snug, centered, single-line column. The column is
-       just wide enough for a two-digit badge and a 🔀; anything longer is clipped
+       conflict and/or a 🚂/🚨 merge-queue marker, so it gets a snug, centered, single-line column.
+       The column is just wide enough for a two-digit badge and one trailing glyph; anything longer is clipped
        to "…" by the th,td overflow rule, which is why the count is not "N failed". */
     td.ci, th.ci { padding-left: 4px; padding-right: 4px; text-align: center; white-space: nowrap; }
     .ci.none { color: var(--none); }

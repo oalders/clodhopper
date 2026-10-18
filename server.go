@@ -640,7 +640,8 @@ func applyMergeQueue(r ciResult, out []byte) ciResult {
 		return r
 	}
 	if n := node.TimelineItems.Nodes; len(n) > 0 && n[len(n)-1].Typename == "RemovedFromMergeQueueEvent" {
-		r.State, r.QueueReason = "ejected", n[len(n)-1].Reason
+		// reason is GitHub free text rendered into an attribute; drop control runes as for any rendered field
+		r.State, r.QueueReason = "ejected", stripControl(n[len(n)-1].Reason)
 	}
 	return r
 }

@@ -77,7 +77,7 @@ func TestParsePRViewIDOnlyWhenOpen(t *testing.T) {
 func TestApplyMergeQueue(t *testing.T) {
 	green := ciResult{State: "green", Passes: 4}
 	const added = `{"__typename":"AddedToMergeQueueEvent"}`
-	const removed = `{"__typename":"RemovedFromMergeQueueEvent","reason":"merge conflict"}`
+	const removed = `{"__typename":"RemovedFromMergeQueueEvent","reason":"merge\n conflict\u0007"}`
 	out := func(entry, nodes string) string {
 		return `{"data":{"node":{"mergeQueueEntry":` + entry + `,"timelineItems":{"nodes":[` + nodes + `]}}}}`
 	}
@@ -88,7 +88,7 @@ func TestApplyMergeQueue(t *testing.T) {
 	}{
 		{"queued", out(`{"state":"QUEUED"}`, added), ciResult{State: "green", Passes: 4, Queue: "queued"}},
 		{"queued but unmergeable", out(`{"state":"UNMERGEABLE"}`, added), ciResult{State: "green", Passes: 4, Queue: "queue-failing"}},
-		{"ejected", out(`null`, added+","+removed), ciResult{State: "ejected", Passes: 4, QueueReason: "merge conflict"}},
+		{"ejected, reason stripped of controls", out(`null`, added+","+removed), ciResult{State: "ejected", Passes: 4, QueueReason: "merge conflict"}},
 		{"ejected then re-queued", out(`{"state":"AWAITING_CHECKS"}`, removed+","+added), ciResult{State: "green", Passes: 4, Queue: "queued"}},
 		{"never queued", out(`null`, ``), green},
 		{"added with no live entry", out(`null`, added), green},

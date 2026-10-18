@@ -3769,10 +3769,14 @@ func TestDashboardRendersMergeQueue(t *testing.T) {
 	html := renderDashboard(t, dashboardData{Agents: []Agent{
 		{SessionID: "ejected", Branch: "a", CI: "ejected", CIQueueReason: "merge conflict"},
 		{SessionID: "queued", Branch: "b", CI: "green", CIQueue: "queued"},
+		{SessionID: "ejected-bare", Branch: "c", CI: "ejected"},
+		{SessionID: "queue-failing", Branch: "d", CI: "green", CIQueue: "queue-failing"},
 	}})
 	for _, want := range []string{
 		`<td data-label="CI" class="ci ejected"><span class="cibadge fail" role="img" aria-label="removed from merge queue: merge conflict" title="removed from merge queue: merge conflict">⏏</span></td>`,
 		`<span role="img" aria-label="CI passing">🟢</span> <span role="img" aria-label="in merge queue" title="in merge queue">🚂</span></td>`,
+		`<span class="cibadge fail" role="img" aria-label="removed from merge queue" title="removed from merge queue">⏏</span></td>`,
+		`<span role="img" aria-label="CI passing">🟢</span> <span role="img" aria-label="in merge queue, failing" title="in merge queue, failing">🚨</span></td>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %s in:\n%s", want, html)
