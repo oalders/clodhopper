@@ -127,11 +127,11 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   `ciForceMinInterval`); concurrent `get`s for one cwd share one lookup. The rollup drives the state and fail
   count (`classifyRollup`); `mergeStateStatus` only refines it (UNSTABLE →
   "soft-failing", DIRTY → merge conflict); `parsePRView`'s doc comment says why
-  BLOCKED is deliberately not mapped. For an OPEN PR a second call, `gh api
-  graphql` (`mergeQueueQuery`, same 4s deadline), reads the merge-queue entry,
-  because queue checks run on a temporary commit the rollup never sees:
-  `applyMergeQueue` sets the 🚂/🚨 marker, and a removal as the newest queue
-  event overrides the state to "ejected" (#183). Like `gitBranch`, it is strictly
+  BLOCKED is deliberately not mapped. For an OPEN PR, a second call (`gh api
+  graphql`, `mergeQueueQuery`, sharing the same 4s deadline) reads the merge
+  queue, because queue checks run on a temporary commit the rollup never sees.
+  `applyMergeQueue` sets the 🚂/🚨 marker from a live entry, or overrides the
+  state to "ejected" when the newest queue event is a removal (#183). Like `gitBranch`, it is strictly
   best-effort: missing `gh`, no PR, or a timeout yields "".
   The same generic `cwdCache` type also backs the pane peek's GitHub owner/repo for the
   footer's PR #N link (`newRepoCache`/`lookupRepo`, via `git remote get-url origin`),
