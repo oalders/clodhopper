@@ -217,6 +217,8 @@ func assignSessColors(agents []Agent, events []Event) map[string]string {
 // dashboardData is the view model rendered by the dashboard template.
 type dashboardData struct {
 	Agents         []Agent
+	QueuedAgents   []Agent // set-and-forget merge-queue rows, folded under the roster; see splitQueued
+	QueueNextETA   string  // earliest queued ETA as local "15:04"; "" when none is known
 	Activity       []SourceCount
 	Events         []Event
 	EventRows      []EventRow // Events folded for display; see foldToolEvents
@@ -906,7 +908,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	agents = dropDeadPanes(agents, peek.cache.panes(now))
 	enrichCI(agents, ci, now)
 	suppressWatchedCI(agents, now)
-	demotePendingCI(agents)
+	demotePendingCI(agents, now)
 	if peek.enabled {
 		for i := range agents {
 			agents[i].LiveTmux = agents[i].TmuxPane != "" && peek.cache.live(agents[i].TmuxPane, now)
@@ -949,9 +951,13 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	}
 	apps, _ := distinctSourceApps(db)
 	branches, _ := distinctBranches(db)
+	// Split last: activity labels, worktrees and session colours above need every row.
+	roster, queued := splitQueued(agents, now)
 
 	data := dashboardData{
-		Agents:         agents,
+		Agents:         roster,
+		QueuedAgents:   queued,
+		QueueNextETA:   queueNextETA(queued),
 		Activity:       activity,
 		Events:         events,
 		EventRows:      foldToolEvents(events),
@@ -995,25 +1001,31 @@ func viewSignature(d dashboardData) string {
 		fmt.Fprintf(h, ":%d:%d", d.Events[0].ID, d.Events[len(d.Events)-1].ID)
 	}
 
-	agents := append([]Agent(nil), d.Agents...)
-	sort.Slice(agents, func(i, j int) bool { return agents[i].SessionID < agents[j].SessionID })
-	for _, a := range agents {
-		// Cwd is folded in because the roster renders it (the branch cell's
-		// click-to-copy target). A session can move to another worktree on the
-		// same branch, and under an event_type filter that move need not touch
-		// the event bounds above — without this the board would keep offering
-		// the old path until some unrelated change forced a repaint.
-		//
-		// %q, not %s: the fields are free text that can contain the ":" used as
-		// the delimiter, so unquoted they let one field's tail masquerade as the
-		// next field's head (branch "main:/w" + cwd "one" hashing the same as
-		// branch "main" + cwd "/w/one"). A collision here is a repaint that never
-		// happens — a stale board, and now a stale copy target.
-		// Subagents, Shells and SubagentSince feed the "waiting on N agents" badge: the
-		// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
-		// Launcher feeds the 🔒/🤖 marker, which a resume can flip in place.
-		// Likewise the queue pill's anchors are hashed, its ticking CIQueueLabel is not.
-		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%q:%d:%d:%d:%q:%q:%d:%d:%d:%q", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree)
+	// The section tag makes a row moving between the roster and the queue repaint.
+	for _, sec := range []struct {
+		tag  string
+		rows []Agent
+	}{{"a", d.Agents}, {"q", d.QueuedAgents}} {
+		agents := append([]Agent(nil), sec.rows...)
+		sort.Slice(agents, func(i, j int) bool { return agents[i].SessionID < agents[j].SessionID })
+		for _, a := range agents {
+			// Cwd is folded in because the roster renders it (the branch cell's
+			// click-to-copy target). A session can move to another worktree on the
+			// same branch, and under an event_type filter that move need not touch
+			// the event bounds above — without this the board would keep offering
+			// the old path until some unrelated change forced a repaint.
+			//
+			// %q, not %s: the fields are free text that can contain the ":" used as
+			// the delimiter, so unquoted they let one field's tail masquerade as the
+			// next field's head (branch "main:/w" + cwd "one" hashing the same as
+			// branch "main" + cwd "/w/one"). A collision here is a repaint that never
+			// happens — a stale board, and now a stale copy target.
+			// Subagents, Shells and SubagentSince feed the "waiting on N agents" badge: the
+			// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
+			// Launcher feeds the 🔒/🤖 marker, which a resume can flip in place.
+			// Likewise the queue pill's anchors are hashed, its ticking CIQueueLabel is not.
+			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%q:%d:%d:%d:%q:%q:%d:%d:%d:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree)
+		}
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)
@@ -1123,10 +1135,12 @@ func isCIWatchCommand(cmd string) bool {
 // flight, is also relaxed for as long as that run stays pending. We accept that
 // over the louder false positive of flagging a busy-waiting agent as needing
 // you. A real "needs approval" (a permission prompt) is left alone — that blocks
-// on you regardless of CI.
-func demotePendingCI(agents []Agent) {
+// on you regardless of CI. Nor is a stuck queue entry (queueStuck): it needs you
+// again. now is injected for that check.
+func demotePendingCI(agents []Agent, now time.Time) {
 	for i := range agents {
-		if agents[i].CI != "pending" && agents[i].CI != "soft-failing" && agents[i].CIQueue != "queued" {
+		queued := agents[i].CIQueue == "queued" && !queueStuck(agents[i], now)
+		if agents[i].CI != "pending" && agents[i].CI != "soft-failing" && !queued {
 			continue
 		}
 		if agents[i].Status == statusNeedsYou || agents[i].Status == statusWaiting {
@@ -1134,6 +1148,48 @@ func demotePendingCI(agents []Agent) {
 			agents[i].StatusRank = rankBackground
 		}
 	}
+}
+
+// A queued PR past its ETA by queueOverdueSecs, or with no ETA queued longer
+// than queueStaleSecs, has likely stalled and needs you again (#195).
+const (
+	queueOverdueSecs = 10 * 60
+	queueStaleSecs   = 45 * 60
+)
+
+// queueStuck reports whether a's merge-queue entry has stalled; see queueOverdueSecs.
+func queueStuck(a Agent, now time.Time) bool {
+	if a.CIQueueETA != 0 {
+		return now.Unix() > a.CIQueueETA+queueOverdueSecs
+	}
+	return a.CIQueueSince != 0 && now.Unix()-a.CIQueueSince > queueStaleSecs
+}
+
+// splitQueued moves set-and-forget rows — queued, parked or idle, not stuck — off
+// the roster into the folded merge-queue section, so only rows needing you stay.
+func splitQueued(agents []Agent, now time.Time) (roster, queued []Agent) {
+	for _, a := range agents {
+		if a.CIQueue == "queued" && (a.Status == statusBackground || a.Status == statusIdle) && !queueStuck(a, now) {
+			queued = append(queued, a)
+		} else {
+			roster = append(roster, a)
+		}
+	}
+	return roster, queued
+}
+
+// queueNextETA is the earliest known ETA among queued as local "15:04", or "".
+func queueNextETA(queued []Agent) string {
+	var next int64
+	for _, a := range queued {
+		if a.CIQueueETA != 0 && (next == 0 || a.CIQueueETA < next) {
+			next = a.CIQueueETA
+		}
+	}
+	if next == 0 {
+		return ""
+	}
+	return time.Unix(next, 0).Local().Format("15:04")
 }
 
 // setWorktrees sets each agent's Worktree to its cwd's worktree-root basename when

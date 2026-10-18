@@ -82,6 +82,18 @@ func TestE2ESeed(t *testing.T) {
 	// Idle with a two-digit hour count; branchless, so the cwd basename stands in.
 	add(23*time.Hour, appB, "", "a-very-long-worktree-directory-name-standing-in-for-the-branch", "e2e-idle-0000-1111-2222-333333333333", "PreToolUse", "Read", "")
 
+	// Merge-queue rows for queue.spec.ts: e2e/serve.sh creates these dirs under
+	// CLODHOPPER_E2E_REPOS, and its stub gh reports one queued and one ejected.
+	if repos := os.Getenv("CLODHOPPER_E2E_REPOS"); repos != "" {
+		for _, name := range []string{"queued", "ejected"} {
+			evs = append(evs, Event{
+				TS: now.Add(-time.Hour).UTC().Format(time.RFC3339), SourceApp: appA, Branch: "main",
+				Cwd: filepath.Join(repos, name), SessionID: "e2e-" + name + "-0000-1111-2222-333333333333",
+				EventType: "Stop", PayloadJSON: "{}",
+			})
+		}
+	}
+
 	// Peek-able rows for swap.spec.ts: e2e/serve.sh's stub tmux lists exactly these pane ids.
 	panes := map[string]string{
 		"e2e-waiting-0000-1111-2222-333333333333": "%9001",

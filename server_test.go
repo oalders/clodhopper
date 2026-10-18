@@ -1481,15 +1481,16 @@ func TestDemotePendingCI(t *testing.T) {
 	agents := []Agent{
 		{SessionID: "needs", Status: statusNeedsYou, StatusRank: 1, CI: "pending"},
 		{SessionID: "waiting", Status: statusWaiting, StatusRank: 0, CI: "pending"},
-		{SessionID: "soft", Status: statusWaiting, StatusRank: 0, CI: "soft-failing"},                             // still mergeable
-		{SessionID: "approval", Status: statusApproval, StatusRank: 1, CI: "pending"},                             // a real prompt: untouched
-		{SessionID: "needs-green", Status: statusNeedsYou, StatusRank: 1, CI: "green"},                            // CI not pending: untouched
-		{SessionID: "working", Status: statusWorking, StatusRank: 5, CI: "pending"},                               // not an alert: untouched
-		{SessionID: "needs-nocheck", Status: statusNeedsYou, StatusRank: 1, CI: ""},                               // no CI info: untouched
-		{SessionID: "queued", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queued"},               // the queue has the next move
-		{SessionID: "queue-failing", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queue-failing"}, // likely needs you: untouched
+		{SessionID: "soft", Status: statusWaiting, StatusRank: 0, CI: "soft-failing"},                                   // still mergeable
+		{SessionID: "approval", Status: statusApproval, StatusRank: 1, CI: "pending"},                                   // a real prompt: untouched
+		{SessionID: "needs-green", Status: statusNeedsYou, StatusRank: 1, CI: "green"},                                  // CI not pending: untouched
+		{SessionID: "working", Status: statusWorking, StatusRank: 5, CI: "pending"},                                     // not an alert: untouched
+		{SessionID: "needs-nocheck", Status: statusNeedsYou, StatusRank: 1, CI: ""},                                     // no CI info: untouched
+		{SessionID: "queued", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queued"},                     // the queue has the next move
+		{SessionID: "queue-failing", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queue-failing"},       // likely needs you: untouched
+		{SessionID: "queue-stuck", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queued", CIQueueETA: 1}, // stalled: needs you again
 	}
-	demotePendingCI(agents)
+	demotePendingCI(agents, time.Unix(1+queueOverdueSecs+1, 0))
 	got := map[string]Agent{}
 	for _, a := range agents {
 		got[a.SessionID] = a
@@ -1504,6 +1505,9 @@ func TestDemotePendingCI(t *testing.T) {
 	}
 	if a := got["queue-failing"]; a.Status != statusWaiting {
 		t.Errorf("a failing queue entry must stay an alert, got %q", a.Status)
+	}
+	if a := got["queue-stuck"]; a.Status != statusWaiting {
+		t.Errorf("a stuck queue entry must stay an alert, got %q", a.Status)
 	}
 	if a := got["needs-green"]; a.Status != statusNeedsYou {
 		t.Errorf("green CI must not demote, got %q", a.Status)
@@ -3794,6 +3798,74 @@ func TestViewSignature_TracksCIDetail(t *testing.T) {
 	}
 	if viewSignature(base) == viewSignature(dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1, CIQueueReason: "merge conflict"}}}) {
 		t.Error("signature unchanged when the queue removal reason changed")
+	}
+}
+
+// Only a queued, parked or idle, not-stuck row leaves the roster for the merge-queue section (#195).
+func TestSplitQueued(t *testing.T) {
+	now := time.Unix(100_000, 0)
+	t0 := now.Unix()
+	cases := []struct {
+		name   string
+		a      Agent
+		queued bool
+	}{
+		{"queued waiting", Agent{CIQueue: "queued", Status: statusBackground, CIQueueETA: t0 + 60}, true},
+		{"queued idle", Agent{CIQueue: "queued", Status: statusIdle}, true},
+		{"queued working", Agent{CIQueue: "queued", Status: statusWorking}, false},
+		{"queued needs approval", Agent{CIQueue: "queued", Status: statusApproval}, false},
+		{"ejected", Agent{CI: "ejected", Status: statusBackground}, false},
+		{"queue-failing", Agent{CIQueue: "queue-failing", Status: statusBackground}, false},
+		{"ETA just reached", Agent{CIQueue: "queued", Status: statusBackground, CIQueueETA: t0 - queueOverdueSecs}, true},
+		{"no ETA, recently queued", Agent{CIQueue: "queued", Status: statusBackground, CIQueueSince: t0 - queueStaleSecs}, true},
+		{"no ETA, queued too long", Agent{CIQueue: "queued", Status: statusBackground, CIQueueSince: t0 - queueStaleSecs - 1}, false},
+	}
+	for _, c := range cases {
+		roster, queued := splitQueued([]Agent{c.a}, now)
+		if got := len(queued) == 1; got != c.queued || len(roster)+len(queued) != 1 {
+			t.Errorf("%s: queued=%v roster=%d, want queued=%v", c.name, got, len(roster), c.queued)
+		}
+	}
+}
+
+// A row overdue on its ETA is not demoted, so it lands back in the roster as needing you.
+func TestSplitQueued_OverdueStaysAlert(t *testing.T) {
+	now := time.Unix(100_000, 0)
+	agents := []Agent{{SessionID: "s", CIQueue: "queued", Status: statusWaiting, CIQueueETA: now.Unix() - queueOverdueSecs - 1}}
+	demotePendingCI(agents, now)
+	roster, queued := splitQueued(agents, now)
+	if len(queued) != 0 || len(roster) != 1 || roster[0].Status != statusWaiting {
+		t.Errorf("overdue queued row: roster=%+v queued=%+v, want it in the roster still waiting for you", roster, queued)
+	}
+}
+
+func TestQueueNextETA(t *testing.T) {
+	early := time.Date(2026, 1, 2, 9, 5, 0, 0, time.Local)
+	got := queueNextETA([]Agent{{CIQueueETA: early.Unix() + 3600}, {}, {CIQueueETA: early.Unix()}})
+	if got != "09:05" {
+		t.Errorf("queueNextETA = %q, want 09:05", got)
+	}
+	if got := queueNextETA([]Agent{{}}); got != "" {
+		t.Errorf("queueNextETA with no ETA = %q, want empty", got)
+	}
+}
+
+// A row moving between the roster and the merge-queue section must repaint.
+func TestViewSignature_TracksQueueSection(t *testing.T) {
+	a := Agent{SessionID: "s1", CI: "green", CIQueue: "queued", CIQueuePos: 1}
+	if viewSignature(dashboardData{Agents: []Agent{a}}) == viewSignature(dashboardData{QueuedAgents: []Agent{a}}) {
+		t.Error("signature unchanged when a row moved into the merge-queue section")
+	}
+}
+
+// The merge-queue section renders only when a row is queued, with its count and next ETA.
+func TestDashboardRendersQueueSection(t *testing.T) {
+	if html := renderDashboard(t, dashboardData{}); strings.Contains(html, `id="ck-mq"`) {
+		t.Error("merge-queue section rendered with no queued rows")
+	}
+	html := renderDashboard(t, dashboardData{QueuedAgents: []Agent{{SessionID: "q", Branch: "b", CIQueue: "queued", CIQueuePos: 1}}, QueueNextETA: "09:05"})
+	if !strings.Contains(html, "Merge queue (1) · next merge ~09:05") {
+		t.Errorf("merge-queue summary missing count or ETA:\n%s", html)
 	}
 }
 

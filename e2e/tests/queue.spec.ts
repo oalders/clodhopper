@@ -1,0 +1,22 @@
+import type { Page } from '@playwright/test';
+import { test, expect } from './fixtures';
+
+const storage = (page: Page, key: string) =>
+  page.evaluate((k) => localStorage.getItem(k), key);
+
+// serve.sh's stub gh queues one seeded row and ejects another (#195).
+test('queued rows fold into a collapsed merge-queue section that remembers being opened', async ({ page }) => {
+  await page.goto('/?refresh=0');
+  const mq = page.locator('#ck-mq');
+  await expect(mq).not.toHaveAttribute('open');
+  await expect(mq.locator('summary')).toHaveText(/^Merge queue \(1\) · next merge ~\d\d:\d\d$/);
+  await expect(mq.locator('table.mq tbody tr')).toHaveCount(1);
+  // The ejected row needs you, so it stays in the main roster.
+  await expect(page.locator('table.roster .cibadge.fail', { hasText: '⏏' })).toHaveCount(1);
+
+  await mq.locator('summary').click();
+  await expect(mq).toHaveAttribute('open');
+  expect(await storage(page, 'ch-mq-open')).toBe('open');
+  await page.reload();
+  await expect(page.locator('#ck-mq')).toHaveAttribute('open');
+});

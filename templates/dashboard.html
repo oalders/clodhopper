@@ -197,6 +197,12 @@
       margin: 0; font-size: var(--fs-lg); font-weight: 700; letter-spacing: -0.02em; color: var(--text-1);
     }
     .ck-cardmeta { font-size: var(--fs-sm); color: var(--text-3); white-space: nowrap; }
+    /* The merge-queue card folds; flex on the summary drops the native marker, so draw one. */
+    #ck-mq { margin-top: 20px; }
+    #ck-mq > summary { cursor: pointer; justify-content: flex-start; gap: 8px; }
+    #ck-mq > summary::before { content: "▸"; color: var(--text-3); }
+    #ck-mq[open] > summary::before { content: "▾"; }
+    #ck-mq:not([open]) > summary { border-bottom: none; }
     .empty {
       color: var(--text-3); padding: 20px 16px; font-size: var(--fs-sm); line-height: 1.55;
     }
@@ -559,6 +565,7 @@
       /* sum of the fixed cols (122ch, plus the CI col's --ci-w, plus 10ch each for the debug id and actions cols when present) + 20ch reserved for the flexible session-name column */
       table.roster { min-width: calc(142ch + var(--ci-w){{ if .Debug }} + 10ch{{ end }}{{ if or .PeekEnabled .ExecEnabled }} + 10ch{{ end }}); }
       table.counts { min-width: 48ch; }
+      table.mq { min-width: 130ch; } /* the fixed cols (110ch) + 20ch for the last, flexible one */
     }
 
     /* ≤640px (phones): the table shape can't fit, so each row becomes a card.
@@ -1061,6 +1068,8 @@
       // __ckActionBusy and unchanged-signature skips for free.
       try { if (window.__ckActMsgs) window.__ckActMsgs.restore(); } catch (e) {}
       try { if (window.__ckPin && window.__ckPin.isOn()) window.__ckPin.apply(); } catch (e) {}
+      // The fresh merge-queue <details> arrives closed; reopen it if this viewer had it open.
+      try { if (window.__ckMQ) window.__ckMQ(); } catch (e) {}
       // Re-arm whatever was armed before the swap, after the panel carry-over
       // (an armed group lives inside an actions panel that has just been
       // re-opened) and before focus restore.
@@ -1222,6 +1231,22 @@
       try { localStorage.setItem('ch-filters-open', open ? 'open' : 'closed'); } catch (e) {}
       apply();
     });
+  })();
+
+  // Merge-queue fold: collapsed unless this viewer opened it. Each poll swaps in a
+  // fresh (closed) <details>, so swapContent re-applies the stored state via __ckMQ.
+  (function () {
+    window.__ckMQ = function () {
+      var d = document.getElementById('ck-mq');
+      if (!d) return;
+      try { d.open = localStorage.getItem('ch-mq-open') === 'open'; } catch (e) {}
+    };
+    window.__ckMQ();
+    // toggle does not bubble, so listen in the capture phase.
+    document.addEventListener('toggle', function (ev) {
+      if (!ev.target || ev.target.id !== 'ck-mq') return;
+      try { localStorage.setItem('ch-mq-open', ev.target.open ? 'open' : 'closed'); } catch (e) {}
+    }, true);
   })();
 
   // Debug toggle: the Activity + Recent-events sections are diagnostics nobody
@@ -2892,6 +2917,35 @@
     <div class="empty">No agents working or waiting on you. (Detecting "waiting for you" needs the <code>Stop</code> and <code>Notification</code> hooks wired in <code>.claude/settings.json</code>; a waiting agent clears when its session ends — on <code>SessionEnd</code>, or via <code>clodhopper end</code> for hard-killed sessions.)</div>
     {{ end }}
   </section>
+
+  {{ if .QueuedAgents }}
+  {{/* Queued set-and-forget rows (splitQueued). The end button reuses the roster's rowform markup, so its delegated arm/confirm JS applies unchanged. */}}
+  <details id="ck-mq" class="ck-card">
+    <summary class="ck-cardhead"><h2>Merge queue ({{ len .QueuedAgents }}){{ with .QueueNextETA }} · next merge ~{{ . }}{{ end }}</h2></summary>
+    <div class="ck-tablewrap">
+    <table class="mq">
+      <colgroup>
+        <col style="width: 24ch"><col style="width: 18ch"><col style="width: 6ch"><col style="width: 44ch"><col{{ if .ExecEnabled }} style="width: 18ch"{{ end }}>{{ if .ExecEnabled }}<col>{{ end }}
+      </colgroup>
+      <thead>
+        <tr><th>branch</th><th>app</th><th class="ci">queue</th><th>detail</th><th>session</th>{{ if .ExecEnabled }}<th>actions</th>{{ end }}</tr>
+      </thead>
+      <tbody>
+        {{ range .QueuedAgents }}
+        <tr>
+          <td class="branch" data-label="branch">{{ template "branchinnerroster" . }}</td>
+          <td data-label="app">{{ .SourceApp }}</td>
+          <td class="ci" data-label="queue"><span class="cibadge queue" role="img" aria-label="{{ .CIQueueLabel }}" title="{{ .CIQueueLabel }}">{{ .CIQueuePos }}</span></td>
+          <td data-label="detail">{{ .CIQueueLabel }}</td>
+          <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
+          {{ if $.ExecEnabled }}<td data-label="actions">{{ if .SessionID }}<span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}"><button type="button" class="pract" data-action="end" aria-label="end{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button><span class="actmsg"></span></span>{{ else }}—{{ end }}</td>{{ end }}
+        </tr>
+        {{ end }}
+      </tbody>
+    </table>
+    </div>
+  </details>
+  {{ end }}
 
   {{ if and .Debug .Activity }}
   <section class="ck-card">
