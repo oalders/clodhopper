@@ -215,12 +215,12 @@
        chrome; the table sits flush inside it. */
     .ck-tablewrap table { margin: 0; }
     table { border-collapse: collapse; width: 100%; table-layout: fixed; font-size: var(--fs-base); }
-    /* Both data tables fill their card; the last column (session) is left
+    /* The data tables fill their card; the last column (session, or actions) is left
        unconstrained so it soaks up leftover width and shows the full name,
        truncating only when the window is genuinely narrow. A leftover-absorbing
        column is safe under fixed layout: its width comes from the table width,
        not the cell content, so it never reflows on a swap. */
-    table.roster, table.counts { width: 100%; }
+    table.roster, table.counts, table.mq { width: 100%; }
     th, td {
       text-align: left; padding: var(--cell-pad-y) var(--cell-pad-x);
       border-bottom: 1px solid var(--border); vertical-align: top;
@@ -565,7 +565,8 @@
       /* sum of the fixed cols (122ch, plus the CI col's --ci-w, plus 10ch each for the debug id and actions cols when present) + 20ch reserved for the flexible session-name column */
       table.roster { min-width: calc(142ch + var(--ci-w){{ if .Debug }} + 10ch{{ end }}{{ if or .PeekEnabled .ExecEnabled }} + 10ch{{ end }}); }
       table.counts { min-width: 48ch; }
-      table.mq { min-width: 130ch; } /* the fixed cols (110ch) + 20ch for the last, flexible one */
+      /* the fixed cols (92ch, plus 18ch for the session col when actions follow it) + 20ch for the last, flexible one */
+      table.mq { min-width: calc(112ch{{ if .ExecEnabled }} + 18ch{{ end }}); }
     }
 
     /* ≤640px (phones): the table shape can't fit, so each row becomes a card.
@@ -2935,7 +2936,7 @@
         <tr>
           <td class="branch" data-label="branch">{{ template "branchinnerroster" . }}</td>
           <td data-label="app">{{ .SourceApp }}</td>
-          <td class="ci" data-label="queue"><span class="cibadge queue" role="img" aria-label="{{ .CIQueueLabel }}" title="{{ .CIQueueLabel }}">{{ .CIQueuePos }}</span></td>
+          <td class="ci" data-label="queue"><span class="cibadge queue" aria-hidden="true">{{ .CIQueuePos }}</span></td>
           <td data-label="detail">{{ .CIQueueLabel }}</td>
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
           {{ if $.ExecEnabled }}<td data-label="actions">{{ if .SessionID }}<span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}"><button type="button" class="pract" data-action="end" aria-label="end{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button><span class="actmsg"></span></span>{{ else }}—{{ end }}</td>{{ end }}

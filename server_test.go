@@ -3801,7 +3801,7 @@ func TestViewSignature_TracksCIDetail(t *testing.T) {
 	}
 }
 
-// Only a queued, parked or idle, not-stuck row leaves the roster for the merge-queue section (#195).
+// Only a queued, waiting-for-you, parked or idle, not-stuck row leaves the roster for the merge-queue section (#195).
 func TestSplitQueued(t *testing.T) {
 	now := time.Unix(100_000, 0)
 	t0 := now.Unix()
@@ -3812,6 +3812,8 @@ func TestSplitQueued(t *testing.T) {
 	}{
 		{"queued waiting", Agent{CIQueue: "queued", Status: statusBackground, CIQueueETA: t0 + 60}, true},
 		{"queued idle", Agent{CIQueue: "queued", Status: statusIdle}, true},
+		{"queued waiting for you", Agent{CIQueue: "queued", Status: statusWaiting}, true},
+		{"queued needs you", Agent{CIQueue: "queued", Status: statusNeedsYou}, false},
 		{"queued working", Agent{CIQueue: "queued", Status: statusWorking}, false},
 		{"queued needs approval", Agent{CIQueue: "queued", Status: statusApproval}, false},
 		{"ejected", Agent{CI: "ejected", Status: statusBackground}, false},
@@ -3832,10 +3834,28 @@ func TestSplitQueued(t *testing.T) {
 func TestSplitQueued_OverdueStaysAlert(t *testing.T) {
 	now := time.Unix(100_000, 0)
 	agents := []Agent{{SessionID: "s", CIQueue: "queued", Status: statusWaiting, CIQueueETA: now.Unix() - queueOverdueSecs - 1}}
-	demotePendingCI(agents, now)
 	roster, queued := splitQueued(agents, now)
+	demotePendingCI(agents, now)
 	if len(queued) != 0 || len(roster) != 1 || roster[0].Status != statusWaiting {
 		t.Errorf("overdue queued row: roster=%+v queued=%+v, want it in the roster still waiting for you", roster, queued)
+	}
+}
+
+// The split decides on the pre-demotion status, and the demotion after it reaches both halves.
+func TestSplitQueued_BeforeDemotion(t *testing.T) {
+	now := time.Unix(100_000, 0)
+	agents := []Agent{
+		{SessionID: "needs", CIQueue: "queued", Status: statusNeedsYou},
+		{SessionID: "waiting", CIQueue: "queued", Status: statusWaiting},
+		{SessionID: "working", Status: statusWorking},
+	}
+	roster, queued := splitQueued(agents, now)
+	demotePendingCI(agents, now)
+	if len(roster) != 2 || roster[0].SessionID != "needs" || roster[1].SessionID != "working" || roster[0].Status != statusBackground {
+		t.Errorf("roster = %+v, want needs (demoted) then working", roster)
+	}
+	if len(queued) != 1 || queued[0].SessionID != "waiting" || queued[0].Status != statusBackground {
+		t.Errorf("queued = %+v, want waiting (demoted)", queued)
 	}
 }
 

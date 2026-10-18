@@ -132,3 +132,17 @@ test('a failed merge reports the failure and unlocks', async ({ page }) => {
   await expect(page.locator(`${prform} .actmsg`)).toHaveText('failed: boom');
   await expectUnlocked(page);
 });
+
+// The merge-queue section's end button reuses the roster's two-step confirm (#195).
+test('end in the merge-queue section posts end for the queued session', async ({ page }) => {
+  const posts = await stubAction(page, { ok: true, exitCode: 0, timedOut: false, output: '' });
+  await page.evaluate(() => { window.__ckActionBusy = 1; });
+  await page.locator('#ck-mq summary').click();
+  const end = page.locator('#ck-mq button.pract[data-action="end"]');
+  await end.click();
+  await expect(end).toHaveText('✓ confirm');
+  await end.click();
+
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0].postData()).toBe('session_id=e2e-queued-0000-1111-2222-333333333333&action=end');
+});

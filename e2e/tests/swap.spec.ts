@@ -132,3 +132,17 @@ test('a busy action holds repaints off until it settles', async ({ page }) => {
   await page.evaluate(() => { window.__ckActionBusy = 0; });
   await repaint(page, '#content table.roster');
 });
+
+test('the merge-queue section keeps its open or closed state across a repaint', async ({ page }) => {
+  const mq = page.locator('#ck-mq');
+  await mq.locator('summary').click();
+  await expect(mq).toHaveAttribute('open');
+  await repaint(page, '#ck-mq');
+  await expect(mq).toHaveAttribute('open');
+
+  // Closed is the fresh section's default, so this checks the close was stored, not just absent.
+  await mq.locator('summary').click();
+  await expect(mq).not.toHaveAttribute('open');
+  await repaint(page, '#ck-mq');
+  await expect(mq).not.toHaveAttribute('open');
+});

@@ -908,6 +908,8 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	agents = dropDeadPanes(agents, peek.cache.panes(now))
 	enrichCI(agents, ci, now)
 	suppressWatchedCI(agents, now)
+	// Before demotePendingCI, so a queued "needs you" row is not folded away (#195).
+	roster, queued := splitQueued(agents, now)
 	demotePendingCI(agents, now)
 	if peek.enabled {
 		for i := range agents {
@@ -951,8 +953,6 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	}
 	apps, _ := distinctSourceApps(db)
 	branches, _ := distinctBranches(db)
-	// Split last: activity labels, worktrees and session colours above need every row.
-	roster, queued := splitQueued(agents, now)
 
 	data := dashboardData{
 		Agents:         roster,
@@ -1165,17 +1165,24 @@ func queueStuck(a Agent, now time.Time) bool {
 	return a.CIQueueSince != 0 && now.Unix()-a.CIQueueSince > queueStaleSecs
 }
 
-// splitQueued moves set-and-forget rows — queued, parked or idle, not stuck — off
-// the roster into the folded merge-queue section, so only rows needing you stay.
+// splitQueued folds set-and-forget rows — queued; waiting for you, waiting or
+// idle (not "needs you"); not stuck — off the roster into the merge-queue
+// section, so only rows needing you stay. Run it before demotePendingCI. It
+// stably partitions agents in place and returns views of it, so later edits
+// through agents (demotion, live-pane flags) reach both halves.
 func splitQueued(agents []Agent, now time.Time) (roster, queued []Agent) {
+	var q []Agent
+	n := 0
 	for _, a := range agents {
-		if a.CIQueue == "queued" && (a.Status == statusBackground || a.Status == statusIdle) && !queueStuck(a, now) {
-			queued = append(queued, a)
+		if a.CIQueue == "queued" && (a.Status == statusWaiting || a.Status == statusBackground || a.Status == statusIdle) && !queueStuck(a, now) {
+			q = append(q, a)
 		} else {
-			roster = append(roster, a)
+			agents[n] = a
+			n++
 		}
 	}
-	return roster, queued
+	copy(agents[n:], q)
+	return agents[:n], agents[n:]
 }
 
 // queueNextETA is the earliest known ETA among queued as local "15:04", or "".
