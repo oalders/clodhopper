@@ -121,14 +121,18 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
 - **Schema migrations** append to the `migrations` slice in `store.go` and run
   best-effort (an already-applied `ALTER` errors harmlessly and is ignored).
 - **CI status** (`server.go`) shells out to one `gh pr view --json
-  mergeStateStatus,statusCheckRollup` per cwd, memoised in `cwdCache` (60s TTL)
+  id,state,mergeStateStatus,statusCheckRollup` per cwd, memoised in `cwdCache` (60s TTL)
   and fetched concurrently across worktrees. The "refresh CI" button sends
   `/api/state?force=1`, which calls `expire` (throttled to once per
   `ciForceMinInterval`); concurrent `get`s for one cwd share one lookup. The rollup drives the state and fail
   count (`classifyRollup`); `mergeStateStatus` only refines it (UNSTABLE →
   "soft-failing", DIRTY → merge conflict); `parsePRView`'s doc comment says why
-  BLOCKED is deliberately not mapped. Like `gitBranch`, it is strictly
-  best-effort: missing `gh`, no PR, or a timeout yields "".
+  BLOCKED is deliberately not mapped. For an OPEN PR, a second call (`gh api
+  graphql`, `mergeQueueQuery`, sharing the same 4s deadline) reads the merge
+  queue, because queue checks run on a temporary commit the rollup never sees;
+  `applyMergeQueue`'s doc comment says when that yields a queue marker (🚂/🚨)
+  or the "ejected" state (⏏). Like `gitBranch`, it is strictly best-effort: missing `gh`, no PR, or a
+  timeout yields "".
   The same generic `cwdCache` type also backs the pane peek's GitHub owner/repo for the
   footer's PR #N link (`newRepoCache`/`lookupRepo`, via `git remote get-url origin`),
   resolved per live-pane row (not concurrently) and likewise best-effort: a

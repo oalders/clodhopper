@@ -57,8 +57,46 @@ func TestParsePRView(t *testing.T) {
 		{"malformed", `not json`, ciResult{}},
 	}
 	for _, c := range cases {
-		if got := parsePRView([]byte(c.out)); got != c.want {
+		if got, _ := parsePRView([]byte(c.out)); got != c.want {
 			t.Errorf("%s: parsePRView = %+v, want %+v", c.name, got, c.want)
+		}
+	}
+}
+
+// Only an open PR can be queued, so only an open PR's node id is returned.
+func TestParsePRViewIDOnlyWhenOpen(t *testing.T) {
+	for state, want := range map[string]string{"OPEN": "PR_1", "MERGED": "", "CLOSED": ""} {
+		if _, got := parsePRView([]byte(`{"id":"PR_1","state":"` + state + `","statusCheckRollup":[]}`)); got != want {
+			t.Errorf("%s: id = %q, want %q", state, got, want)
+		}
+	}
+}
+
+// A live entry marks the row queued; with none, a removal as the newest event
+// is an ejection that overrides the head commit's green.
+func TestApplyMergeQueue(t *testing.T) {
+	green := ciResult{State: "green", Passes: 4}
+	const added = `{"__typename":"AddedToMergeQueueEvent"}`
+	const removed = `{"__typename":"RemovedFromMergeQueueEvent","reason":"merge\n conflict\u0007"}`
+	out := func(entry, nodes string) string {
+		return `{"data":{"node":{"mergeQueueEntry":` + entry + `,"timelineItems":{"nodes":[` + nodes + `]}}}}`
+	}
+	cases := []struct {
+		name string
+		out  string
+		want ciResult
+	}{
+		{"queued", out(`{"state":"QUEUED"}`, added), ciResult{State: "green", Passes: 4, Queue: "queued"}},
+		{"queued but unmergeable", out(`{"state":"UNMERGEABLE"}`, added), ciResult{State: "green", Passes: 4, Queue: "queue-failing"}},
+		{"ejected, reason stripped of controls", out(`null`, added+","+removed), ciResult{State: "ejected", Passes: 4, QueueReason: "merge conflict"}},
+		{"ejected then re-queued", out(`{"state":"AWAITING_CHECKS"}`, removed+","+added), ciResult{State: "green", Passes: 4, Queue: "queued"}},
+		{"never queued", out(`null`, ``), green},
+		{"added with no live entry", out(`null`, added), green},
+		{"malformed", `not json`, green},
+	}
+	for _, c := range cases {
+		if got := applyMergeQueue(green, []byte(c.out)); got != c.want {
+			t.Errorf("%s: applyMergeQueue = %+v, want %+v", c.name, got, c.want)
 		}
 	}
 }

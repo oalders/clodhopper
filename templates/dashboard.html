@@ -500,8 +500,8 @@
 
     /* CI is a status dot (emoji) — on green/red/orange a CSS circle with the
        passed/failed count inside, spelled out in its aria-label and title — plus a 🔀 on a merge
-       conflict, so it gets a snug, centered, single-line column. The column is
-       just wide enough for a two-digit badge and a 🔀; anything longer is clipped
+       conflict and/or a 🚂/🚨 merge-queue marker, so it gets a snug, centered, single-line column.
+       The column is just wide enough for a two-digit badge and one trailing glyph; anything longer is clipped
        to "…" by the th,td overflow rule, which is why the count is not "N failed". */
     td.ci, th.ci { padding-left: 4px; padding-right: 4px; text-align: center; white-space: nowrap; }
     .ci.none { color: var(--none); }
@@ -2818,7 +2818,7 @@
       <tbody>
         {{ range .Agents }}
         <tr data-group="{{ .GroupKey }}"{{ with rowClass . }} class="{{ . }}"{{ end }}>
-          <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if and (eq .CI "green") .CIPasses }}<span class="cibadge ok" role="img" aria-label="CI passing, {{ .CIPasses }} passed" title="{{ .CIPasses }} passed">{{ .CIPasses }}</span>{{ else if eq .CI "green" }}<span role="img" aria-label="CI passing">🟢</span>{{ else if eq .CI "pending" }}<span role="img" aria-label="CI pending">🟡</span>{{ else if eq .CI "failing" }}<span class="cibadge fail" role="img" aria-label="CI failing, {{ .CIFails }} failed" title="{{ .CIFails }} failed">{{ .CIFails }}</span>{{ else if eq .CI "soft-failing" }}<span class="cibadge soft" role="img" aria-label="non-required check failing, {{ .CIFails }} failed" title="{{ .CIFails }} non-required failed">{{ .CIFails }}</span>{{ else }}<span role="img" aria-label="no CI">—</span>{{ end }}{{ if .CIConflict }} <span role="img" aria-label="merge conflict with base" title="merge conflict with base">🔀</span>{{ end }}</td>
+          <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}">{{ if and (eq .CI "green") .CIPasses }}<span class="cibadge ok" role="img" aria-label="CI passing, {{ .CIPasses }} passed" title="{{ .CIPasses }} passed">{{ .CIPasses }}</span>{{ else if eq .CI "green" }}<span role="img" aria-label="CI passing">🟢</span>{{ else if eq .CI "pending" }}<span role="img" aria-label="CI pending">🟡</span>{{ else if eq .CI "failing" }}<span class="cibadge fail" role="img" aria-label="CI failing, {{ .CIFails }} failed" title="{{ .CIFails }} failed">{{ .CIFails }}</span>{{ else if eq .CI "soft-failing" }}<span class="cibadge soft" role="img" aria-label="non-required check failing, {{ .CIFails }} failed" title="{{ .CIFails }} non-required failed">{{ .CIFails }}</span>{{ else if eq .CI "ejected" }}<span class="cibadge fail" role="img" aria-label="removed from merge queue{{ if .CIQueueReason }}: {{ .CIQueueReason }}{{ end }}" title="removed from merge queue{{ if .CIQueueReason }}: {{ .CIQueueReason }}{{ end }}">⏏</span>{{ else }}<span role="img" aria-label="no CI">—</span>{{ end }}{{ if .CIConflict }} <span role="img" aria-label="merge conflict with base" title="merge conflict with base">🔀</span>{{ end }}{{ if eq .CIQueue "queued" }} <span role="img" aria-label="in merge queue" title="in merge queue">🚂</span>{{ else if eq .CIQueue "queue-failing" }} <span role="img" aria-label="in merge queue, failing" title="in merge queue, failing">🚨</span>{{ end }}</td>
           {{ template "launcher" . }}
           {{ template "branchcellroster" . }}
           <td data-label="app">{{ .SourceApp }}</td>
