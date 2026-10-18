@@ -218,7 +218,7 @@ func assignSessColors(agents []Agent, events []Event) map[string]string {
 type dashboardData struct {
 	Agents         []Agent
 	QueuedAgents   []Agent // set-and-forget merge-queue rows, folded under the roster; see splitQueued
-	QueueNextETA   string  // earliest queued ETA as local "15:04"; "" when none is known
+	QueueNextETA   string  // earliest queued ETA as an etaPhrase; "" when none is known
 	Activity       []SourceCount
 	Events         []Event
 	EventRows      []EventRow // Events folded for display; see foldToolEvents
@@ -957,7 +957,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	data := dashboardData{
 		Agents:         roster,
 		QueuedAgents:   queued,
-		QueueNextETA:   queueNextETA(queued),
+		QueueNextETA:   queueNextETA(queued, now),
 		Activity:       activity,
 		Events:         events,
 		EventRows:      foldToolEvents(events),
@@ -1000,6 +1000,10 @@ func viewSignature(d dashboardData) string {
 	if len(d.Events) > 0 {
 		fmt.Fprintf(h, ":%d:%d", d.Events[0].ID, d.Events[len(d.Events)-1].ID)
 	}
+
+	// Unlike the per-row queue labels, the queue card's countdown is hashed so it
+	// cannot freeze on a quiet board; it ticks at most once a minute.
+	fmt.Fprintf(h, "|n:%q", d.QueueNextETA)
 
 	// The section tag makes a row moving between the roster and the queue repaint.
 	for _, sec := range []struct {
@@ -1185,8 +1189,8 @@ func splitQueued(agents []Agent, now time.Time) (roster, queued []Agent) {
 	return agents[:n], agents[n:]
 }
 
-// queueNextETA is the earliest known ETA among queued as local "15:04", or "".
-func queueNextETA(queued []Agent) string {
+// queueNextETA is the earliest known ETA among queued as an etaPhrase, or "".
+func queueNextETA(queued []Agent, now time.Time) string {
 	var next int64
 	for _, a := range queued {
 		if a.CIQueueETA != 0 && (next == 0 || a.CIQueueETA < next) {
@@ -1196,7 +1200,16 @@ func queueNextETA(queued []Agent) string {
 	if next == 0 {
 		return ""
 	}
-	return time.Unix(next, 0).Local().Format("15:04")
+	return etaPhrase(time.Unix(next, 0), now)
+}
+
+// etaPhrase is eta relative to now ("in ~12m", or "now" once due): a clock time
+// would be in the server's timezone, not the viewer's.
+func etaPhrase(eta, now time.Time) string {
+	if d := eta.Sub(now); d > 0 {
+		return "in ~" + humanizeSeconds(int(d/time.Second))
+	}
+	return "now"
 }
 
 // setWorktrees sets each agent's Worktree to its cwd's worktree-root basename when
@@ -1276,7 +1289,7 @@ func queueLabel(r ciResult, now time.Time) string {
 		parts[0] += ", failing"
 	}
 	if !r.QueueETA.IsZero() {
-		parts = append(parts, "merge expected ~"+r.QueueETA.Local().Format("15:04"))
+		parts = append(parts, "merge expected "+etaPhrase(r.QueueETA, now))
 	}
 	if !r.QueueSince.IsZero() {
 		parts = append(parts, "queued "+humanizeSeconds(int(max(0, now.Sub(r.QueueSince)/time.Second)))+" ago")

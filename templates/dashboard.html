@@ -198,7 +198,7 @@
     }
     .ck-cardmeta { font-size: var(--fs-sm); color: var(--text-3); white-space: nowrap; }
     /* The merge-queue card folds; flex on the summary drops the native marker, so draw one. */
-    #ck-mq { margin-bottom: 20px; } /* .ck-card:last-of-type zeroes it: this is the only <details> */
+    #ck-mq { margin-top: 20px; } /* the roster above is the last <section>, so .ck-card:last-of-type zeroed its gap */
     #ck-mq > summary { cursor: pointer; justify-content: flex-start; gap: 8px; }
     #ck-mq > summary::before { content: "▸"; color: var(--text-3); }
     #ck-mq > summary::-webkit-details-marker { display: none; } /* older WebKit ignores display:flex here */
@@ -2923,7 +2923,7 @@
   {{ if .QueuedAgents }}
   {{/* Queued set-and-forget rows (splitQueued). The end button reuses the roster's rowform markup, so its delegated arm/confirm JS applies unchanged. */}}
   <details id="ck-mq" class="ck-card">
-    <summary class="ck-cardhead"><h2>Merge queue ({{ len .QueuedAgents }}){{ with .QueueNextETA }} · next merge ~{{ . }}{{ end }}</h2></summary>
+    <summary class="ck-cardhead"><h2>Merge queue ({{ len .QueuedAgents }}){{ with .QueueNextETA }} · next merge {{ . }}{{ end }}</h2></summary>
     <div class="ck-tablewrap">
     <table class="mq">
       <colgroup>

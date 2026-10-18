@@ -3860,13 +3860,19 @@ func TestSplitQueued_BeforeDemotion(t *testing.T) {
 }
 
 func TestQueueNextETA(t *testing.T) {
-	early := time.Date(2026, 1, 2, 9, 5, 0, 0, time.Local)
-	got := queueNextETA([]Agent{{CIQueueETA: early.Unix() + 3600}, {}, {CIQueueETA: early.Unix()}})
-	if got != "09:05" {
-		t.Errorf("queueNextETA = %q, want 09:05", got)
-	}
-	if got := queueNextETA([]Agent{{}}); got != "" {
-		t.Errorf("queueNextETA with no ETA = %q, want empty", got)
+	now := time.Date(2026, 1, 2, 9, 5, 0, 0, time.Local)
+	for _, tc := range []struct {
+		name   string
+		queued []Agent
+		want   string
+	}{
+		{"earliest wins", []Agent{{CIQueueETA: now.Unix() + 3600}, {}, {CIQueueETA: now.Unix() + 300}}, "in ~5m"},
+		{"already due", []Agent{{CIQueueETA: now.Unix() - 60}}, "now"},
+		{"no ETA", []Agent{{}}, ""},
+	} {
+		if got := queueNextETA(tc.queued, now); got != tc.want {
+			t.Errorf("%s: queueNextETA = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -3876,6 +3882,12 @@ func TestViewSignature_TracksQueueSection(t *testing.T) {
 	if viewSignature(dashboardData{Agents: []Agent{a}}) == viewSignature(dashboardData{QueuedAgents: []Agent{a}}) {
 		t.Error("signature unchanged when a row moved into the merge-queue section")
 	}
+	q := dashboardData{QueuedAgents: []Agent{a}, QueueNextETA: "in ~5m"}
+	sig := viewSignature(q)
+	q.QueueNextETA = "in ~4m"
+	if viewSignature(q) == sig {
+		t.Error("signature unchanged when the next-merge countdown ticked")
+	}
 }
 
 // The merge-queue section renders only when a row is queued, with its count and next ETA.
@@ -3883,8 +3895,8 @@ func TestDashboardRendersQueueSection(t *testing.T) {
 	if html := renderDashboard(t, dashboardData{}); strings.Contains(html, `id="ck-mq"`) {
 		t.Error("merge-queue section rendered with no queued rows")
 	}
-	html := renderDashboard(t, dashboardData{QueuedAgents: []Agent{{SessionID: "q", Branch: "b", CIQueue: "queued", CIQueuePos: 1}}, QueueNextETA: "09:05"})
-	if !strings.Contains(html, "Merge queue (1) · next merge ~09:05") {
+	html := renderDashboard(t, dashboardData{QueuedAgents: []Agent{{SessionID: "q", Branch: "b", CIQueue: "queued", CIQueuePos: 1}}, QueueNextETA: "in ~5m"})
+	if !strings.Contains(html, "Merge queue (1) · next merge in ~5m") {
 		t.Errorf("merge-queue summary missing count or ETA:\n%s", html)
 	}
 }
@@ -3934,7 +3946,7 @@ func TestQueueLabel(t *testing.T) {
 		r    ciResult
 		want string
 	}{
-		{ciResult{Queue: "queued", QueuePos: 2, QueueETA: now.Add(152 * time.Minute), QueueSince: now.Add(-12 * time.Minute)}, "merge queue position 2 · merge expected ~14:32 · queued 12m ago"},
+		{ciResult{Queue: "queued", QueuePos: 2, QueueETA: now.Add(152 * time.Minute), QueueSince: now.Add(-12 * time.Minute)}, "merge queue position 2 · merge expected in ~2h · queued 12m ago"},
 		{ciResult{Queue: "queue-failing", QueuePos: 1, QueueSince: now.Add(-90 * time.Second)}, "merge queue position 1, failing · queued 1m ago"},
 		{ciResult{Queue: "queued", QueuePos: 3}, "merge queue position 3"},
 	} {
