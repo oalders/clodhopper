@@ -1139,8 +1139,8 @@ func isCIWatchCommand(cmd string) bool {
 // again. now is injected for that check.
 func demotePendingCI(agents []Agent, now time.Time) {
 	for i := range agents {
-		queued := agents[i].CIQueue == "queued" && !queueStuck(agents[i], now)
-		if agents[i].CI != "pending" && agents[i].CI != "soft-failing" && !queued {
+		inQueue := agents[i].CIQueue == "queued" && !queueStuck(agents[i], now)
+		if agents[i].CI != "pending" && agents[i].CI != "soft-failing" && !inQueue {
 			continue
 		}
 		if agents[i].Status == statusNeedsYou || agents[i].Status == statusWaiting {

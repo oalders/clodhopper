@@ -145,4 +145,5 @@ test('end in the merge-queue section posts end for the queued session', async ({
 
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0].postData()).toBe('session_id=e2e-queued-0000-1111-2222-333333333333&action=end');
+  await expect(page.locator('#ck-mq .actmsg')).toHaveText('dismissed — row will clear');
 });
