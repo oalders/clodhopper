@@ -989,7 +989,8 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 // event list, each agent's status/doing/CI, and the activity tallies. It
 // deliberately omits cosmetic, purely time-derived values — the "updated" clock,
 // idle counters, and the idle-based row ordering — so the dashboard's poller
-// redraws when something actually happened, not merely because time passed.
+// redraws when something actually happened, not merely because time passed. The
+// one exception is the queue card's next-merge countdown (see below).
 // Components are folded in a stable, idle-independent order for the same reason.
 func viewSignature(d dashboardData) string {
 	h := fnv.New64a()
@@ -1002,7 +1003,7 @@ func viewSignature(d dashboardData) string {
 	}
 
 	// Unlike the per-row queue labels, the queue card's countdown is hashed so it
-	// cannot freeze on a quiet board; it ticks at most once a minute.
+	// cannot freeze on a quiet board; it ticks once a minute until its last minute.
 	fmt.Fprintf(h, "|n:%q", d.QueueNextETA)
 
 	// The section tag makes a row moving between the roster and the queue repaint.
@@ -1206,7 +1207,7 @@ func queueNextETA(queued []Agent, now time.Time) string {
 // etaPhrase is eta relative to now ("in ~12m", or "now" once due): a clock time
 // would be in the server's timezone, not the viewer's.
 func etaPhrase(eta, now time.Time) string {
-	if d := eta.Sub(now); d > 0 {
+	if d := eta.Sub(now); d >= time.Second {
 		return "in ~" + humanizeSeconds(int(d/time.Second))
 	}
 	return "now"

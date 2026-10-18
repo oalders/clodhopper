@@ -3874,6 +3874,10 @@ func TestQueueNextETA(t *testing.T) {
 			t.Errorf("%s: queueNextETA = %q, want %q", tc.name, got, tc.want)
 		}
 	}
+	// ETAs are whole seconds but now is not: under a second left is "now", not "in ~0s".
+	if got := queueNextETA([]Agent{{CIQueueETA: now.Unix() + 1}}, now.Add(500*time.Millisecond)); got != "now" {
+		t.Errorf("sub-second remainder: queueNextETA = %q, want %q", got, "now")
+	}
 }
 
 // A row moving between the roster and the merge-queue section must repaint.
@@ -3882,9 +3886,11 @@ func TestViewSignature_TracksQueueSection(t *testing.T) {
 	if viewSignature(dashboardData{Agents: []Agent{a}}) == viewSignature(dashboardData{QueuedAgents: []Agent{a}}) {
 		t.Error("signature unchanged when a row moved into the merge-queue section")
 	}
-	q := dashboardData{QueuedAgents: []Agent{a}, QueueNextETA: "in ~5m"}
+	now := time.Unix(1_700_000_000, 0)
+	a.CIQueueETA = now.Unix() + 300
+	q := dashboardData{QueuedAgents: []Agent{a}, QueueNextETA: queueNextETA([]Agent{a}, now)}
 	sig := viewSignature(q)
-	q.QueueNextETA = "in ~4m"
+	q.QueueNextETA = queueNextETA([]Agent{a}, now.Add(time.Minute))
 	if viewSignature(q) == sig {
 		t.Error("signature unchanged when the next-merge countdown ticked")
 	}
