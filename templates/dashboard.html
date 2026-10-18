@@ -500,7 +500,7 @@
 
     /* CI is a status dot (emoji) — on green/red/orange a CSS circle with the
        passed/failed count inside, spelled out in its aria-label and title — plus a 🔀 on a merge
-       conflict and/or a hollow #N merge-queue position pill, in a snug single-line column.
+       conflict and/or a #N merge-queue position pill, in a snug single-line column.
        Two slots, left-aligned rather than centered, so a row's markers never shift its badge:
        .ci-main always starts at the same x and is wide enough for a two-digit badge, and .ci-marks
        follows it. The column is only as wide as the most-marked row needs: ciMarkSlots puts a
@@ -526,9 +526,9 @@
     .ci .cibadge.ok { background: var(--ok); }
     .ci .cibadge.fail { background: var(--fail); }
     .ci .cibadge.soft { background: var(--attention); }
-    /* Hollow, so a queue position never reads as a solid pass/fail count. --background is the .status.background blue, not the page --bg. */
-    .ci .cibadge.queue { color: var(--background); border: 1.5px solid currentColor; }
-    .ci .cibadge.queue.failing { color: var(--fail); }
+    /* --background is the .status.background blue, not the page --bg. Solid, because blue text on a tinted row was hard to read. */
+    .ci .cibadge.queue { background: var(--background); }
+    .ci .cibadge.queue.failing { background: var(--fail); }
 
     /* Per-session colour key: a small swatch whose colour comes from SessColors
        (server-assigned). Pairs with the row tint on Recent events to link a
