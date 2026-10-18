@@ -49,7 +49,7 @@ for (const path of ['/?refresh=0', '/?refresh=0&debug=1']) {
             r.selectNodeContents(el);
             return r.getBoundingClientRect();
           };
-          const [ci, branch, status, idle] = ['td.ci', 'td.branch', 'td.status', 'td.idle:not(.status)'].map(box);
+          const [ci, branch, status, idle] = ['td.ci', 'td.branch', 'td.status', 'td[data-label="idle"]'].map(box);
           const name = row.querySelector('td.branch')?.textContent?.trim();
           const out: string[] = [];
           if (ci && branch && branch.left - ci.right > 12) out.push(`"${name}": branch starts ${branch.left - ci.right}px after CI`);

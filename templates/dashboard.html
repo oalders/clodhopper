@@ -591,7 +591,7 @@
         gap: 8px;
       }
       table.roster td.status   { grid-area: 1 / 1 / auto / 3; }
-      table.roster td.idle:not(.status) { grid-area: 1 / 3 / auto / 5; justify-self: end; } /* an idle-state status cell is also .idle */
+      table.roster td[data-label="idle"] { grid-area: 1 / 3 / auto / 5; justify-self: end; } /* not td.idle: an idle-state status cell also carries .idle */
       table.roster td.ci       { grid-area: 2 / 1; white-space: normal; } /* a badge and its 🔀 may wrap: nothing scrolls here */
       table.roster td.branch   { grid-area: 2 / 2 / auto / 5; font-size: var(--fs-md); }
       table.roster td.summary  { grid-area: 3 / 1 / auto / 5; }
@@ -611,7 +611,7 @@
       /* Column names are noise once the layout says what each field is; only
          the idle timer still needs naming. */
       table.roster td::before { content: none; }
-      table.roster td.idle:not(.status)::before { content: attr(data-label); }
+      table.roster td[data-label="idle"]::before { content: attr(data-label); }
       /* Copy-to-clipboard has no utility on a phone — there is nowhere to paste
          a path. Drop the affordance rather than shrink it. */
       table.roster td.branch .copyicon { display: none; }
