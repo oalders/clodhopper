@@ -3756,6 +3756,28 @@ func TestViewSignature_TracksCIDetail(t *testing.T) {
 	if viewSignature(base) == viewSignature(conflict) {
 		t.Error("signature unchanged when a conflict appeared")
 	}
+	if viewSignature(base) == viewSignature(dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1, CIQueue: "queued"}}}) {
+		t.Error("signature unchanged when the PR joined the merge queue")
+	}
+	if viewSignature(base) == viewSignature(dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1, CIQueueReason: "merge conflict"}}}) {
+		t.Error("signature unchanged when the queue removal reason changed")
+	}
+}
+
+// The ejected badge carries GitHub's reason; the queue marker sits after the badge.
+func TestDashboardRendersMergeQueue(t *testing.T) {
+	html := renderDashboard(t, dashboardData{Agents: []Agent{
+		{SessionID: "ejected", Branch: "a", CI: "ejected", CIQueueReason: "merge conflict"},
+		{SessionID: "queued", Branch: "b", CI: "green", CIQueue: "queued"},
+	}})
+	for _, want := range []string{
+		`<td data-label="CI" class="ci ejected"><span class="cibadge fail" role="img" aria-label="removed from merge queue: merge conflict" title="removed from merge queue: merge conflict">⏏</span></td>`,
+		`<span role="img" aria-label="CI passing">🟢</span> <span role="img" aria-label="in merge queue" title="in merge queue">🚂</span></td>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing %s in:\n%s", want, html)
+		}
+	}
 }
 
 // The flip into suppression and the expiry back out of it must both repaint.

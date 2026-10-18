@@ -561,14 +561,17 @@ func (c *cwdCache[T]) get(cwd string, now time.Time) T {
 	return f.val
 }
 
-// ciResult is one PR's CI verdict: State is "", "pending", "green", "failing" or
-// "soft-failing" (only non-required checks failed); Fails and Passes count
-// failed and passed checks (skips are neither).
+// ciResult is one PR's CI verdict: State is "", "pending", "green", "failing",
+// "soft-failing" (only non-required checks failed) or "ejected" (just removed
+// from the merge queue); Fails and Passes count failed and passed checks (skips
+// are neither).
 type ciResult struct {
-	State    string
-	Fails    int
-	Passes   int
-	Conflict bool // merge conflict with the base branch
+	State       string
+	Fails       int
+	Passes      int
+	Conflict    bool   // merge conflict with the base branch
+	Queue       string // "", "queued" or "queue-failing" (the queue entry is UNMERGEABLE)
+	QueueReason string // GitHub's reason for an "ejected" PR's removal from the queue
 }
 
 // lookupCI shells out to `gh pr view` in cwd and summarises the result. It is
@@ -580,13 +583,66 @@ func lookupCI(cwd string) ciResult {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", "--json", "mergeStateStatus,statusCheckRollup")
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", "--json", "id,state,mergeStateStatus,statusCheckRollup")
 	cmd.Dir = cwd
 	out, err := cmd.Output()
 	if err != nil {
 		return ciResult{} // no PR for branch, not a repo, gh unauth, or timeout
 	}
-	return parsePRView(out)
+	r, id := parsePRView(out)
+	if id == "" {
+		return r
+	}
+	// Queue checks run on a temporary gh-readonly-queue commit the rollup never
+	// sees, so ask for the queue entry directly (#183); same ctx, same deadline.
+	cmd = exec.CommandContext(ctx, "gh", "api", "graphql", "-f", "id="+id, "-f", "query="+mergeQueueQuery)
+	cmd.Dir = cwd
+	out, err = cmd.Output()
+	if err != nil {
+		return r // no queue signal, never an error
+	}
+	return applyMergeQueue(r, out)
+}
+
+// mergeQueueQuery fetches a PR's live merge-queue entry and its newest queue
+// add/remove events; the removal event is the only trace an ejection leaves.
+const mergeQueueQuery = `query($id:ID!){node(id:$id){... on PullRequest{mergeQueueEntry{state} timelineItems(last:5,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{__typename ... on RemovedFromMergeQueueEvent{reason}}}}}}`
+
+// applyMergeQueue folds the mergeQueueQuery output into r. A live entry sets
+// Queue; with none, a removal as the newest event means the PR was ejected,
+// which overrides the head commit's (possibly green) state. Any other or
+// unparseable output leaves r unchanged.
+func applyMergeQueue(r ciResult, out []byte) ciResult {
+	var resp struct {
+		Data struct {
+			Node struct {
+				MergeQueueEntry *struct {
+					State string `json:"state"`
+				} `json:"mergeQueueEntry"`
+				TimelineItems struct {
+					Nodes []struct {
+						Typename string `json:"__typename"`
+						Reason   string `json:"reason"`
+					} `json:"nodes"`
+				} `json:"timelineItems"`
+			} `json:"node"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return r
+	}
+	node := resp.Data.Node
+	if e := node.MergeQueueEntry; e != nil {
+		r.Queue = "queued"
+		if e.State == "UNMERGEABLE" {
+			r.Queue = "queue-failing"
+		}
+		return r
+	}
+	if n := node.TimelineItems.Nodes; len(n) > 0 && n[len(n)-1].Typename == "RemovedFromMergeQueueEvent" {
+		r.State, r.QueueReason = "ejected", n[len(n)-1].Reason
+	}
+	return r
 }
 
 // rollupNode is one statusCheckRollup entry: a CheckRun (status/conclusion) or
@@ -598,24 +654,31 @@ type rollupNode struct {
 	State      string `json:"state"`
 }
 
-// parsePRView turns `gh pr view --json mergeStateStatus,statusCheckRollup`
-// output into a ciResult. The rollup drives the state; mergeStateStatus only
-// refines it, because BLOCKED also means "review missing" with green checks.
-// UNKNOWN never flags a conflict: every fresh PR is UNKNOWN for a moment.
-func parsePRView(out []byte) ciResult {
+// parsePRView turns `gh pr view --json id,state,mergeStateStatus,statusCheckRollup`
+// output into a ciResult, plus the PR's node id when it is still OPEN (only an
+// open PR can be in the merge queue). The rollup drives the state;
+// mergeStateStatus only refines it, because BLOCKED also means "review missing"
+// with green checks. UNKNOWN never flags a conflict: every fresh PR is UNKNOWN
+// for a moment.
+func parsePRView(out []byte) (ciResult, string) {
 	var pr struct {
+		ID                string       `json:"id"`
+		State             string       `json:"state"`
 		MergeStateStatus  string       `json:"mergeStateStatus"`
 		StatusCheckRollup []rollupNode `json:"statusCheckRollup"`
 	}
 	if err := json.Unmarshal(out, &pr); err != nil {
-		return ciResult{}
+		return ciResult{}, ""
 	}
 	r := classifyRollup(pr.StatusCheckRollup)
 	if r.State == "failing" && pr.MergeStateStatus == "UNSTABLE" {
 		r.State = "soft-failing" // GitHub says only non-required checks failed
 	}
 	r.Conflict = pr.MergeStateStatus == "DIRTY"
-	return r
+	if pr.State != "OPEN" {
+		return r, ""
+	}
+	return r, pr.ID
 }
 
 // classifyRollup reduces the rollup to one state plus a fail count. Any failure
@@ -917,7 +980,7 @@ func viewSignature(d dashboardData) string {
 		// Subagents and SubagentSince feed the "waiting on N agents" badge: the
 		// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
 		// Launcher feeds the 🔒/🤖 marker, which a resume can flip in place.
-		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%q:%d:%d:%q", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.Launcher, a.Subagents, a.SubagentSince, a.Worktree)
+		fmt.Fprintf(h, "|a:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%q:%q:%q:%d:%d:%q", a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIQueue, a.CIQueueReason, a.Launcher, a.Subagents, a.SubagentSince, a.Worktree)
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)
@@ -1091,5 +1154,6 @@ func enrichCI(agents []Agent, ci *cwdCache[ciResult], now time.Time) {
 	for i := range agents {
 		r := results[agents[i].Cwd]
 		agents[i].CI, agents[i].CIFails, agents[i].CIPasses, agents[i].CIConflict = r.State, r.Fails, r.Passes, r.Conflict
+		agents[i].CIQueue, agents[i].CIQueueReason = r.Queue, r.QueueReason
 	}
 }
