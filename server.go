@@ -1043,9 +1043,10 @@ func demotePendingCI(agents []Agent) {
 // with no known branch are skipped: their BranchGuess already names the dir.
 // main is skipped too: it is the primary checkout, whose dir is just the repo's name.
 func setWorktrees(agents []Agent, roots *cwdCache[string], now time.Time) {
-	found := lookupCwds(agents, roots, now)
+	noSuffix := func(a Agent) bool { return a.Branch == "" || a.Branch == "main" }
+	found := lookupCwds(slices.DeleteFunc(slices.Clone(agents), noSuffix), roots, now)
 	for i, a := range agents {
-		if a.Branch == "" || a.Branch == "main" {
+		if noSuffix(a) {
 			continue
 		}
 		// Guarded: filepath.Base("") is ".", not "". Comparing to the branch's last

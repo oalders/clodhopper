@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -882,13 +883,21 @@ func TestHandleStateForceRefreshesCI(t *testing.T) {
 	}
 }
 
-// setWorktrees names the worktree dir only when it differs from a known branch.
+// setWorktrees names the worktree dir only when it differs from a known branch,
+// and never spends a lookup on a row that cannot show one.
 func TestSetWorktrees(t *testing.T) {
-	roots := &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: filepath.Dir}
+	var mu sync.Mutex
+	looked := map[string]bool{}
+	roots := &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: func(cwd string) string {
+		mu.Lock()
+		looked[cwd] = true
+		mu.Unlock()
+		return filepath.Dir(cwd)
+	}}
 	agents := []Agent{
 		{Branch: "fix-12", Cwd: "/wt/fix-12/x"},
 		{Branch: "fix-1288", Cwd: "/wt/gh-1308/x"},
-		{BranchGuess: "x", Cwd: "/wt/gh-1308/x"},
+		{BranchGuess: "x", Cwd: "/wt/guess/x"},
 		{Branch: "feature/foo", Cwd: "/wt/foo/x"},
 		{Branch: "main", Cwd: "/wt/clodhopper/x"},
 	}
@@ -897,6 +906,14 @@ func TestSetWorktrees(t *testing.T) {
 		if agents[i].Worktree != want {
 			t.Errorf("agents[%d].Worktree = %q, want %q", i, agents[i].Worktree, want)
 		}
+	}
+	for _, cwd := range []string{"/wt/guess/x", "/wt/clodhopper/x"} {
+		if looked[cwd] {
+			t.Errorf("looked up %s, whose row has no branch or is on main", cwd)
+		}
+	}
+	if len(agents) != 5 || agents[2].Cwd != "/wt/guess/x" || agents[4].Cwd != "/wt/clodhopper/x" {
+		t.Errorf("setWorktrees reordered or dropped the caller's rows: %+v", agents)
 	}
 }
 
