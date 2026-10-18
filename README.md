@@ -159,11 +159,18 @@ board used to expose.
 - `--enable-merge` (default off): turn on the roster's **PR-action buttons**.
   When set, each roster row gains squash / squash + admin / close / ready
   buttons — plus a **rebase** button and an **end** button that just dismisses
-  the row — behind a two-step confirm. Clicking one runs your local `merge-pr`,
-  `gh pr ready`, or `git` in that row's worktree — merging or closing the real PR,
-  removing the worktree, and killing the row's tmux session, same as if you'd
-  typed the command yourself. `--squash --admin` bypasses branch protection
-  using your own `gh` authentication.
+  the row — behind a two-step confirm. **ready** and **rebase** run `gh pr ready`
+  or `git` in that row's worktree. **squash** and **close** start your local
+  `merge-pr` in a new `merge-pr` window of the row's own tmux session and return
+  at once, so a merge queue can take as long as it needs: merge-pr merges or
+  closes the real PR, removes the worktree, and kills that tmux session, same
+  as if you'd typed the command yourself, and the row drops once the dashboard
+  sees its pane gone. As with any session ended outside the dashboard, the
+  dead-pane check keeps rows while no row matches a live pane, so a lone row
+  may need **end**. **squash** and **close** need the row to be in a live tmux
+  pane. If merge-pr fails, its window stays open showing the error.
+  `--squash --admin` bypasses branch protection using your own `gh`
+  authentication.
 
   Whatever address the server is bound to, every action that runs a command
   (the PR actions, the session actions, and **rebase**) is accepted only from a
@@ -482,14 +489,15 @@ servers put a stub `tmux` on `PATH` that only lists the seeded panes and fails
 everything else, so no real tmux is ever reached. The suite checks that status
 badges and time cells are never clipped and the page never scrolls sideways at
 1440, 641 and 390px wide, plus the theme toggle, filter strip and refresh CI button.
-`restart.spec.ts` and `swap.spec.ts` run against a second server on
-`127.0.0.1:9325` started with `--enable-merge --pane-peek`, covering the
-restart (all) arm/confirm, Escape and report table, and what a poll's repaint
+`restart.spec.ts`, `swap.spec.ts` and `merge.spec.ts` run against a second
+server on `127.0.0.1:9325` started with `--enable-merge --pane-peek`, covering
+the restart (all) arm/confirm, Escape and report table, what a poll's repaint
 carries over (open peeks and their scroll, open actions panels, focus, and the
-hold-off while an action is busy). That server is just as isolated:
-`restart.spec.ts` answers `/api/action` with a canned report, `swap.spec.ts`
-stubs `/api/pane`, and any exec request a test didn't stub is aborted and fails
-the test, so nothing reaches the real write path. JetBrains
+hold-off while an action is busy), and a squash's result line. That server is
+just as isolated: `restart.spec.ts` and `merge.spec.ts` answer `/api/action`
+with canned results, `swap.spec.ts` stubs `/api/pane`, and any exec request a
+test didn't stub is aborted and fails the test, so nothing reaches the real
+write path. JetBrains
 Mono comes from `@fontsource/jetbrains-mono`, so the measurements match on
 every machine. CI runs it as the blocking `e2e` job and uploads the HTML
 report on failure.

@@ -30,30 +30,31 @@ import (
 // vector to run. This is the security boundary: only these fixed vectors are
 // ever executed, and no request string reaches the command line. binary is a
 // logical name ("merge-pr", "gh" or "git") that handleAction resolves to an
-// injected path. teardown is true for the merge-pr actions, whose success hard-kills the
-// session and therefore must be followed by a synthetic SessionEnd. ok is false
-// for any unknown action, which the caller rejects with 400.
-func actionArgv(action string, force bool) (binary string, args []string, teardown bool, ok bool) {
+// injected path. inTmux is true for the merge-pr actions, which run detached in a
+// new window of the row's tmux session (see startMergeWindow) rather than as a
+// subprocess of serve. ok is false for any unknown action, which the caller
+// rejects with 400.
+func actionArgv(action string, force bool) (binary string, args []string, inTmux bool, ok bool) {
 	switch action {
 	case "squash":
-		binary, args, teardown = "merge-pr", []string{"--squash"}, true
+		binary, args, inTmux = "merge-pr", []string{"--squash"}, true
 	case "squash-admin":
-		binary, args, teardown = "merge-pr", []string{"--squash", "--admin"}, true
+		binary, args, inTmux = "merge-pr", []string{"--squash", "--admin"}, true
 	case "close":
-		binary, args, teardown = "merge-pr", []string{"--close"}, true
+		binary, args, inTmux = "merge-pr", []string{"--close"}, true
 	case "rebase":
 		// rebase is a SEQUENCE of git invocations, not one argv, so the vector is
 		// built by rebaseSteps from a server-derived, regex-validated base branch
 		// (see runRebase). It still passes through this allowlist — the boundary
 		// for anything that execs — which is what makes "git" a legal binary at
 		// all; the argv itself is assembled below the line, never from a request
-		// string. Non-destructive to the row (no teardown) and --force is
+		// string. Runs as a subprocess (not in tmux) and --force is
 		// meaningless here (ignored): the push safety comes from
 		// --force-with-lease.
 		return "git", nil, false, true
 	case "ready":
-		// gh pr ready is non-destructive: the session keeps running, so no
-		// teardown, and --force is meaningless here (ignored).
+		// gh pr ready is a quick subprocess, and --force is meaningless here
+		// (ignored).
 		return "gh", []string{"pr", "ready"}, false, true
 	default:
 		return "", nil, false, false
@@ -61,12 +62,15 @@ func actionArgv(action string, force bool) (binary string, args []string, teardo
 	if force {
 		args = append(args, "--force")
 	}
-	return binary, args, teardown, true
+	return binary, args, inTmux, true
 }
 
 // inflightSet tracks which sessions have an action currently running, so a
-// double-click or a second tab cannot spawn two merge-pr subprocesses racing on
-// the same worktree. Keyed by session id.
+// double-click or a second tab cannot start two actions racing on the same
+// worktree. Keyed by session id. For the merge actions the lock covers only
+// startMergeWindow, not merge-pr's run in the new window: issue #188 accepts
+// that a second click starts a second merge-pr window, and merge-pr itself
+// handles a PR that is already merged or closed.
 type inflightSet struct {
 	mu sync.Mutex
 	m  map[string]bool
@@ -130,8 +134,8 @@ type reportRow struct {
 }
 
 // runAction runs bin with args in dir, capturing combined output. stdin is left
-// nil (closed): merge-pr's one interactive prompt then hits EOF and fails closed
-// instead of hanging a serve goroutine. The child gets its own process group so a
+// nil (closed): any interactive prompt then hits EOF and fails closed instead of
+// hanging a serve goroutine. The child gets its own process group so a
 // timeout can SIGKILL the whole tree (an in-flight `gh`/`git` child reparents and
 // survives if only the bash parent is signalled). The timeout is enforced by
 // context + Cmd.WaitDelay rather than by waiting on Wait(), so a grandchild that
@@ -144,7 +148,6 @@ func runAction(bin, dir string, args []string, timeout time.Duration) actionResu
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
 	cmd.Stdin = nil
-	cmd.Env = actionEnv(os.Environ())
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Setpgid makes the child's pgid equal its pid, so -pid targets the whole
 	// group (the default Cancel would signal the direct child only).
@@ -168,10 +171,10 @@ func runAction(bin, dir string, args []string, timeout time.Duration) actionResu
 
 // runTmux runs the tmux binary with a FIXED argument vector (no shell, no
 // request string on the command line) and returns its clean stdout separately
-// from the combined diagnostic output. Unlike runAction it does NOT strip
-// $TMUX/$TMUX_PANE: targeting is by the explicit -t pane id the caller resolved
-// server-side, and the command must reach the SAME tmux server whose pane ids the
-// peek feature enumerated — which is the server named by serve's inherited $TMUX.
+// from the combined diagnostic output. It keeps serve's inherited $TMUX:
+// targeting is by the explicit -t pane id the caller resolved server-side, and
+// the command must reach the SAME tmux server whose pane ids the peek feature
+// enumerated — which is the server named by serve's inherited $TMUX.
 // Best-effort by construction: a tmux that cannot start returns ExitCode -1. Its
 // timeout is enforced exactly as runAction's (context + Cmd.WaitDelay).
 func runTmux(tmuxBin, dir string, args []string, timeout time.Duration) (stdout string, res actionResult) {
@@ -259,24 +262,59 @@ func runSessionAction(tmuxBin, action, pane, dir string, clearDelay time.Duratio
 	}
 }
 
-// actionEnv strips serve's own tmux context ($TMUX / $TMUX_PANE) from the child
-// environment. An action's cwd already points at the target row's worktree, but
-// merge-pr resolves which tmux session to kill from $TMUX first ("run from inside
-// the worktree's session") and only falls back to matching a pane's start-path
-// against the worktree when $TMUX is unset. Inherited unchanged, that first branch
-// names the session serve itself runs in — so a merge would tear down the
-// dashboard's own tmux session instead of the merged branch's. Dropping these two
-// forces the worktree-matching fallback, which keys off the cwd we already set.
-// Same reason ingest is careful never to trust an ambient $TMUX_PANE.
-func actionEnv(env []string) []string {
-	out := env[:0:0]
-	for _, kv := range env {
-		if strings.HasPrefix(kv, "TMUX=") || strings.HasPrefix(kv, "TMUX_PANE=") {
-			continue
-		}
-		out = append(out, kv)
+// tmuxSessionIDRe is the shape of a tmux session id ("$3"), checked before the
+// id display-message printed becomes part of a -t target.
+var tmuxSessionIDRe = regexp.MustCompile(`^\$\d+$`)
+
+// mergeStarted is what a merge button reports: merge-pr's own outcome lands in
+// its tmux window, not in this response.
+const mergeStarted = "merge started in tmux window merge-pr"
+
+// startMergeWindow runs merge-pr (args from actionArgv) detached in a new
+// `merge-pr` window of the tmux session that owns pane, and returns as soon as
+// the window exists. merge-pr can wait many minutes on a merge queue, so it must
+// not be a subprocess serve times out and kills; and from inside that session
+// its $TMUX/$TMUX_PANE name exactly the session it should tear down on success.
+//
+// new-window's -t takes a window, not a pane, so the pane's session id is looked
+// up first. -a after {end} makes the new window the session's new {end}, and the
+// set-option runs in the same tmux command queue pass (";" is tmux's separator,
+// not a shell's), so even a merge-pr that fails instantly is still there for
+// remain-on-exit to keep its message on screen. With -d, new-window leaves the
+// queue's current target alone, which is why set-option names the window again.
+func startMergeWindow(tmuxBin, mergePR, pane, dir string, args []string) actionResult {
+	// tmux format-expands -c, so a stored cwd holding "#(...)" would run a shell
+	// command; such paths are vanishingly rare, so refuse rather than escape.
+	if strings.Contains(dir, "#") {
+		return actionResult{ExitCode: -1, Output: "worktree path contains '#', which tmux would expand; run merge-pr from the worktree"}
 	}
-	return out
+	// The tmux server's PATH is not serve's, so hand it an absolute path.
+	// No '#' check: tmux format-expands -c's value, not the command argv.
+	bin, err := exec.LookPath(mergePR)
+	if err == nil {
+		bin, err = filepath.Abs(bin)
+	}
+	if err != nil {
+		return actionResult{ExitCode: -1, Output: "merge-pr not found: " + err.Error()}
+	}
+	out, res := runTmux(tmuxBin, dir,
+		[]string{"display-message", "-p", "-t", pane, "#{session_id}"}, tmuxTimeout)
+	if res.ExitCode != 0 || res.TimedOut {
+		return res
+	}
+	sid := strings.TrimSpace(out)
+	if !tmuxSessionIDRe.MatchString(sid) {
+		return actionResult{ExitCode: -1, Output: "display-message returned no valid session id"}
+	}
+	target := sid + ":{end}"
+	// args is never empty, so the command is 2+ argv elements and tmux execs it
+	// directly rather than through a shell.
+	argv := append([]string{"new-window", "-a", "-d", "-t", target, "-c", dir, "-n", "merge-pr", bin}, args...)
+	argv = append(argv, ";", "set-option", "-p", "-t", target, "remain-on-exit", "failed")
+	if _, res := runTmux(tmuxBin, dir, argv, tmuxTimeout); res.ExitCode != 0 || res.TimedOut {
+		return res
+	}
+	return actionResult{Output: mergeStarted}
 }
 
 // exitCode extracts a process exit code from Cmd.Wait's error: 0 on success, the
@@ -370,7 +408,7 @@ func remoteAllowed(remoteAddr string) bool {
 // just writes a synthetic SessionEnd to drop a roster row (the same reason it
 // deliberately never reaches actionArgv, the allowlist boundary for things that
 // do exec). Everything else - the merge-pr/gh PR actions, the tmux session
-// actions, rebase - spawns a subprocess.
+// actions, rebase - runs tmux, gh or git.
 //
 // Phrased as "is this the one exec-free action" rather than as a list of the
 // exec-backed ones so the gate fails CLOSED: an action added later is
@@ -449,11 +487,7 @@ func tokenOK(got, want string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
-// actionTimeout / readyTimeout bound the two action classes. Teardown does real
-// work (docker-teardown, kill-worktree-procs, submodule-forced worktree remove,
-// session kill), so it gets a generous ceiling; gh pr ready is a single API call.
 const (
-	actionTimeout = 120 * time.Second
 	// waitDelay is the hard stop applied after a timeout kills the process
 	// group. cmd.Stdout is a *bytes.Buffer, so os/exec inserts an os.Pipe plus a
 	// copier goroutine, and Wait() blocks until EVERY writer of that pipe closes.
@@ -462,12 +496,13 @@ const (
 	// kill, and holds the write end open — which used to block the handler
 	// goroutine forever and leak its inflight locks. WaitDelay makes os/exec close
 	// the pipe and return exec.ErrWaitDelay instead of waiting on such a process.
-	waitDelay    = 2 * time.Second
+	waitDelay = 2 * time.Second
+	// readyTimeout bounds gh pr ready, a single API call.
 	readyTimeout = 20 * time.Second
-	// tmuxTimeout bounds a session action's tmux invocations. send-keys and
-	// split-window are quick local RPCs to the tmux server (split-window returns
-	// as soon as the pane exists, it does not wait for `nn claude`), so a few
-	// seconds is generous.
+	// tmuxTimeout bounds a session action's tmux invocations. send-keys,
+	// split-window and new-window are quick local RPCs to the tmux server (the
+	// last two return as soon as the pane exists, they do not wait for `nn
+	// claude` or merge-pr), so a few seconds is generous.
 	tmuxTimeout = 10 * time.Second
 	// monitorCIClearDelay is how long the monitor-ci action waits after /clear
 	// before sending /monitor-ci, so the agent's TUI can finish redrawing its
@@ -489,8 +524,8 @@ const (
 	// milliseconds, so a second is generous yet keeps the overrun small.
 	restartProbeFloor = time.Second
 	// rebaseTimeout bounds EACH step of the rebase sequence (fetch, pull
-	// --rebase, push). A fetch or a force-push against a slow remote is the same
-	// order of work as a teardown, so it gets the same generous ceiling.
+	// --rebase, push). A fetch or a force-push against a slow remote can take a
+	// while, so it gets a generous ceiling.
 	rebaseTimeout = 120 * time.Second
 	// rebaseTotalTimeout bounds the WHOLE sequence, not just each step: without
 	// it three 120s steps plus an abort could pin a serve goroutine (and the
@@ -1083,7 +1118,7 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		return
 	}
 
-	binary, args, teardown, ok := actionArgv(action, force)
+	binary, args, inTmux, ok := actionArgv(action, force)
 	if !ok {
 		http.Error(w, "unknown action", http.StatusBadRequest)
 		return
@@ -1110,8 +1145,9 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 	// Compute each lock key ONCE and release the very same string.
 	//
 	// cwdKey's answer is NOT stable across the action: it runs EvalSymlinks, and
-	// the merge actions call merge-pr, which REMOVES the worktree — after which
-	// the same path resolves to its unresolved spelling instead. Releasing under
+	// the worktree can be REMOVED meanwhile (merge-pr tears it down, and its
+	// window outlives this request) — after which the same path resolves to its
+	// unresolved spelling instead. Releasing under
 	// a re-derived key would delete nothing and pin the entry for the life of the
 	// process, 409-ing every later session that resolves there. Today
 	// `defer release(cwdKey(cwd))` would happen to be safe (a deferred call's
@@ -1130,7 +1166,7 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 
 	// Dedupe on the WORK TREE as well as the session. Two roster rows can resolve
 	// to the same cwd (a resumed or restarted agent, a shared checkout), and two
-	// concurrent git/merge-pr runs in one directory means interleaved operations,
+	// concurrent git runs in one directory means interleaved operations,
 	// index.lock contention, or a push firing against whatever branch the other
 	// one left checked out — which would sidestep the cur == base guard entirely.
 	// The key is namespaced ("cwd:") so it cannot collide with a session id, and
@@ -1143,36 +1179,34 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 	}
 	defer cfg.inflight.release(worktreeLock)
 
-	bin := cfg.mergePR
-	timeout := actionTimeout
-	switch binary {
-	case "gh":
-		bin, timeout = cfg.gh, readyTimeout
-	case "git":
-		bin, timeout = cfg.git, rebaseTimeout
+	// The merge-pr actions only START merge-pr, in the row's own tmux session
+	// (see startMergeWindow), so a row with no live pane has nowhere to run it.
+	// No synthetic SessionEnd: the row drops like any session merge-pr kills from
+	// a terminal, once dropDeadPanes sees its pane gone.
+	if inTmux {
+		pane, err := latestPaneForSession(db, sessionID)
+		if err != nil {
+			http.Error(w, "lookup failed", http.StatusInternalServerError)
+			return
+		}
+		if !paneIDRe.MatchString(pane) {
+			writeActionResult(w, actionResult{ExitCode: -1, Output: "session is not in tmux; run merge-pr from a terminal in its worktree"})
+			return
+		}
+		writeActionResult(w, startMergeWindow(cfg.tmux, cfg.mergePR, pane, cwd, args))
+		return
 	}
+
 	// The git binary drives a multi-step sequence rather than one argv (see
 	// runRebase); actionArgv returned no args for it precisely because they are
-	// assembled server-side from a validated base branch. timeout bounds each
-	// step; rebaseTotalTimeout bounds the sequence as a whole.
+	// assembled server-side from a validated base branch. rebaseTimeout bounds
+	// each step; rebaseTotalTimeout bounds the sequence as a whole.
 	var res actionResult
 	if binary == "git" {
-		res = runRebase(bin, cwd, sessionID, timeout, rebaseTotalTimeout, now)
+		res = runRebase(cfg.git, cwd, sessionID, rebaseTimeout, rebaseTotalTimeout, now)
 	} else {
-		res = runAction(bin, cwd, args, timeout)
+		res = runAction(cfg.gh, cwd, args, readyTimeout)
 	}
-
-	// A clean teardown hard-kills the session, so it never emits its own
-	// SessionEnd; write a synthetic one so the row drops. Best-effort: a failure
-	// here does not change what we report about the merge itself. A timeout is
-	// NOT treated as success even at exit 0 (the deadline may have fired after
-	// the merge but mid-teardown), so it never ends the session here.
-	if teardown && res.ExitCode == 0 && !res.TimedOut {
-		if _, err := endSessions(db, EndSelector{SessionID: sessionID}, now); err != nil {
-			debugf("action: endSessions after merge: %v", err)
-		}
-	}
-
 	writeActionResult(w, res)
 }
 

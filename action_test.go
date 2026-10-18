@@ -22,12 +22,12 @@ import (
 
 func TestActionArgv(t *testing.T) {
 	cases := []struct {
-		action   string
-		force    bool
-		binary   string
-		args     []string
-		teardown bool
-		ok       bool
+		action string
+		force  bool
+		binary string
+		args   []string
+		inTmux bool
+		ok     bool
 	}{
 		{"squash", false, "merge-pr", []string{"--squash"}, true, true},
 		{"squash", true, "merge-pr", []string{"--squash", "--force"}, true, true},
@@ -38,7 +38,7 @@ func TestActionArgv(t *testing.T) {
 		{"ready", false, "gh", []string{"pr", "ready"}, false, true},
 		{"ready", true, "gh", []string{"pr", "ready"}, false, true}, // force ignored
 		// rebase carries no argv of its own: runRebase assembles the sequence from
-		// a server-validated base branch. Not a teardown, and force is ignored.
+		// a server-validated base branch. Not in tmux, and force is ignored.
 		{"rebase", false, "git", nil, false, true},
 		{"rebase", true, "git", nil, false, true},
 		{"", false, "", nil, false, false},
@@ -49,9 +49,9 @@ func TestActionArgv(t *testing.T) {
 	}
 	for _, c := range cases {
 		b, a, td, ok := actionArgv(c.action, c.force)
-		if b != c.binary || td != c.teardown || ok != c.ok || !reflect.DeepEqual(a, c.args) {
+		if b != c.binary || td != c.inTmux || ok != c.ok || !reflect.DeepEqual(a, c.args) {
 			t.Errorf("actionArgv(%q,%v) = (%q,%v,%v,%v), want (%q,%v,%v,%v)",
-				c.action, c.force, b, a, td, ok, c.binary, c.args, c.teardown, c.ok)
+				c.action, c.force, b, a, td, ok, c.binary, c.args, c.inTmux, c.ok)
 		}
 	}
 }
@@ -91,45 +91,6 @@ func TestRunActionSuccess(t *testing.T) {
 	}
 	if !strings.Contains(r.Output, "merged fine") {
 		t.Fatalf("output = %q", r.Output)
-	}
-}
-
-func TestActionEnvStripsTmux(t *testing.T) {
-	in := []string{"PATH=/bin", "TMUX=/tmp/tmux-1000/default,123,4", "HOME=/home/x", "TMUX_PANE=%7", "TMUXFOO=keep"}
-	got := actionEnv(in)
-	for _, kv := range got {
-		if strings.HasPrefix(kv, "TMUX=") || strings.HasPrefix(kv, "TMUX_PANE=") {
-			t.Fatalf("tmux var leaked: %q in %v", kv, got)
-		}
-	}
-	// Only the two exact keys are dropped; unrelated vars (incl. TMUX-prefixed
-	// names that aren't TMUX/TMUX_PANE) survive.
-	for _, want := range []string{"PATH=/bin", "HOME=/home/x", "TMUXFOO=keep"} {
-		found := false
-		for _, kv := range got {
-			if kv == want {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("dropped unrelated var %q; got %v", want, got)
-		}
-	}
-}
-
-// End to end: a child spawned by runAction must not see serve's $TMUX, so
-// merge-pr falls back to matching the worktree instead of killing serve's own
-// session. Set TMUX in this process and confirm the subprocess reads it empty.
-func TestRunActionChildHasNoTmux(t *testing.T) {
-	t.Setenv("TMUX", "/tmp/tmux-1000/default,999,0")
-	t.Setenv("TMUX_PANE", "%99")
-	stub := writeStub(t, "envcheck", `echo "TMUX=[${TMUX:-}] PANE=[${TMUX_PANE:-}]"; exit 0`)
-	r := runAction(stub, t.TempDir(), nil, 5*time.Second)
-	if r.ExitCode != 0 || r.TimedOut {
-		t.Fatalf("got %+v", r)
-	}
-	if !strings.Contains(r.Output, "TMUX=[] PANE=[]") {
-		t.Fatalf("child saw serve's tmux env: %q", r.Output)
 	}
 }
 
@@ -347,62 +308,153 @@ func TestHandleActionUnknownActionAndSession(t *testing.T) {
 	}
 }
 
-func TestHandleActionTeardownSuccessEndsSession(t *testing.T) {
-	db := openTestDB(t)
-	dir := t.TempDir()
-	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-1", Cwd: dir, EventType: "Stop", PayloadJSON: "{}"})
-	stub := writeStub(t, "merge", `echo "Merged #7"; exit 0`)
-	cfg := newActionCfg(stub, "/bin/true")
+// mergeTmuxStub is a fake tmux that logs each invocation's argv (one line,
+// space-joined) and answers display-message with sid, the session id a merge
+// button's new-window then targets.
+func mergeTmuxStub(t *testing.T, sid string) (bin, logPath string) {
+	t.Helper()
+	logPath = filepath.Join(t.TempDir(), "tmux.log")
+	bin = writeStub(t, "tmux", `echo "$@" >> `+logPath+`
+if [ "$1" = "display-message" ]; then echo '`+sid+`'; fi
+exit 0`)
+	return bin, logPath
+}
 
-	w := httptest.NewRecorder()
-	handleAction(w, actionReq("live-1", "squash", false, "secret", "127.0.0.1"), db, cfg, time.Date(2026, 8, 12, 10, 5, 0, 0, time.UTC))
-	if w.Code != http.StatusOK {
-		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+// Regression for #188: a merge button must not run merge-pr as a subprocess
+// serve would time out and kill mid merge-queue wait. It starts merge-pr in a
+// new window of the row's own tmux session and returns at once, and the row is
+// left to drop when merge-pr kills that session (no synthetic SessionEnd).
+func TestHandleActionMergeStartsTmuxWindow(t *testing.T) {
+	cases := []struct {
+		action string
+		force  bool
+		args   string
+	}{
+		{"squash", false, "--squash"},
+		{"close", true, "--close --force"},
 	}
-	var got struct {
-		OK       bool   `json:"ok"`
-		ExitCode int    `json:"exitCode"`
-		Output   string `json:"output"`
-	}
-	json.Unmarshal(w.Body.Bytes(), &got)
-	if !got.OK || got.ExitCode != 0 || !strings.Contains(got.Output, "Merged #7") {
-		t.Fatalf("resp = %+v", got)
-	}
-	// Session must now be ended (synthetic SessionEnd is the latest event).
-	if cwd, _ := latestCwdForSession(db, "live-1"); cwd != dir {
-		t.Fatalf("cwd changed unexpectedly: %q", cwd)
-	}
-	rows := queryLatestEventType(t, db, "live-1")
-	if rows != "SessionEnd" {
-		t.Fatalf("latest event = %q, want SessionEnd", rows)
+	for _, c := range cases {
+		t.Run(c.action, func(t *testing.T) {
+			db := openTestDB(t)
+			dir := t.TempDir()
+			insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-1", Cwd: dir, TmuxPane: "%12", EventType: "Stop", PayloadJSON: "{}"})
+			mergePR := writeStub(t, "merge-pr", "exit 0")
+			stub, logPath := mergeTmuxStub(t, "$4")
+			cfg := newActionCfg(mergePR, "/bin/true")
+			cfg.tmux = stub
+
+			w := httptest.NewRecorder()
+			handleAction(w, actionReq("live-1", c.action, c.force, "secret", "127.0.0.1"), db, cfg, time.Date(2026, 8, 12, 10, 5, 0, 0, time.UTC))
+			if got := decodeActionJSON(t, w); !got.OK || got.Output != mergeStarted {
+				t.Fatalf("resp = %+v", got)
+			}
+			got, _ := os.ReadFile(logPath)
+			want := "display-message -p -t %12 #{session_id}\n" +
+				"new-window -a -d -t $4:{end} -c " + dir + " -n merge-pr " + mergePR + " " + c.args +
+				" ; set-option -p -t $4:{end} remain-on-exit failed\n"
+			if string(got) != want {
+				t.Fatalf("argv = %q, want %q", got, want)
+			}
+			if et := queryLatestEventType(t, db, "live-1"); et == "SessionEnd" {
+				t.Fatal("starting a merge must not end the session")
+			}
+		})
 	}
 }
 
-func TestHandleAction_ForceReachesArgv(t *testing.T) {
+// A row with no usable pane has no session to run merge-pr in: the button
+// reports that and nothing runs.
+func TestHandleActionMergeNeedsPane(t *testing.T) {
 	db := openTestDB(t)
 	dir := t.TempDir()
-	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "sfx", Cwd: dir, EventType: "Stop", PayloadJSON: "{}"})
-	stub := writeStub(t, "merge-pr", `echo "$@"; exit 0`)
-	cfg := newActionCfg(stub, "gh")
-	cfg.enabled = true
-	cfg.token = "tok"
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "nopane", Cwd: dir, EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "badpane", Cwd: dir, TmuxPane: "; rm -rf /", EventType: "Stop", PayloadJSON: "{}"})
+	logPath := filepath.Join(t.TempDir(), "ran.log")
+	cfg := newActionCfg(logStub(t, "merge-pr", logPath), "/bin/true")
+	cfg.tmux = logStub(t, "tmux", logPath)
+	for _, sess := range []string{"nopane", "badpane"} {
+		w := httptest.NewRecorder()
+		handleAction(w, actionReq(sess, "squash", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+		if got := decodeActionJSON(t, w); got.OK || !strings.Contains(got.Output, "not in tmux") {
+			t.Fatalf("%s: resp = %+v", sess, got)
+		}
+	}
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatal("tmux or merge-pr ran for a session with no valid pane")
+	}
+}
 
+// The session id display-message prints becomes part of new-window's target, so
+// anything that is not a tmux session id refuses before new-window runs.
+func TestHandleActionMergeRejectsBadSessionID(t *testing.T) {
+	for _, sid := range []string{"", "garbage", "$1;kill-server", "%3"} {
+		t.Run(sid, func(t *testing.T) {
+			db := openTestDB(t)
+			insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-1", Cwd: t.TempDir(), TmuxPane: "%12", EventType: "Stop", PayloadJSON: "{}"})
+			stub, logPath := mergeTmuxStub(t, sid)
+			cfg := newActionCfg(writeStub(t, "merge-pr", "exit 0"), "/bin/true")
+			cfg.tmux = stub
+			w := httptest.NewRecorder()
+			handleAction(w, actionReq("live-1", "squash", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+			if got := decodeActionJSON(t, w); got.OK {
+				t.Fatalf("resp = %+v, want a refusal", got)
+			}
+			got, _ := os.ReadFile(logPath)
+			if strings.Contains(string(got), "new-window") {
+				t.Fatalf("new-window ran with session id %q: %q", sid, got)
+			}
+		})
+	}
+}
+
+// tmux format-expands new-window's -c, so a cwd with "#(...)" in it would run
+// a shell command inside tmux; it is refused before tmux is touched.
+func TestHandleActionMergeRefusesFormatInCwd(t *testing.T) {
+	db := openTestDB(t)
+	dir := filepath.Join(t.TempDir(), "#(touch pwned)")
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-1", Cwd: dir, TmuxPane: "%12", EventType: "Stop", PayloadJSON: "{}"})
+	logPath := filepath.Join(t.TempDir(), "ran.log")
+	cfg := newActionCfg(logStub(t, "merge-pr", logPath), "/bin/true")
+	cfg.tmux = logStub(t, "tmux", logPath)
 	w := httptest.NewRecorder()
-	handleAction(w, actionReq("sfx", "squash", true, "tok", "127.0.0.1"), db, cfg, time.Now())
-	if w.Code != http.StatusOK {
-		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+	handleAction(w, actionReq("live-1", "squash", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if got := decodeActionJSON(t, w); got.OK || !strings.Contains(got.Output, "'#'") {
+		t.Fatalf("resp = %+v", got)
 	}
-	var got struct {
-		OK       bool   `json:"ok"`
-		ExitCode int    `json:"exitCode"`
-		TimedOut bool   `json:"timedOut"`
-		Output   string `json:"output"`
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatal("tmux ran for a cwd tmux would format-expand")
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+}
+
+// A merge-pr that cannot be found is reported before tmux is touched, rather
+// than opening a window that would only show "command not found".
+func TestHandleActionMergePRNotFound(t *testing.T) {
+	db := openTestDB(t)
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-1", Cwd: t.TempDir(), TmuxPane: "%12", EventType: "Stop", PayloadJSON: "{}"})
+	logPath := filepath.Join(t.TempDir(), "ran.log")
+	cfg := newActionCfg(filepath.Join(t.TempDir(), "no-such-merge-pr"), "/bin/true")
+	cfg.tmux = logStub(t, "tmux", logPath)
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("live-1", "squash", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if got := decodeActionJSON(t, w); got.OK || !strings.Contains(got.Output, "merge-pr not found") {
+		t.Fatalf("resp = %+v", got)
 	}
-	if !got.OK || !strings.Contains(got.Output, "--force") {
-		t.Fatalf("resp = %+v, want output containing --force", got)
+	if _, err := os.Stat(logPath); err == nil {
+		t.Fatal("tmux ran although merge-pr could not be found")
+	}
+}
+
+// A tmux that cannot open the window reports its own error, not success.
+func TestHandleActionMergeTmuxFailureSurfaced(t *testing.T) {
+	db := openTestDB(t)
+	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-3", Cwd: t.TempDir(), TmuxPane: "%12", EventType: "Stop", PayloadJSON: "{}"})
+	cfg := newActionCfg(writeStub(t, "merge-pr", "exit 0"), "/bin/true")
+	cfg.tmux = writeStub(t, "tmux", `if [ "$1" = "display-message" ]; then echo '$4'; exit 0; fi
+echo "create window failed" >&2; exit 1`)
+	w := httptest.NewRecorder()
+	handleAction(w, actionReq("live-3", "close", false, "secret", "127.0.0.1"), db, cfg, time.Now())
+	if got := decodeActionJSON(t, w); got.OK || !strings.Contains(got.Output, "create window failed") {
+		t.Fatalf("resp = %+v", got)
 	}
 }
 
@@ -419,28 +471,6 @@ func TestHandleActionReadyDoesNotEndSession(t *testing.T) {
 	}
 	if queryLatestEventType(t, db, "live-2") == "SessionEnd" {
 		t.Fatal("ready must not end the session")
-	}
-}
-
-func TestHandleActionFailureSurfaced(t *testing.T) {
-	db := openTestDB(t)
-	dir := t.TempDir()
-	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-3", Cwd: dir, EventType: "Stop", PayloadJSON: "{}"})
-	stub := writeStub(t, "merge", `echo "uncommitted changes" >&2; exit 1`)
-	cfg := newActionCfg(stub, "/bin/true")
-	w := httptest.NewRecorder()
-	handleAction(w, actionReq("live-3", "close", false, "secret", "127.0.0.1"), db, cfg, time.Now())
-	var got struct {
-		OK     bool   `json:"ok"`
-		Output string `json:"output"`
-	}
-	json.Unmarshal(w.Body.Bytes(), &got)
-	if got.OK || !strings.Contains(got.Output, "uncommitted changes") {
-		t.Fatalf("resp = %+v", got)
-	}
-	// Failure must NOT end the session.
-	if queryLatestEventType(t, db, "live-3") == "SessionEnd" {
-		t.Fatal("failed action must not end the session")
 	}
 }
 
@@ -2440,15 +2470,19 @@ func TestHandleActionWorktreeLockReleasedAfterWorktreeRemoved(t *testing.T) {
 
 	db := openTestDB(t)
 	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "leak-1",
-		Cwd: link, EventType: "Stop", PayloadJSON: "{}"})
+		Cwd: link, TmuxPane: "%1", EventType: "Stop", PayloadJSON: "{}"})
 	// A second row already sitting on the RESOLVED path: this is the request the
 	// leaked key would block.
 	insertEvent(db, Event{TS: "2026-08-12T10:01:00Z", SourceApp: "x", SessionID: "leak-2",
-		Cwd: realDir, EventType: "Stop", PayloadJSON: "{}"})
+		Cwd: realDir, TmuxPane: "%2", EventType: "Stop", PayloadJSON: "{}"})
 
-	// merge-pr tears the worktree down, exactly as the real one does.
-	cfg := newActionCfg(writeStub(t, "merge-pr",
-		"rm -rf "+strconv.Quote(link)+" "+strconv.Quote(realDir)+"; exit 0"), "/bin/true")
+	// merge-pr tears the worktree down, as the real one does; the stub tmux
+	// does it inside new-window, as a merge-pr that finishes at once would.
+	// The single-quoted '$1' is a literal stand-in tmux session id for
+	// display-message to print, not a shell parameter.
+	cfg := newActionCfg(writeStub(t, "merge-pr", "exit 0"), "/bin/true")
+	cfg.tmux = writeStub(t, "tmux", `if [ "$1" = "display-message" ]; then echo '$1'; exit 0; fi
+rm -rf `+strconv.Quote(link)+" "+strconv.Quote(realDir)+"; exit 0")
 
 	w := httptest.NewRecorder()
 	handleAction(w, actionReq("leak-1", "close", false, "secret", "127.0.0.1"), db, cfg, time.Now())
