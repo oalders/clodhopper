@@ -4005,6 +4005,7 @@ func TestCIMarkSlots(t *testing.T) {
 		{"draft", []Agent{{CI: "green", CIDraft: true}}, 1},
 		{"split across rows", []Agent{{CIConflict: true}, {CIQueue: "queue-failing"}}, 1},
 		{"both on one row", []Agent{{}, {CIConflict: true, CIQueue: "queued"}}, 2},
+		{"conflict and draft on one row", []Agent{{CIConflict: true, CIDraft: true}}, 2},
 	} {
 		if got := ciMarkSlots(tc.agents); got != tc.want {
 			t.Errorf("%s: ciMarkSlots = %d, want %d", tc.name, got, tc.want)

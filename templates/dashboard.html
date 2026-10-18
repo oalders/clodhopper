@@ -538,7 +538,7 @@
     /* --background is the .status.background blue, not the page --bg. Solid, because blue text on a tinted row was hard to read. */
     .ci .cibadge.queue { background: var(--background); }
     .ci .cibadge.queue.failing { background: var(--fail); }
-    .ci .cibadge.draft { padding: 0 .3em; border: 1px solid var(--text-3); color: var(--text-3); font-size: var(--fs-2xs); font-weight: normal; }
+    .ci .cibadge.draft { height: calc(1.6 * var(--fs-xs)); padding: 0 .3em; border: 1px solid var(--text-2); color: var(--text-2); font-size: var(--fs-2xs); font-weight: normal; }
 
     /* Per-session colour key: a small swatch whose colour comes from SessColors
        (server-assigned). Pairs with the row tint on Recent events to link a
