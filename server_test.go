@@ -2149,8 +2149,11 @@ func TestDashboardRendersWaitingOnSubagents(t *testing.T) {
 	for _, c := range []struct {
 		n, shells int
 		text      string
-	}{{1, 0, "waiting on 1 agent"}, {2, 0, "waiting on 2 agents"}, {0, 1, "waiting on 1 shell"}, {0, 2, "waiting on 2 shells"}, {1, 1, "waiting on 2 tasks"}} {
+	}{{1, 0, "waiting on 1 agent"}, {2, 0, "waiting on 2 agents"}, {0, 1, "waiting on 1 shell"}, {0, 2, "waiting on 2 shells"}, {1, 1, `waiting on 2 tasks<span class="ck-sr"> (1 agent, 1 shell)</span>`}} {
 		d := dashboardData{Agents: []Agent{{SessionID: "s1", Status: statusSubagents, Subagents: c.n, Shells: c.shells, WaitingOn: waitingOn(c.n, c.shells), SubagentSince: 1700000000, SubagentAge: "6m"}}}
+		if c.n > 0 && c.shells > 0 {
+			d.Agents[0].WaitingOnDetail = "1 agent, 1 shell"
+		}
 		html := renderDashboard(t, d)
 		// The trailing space keeps "waiting on 1 agent" from matching the plural.
 		for _, want := range []string{c.text + " ", `class="status background"`, `<span aria-hidden="true">·</span>`, `<span class="ck-sr">running </span>`, `<span data-since="1700000000">6m</span>`} {
@@ -2158,6 +2161,17 @@ func TestDashboardRendersWaitingOnSubagents(t *testing.T) {
 				t.Errorf("%d subagents: %q missing in:\n%s", c.n, want, html)
 			}
 		}
+	}
+	// The mixed "tasks" count is also broken down on hover (screen readers get it above).
+	d := dashboardData{Agents: []Agent{{SessionID: "s1", Status: statusSubagents, Subagents: 1, Shells: 1, WaitingOn: "2 tasks", WaitingOnDetail: "1 agent, 1 shell"}}}
+	html := renderDashboard(t, d)
+	if want := `<span class="ck-badge" title="1 agent, 1 shell">`; !strings.Contains(html, want) {
+		t.Errorf("mixed breakdown: %q missing", want)
+	}
+	// A plain count carries neither.
+	d.Agents[0] = Agent{SessionID: "s1", Status: statusSubagents, Subagents: 2, WaitingOn: "2 agents"}
+	if html := renderDashboard(t, d); strings.Contains(html, `<span class="ck-badge" title=`) {
+		t.Error("plain count should carry no breakdown title")
 	}
 }
 

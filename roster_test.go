@@ -707,6 +707,10 @@ func TestAgentRoster_WaitingOnShells(t *testing.T) {
 	started(at(9), "s-killed", "b1")
 	ins(at(3), "s-killed", "PostToolUse", "TaskStop", `{"tool_input":{"task_id":"b1"}}`)
 	ins(at(2), "s-killed", "Stop", "", "{}")
+	// So does KillShell's shell_id, from older Claude Code.
+	started(at(9), "s-killshell", "b1")
+	ins(at(3), "s-killshell", "PostToolUse", "KillShell", `{"tool_input":{"shell_id":"b1"}}`)
+	ins(at(2), "s-killshell", "Stop", "", "{}")
 	// A restarted session (nn --resume keeps the id) lost its shells.
 	started(at(9), "s-resumed", "b1")
 	ins(at(4), "s-resumed", "SessionStart", "", `{"source":"resume"}`)
@@ -746,6 +750,7 @@ func TestAgentRoster_WaitingOnShells(t *testing.T) {
 		{"s-done", statusWaiting, 0, 0, 0, ""},
 		{"s-two", statusSubagents, 1, 0, 7, "1 shell"},
 		{"s-killed", statusWaiting, 0, 0, 0, ""},
+		{"s-killshell", statusWaiting, 0, 0, 0, ""},
 		{"s-resumed", statusWaiting, 0, 0, 0, ""},
 		{"s-compact", statusSubagents, 1, 0, 9, "1 shell"},
 		{"s-both", statusSubagents, 1, 1, 6, "2 tasks"},
@@ -762,6 +767,13 @@ func TestAgentRoster_WaitingOnShells(t *testing.T) {
 				t.Errorf("%s: want SubagentSince %d, got %d", c.sess, want, a.SubagentSince)
 			}
 		}
+	}
+	// Only the mixed count spells out its parts; a plain one needs no breakdown.
+	if d := got["s-both"].WaitingOnDetail; d != "1 agent, 1 shell" {
+		t.Errorf("s-both: WaitingOnDetail = %q, want %q", d, "1 agent, 1 shell")
+	}
+	if d := got["s-one"].WaitingOnDetail; d != "" {
+		t.Errorf("s-one: WaitingOnDetail = %q, want none", d)
 	}
 }
 

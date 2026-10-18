@@ -201,6 +201,13 @@ func filterToolInput(ti map[string]any) map[string]any {
 		if !toolInputAllow[k] {
 			continue
 		}
+		// These two are only ever matched against a hoisted task id, so a value
+		// of any other shape is refused rather than stored as free text.
+		if k == "task_id" || k == "shell_id" {
+			if id, ok := v.(string); !ok || !taskIDRe.MatchString(id) {
+				continue
+			}
+		}
 		if sv, keep := sanitizeScalar(v); keep {
 			out[k] = sv
 		}

@@ -173,3 +173,28 @@ func TestScrubPayload_HoistsBackgroundTaskIDs(t *testing.T) {
 		}
 	}
 }
+
+// TaskStop's task_id (and KillShell's shell_id) is only ever matched against a
+// hoisted task id, so only an id-shaped value is kept.
+func TestScrubPayload_ToolInputTaskIDMustBeIDShaped(t *testing.T) {
+	for raw, want := range map[string]string{
+		`{"tool_input":{"task_id":"bmrjj0byy"}}`:              "bmrjj0byy",
+		`{"tool_input":{"shell_id":"bash_1"}}`:                "bash_1",
+		`{"tool_input":{"task_id":"stop the deploy please"}}`: "",
+		`{"tool_input":{"task_id":42}}`:                       "",
+	} {
+		var p struct {
+			ToolInput map[string]any `json:"tool_input"`
+		}
+		if err := json.Unmarshal([]byte(scrubPayload([]byte(raw))), &p); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := p.ToolInput["task_id"].(string)
+		if id, _ := p.ToolInput["shell_id"].(string); id != "" {
+			got = id
+		}
+		if got != want {
+			t.Errorf("%s: kept id %q, want %q", raw, got, want)
+		}
+	}
+}

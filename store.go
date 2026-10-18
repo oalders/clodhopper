@@ -422,6 +422,7 @@ type Agent struct {
 	Subagents        int    // background subagents still running while the main agent waits; set only for statusSubagents
 	Shells           int    // background shells still running while the main agent waits; set only for statusSubagents
 	WaitingOn        string // the badge's count text for Subagents and Shells ("1 agent", "2 shells", "3 tasks"); see waitingOn
+	WaitingOnDetail  string // when WaitingOn says "tasks", their breakdown ("1 agent, 2 shells") for the badge's title and screen readers
 	SubagentSince    int64  // unix seconds of the earliest start among those subagents and shells, so the client can tick their running time in place
 	SubagentAge      string // humanised time since SubagentSince, the initial value the client then ticks
 	CI               string // merge-readiness ("", "pending", "green", "failing", "soft-failing", "ejected"); filled by the server layer via gh
@@ -761,6 +762,9 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 			if a.Subagents+a.Shells > 0 {
 				a.Status, a.StatusRank = statusSubagents, rankBackground
 				a.WaitingOn = waitingOn(a.Subagents, a.Shells)
+				if a.Subagents > 0 && a.Shells > 0 {
+					a.WaitingOnDetail = waitingOn(a.Subagents, 0) + ", " + waitingOn(0, a.Shells)
+				}
 				a.SubagentSince = earliest.Unix()
 				a.SubagentAge = humanizeSeconds(int(max(0, now.Unix()-a.SubagentSince)))
 			}
@@ -1008,7 +1012,9 @@ func foldToolEvents(events []Event) []EventRow {
 // humanizeSeconds renders a compact age like "12s", "4m", or "1h".
 // waitingOn is the count text of the "waiting on …" badge: "1 agent", "2 shells",
 // or, when both kinds are running, their sum as "tasks" (Claude Code's own word
-// for either) so the nowrap badge stays within the status column's width.
+// for either) so the nowrap badge stays within the status column's width: the
+// 32ch budget in dashboard.html's roster <colgroup> comment assumes no noun
+// here is longer than "agents". Callers pass a nonzero total.
 func waitingOn(subagents, shells int) string {
 	n, noun := subagents+shells, "task"
 	switch {
