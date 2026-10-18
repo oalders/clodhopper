@@ -29,6 +29,14 @@ in the pre-commit hook (`scripts/pre-commit --init` to enable) and in CI
 (`.github/workflows/lint.yml`), so keep code `precious lint --all`-clean. See
 README.md "Linting and formatting".
 
+**Never touch the user's real tmux server.** This code drives tmux, and the
+default socket is the user's live session: one `tmux kill-server` there kills
+every agent and terminal they have open. Tests use fake `tmux` stubs on `PATH`
+(the e2e harness's `serve.sh` does the same); prefer them. If you must probe
+real tmux behaviour, give every call a scratch socket — `tmux -L <name> …` or
+`tmux -S "$TMPDIR/<sock>" …` — and only ever kill that socket's server. Unsetting
+`TMUX` does not isolate a call: it still reaches the default socket.
+
 ## Architecture
 
 The defining constraint is **capture and viewing are decoupled through the shared
