@@ -586,20 +586,21 @@
          fields (app / id / session) fall to one muted footer line. */
       table.roster tbody tr:not(.panerow):not(.actrow) {
         display: grid;
-        grid-template-columns: auto minmax(0, 1fr) auto;
+        grid-template-columns: auto minmax(0, 1fr) auto auto;
         align-items: baseline;
         gap: 8px;
       }
       table.roster td.status   { grid-area: 1 / 1 / auto / 3; }
-      table.roster td.idle     { grid-area: 1 / 3; justify-self: end; }
+      table.roster td[data-label="idle"] { grid-area: 1 / 3 / auto / 5; justify-self: end; } /* not td.idle: an idle-state status cell also carries .idle */
       table.roster td.ci       { grid-area: 2 / 1; white-space: normal; } /* a badge and its 🔀 may wrap: nothing scrolls here */
-      table.roster td.branch   { grid-area: 2 / 2 / auto / 4; font-size: var(--fs-md); }
-      table.roster td.summary  { grid-area: 3 / 1 / auto / 4; }
-      table.roster td[data-label="app"] { grid-area: 4 / 1; }
-      table.roster td.sess     { grid-area: 4 / 2; }
-      table.roster td.launcher { grid-area: 4 / 3; justify-self: end; }
+      table.roster td.branch   { grid-area: 2 / 2 / auto / 5; font-size: var(--fs-md); }
+      table.roster td.summary  { grid-area: 3 / 1 / auto / 5; }
+      /* Spans the 1fr track so a long app name can't widen the CI column and squeeze the branch. */
+      table.roster td[data-label="app"] { grid-area: 4 / 1 / auto / 3; }
+      table.roster td.sess     { grid-area: 4 / 3; }
+      table.roster td.launcher { grid-area: 4 / 4; justify-self: end; }
       table.roster td.launcher:empty { display: none; }
-      table.roster td.actions  { grid-area: 5 / 1 / auto / 4; }
+      table.roster td.actions  { grid-area: 5 / 1 / auto / 5; }
       /* The footer line is context, not content. */
       table.roster td[data-label="app"],
       table.roster td.sess     { color: var(--text-3); font-size: var(--fs-xs); }
@@ -610,7 +611,7 @@
       /* Column names are noise once the layout says what each field is; only
          the idle timer still needs naming. */
       table.roster td::before { content: none; }
-      table.roster td.idle::before { content: attr(data-label); }
+      table.roster td[data-label="idle"]::before { content: attr(data-label); }
       /* Copy-to-clipboard has no utility on a phone — there is nowhere to paste
          a path. Drop the affordance rather than shrink it. */
       table.roster td.branch .copyicon { display: none; }

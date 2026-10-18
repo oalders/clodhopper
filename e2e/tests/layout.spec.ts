@@ -33,5 +33,31 @@ for (const path of ['/?refresh=0', '/?refresh=0&debug=1']) {
       }));
       expect(scrollWidth).toBeLessThanOrEqual(innerWidth);
     });
+
+    // A long app name in the card footer must not widen the CI track and squeeze the branch.
+    test('card branch sits beside CI and status clears idle on a phone', async ({ page }) => {
+      test.skip(page.viewportSize()!.width > 640, 'the roster is only a card grid on a phone');
+      const cards = page.locator('table.roster tbody tr:not(.panerow):not(.actrow)');
+      expect(await cards.count()).toBeGreaterThan(0);
+      const bad = await cards.evaluateAll((rows) =>
+        rows.flatMap((row) => {
+          // The contents' extent, not the cell's: a grid cell stretches to fill its track.
+          const box = (sel: string) => {
+            const el = row.querySelector(sel);
+            if (!el) return undefined;
+            const r = document.createRange();
+            r.selectNodeContents(el);
+            return r.getBoundingClientRect();
+          };
+          const [ci, branch, status, idle] = ['td.ci', 'td.branch', 'td.status', 'td[data-label="idle"]'].map(box);
+          const name = row.querySelector('td.branch')?.textContent?.trim();
+          const out: string[] = [];
+          if (ci && branch && branch.left - ci.right > 12) out.push(`"${name}": branch starts ${branch.left - ci.right}px after CI`);
+          if (status && idle && status.right > idle.left) out.push(`"${name}": status overlaps idle by ${status.right - idle.left}px`);
+          return out;
+        }),
+      );
+      expect(bad).toEqual([]);
+    });
   });
 }
