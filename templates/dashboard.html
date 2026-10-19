@@ -2800,6 +2800,9 @@
      do). */}}
 {{ define "branchinner" }}{{ if .Branch }}{{ if .Rebasing }}<span role="img" aria-label="mid-rebase" title="mid-rebase">🚧</span> <span class="rebase-branch">{{ .Branch }}</span>{{ else }}{{ .Branch }}{{ end }}{{ else }}—{{ end }}{{ end }}
 
+{{/* peekbtn is the live-pane peek toggle, shared by the roster and merge-queue rows. */}}
+{{ define "peekbtn" }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" data-peek="{{ .SessionID }}"{{ with .Repo }} data-repo="{{ . }}"{{ end }} aria-expanded="false" aria-controls="panerow-{{ .SessionID }}" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}
+
 {{/* branchinnerroster is the roster's branch renderer. It is branchinner plus one
      fallback: when git never resolved a branch (a detached HEAD that is not a
      rebase — see gitBranch), the session would otherwise show a bare "—" with no
@@ -2809,9 +2812,6 @@
      subdirectory. It is roster-only because only Agent carries a cwd to guess
      from; SourceCount (activity) and EventRow (recent events) have none. A known
      branch is suffixed " / dir" when its worktree dir differs (Worktree, #184). */}}
-{{/* peekbtn is the live-pane peek toggle, shared by the roster and merge-queue rows. */}}
-{{ define "peekbtn" }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" data-peek="{{ .SessionID }}"{{ with .Repo }} data-repo="{{ . }}"{{ end }} aria-expanded="false" aria-controls="panerow-{{ .SessionID }}" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}
-
 {{ define "branchinnerroster" }}{{ if .Branch }}{{ template "branchinner" . }}{{ with .Worktree }}<span class="worktree"> / {{ . }}</span>{{ end }}{{ else if .BranchGuess }}<span class="branch-guess" title="worktree directory — branch name unknown">{{ .BranchGuess }}</span>{{ else }}—{{ end }}{{ end }}
 
 {{/* branchcell is the plain branch <td> used by the recent-events table; the
