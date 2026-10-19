@@ -2123,6 +2123,7 @@ func TestContentTemplate_PeekControlsCellA11yAndEmptyState(t *testing.T) {
 // row must render as many cells as the header, the peek panerow (spanning them
 // all) only for a live pane with peek on, and a row with neither control "—".
 func TestContentTemplate_QueueActionsColumn(t *testing.T) {
+	tdRe, dashRe := regexp.MustCompile(`<td[\s>]`), regexp.MustCompile(`class="ctrlwrap">\s*—\s*</div>`)
 	queued := []Agent{
 		{SessionID: "live", Branch: "a", TmuxPane: "%3", LiveTmux: true},
 		{SessionID: "dead", Branch: "b"},
@@ -2152,12 +2153,12 @@ func TestContentTemplate_QueueActionsColumn(t *testing.T) {
 			}
 			for i, row := range rows {
 				row, _, _ = strings.Cut(row, `<tr class="panerow"`)
-				if tds := strings.Count(row, "<td "); tds != ths {
+				if tds := len(tdRe.FindAllString(row, -1)); tds != ths {
 					t.Errorf("row %d renders %d cells under %d headers:\n%s", i, tds, ths, row)
 				}
 				// Only the last row has neither a live pane nor a session id; the dead one has end under exec.
 				wantDash := i == 2 || (i == 1 && !tc.exec)
-				if got := strings.Contains(row, `<div class="ctrlwrap">—</div>`); got != wantDash {
+				if got := dashRe.MatchString(row); got != wantDash {
 					t.Errorf("row %d shows \"—\" = %v, want %v:\n%s", i, got, wantDash, row)
 				}
 			}

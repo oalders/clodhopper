@@ -139,6 +139,9 @@ test('end in the merge-queue section posts end for the queued session', async ({
   await page.evaluate(() => { window.__ckActionBusy = 1; });
   await page.locator('#ck-mq summary').click();
   const end = page.locator('#ck-mq button.pract[data-action="end"]');
+  // An empty result line must not open a second flex line under the controls. Not
+  // toBeHidden: Playwright already counts an empty zero-height box as hidden.
+  await expect(page.locator('#ck-mq .actmsg')).toHaveCSS('display', 'none');
   await end.click();
   await expect(end).toHaveText('✓ confirm');
   await end.click();
@@ -190,5 +193,7 @@ test('the merge-queue actions cell fits a phone', async ({ page }) => {
   await page.locator('#ck-mq summary').click();
   const peek = (await page.locator('#ck-mq td.actions button.peek').boundingBox())!;
   expect(peek.height).toBeGreaterThanOrEqual(44);
+  const end = (await page.locator('#ck-mq td.actions button.pract[data-action="end"]').boundingBox())!;
+  expect(end.height).toBeGreaterThanOrEqual(44);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
