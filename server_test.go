@@ -2119,6 +2119,51 @@ func TestContentTemplate_PeekControlsCellA11yAndEmptyState(t *testing.T) {
 	}
 }
 
+// The merge-queue table gains an actions column under peek OR merge (#199): every
+// row must render as many cells as the header, the peek panerow (colspan 6) only
+// for a live pane with peek on, and a row with neither control falls back to "—".
+func TestContentTemplate_QueueActionsColumn(t *testing.T) {
+	queued := []Agent{
+		{SessionID: "live", Branch: "a", TmuxPane: "%3", LiveTmux: true},
+		{SessionID: "dead", Branch: "b"},
+	}
+	for _, tc := range []struct {
+		name       string
+		peek, exec bool
+	}{
+		{"peek only", true, false},
+		{"exec only", false, true},
+		{"both", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			d := dashboardData{PeekEnabled: tc.peek, ExecEnabled: tc.exec, QueuedAgents: queued}
+			if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+				t.Fatal(err)
+			}
+			_, table, _ := strings.Cut(buf.String(), `<table class="mq">`)
+			table, _, _ = strings.Cut(table, "</table>")
+			head, body, _ := strings.Cut(table, "</thead>")
+			ths := strings.Count(head, "<th>") + strings.Count(head, "<th ")
+			for _, row := range strings.Split(body, "<tr>")[1:] {
+				row, _, _ = strings.Cut(row, `<tr class="panerow"`)
+				if tds := strings.Count(row, "<td "); tds != ths {
+					t.Errorf("row renders %d cells under %d headers:\n%s", tds, ths, row)
+				}
+			}
+			if got := strings.Contains(body, `data-peek-row="live"><td colspan="6">`); got != tc.peek {
+				t.Errorf("live-pane panerow rendered = %v, want %v:\n%s", got, tc.peek, body)
+			}
+			if strings.Contains(body, `data-peek-row="dead"`) {
+				t.Errorf("a row without a live pane must not get a panerow:\n%s", body)
+			}
+			if got := strings.Contains(body, `<div class="ctrlwrap">—</div>`); got != !tc.exec {
+				t.Errorf("row with neither control shows \"—\" = %v, want %v:\n%s", got, !tc.exec, body)
+			}
+		})
+	}
+}
+
 // renderDashboard executes the full dashboardTmpl (mirroring handleDashboard,
 // server.go:532) rather than just the "content" sub-template, since the
 // data-csrf attribute lives on <body>, outside "content".

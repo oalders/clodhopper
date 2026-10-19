@@ -242,16 +242,20 @@
        + text-overflow:ellipsis) so a long name never breaks the fixed layout. */
     td.tmux { white-space: nowrap; color: var(--text-2); }
     td.launcher, th.launcher { padding-left: 0; padding-right: 0; text-align: center; }
-    /* The roster's shared controls cell (class "actions") holds the live-pane
-       peek toggle and the merge "⋯ actions" toggle as inline siblings. The flex
-       lives on an inner .ctrlwrap wrapper, NOT the <td>: a display:flex <td> stops
-       being a table-cell box and drops out of border-collapse, so it paints its
-       own bottom border as an orphaned bar floating above the shared row
-       separator. Keeping the <td> a real cell lets its border collapse into the
-       row grid like every other column. */
+    /* The roster's shared controls cell (class "actions"; the queue card's reuses
+       it) holds the live-pane peek toggle and the merge "⋯ actions" toggle as
+       inline siblings. The flex lives on an inner .ctrlwrap wrapper, NOT the
+       <td>: a display:flex <td> stops being a table-cell box and drops out of
+       border-collapse, so it paints its own bottom border as an orphaned bar
+       floating above the shared row separator. Keeping the <td> a real cell lets
+       its border collapse into the row grid like every other column. */
     table.roster td.actions .ctrlwrap, table.mq td.actions .ctrlwrap { display: flex; align-items: center; gap: 6px; }
     /* Pin ⋯ right even when no peek toggle precedes it (rows without a live pane). */
     table.roster td.actions .ctrlwrap .actbtn { margin-left: auto; }
+    /* In the narrow queue cell, end's result wraps onto its own full-width line under ⤢ + end. */
+    table.mq td.actions .ctrlwrap { flex-wrap: wrap; }
+    table.mq td.actions .rowform { display: contents; }
+    table.mq td.actions .actmsg { flex-basis: 100%; }
     td.idle { font-variant-numeric: tabular-nums; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
     td.summary em { font-style: italic; color: var(--text-3); } /* a completed phase, not one in progress */
@@ -622,7 +626,7 @@
       table.roster td.tmux     { display: none; }
       /* Column names are noise once the layout says what each field is; only
          the idle timer still needs naming. */
-      table.roster td::before { content: none; }
+      table.roster td::before, table.mq td.actions::before { content: none; }
       table.roster td[data-label="idle"]::before { content: attr(data-label); }
       /* Copy-to-clipboard has no utility on a phone — there is nowhere to paste
          a path. Drop the affordance rather than shrink it. */
@@ -2803,6 +2807,9 @@
      subdirectory. It is roster-only because only Agent carries a cwd to guess
      from; SourceCount (activity) and EventRow (recent events) have none. A known
      branch is suffixed " / dir" when its worktree dir differs (Worktree, #184). */}}
+{{/* peekbtn is the live-pane peek toggle, shared by the roster and merge-queue rows. */}}
+{{ define "peekbtn" }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" data-peek="{{ .SessionID }}"{{ with .Repo }} data-repo="{{ . }}"{{ end }} aria-expanded="false" aria-controls="panerow-{{ .SessionID }}" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}
+
 {{ define "branchinnerroster" }}{{ if .Branch }}{{ template "branchinner" . }}{{ with .Worktree }}<span class="worktree"> / {{ . }}</span>{{ end }}{{ else if .BranchGuess }}<span class="branch-guess" title="worktree directory — branch name unknown">{{ .BranchGuess }}</span>{{ else }}—{{ end }}{{ end }}
 
 {{/* branchcell is the plain branch <td> used by the recent-events table; the
@@ -2874,7 +2881,7 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>{{ end }}
-          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" data-peek="{{ .SessionID }}"{{ with .Repo }} data-repo="{{ . }}"{{ end }} aria-expanded="false" aria-controls="panerow-{{ .SessionID }}" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · reload plugins · squash · admin · close · ready · rebase · end"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · reload plugins · squash · admin · close · ready · rebase · end"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}10{{ else }}9{{ end }}"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
@@ -2943,7 +2950,7 @@
           <td class="ci" data-label="queue"><span class="cibadge queue" aria-hidden="true">{{ .CIQueuePos }}</span></td>
           <td data-label="detail">{{ .CIQueueLabel }}</td>
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
-          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}<button type="button" class="peek" data-pane="{{ .TmuxPane }}" data-peek="{{ .SessionID }}"{{ with .Repo }} data-repo="{{ . }}"{{ end }} aria-expanded="false" aria-controls="panerow-{{ .SessionID }}" aria-label="{{ if .TmuxSession }}show pane for {{ .TmuxSession }}{{ else }}show pane{{ end }}" title="{{ if .TmuxSession }}{{ .TmuxSession }} — {{ end }}show this pane's last lines">⤢</button>{{ end }}{{ if $act }}<span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}"><button type="button" class="pract" data-action="end" aria-label="end{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button><span class="actmsg"></span></span>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}"><button type="button" class="pract" data-action="end" aria-label="end{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button><span class="actmsg"></span></span>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="6"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
         {{ end }}

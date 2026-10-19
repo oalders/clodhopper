@@ -147,16 +147,32 @@ test('the merge-queue section keeps its open or closed state across a repaint', 
   await expect(mq).not.toHaveAttribute('open');
 });
 
-test('a queued row keeps its open peek inside the merge-queue section across a repaint', async ({ page }) => {
-  const q = 'e2e-queued-0000-1111-2222-333333333333';
-  await page.locator('#ck-mq summary').click();
-  const cap = await openPeek(page, q);
-  await expect(page.locator(`#ck-mq tr.panerow[data-peek-row="${q}"]`)).toBeVisible();
-  await repaint(page, `${peekRow(q)} .panecap`);
+const queued = 'e2e-queued-0000-1111-2222-333333333333';
+const mqPeekRow = `#ck-mq tr.panerow[data-peek-row="${queued}"]`;
 
-  await expect(page.locator(`#ck-mq tr.panerow[data-peek-row="${q}"]`)).toBeVisible();
-  await expect(page.locator(peekBtn(q))).toHaveAttribute('aria-expanded', 'true');
+test('a queued row keeps its open peek inside the merge-queue section across a repaint', async ({ page }) => {
+  await page.locator('#ck-mq summary').click();
+  const cap = await openPeek(page, queued);
+  await expect(page.locator(mqPeekRow)).toBeVisible();
+  await repaint(page, `${mqPeekRow} .panecap`);
+
+  await expect(page.locator(mqPeekRow)).toBeVisible();
+  await expect(page.locator(peekBtn(queued))).toHaveAttribute('aria-expanded', 'true');
   expect(await cap.textContent()).toBe(capture);
   expect(await cap.evaluate((el) => el.scrollTop)).toBe(scrolled);
   await expect(cap).toBeFocused();
+});
+
+test('a queued row\'s peek closes on a second click and on Esc from its capture', async ({ page }) => {
+  await page.locator('#ck-mq summary').click();
+  const btn = page.locator(peekBtn(queued));
+  await openPeek(page, queued);
+  await btn.click();
+  await expect(btn).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator(mqPeekRow)).toBeHidden();
+
+  const cap = await openPeek(page, queued);
+  await cap.press('Escape');
+  await expect(page.locator(mqPeekRow)).toBeHidden();
+  await expect(btn).toBeFocused();
 });

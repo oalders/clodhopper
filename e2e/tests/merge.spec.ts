@@ -145,7 +145,15 @@ test('end in the merge-queue section posts end for the queued session', async ({
 
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0].postData()).toBe('session_id=e2e-queued-0000-1111-2222-333333333333&action=end');
-  await expect(page.locator('#ck-mq .actmsg')).toHaveText('dismissed — row will clear');
+  const msg = page.locator('#ck-mq .actmsg');
+  await expect(msg).toHaveText('dismissed — row will clear');
+  // The fixed-width actions cell wraps the result onto its own line under ⤢, inside the cell.
+  const cell = (await page.locator('#ck-mq td.actions').boundingBox())!;
+  const peek = (await page.locator('#ck-mq button.peek').boundingBox())!;
+  const box = (await msg.boundingBox())!;
+  expect(box.x).toBeLessThanOrEqual(peek.x);
+  expect(box.y).toBeGreaterThanOrEqual(peek.y + peek.height);
+  expect(box.x + box.width).toBeLessThanOrEqual(cell.x + cell.width);
 });
 
 // The actions col is fixed and the session col flexes, not the other way round (#199).
@@ -168,4 +176,13 @@ test('the merge-queue session name and its peek + end controls are not clipped',
   expect(await actions.evaluate(clipped)).toBe(false);
   await actions.locator('button.actcancel').click();
   await expect(end).toHaveText('end');
+});
+
+// On a phone the queue card's peek is a 44px touch target and the card never scrolls sideways.
+test('the merge-queue actions cell fits a phone', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('#ck-mq summary').click();
+  const peek = (await page.locator('#ck-mq td.actions button.peek').boundingBox())!;
+  expect(peek.height).toBeGreaterThanOrEqual(44);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
