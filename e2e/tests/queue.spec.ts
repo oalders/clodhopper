@@ -31,6 +31,7 @@ test('a merged PR shows a merged chip, not its stale CI', async ({ page }) => {
   await expect(merged.getByRole('img', { name: 'pull request merged' })).toHaveText('merged');
   await expect(merged.locator('.cibadge.fail')).toHaveCount(0);
   await expect(merged.getByRole('img', { name: 'merge conflict with base' })).toHaveCount(0);
+  await expect(merged.getByRole('img', { name: 'no CI' })).toHaveCount(0);
   // Seeded "waiting for you" (a Stop); a finished PR relaxes it to background.
   await expect(merged.locator('td.status')).toHaveText(/^waiting$/);
 });
