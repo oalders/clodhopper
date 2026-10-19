@@ -744,7 +744,10 @@ func classifyRollup(nodes []rollupNode) ciResult {
 		case "pending":
 			// A same-named job already finished, so this status is a gate
 			// waiting on something else, usually the user (#201).
-			pending = pending || n.Typename != "StatusContext" || !done[n.Context]
+			if n.Typename == "StatusContext" && done[n.Context] {
+				continue
+			}
+			pending = true
 		case "pass":
 			r.Passes++
 		}
