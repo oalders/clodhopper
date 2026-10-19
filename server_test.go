@@ -2120,12 +2120,13 @@ func TestContentTemplate_PeekControlsCellA11yAndEmptyState(t *testing.T) {
 }
 
 // The merge-queue table gains an actions column under peek OR merge (#199): every
-// row must render as many cells as the header, the peek panerow (colspan 6) only
-// for a live pane with peek on, and a row with neither control falls back to "—".
+// row must render as many cells as the header, the peek panerow (spanning them
+// all) only for a live pane with peek on, and a row with neither control "—".
 func TestContentTemplate_QueueActionsColumn(t *testing.T) {
 	queued := []Agent{
 		{SessionID: "live", Branch: "a", TmuxPane: "%3", LiveTmux: true},
 		{SessionID: "dead", Branch: "b"},
+		{Branch: "c"}, // no session id, so no end button either
 	}
 	for _, tc := range []struct {
 		name       string
@@ -2145,20 +2146,27 @@ func TestContentTemplate_QueueActionsColumn(t *testing.T) {
 			table, _, _ = strings.Cut(table, "</table>")
 			head, body, _ := strings.Cut(table, "</thead>")
 			ths := strings.Count(head, "<th>") + strings.Count(head, "<th ")
-			for _, row := range strings.Split(body, "<tr>")[1:] {
+			rows := strings.Split(body, "<tr>")[1:]
+			if len(rows) != len(queued) {
+				t.Fatalf("inspected %d rows, want %d:\n%s", len(rows), len(queued), body)
+			}
+			for i, row := range rows {
 				row, _, _ = strings.Cut(row, `<tr class="panerow"`)
 				if tds := strings.Count(row, "<td "); tds != ths {
-					t.Errorf("row renders %d cells under %d headers:\n%s", tds, ths, row)
+					t.Errorf("row %d renders %d cells under %d headers:\n%s", i, tds, ths, row)
+				}
+				// Only the last row has neither a live pane nor a session id; the dead one has end under exec.
+				wantDash := i == 2 || (i == 1 && !tc.exec)
+				if got := strings.Contains(row, `<div class="ctrlwrap">—</div>`); got != wantDash {
+					t.Errorf("row %d shows \"—\" = %v, want %v:\n%s", i, got, wantDash, row)
 				}
 			}
-			if got := strings.Contains(body, `data-peek-row="live"><td colspan="6">`); got != tc.peek {
-				t.Errorf("live-pane panerow rendered = %v, want %v:\n%s", got, tc.peek, body)
+			panerow := fmt.Sprintf(`data-peek-row="live"><td colspan="%d">`, ths)
+			if got := strings.Contains(body, panerow); got != tc.peek {
+				t.Errorf("live-pane panerow spanning %d rendered = %v, want %v:\n%s", ths, got, tc.peek, body)
 			}
-			if strings.Contains(body, `data-peek-row="dead"`) {
-				t.Errorf("a row without a live pane must not get a panerow:\n%s", body)
-			}
-			if got := strings.Contains(body, `<div class="ctrlwrap">—</div>`); got != !tc.exec {
-				t.Errorf("row with neither control shows \"—\" = %v, want %v:\n%s", got, !tc.exec, body)
+			if n := strings.Count(body, `class="panerow"`); n > 1 {
+				t.Errorf("only the live-pane row may get a panerow, got %d:\n%s", n, body)
 			}
 		})
 	}

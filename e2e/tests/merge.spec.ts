@@ -174,6 +174,12 @@ test('the merge-queue session name and its peek + end controls are not clipped',
   await expect(end).toHaveText('✓ confirm');
   await expect(actions.locator('button.actcancel')).toBeVisible();
   expect(await actions.evaluate(clipped)).toBe(false);
+  // The cell wraps, so also pin ⤢, confirm and ✕ to one line: a too-narrow col would wrap, not clip.
+  const mid = async (sel: string) => { const b = (await actions.locator(sel).boundingBox())!; return b.y + b.height / 2; };
+  const line = await mid('button.peek');
+  for (const sel of ['button.pract[data-action="end"]', 'button.actcancel']) {
+    expect(Math.abs((await mid(sel)) - line)).toBeLessThanOrEqual(1);
+  }
   await actions.locator('button.actcancel').click();
   await expect(end).toHaveText('end');
 });

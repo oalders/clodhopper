@@ -255,7 +255,8 @@
     /* In the narrow queue cell, end's result wraps onto its own full-width line under ⤢ + end. */
     table.mq td.actions .ctrlwrap { flex-wrap: wrap; }
     table.mq td.actions .rowform { display: contents; }
-    table.mq td.actions .actmsg { flex-basis: 100%; }
+    table.mq td.actions .actmsg { flex-basis: 100%; overflow-wrap: anywhere; }
+    table.mq td.actions .actmsg:empty { display: none; } /* else its 100% basis opens an empty second line */
     td.idle { font-variant-numeric: tabular-nums; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
     td.summary em { font-style: italic; color: var(--text-3); } /* a completed phase, not one in progress */
@@ -646,6 +647,7 @@
          sitting side by side when both are present. */
       table.roster td.actions .ctrlwrap, table.mq td.actions .ctrlwrap { width: 100%; gap: 8px; }
       /* Peek becomes a real control on touch. */
+      table.mq td.actions .rowform > button.pract { flex: 1; } /* end stretches like ⤢ */
       table.roster td.actions button.peek, table.mq td.actions button.peek {
         flex: 1; min-height: 44px; padding: 0 12px;
         display: flex; align-items: center; justify-content: center;
