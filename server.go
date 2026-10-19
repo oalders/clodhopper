@@ -36,8 +36,8 @@ var dashboardTmpl = template.Must(
 	}).Parse(dashboardHTML),
 )
 
-// ciMarkSlots is the most 🔀/draft-chip/queue-pill markers any one roster row
-// carries (0–2: GitHub never queues a draft, so the chip and pill share a slot).
+// ciMarkSlots is the most 🔀/draft-chip/queue-pill/done-chip markers any one roster
+// row carries (0–2: GitHub never queues a draft or a finished PR, so those share a slot).
 // The template turns it into a ci-mN class on the table, which sizes the CI
 // column to fit, so a board with no markers spends no width on them. It is
 // recomputed on every render, so the column follows /api/state polls.
@@ -48,7 +48,7 @@ func ciMarkSlots(agents []Agent) int {
 		if a.CIConflict {
 			n++
 		}
-		if a.CIQueue != "" || a.CIDraft {
+		if a.CIQueue != "" || a.CIDraft || a.CIDone != "" {
 			n++
 		}
 		most = max(most, n)
@@ -594,6 +594,7 @@ type ciResult struct {
 	Passes      int
 	Conflict    bool      // merge conflict with the base branch
 	Draft       bool      // the PR is a draft
+	Done        string    // "merged" or "closed" once the PR is no longer open
 	Queue       string    // "", "queued" or "queue-failing" (the queue entry is UNMERGEABLE)
 	QueuePos    int       // 1-based merge-queue position, 0 when not queued
 	QueueETA    time.Time // expected merge time, zero when GitHub gave no estimate
@@ -697,7 +698,7 @@ type rollupNode struct {
 // open PR can be in the merge queue). The rollup drives the state;
 // mergeStateStatus only refines it, because BLOCKED also means "review missing"
 // with green checks. UNKNOWN never flags a conflict: every fresh PR is UNKNOWN
-// for a moment.
+// for a moment. A MERGED or CLOSED PR yields only Done: its rollup is stale.
 func parsePRView(out []byte) (ciResult, string) {
 	var pr struct {
 		ID                string       `json:"id"`
@@ -709,6 +710,9 @@ func parsePRView(out []byte) (ciResult, string) {
 	if err := json.Unmarshal(out, &pr); err != nil {
 		return ciResult{}, ""
 	}
+	if pr.State == "MERGED" || pr.State == "CLOSED" {
+		return ciResult{Done: strings.ToLower(pr.State)}, ""
+	}
 	r := classifyRollup(pr.StatusCheckRollup)
 	if r.State == "failing" && pr.MergeStateStatus == "UNSTABLE" {
 		r.State = "soft-failing" // GitHub says only non-required checks failed
@@ -716,7 +720,7 @@ func parsePRView(out []byte) (ciResult, string) {
 	r.Conflict = pr.MergeStateStatus == "DIRTY"
 	r.Draft = pr.IsDraft
 	if pr.State != "OPEN" {
-		return r, ""
+		return r, "" // an unexpected state: not queueable either
 	}
 	return r, pr.ID
 }
@@ -1047,7 +1051,7 @@ func viewSignature(d dashboardData) string {
 			// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
 			// Launcher feeds the 🔒/🤖 marker, which a resume can flip in place.
 			// Likewise the queue pill's anchors are hashed, its ticking CIQueueLabel is not.
-			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%t:%q:%d:%d:%d:%q:%q:%d:%d:%d:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIDraft, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree)
+			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%t:%q:%q:%d:%d:%d:%q:%q:%d:%d:%d:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIDraft, a.CIDone, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree)
 		}
 	}
 
@@ -1146,12 +1150,13 @@ func isCIWatchCommand(cmd string) bool {
 // demotePendingCI relaxes a "needs you"/"waiting for you" row to the non-urgent
 // statusBackground when its CI is still running, only non-required checks
 // failed (the PR is still mergeable), or the PR sits in the merge queue (the
-// queue, not the user, has the next move; a "queue-failing" entry is left alone,
-// as it will likely be ejected and need you). A pending check means the agent
-// most likely pushed and is waiting on that run, not blocked on the user — so the
-// alert styling would be misleading (issue #31). This runs in the server layer,
-// not in deriveStatus, because CI is fetched here via gh and is deliberately kept
-// out of the deterministic roster.
+// queue, not the user, has the next move; a "queue-failing" entry is left
+// alone, as it will likely be ejected and need you), or the PR is merged or
+// closed (nothing is left to act on; end dismisses the row). A pending check
+// means the agent most likely pushed and is waiting on that run, not blocked on
+// the user — so the alert styling would be misleading (issue #31). This runs in
+// the server layer, not in deriveStatus, because CI is fetched here via gh and
+// is deliberately kept out of the deterministic roster.
 //
 // Tradeoff (intentional, matching the roster's other heuristics): an agent that
 // genuinely finished and is awaiting you, but whose earlier push still has CI in
@@ -1163,7 +1168,7 @@ func isCIWatchCommand(cmd string) bool {
 func demotePendingCI(agents []Agent, now time.Time) {
 	for i := range agents {
 		inQueue := agents[i].CIQueue == "queued" && !queueStuck(agents[i], now)
-		if agents[i].CI != "pending" && agents[i].CI != "soft-failing" && !inQueue {
+		if agents[i].CI != "pending" && agents[i].CI != "soft-failing" && !inQueue && agents[i].CIDone == "" {
 			continue
 		}
 		if agents[i].Status == statusNeedsYou || agents[i].Status == statusWaiting {
@@ -1289,7 +1294,7 @@ func enrichCI(agents []Agent, ci *cwdCache[ciResult], now time.Time) {
 	for i := range agents {
 		r := results[agents[i].Cwd]
 		agents[i].CI, agents[i].CIFails, agents[i].CIPasses, agents[i].CIConflict = r.State, r.Fails, r.Passes, r.Conflict
-		agents[i].CIDraft = r.Draft
+		agents[i].CIDraft, agents[i].CIDone = r.Draft, r.Done
 		agents[i].CIQueue, agents[i].CIQueueReason = r.Queue, r.QueueReason
 		if r.Queue != "" {
 			agents[i].CIQueuePos, agents[i].CIQueueETA, agents[i].CIQueueSince = r.QueuePos, unixOrZero(r.QueueETA), unixOrZero(r.QueueSince)

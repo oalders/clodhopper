@@ -4,7 +4,7 @@ import { test, expect, fontsReady } from './fixtures';
 // project viewport. Only these targets are checked: branch, cwd, session and
 // other free text are allowed to truncate. No absolute widths are asserted, so
 // a deliberate column change doesn't break the suite.
-const mustFit = 'table.roster td.status, table.roster .ck-badge, table.roster td.idle, table.events td.time';
+const mustFit = 'table.roster td.status, table.roster .ck-badge, table.roster td.idle, table.roster td.ci, table.events td.time';
 
 // The default board, and the debug view that adds the events table's time cells.
 for (const path of ['/?refresh=0', '/?refresh=0&debug=1']) {

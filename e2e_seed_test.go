@@ -83,9 +83,9 @@ func TestE2ESeed(t *testing.T) {
 	add(23*time.Hour, appB, "", "a-very-long-worktree-directory-name-standing-in-for-the-branch", "e2e-idle-0000-1111-2222-333333333333", "PreToolUse", "Read", "")
 
 	// Merge-queue rows for queue.spec.ts: e2e/serve.sh creates these dirs under
-	// CLODHOPPER_E2E_REPOS, and its stub gh reports one queued and one ejected.
+	// CLODHOPPER_E2E_REPOS, and its stub gh reports one queued, one ejected and one merged.
 	if repos := os.Getenv("CLODHOPPER_E2E_REPOS"); repos != "" {
-		for _, name := range []string{"queued", "ejected"} {
+		for _, name := range []string{"queued", "ejected", "merged"} {
 			evs = append(evs, Event{
 				TS: now.Add(-time.Hour).UTC().Format(time.RFC3339), SourceApp: appA, Branch: "main",
 				Cwd: filepath.Join(repos, name), SessionID: "e2e-" + name + "-0000-1111-2222-333333333333",
