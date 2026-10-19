@@ -17,6 +17,8 @@ func TestClassifyRollup(t *testing.T) {
 		return rollupNode{Typename: "CheckRun", Status: status, Conclusion: conclusion}
 	}
 	ctx := func(state string) rollupNode { return rollupNode{Typename: "StatusContext", State: state} }
+	named := func(n rollupNode, name string) rollupNode { n.Name = name; return n }
+	namedCtx := func(state, context string) rollupNode { n := ctx(state); n.Context = context; return n }
 	cases := []struct {
 		name  string
 		nodes []rollupNode
@@ -29,6 +31,10 @@ func TestClassifyRollup(t *testing.T) {
 		{"pending context is pending", []rollupNode{ctx("PENDING")}, ciResult{State: "pending"}},
 		{"every fail conclusion counts", []rollupNode{run("COMPLETED", "FAILURE"), run("COMPLETED", "TIMED_OUT"), run("COMPLETED", "ACTION_REQUIRED"), run("COMPLETED", "STARTUP_FAILURE"), run("COMPLETED", "CANCELLED"), run("QUEUED", "")}, ciResult{State: "failing", Fails: 5}},
 		{"failed contexts count", []rollupNode{ctx("FAILURE"), ctx("ERROR"), ctx("SUCCESS")}, ciResult{State: "failing", Fails: 2, Passes: 1}},
+		{"pending context named after a finished run is skipped", []rollupNode{named(run("COMPLETED", "SUCCESS"), "ci"), namedCtx("PENDING", "ci"), namedCtx("EXPECTED", "ci")}, ciResult{State: "green", Passes: 1}},
+		{"pending context with another name stays pending", []rollupNode{named(run("COMPLETED", "SUCCESS"), "ci"), namedCtx("PENDING", "gate")}, ciResult{State: "pending", Passes: 1}},
+		{"same-name run still in progress stays pending", []rollupNode{named(run("IN_PROGRESS", ""), "ci"), namedCtx("PENDING", "ci")}, ciResult{State: "pending"}},
+		{"same-name failed run still fails", []rollupNode{named(run("COMPLETED", "FAILURE"), "ci"), namedCtx("PENDING", "ci")}, ciResult{State: "failing", Fails: 1}},
 		{"unknown values fail closed", []rollupNode{run("COMPLETED", "NEW"), ctx("NEW"), {Typename: "NewNode"}}, ciResult{State: "failing", Fails: 3}},
 	}
 	for _, c := range cases {
@@ -55,6 +61,7 @@ func TestParsePRView(t *testing.T) {
 		{"conflict without checks", `{"mergeStateStatus":"DIRTY","statusCheckRollup":[]}`, ciResult{Conflict: true}},
 		{"unknown is no conflict", `{"mergeStateStatus":"UNKNOWN","statusCheckRollup":[` + failed + `]}`, ciResult{State: "failing", Fails: 1}},
 		{"draft", `{"isDraft":true,"statusCheckRollup":[` + passed + `]}`, ciResult{State: "green", Passes: 1, Draft: true}},
+		{"draft gate named after a finished job is green", `{"isDraft":true,"statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"StatusContext","context":"ci","state":"PENDING"}]}`, ciResult{State: "green", Passes: 1, Draft: true}},
 		{"malformed", `not json`, ciResult{}},
 	}
 	for _, c := range cases {

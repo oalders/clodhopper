@@ -681,12 +681,14 @@ func applyMergeQueue(r ciResult, out []byte, now time.Time) ciResult {
 	return r
 }
 
-// rollupNode is one statusCheckRollup entry: a CheckRun (status/conclusion) or
-// a StatusContext (state), told apart by __typename.
+// rollupNode is one statusCheckRollup entry: a CheckRun (name/status/conclusion)
+// or a StatusContext (context/state), told apart by __typename.
 type rollupNode struct {
 	Typename   string `json:"__typename"`
+	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
+	Context    string `json:"context"`
 	State      string `json:"state"`
 }
 
@@ -721,10 +723,17 @@ func parsePRView(out []byte) (ciResult, string) {
 
 // classifyRollup reduces the rollup to one state plus a fail count. Any failure
 // wins; otherwise any still-pending check keeps it amber; passes and skips alone
-// are green. An unrecognised value counts as a failure (fail closed).
+// are green, as is a pending status named after a finished check run. An
+// unrecognised value counts as a failure (fail closed).
 func classifyRollup(nodes []rollupNode) ciResult {
 	if len(nodes) == 0 {
 		return ciResult{}
+	}
+	done := map[string]bool{}
+	for _, n := range nodes {
+		if n.Typename == "CheckRun" && n.Status == "COMPLETED" && n.Name != "" {
+			done[n.Name] = true
+		}
 	}
 	var r ciResult
 	var pending bool
@@ -733,7 +742,9 @@ func classifyRollup(nodes []rollupNode) ciResult {
 		case "fail":
 			r.Fails++
 		case "pending":
-			pending = true
+			// A same-named job already finished, so this status is a gate
+			// waiting on something else, usually the user (#201).
+			pending = pending || n.Typename != "StatusContext" || !done[n.Context]
 		case "pass":
 			r.Passes++
 		}
