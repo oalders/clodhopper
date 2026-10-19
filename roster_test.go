@@ -47,7 +47,8 @@ func TestClassifyRollup(t *testing.T) {
 }
 
 // mergeStateStatus only refines the rollup's verdict: UNSTABLE softens a red,
-// DIRTY (and only DIRTY) flags a conflict, isDraft passes through, and junk output yields no CI.
+// DIRTY (and only DIRTY) flags a conflict, isDraft passes through, a finished PR
+// yields only Done (its rollup is stale), and junk output yields no CI.
 func TestParsePRView(t *testing.T) {
 	const failed = `{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}`
 	const passed = `{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}`
@@ -64,6 +65,8 @@ func TestParsePRView(t *testing.T) {
 		{"unknown is no conflict", `{"mergeStateStatus":"UNKNOWN","statusCheckRollup":[` + failed + `]}`, ciResult{State: "failing", Fails: 1}},
 		{"draft", `{"isDraft":true,"statusCheckRollup":[` + passed + `]}`, ciResult{State: "green", Passes: 1, Draft: true}},
 		{"draft gate named after a finished job is green", `{"isDraft":true,"statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"StatusContext","context":"ci","state":"PENDING"}]}`, ciResult{State: "green", Passes: 1, Draft: true}},
+		{"merged drops the stale verdict", `{"state":"MERGED","isDraft":true,"mergeStateStatus":"DIRTY","statusCheckRollup":[` + failed + `]}`, ciResult{Done: "merged"}},
+		{"closed drops the stale verdict", `{"state":"CLOSED","isDraft":true,"mergeStateStatus":"DIRTY","statusCheckRollup":[` + failed + `]}`, ciResult{Done: "closed"}},
 		{"malformed", `not json`, ciResult{}},
 	}
 	for _, c := range cases {

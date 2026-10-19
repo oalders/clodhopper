@@ -1489,13 +1489,14 @@ func TestDemotePendingCI(t *testing.T) {
 		{SessionID: "queued", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queued"},                     // the queue has the next move
 		{SessionID: "queue-failing", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queue-failing"},       // likely needs you: untouched
 		{SessionID: "queue-stuck", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queued", CIQueueETA: 1}, // stalled: needs you again
+		{SessionID: "merged", Status: statusNeedsYou, StatusRank: 1, CIDone: "merged"},                                  // finished PR: nothing to act on
 	}
 	demotePendingCI(agents, time.Unix(1+queueOverdueSecs+1, 0))
 	got := map[string]Agent{}
 	for _, a := range agents {
 		got[a.SessionID] = a
 	}
-	for _, id := range []string{"needs", "waiting", "soft", "queued"} {
+	for _, id := range []string{"needs", "waiting", "soft", "queued", "merged"} {
 		if a := got[id]; a.Status != statusBackground || a.StatusRank != rankBackground {
 			t.Errorf("%s with pending CI should demote to %q rank %d, got %q rank %d", id, statusBackground, rankBackground, a.Status, a.StatusRank)
 		}
@@ -3806,7 +3807,7 @@ func TestDashboardRendersSuppressedCIAsPending(t *testing.T) {
 
 // The soft-failing badge, the counts inside the green, red and orange badges
 // (a green with every check skipped keeps the plain dot), and the conflict
-// marker, which co-renders even with no CI state at all, and the draft chip.
+// marker, which co-renders even with no CI state at all, and the draft and merged chips.
 func TestDashboardRendersCIDetail(t *testing.T) {
 	html := renderDashboard(t, dashboardData{Agents: []Agent{
 		{SessionID: "red", Branch: "a", CI: "failing", CIFails: 3},
@@ -3815,6 +3816,7 @@ func TestDashboardRendersCIDetail(t *testing.T) {
 		{SessionID: "green", Branch: "d", CI: "green", CIPasses: 7},
 		{SessionID: "allskipped", Branch: "e", CI: "green"},
 		{SessionID: "draft", Branch: "f", CI: "pending", CIDraft: true},
+		{SessionID: "merged", Branch: "g", CIDone: "merged"},
 	}})
 	for _, want := range []string{
 		`<span class="ci-main"><span class="cibadge fail" role="img" aria-label="CI failing, 3 failed" title="3 failed">3</span></span><span class="ci-marks"></span>`,
@@ -3823,6 +3825,7 @@ func TestDashboardRendersCIDetail(t *testing.T) {
 		`<span class="cibadge ok" role="img" aria-label="CI passing, 7 passed" title="7 passed">7</span>`,
 		`<td data-label="CI" class="ci green"><span class="ci-main"><span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"></span></td>`,
 		`<span role="img" aria-label="CI pending">🟡</span></span><span class="ci-marks"><span class="cibadge draft" role="img" aria-label="draft pull request" title="draft pull request">draft</span></span>`,
+		`<span role="img" aria-label="no CI">—</span></span><span class="ci-marks"><span class="cibadge done" role="img" aria-label="pull request merged" title="pull request merged">merged</span></span>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %s in:\n%s", want, html)
@@ -3833,7 +3836,7 @@ func TestDashboardRendersCIDetail(t *testing.T) {
 	}
 }
 
-// A change in fail count, pass count, conflict, draft or queue position alone must repaint.
+// A change in fail count, pass count, conflict, draft, done or queue position alone must repaint.
 func TestViewSignature_TracksCIDetail(t *testing.T) {
 	base := dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1}}}
 	more := dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 2}}}
@@ -3850,6 +3853,9 @@ func TestViewSignature_TracksCIDetail(t *testing.T) {
 	}
 	if viewSignature(base) == viewSignature(dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1, CIDraft: true}}}) {
 		t.Error("signature unchanged when the PR became a draft")
+	}
+	if viewSignature(dashboardData{Agents: []Agent{{SessionID: "s1", CIDone: "closed"}}}) == viewSignature(dashboardData{Agents: []Agent{{SessionID: "s1", CIDone: "merged"}}}) {
+		t.Error("signature unchanged when the PR went from closed to merged")
 	}
 	if viewSignature(base) == viewSignature(dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1, CIQueue: "queued"}}}) {
 		t.Error("signature unchanged when the PR joined the merge queue")
@@ -4057,6 +4063,7 @@ func TestCIMarkSlots(t *testing.T) {
 		{"conflict", []Agent{{}, {CIConflict: true}}, 1},
 		{"queued", []Agent{{CI: "green", CIQueue: "queued"}}, 1},
 		{"draft", []Agent{{CI: "green", CIDraft: true}}, 1},
+		{"merged", []Agent{{CIDone: "merged"}}, 1},
 		{"split across rows", []Agent{{CIConflict: true}, {CIQueue: "queue-failing"}}, 1},
 		{"both on one row", []Agent{{}, {CIConflict: true, CIQueue: "queued"}}, 2},
 		{"conflict and draft on one row", []Agent{{CIConflict: true, CIDraft: true}}, 2},
