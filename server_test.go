@@ -2119,6 +2119,60 @@ func TestContentTemplate_PeekControlsCellA11yAndEmptyState(t *testing.T) {
 	}
 }
 
+// The merge-queue table gains an actions column under peek OR merge (#199): every
+// row must render as many cells as the header, the peek panerow (spanning them
+// all) only for a live pane with peek on, and a row with neither control "—".
+func TestContentTemplate_QueueActionsColumn(t *testing.T) {
+	tdRe, dashRe := regexp.MustCompile(`<td[\s>]`), regexp.MustCompile(`class="ctrlwrap">\s*—\s*</div>`)
+	queued := []Agent{
+		{SessionID: "live", Branch: "a", TmuxPane: "%3", LiveTmux: true},
+		{SessionID: "dead", Branch: "b"},
+		{Branch: "c"}, // no session id, so no end button either
+	}
+	for _, tc := range []struct {
+		name       string
+		peek, exec bool
+	}{
+		{"peek only", true, false},
+		{"exec only", false, true},
+		{"both", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			d := dashboardData{PeekEnabled: tc.peek, ExecEnabled: tc.exec, QueuedAgents: queued}
+			if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+				t.Fatal(err)
+			}
+			_, table, _ := strings.Cut(buf.String(), `<table class="mq">`)
+			table, _, _ = strings.Cut(table, "</table>")
+			head, body, _ := strings.Cut(table, "</thead>")
+			ths := strings.Count(head, "<th>") + strings.Count(head, "<th ")
+			rows := strings.Split(body, "<tr>")[1:]
+			if len(rows) != len(queued) {
+				t.Fatalf("inspected %d rows, want %d:\n%s", len(rows), len(queued), body)
+			}
+			for i, row := range rows {
+				row, _, _ = strings.Cut(row, `<tr class="panerow"`)
+				if tds := len(tdRe.FindAllString(row, -1)); tds != ths {
+					t.Errorf("row %d renders %d cells under %d headers:\n%s", i, tds, ths, row)
+				}
+				// Only the last row has neither a live pane nor a session id; the dead one has end under exec.
+				wantDash := i == 2 || (i == 1 && !tc.exec)
+				if got := dashRe.MatchString(row); got != wantDash {
+					t.Errorf("row %d shows \"—\" = %v, want %v:\n%s", i, got, wantDash, row)
+				}
+			}
+			panerow := fmt.Sprintf(`data-peek-row="live"><td colspan="%d">`, ths)
+			if got := strings.Contains(body, panerow); got != tc.peek {
+				t.Errorf("live-pane panerow spanning %d rendered = %v, want %v:\n%s", ths, got, tc.peek, body)
+			}
+			if n := strings.Count(body, `class="panerow"`); n > 1 {
+				t.Errorf("only the live-pane row may get a panerow, got %d:\n%s", n, body)
+			}
+		})
+	}
+}
+
 // renderDashboard executes the full dashboardTmpl (mirroring handleDashboard,
 // server.go:532) rather than just the "content" sub-template, since the
 // data-csrf attribute lives on <body>, outside "content".
