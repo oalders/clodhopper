@@ -16,6 +16,10 @@ test('queued rows fold into a collapsed merge-queue section that remembers being
   expect((await mq.boundingBox())!.y - (roster.y + roster.height)).toBeGreaterThan(0);
   // The ejected row needs you, so it stays in the main roster.
   await expect(page.locator('table.roster .cibadge.fail', { hasText: '⏏' })).toHaveCount(1);
+  // A merged PR shows its chip, not the stale rollup's red badge (#204).
+  const merged = page.locator('table.roster tr', { has: page.locator('.copycwd[data-cwd$="/merged"]') });
+  await expect(merged.locator('.cibadge.done')).toHaveText('merged');
+  await expect(merged.locator('.cibadge.fail')).toHaveCount(0);
 
   await mq.locator('summary').click();
   await expect(mq).toHaveAttribute('open');

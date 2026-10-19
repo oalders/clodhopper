@@ -720,7 +720,7 @@ func parsePRView(out []byte) (ciResult, string) {
 	r.Conflict = pr.MergeStateStatus == "DIRTY"
 	r.Draft = pr.IsDraft
 	if pr.State != "OPEN" {
-		return r, ""
+		return r, "" // an unexpected state: not queueable either
 	}
 	return r, pr.ID
 }

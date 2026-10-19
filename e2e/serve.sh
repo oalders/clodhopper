@@ -41,15 +41,23 @@ printf '%%9003\tseeded-merge-queue-session-name\tclaude\t/nonexistent\n'
 STUB
 chmod +x "$tmp/bin/tmux"
 # A stub gh puts the seeded merge-queue rows (e2e_seed_test.go) in the queue or
-# ejects them, keyed on the row's cwd; every other cwd has no PR.
+# ejects them, and reports the merged row's PR merged, keyed on the row's cwd;
+# every other cwd has no PR.
 export CLODHOPPER_E2E_REPOS="$tmp/repos"
-mkdir -p "$CLODHOPPER_E2E_REPOS/queued" "$CLODHOPPER_E2E_REPOS/ejected"
+mkdir -p "$CLODHOPPER_E2E_REPOS/queued" "$CLODHOPPER_E2E_REPOS/ejected" "$CLODHOPPER_E2E_REPOS/merged"
 cat >"$tmp/bin/gh" <<'STUB'
 #!/bin/sh
 dir=$(basename "$(pwd)")
-case "$dir" in queued | ejected) ;; *) exit 1 ;; esac
+case "$dir" in queued | ejected | merged) ;; *) exit 1 ;; esac
 case "${1-}" in
-pr) echo '{"id":"PR_e2e","state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}' ;;
+pr)
+	# merged: the stale failing rollup and DIRTY must not render for a finished PR (#204).
+	if [ "$dir" = merged ]; then
+		echo '{"id":"PR_e2e","state":"MERGED","mergeStateStatus":"DIRTY","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]}'
+	else
+		echo '{"id":"PR_e2e","state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}'
+	fi
+	;;
 api)
 	if [ "$dir" = queued ]; then
 		echo '{"data":{"node":{"mergeQueueEntry":{"state":"QUEUED","position":1,"estimatedTimeToMerge":3600,"enqueuedAt":null},"timelineItems":{"nodes":[]}}}}'

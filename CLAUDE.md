@@ -134,8 +134,8 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   `ciForceMinInterval`); concurrent `get`s for one cwd share one lookup. The rollup drives the state and fail
   count (`classifyRollup`); `mergeStateStatus` only refines it (UNSTABLE →
   "soft-failing", DIRTY → merge conflict); `parsePRView`'s doc comment says why
-  BLOCKED is deliberately not mapped. A MERGED or CLOSED PR drops the stale
-  verdict for a muted chip and demotes the row (`demotePendingCI`). For an OPEN PR, a second call (`gh api
+  BLOCKED is deliberately not mapped. A MERGED or CLOSED PR skips the stale
+  rollup for a muted chip and relaxes a needs-you/waiting row to background (`demotePendingCI`). For an OPEN PR, a second call (`gh api
   graphql`, `mergeQueueQuery`, sharing the same 4s deadline) reads the merge
   queue, because queue checks run on a temporary commit the rollup never sees;
   `applyMergeQueue`'s doc comment says when that yields a queue-position pill
