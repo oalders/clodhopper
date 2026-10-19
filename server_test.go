@@ -3825,7 +3825,7 @@ func TestDashboardRendersCIDetail(t *testing.T) {
 		`<span class="cibadge ok" role="img" aria-label="CI passing, 7 passed" title="7 passed">7</span>`,
 		`<td data-label="CI" class="ci green"><span class="ci-main"><span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"></span></td>`,
 		`<span role="img" aria-label="CI pending">🟡</span></span><span class="ci-marks"><span class="cibadge draft" role="img" aria-label="draft pull request" title="draft pull request">draft</span></span>`,
-		`<span role="img" aria-label="no CI">—</span></span><span class="ci-marks"><span class="cibadge done" role="img" aria-label="pull request merged" title="pull request merged">merged</span></span>`,
+		`<span aria-hidden="true">—</span></span><span class="ci-marks"><span class="cibadge done" role="img" aria-label="pull request merged" title="pull request merged">merged</span></span>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %s in:\n%s", want, html)
