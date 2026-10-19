@@ -35,6 +35,7 @@ func TestClassifyRollup(t *testing.T) {
 		{"unnamed context does not match an unnamed run", []rollupNode{run("COMPLETED", "SUCCESS"), ctx("PENDING")}, ciResult{State: "pending", Passes: 1}},
 		{"pending context with another name stays pending", []rollupNode{named(run("COMPLETED", "SUCCESS"), "ci"), namedCtx("PENDING", "gate")}, ciResult{State: "pending", Passes: 1}},
 		{"same-name run still in progress stays pending", []rollupNode{named(run("IN_PROGRESS", ""), "ci"), namedCtx("PENDING", "ci")}, ciResult{State: "pending"}},
+		{"re-run in progress keeps a same-name gate pending", []rollupNode{named(run("COMPLETED", "SUCCESS"), "ci"), named(run("IN_PROGRESS", ""), "ci"), namedCtx("PENDING", "ci")}, ciResult{State: "pending", Passes: 1}},
 		{"same-name failed run still fails", []rollupNode{named(run("COMPLETED", "FAILURE"), "ci"), namedCtx("PENDING", "ci")}, ciResult{State: "failing", Fails: 1}},
 		{"unknown values fail closed", []rollupNode{run("COMPLETED", "NEW"), ctx("NEW"), {Typename: "NewNode"}}, ciResult{State: "failing", Fails: 3}},
 	}

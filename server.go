@@ -723,7 +723,7 @@ func parsePRView(out []byte) (ciResult, string) {
 
 // classifyRollup reduces the rollup to one state plus a fail count. Any failure
 // wins; otherwise any still-pending check keeps it amber; passes and skips alone
-// are green, as is a pending status named after a finished check run. An
+// are green. A pending status named after a finished check run is ignored. An
 // unrecognised value counts as a failure (fail closed).
 func classifyRollup(nodes []rollupNode) ciResult {
 	if len(nodes) == 0 {
