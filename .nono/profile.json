@@ -1,4 +1,7 @@
 {
   "extends": ["oalders", "oalders-go", "oalders-node"],
+  "filesystem": {
+    "allow": ["~/.claude/clodhopper/var"]
+  },
   "linux": { "sandbox_policy": "landlock" }
 }
