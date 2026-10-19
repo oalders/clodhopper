@@ -147,3 +147,25 @@ test('end in the merge-queue section posts end for the queued session', async ({
   expect(posts[0].postData()).toBe('session_id=e2e-queued-0000-1111-2222-333333333333&action=end');
   await expect(page.locator('#ck-mq .actmsg')).toHaveText('dismissed — row will clear');
 });
+
+// The actions col is fixed and the session col flexes, not the other way round (#199).
+test('the merge-queue session name and its peek + end controls are not clipped', async ({ page }) => {
+  await page.evaluate(() => { window.__ckActionBusy = 1; });
+  await page.locator('#ck-mq summary').click();
+  const name = page.locator('#ck-mq td.tmux');
+  await expect(name).toHaveText('seeded-merge-queue-session-name');
+  const clipped = (el: Element) => el.scrollWidth > el.clientWidth;
+  expect(await name.evaluate(clipped)).toBe(false);
+  const actions = page.locator('#ck-mq td.actions');
+  await expect(actions.locator('button.peek')).toBeVisible();
+  const end = actions.locator('button.pract[data-action="end"]');
+  await expect(end).toBeVisible();
+  expect(await actions.evaluate(clipped)).toBe(false);
+  // Armed, the cell also holds "✓ confirm" and its ✕ cancel; the busy flag keeps a repaint from disarming it.
+  await end.click();
+  await expect(end).toHaveText('✓ confirm');
+  await expect(actions.locator('button.actcancel')).toBeVisible();
+  expect(await actions.evaluate(clipped)).toBe(false);
+  await actions.locator('button.actcancel').click();
+  await expect(end).toHaveText('end');
+});

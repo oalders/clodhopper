@@ -94,14 +94,19 @@ func TestE2ESeed(t *testing.T) {
 		}
 	}
 
-	// Peek-able rows for swap.spec.ts: e2e/serve.sh's stub tmux lists exactly these pane ids.
+	// Peek-able rows for swap.spec.ts, the queued one included: e2e/serve.sh's stub tmux lists exactly these pane ids.
 	panes := map[string]string{
 		"e2e-waiting-0000-1111-2222-333333333333": "%9001",
 		"e2e-twin-0000-1111-2222-333333333333":    "%9001",
 		"e2e-needs-0000-1111-2222-333333333333":   "%9002",
+		"e2e-queued-0000-1111-2222-333333333333":  "%9003",
 	}
 	for _, ev := range evs {
 		ev.TmuxPane = panes[ev.SessionID]
+		// Matches the stub tmux's name for %9003, so dropDeadPanes keeps it as the label (merge.spec.ts).
+		if ev.TmuxPane == "%9003" {
+			ev.TmuxSession = "seeded-merge-queue-session-name"
+		}
 		if err := insertEvent(db, ev); err != nil {
 			t.Fatal(err)
 		}

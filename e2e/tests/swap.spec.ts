@@ -146,3 +146,17 @@ test('the merge-queue section keeps its open or closed state across a repaint', 
   await repaint(page, '#ck-mq');
   await expect(mq).not.toHaveAttribute('open');
 });
+
+test('a queued row keeps its open peek inside the merge-queue section across a repaint', async ({ page }) => {
+  const q = 'e2e-queued-0000-1111-2222-333333333333';
+  await page.locator('#ck-mq summary').click();
+  const cap = await openPeek(page, q);
+  await expect(page.locator(`#ck-mq tr.panerow[data-peek-row="${q}"]`)).toBeVisible();
+  await repaint(page, `${peekRow(q)} .panecap`);
+
+  await expect(page.locator(`#ck-mq tr.panerow[data-peek-row="${q}"]`)).toBeVisible();
+  await expect(page.locator(peekBtn(q))).toHaveAttribute('aria-expanded', 'true');
+  expect(await cap.textContent()).toBe(capture);
+  expect(await cap.evaluate((el) => el.scrollTop)).toBe(scrolled);
+  await expect(cap).toBeFocused();
+});
