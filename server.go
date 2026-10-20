@@ -351,7 +351,6 @@ func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool
 		mergePR:           "merge-pr",
 		gh:                "gh",
 		tmux:              "tmux",
-		git:               "git",
 		clearDelay:        monitorCIClearDelay,
 		restartPoll:       restartPollInterval,
 		restartExitWait:   restartExitWait,
@@ -411,7 +410,7 @@ func runServe(args []string) int {
 	allowPub := fs.Bool("allow-public", allowPublic(), "allow binding to a public IP (UNSAFE: dashboard has no auth or TLS)")
 	panePeek := fs.Bool("pane-peek", false, "enable the live tmux pane peek (streams pane content to the dashboard; use only on a trusted network such as your tailnet)")
 	paneLines := fs.Int("pane-lines", paneLinesDefault, "lines shown in a pane peek (1..2000)")
-	enableMerge := fs.Bool("enable-merge", false, "enable PR-action buttons on the roster (merge-pr --squash/--admin/--close, gh pr ready, git rebase onto the default branch + push --force-with-lease); writes to your repos — use only on a trusted network. Whatever the server is bound to, the actions that run commands are accepted only from loopback and Tailscale peers")
+	enableMerge := fs.Bool("enable-merge", false, "enable PR-action buttons on the roster (merge-pr --squash/--admin/--close, gh pr ready, and session actions such as rebase via /kitchen-sink:git-rebase); writes to your repos — use only on a trusted network. Whatever the server is bound to, the actions that run commands are accepted only from loopback and Tailscale peers")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

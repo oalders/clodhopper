@@ -407,10 +407,11 @@
     .actpanel { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 24px; padding: 12px; }
     .actcol { display: flex; flex-direction: column; gap: 6px; }
     .actcol.prcol { flex: 1 1 320px; }
-    /* Fixed width so arming rebase/end (confirm label, ✕, caveat) can't widen the
-       column, wrap it and move the confirm button (#128); px tracks the px type. */
-    .actcol.rowcol { width: 224px; }
-    .rowcol .actmsg { overflow-wrap: anywhere; }
+    /* Fixed width so arming a session action (confirm label, ✕, caveat) can't
+       widen the column, wrap it and move the confirm button (#128); px tracks the
+       px type, and holds every button plus an armed one's ✓ confirm and ✕. */
+    .actcol.sesscol { width: 448px; }
+    .sesscol .actmsg { overflow-wrap: anywhere; }
     .acteyebrow {
       font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.06em;
       color: var(--text-3); /* matches the design; text-3 on the surface-2 panel is ~4.5:1 (clears AA) */
@@ -703,11 +704,10 @@
       .actpanel button.prmode { min-height: 44px; font-size: var(--fs-sm); }
       .actpanel .prcmd { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; font-size: var(--fs-sm); }
       .actpanel .prrun { grid-column: 1 / -1; }
-      /* The row cluster's lone End button would otherwise strand at half width in
-         the two-track grid. Scope this to the primary (idle/confirm) button the
-         way .prrun is in the PR form, so the cancel button armConfirm() injects
-         free-flows beside it instead of stacking as its own full-width row. */
-      .actpanel .rowform button.pract:not(.actcancel) { grid-column: 1 / -1; }
+      /* End closes the session cluster (alone on a pane-less row, fifth of five
+         otherwise), so it would strand at half width in the two-track grid. Once
+         armed its ✕ is the last button, so confirm and ✕ share the line instead. */
+      .actpanel .actsession button.pract:last-of-type:not(.actcancel) { grid-column: 1 / -1; }
       /* Only the long free-text doing/summary field claims its own full-width
          line; branch now flows inline with ci / app / status, wrapping within
          its own cell when a name is genuinely too long. */
@@ -1989,8 +1989,9 @@
     // So remember failure/timeout results here and re-apply them across each
     // swapContent for at least this long.
     var ACTMSG_MIN_MS = 5000;
-    // Keyed by session id AND group class: a session renders THREE .actgroups
-    // (actsession / prform / rowform), each with its own .actmsg.
+    // Keyed by session id AND group class: a roster session renders two
+    // .actgroups (actsession / prform) and a queued one a rowform, each with its
+    // own .actmsg.
     var ACTMSG_GROUPS = ['actsession', 'prform', 'rowform'];
     var actMsgs = {};
 
@@ -2048,7 +2049,7 @@
       ready: 'mark PR ready?',
       'monitor-ci': '/clear then /monitor-ci — drops the agent\'s current context',
       end: 'dismiss this row from the dashboard — the agent is NOT stopped, and the row returns if it emits another event',
-      rebase: 'REWRITTEN — rebased onto the default branch, then force-pushed (--force-with-lease), replacing the PR\'s commits. On a conflict the rebase is aborted and nothing is pushed',
+      rebase: 'asks the agent to run /kitchen-sink:git-rebase — it rebases onto the default branch, resolves any conflicts, and force-pushes, replacing the PR\'s commits',
       'broadcast-restart': 'restart every idle / waiting-for-you session: /exit kills each claude, then it is resumed with its session id once its pane is back at a shell in the directory it was launched from'
     };
 
@@ -2109,9 +2110,9 @@
     // it disarms itself, so an absent-minded arm on a destructive action does not
     // stay live indefinitely. It is an inactivity timer, not a deadline: any
     // focus, key press or pointer press inside the armed group restarts it (see
-    // resetArmTimer), because a reader working through the rebase caveat — the
-    // longest of them — or checking the branch on GitHub first must never be
-    // timed out mid-decision (WCAG 2.2.1). The board keeps repainting while a row
+    // resetArmTimer), because a reader working through a long caveat or
+    // checking the branch on GitHub first must never be timed out mid-decision
+    // (WCAG 2.2.1). The board keeps repainting while a row
     // is armed (swapContent carries the armed group across the swap), so nothing
     // else is waiting on this timer.
     var ARM_IDLE_MS = 60000;
@@ -2318,15 +2319,10 @@
                  : action === 'monitor-ci' ? 'sent /monitor-ci'
                  : action === 'new-monitor' ? 'watcher started'
                  : action === 'reload-plugins' ? 'sent /reload-plugins'
-                 : action === 'rebase' ? 'rebased onto the default branch and force-pushed'
+                 : action === 'rebase' ? 'sent /kitchen-sink:git-rebase'
                  : 'done')
               : ('failed: ' + (d.output || ('exit ' + d.exitCode)));
-            // A rebase gets its own wording: the deadline can fire after the
-            // force-push started, so "verify before retrying" has to say WHAT to
-            // verify — a blind retry could rebase on top of a push that landed.
-            if (d.timedOut) msg.textContent = action === 'rebase'
-              ? 'timed out — the rebase/push may have partially completed; check the branch on GitHub before retrying'
-              : 'timed out — verify before retrying';
+            if (d.timedOut) msg.textContent = 'timed out — verify before retrying';
             if (!d.ok || d.timedOut || merges) noteMsg(group, msg.textContent);
           }
           // A successful row-clearing action is followed by the row disappearing
@@ -2613,10 +2609,11 @@
     // on a busy board). A group whose action is already in flight is skipped: the
     // repaint cannot reach it anyway (__ckActionBusy).
 
-    // armGroupKind names WHICH of a row's three action groups this is. All three
-    // carry the same data-session, so without this the scan below cannot tell
-    // them apart: a rebase/end arm would match the session group first (DOM
-    // order), find no matching button there, and be dropped.
+    // armGroupKind names WHICH action group this is: a roster row's actsession or
+    // prform (both carry the same data-session, so without this the scan below
+    // cannot tell them apart: a squash arm would match the session group first,
+    // in DOM order, find no matching button there, and be dropped), or a queued
+    // row's rowform.
     function armGroupKind(g) {
       if (g.classList.contains('prform')) return 'prform';
       if (g.classList.contains('rowform')) return 'rowform';
@@ -2633,8 +2630,8 @@
       if (el.classList.contains('practadmin')) return 'admin';
       if (el.classList.contains('practforce')) return 'force';
       if (el.classList.contains('prmode')) return 'mode:' + (el.getAttribute('data-mode') || '');
-      // A group can hold MORE than the armed run button: rowform renders rebase
-      // + end and actsession renders monitor-ci + new-monitor + reload-plugins, and arming
+      // A group can hold MORE than the armed run button: actsession renders
+      // monitor-ci + new-monitor + reload-plugins + rebase + end, and arming
       // disables neither. Naming the button by its action keeps a reader who
       // Tabbed to the sibling on that sibling, instead of being yanked back onto
       // the armed one. (The armed button itself round-trips through this arm too.)
@@ -2885,22 +2882,22 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>{{ end }}
-          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · reload plugins · squash · admin · close · ready · rebase · end"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · reload plugins · rebase · end · squash · admin · close · ready"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}10{{ else }}9{{ end }}"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
         {{ if and $.ExecEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}10{{ else }}9{{ end }}"><div class="actpanel">
-            {{ if .HasPane }}
-            <div class="actcol" role="group" aria-label="session actions">
+            <div class="actcol sesscol" role="group" aria-label="session actions">
               <span class="acteyebrow">session</span>
               <span class="actgroup actsession" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}">
-                <button type="button" class="pract" data-action="monitor-ci" title="/clear then /monitor-ci in the running pane">monitor ci</button>
+                {{ if .HasPane }}<button type="button" class="pract" data-action="monitor-ci" title="/clear then /monitor-ci in the running pane">monitor ci</button>
                 <button type="button" class="pract" data-action="new-monitor" data-noconfirm="true" title="split a new pane running /monitor-ci">+ watcher</button>
                 <button type="button" class="pract" data-action="reload-plugins" data-noconfirm="true" title="send /reload-plugins to the running pane">reload plugins</button>
+                <button type="button" class="pract" data-action="rebase" aria-label="rebase{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }}: ask the agent to run /kitchen-sink:git-rebase" title="send /kitchen-sink:git-rebase to the running pane">rebase</button>
+                {{ end }}<button type="button" class="pract" data-action="end" aria-label="end{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button>
                 <span class="actmsg"></span>
               </span>
             </div>
-            {{ end }}
             <div class="actcol prcol" role="group" aria-label="pull request actions">
               <span class="acteyebrow">pull request</span>
               <span class="actgroup prform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}">
@@ -2916,14 +2913,6 @@
                 <span class="actmsg"></span>
               </span>
             </div>
-            <div class="actcol rowcol" role="group" aria-label="row actions">
-              <span class="acteyebrow">row</span>
-              <span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}">
-                <button type="button" class="pract" data-action="rebase" aria-label="rebase{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} onto the default branch and force-push" title="git pull --rebase onto the default branch, then git push --force-with-lease">rebase</button>
-                <button type="button" class="pract" data-action="end" aria-label="end{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button>
-                <span class="actmsg"></span>
-              </span>
-            </div>
           </div></td></tr>{{ end }}
         {{ end }}
       </tbody>
@@ -2935,7 +2924,7 @@
   </section>
 
   {{ if .QueuedAgents }}
-  {{/* Queued set-and-forget rows (splitQueued). The end button reuses the roster's rowform markup, so its delegated arm/confirm JS applies unchanged. */}}
+  {{/* Queued set-and-forget rows (splitQueued). The end button reuses the roster's end markup in its own rowform group, so the delegated arm/confirm JS applies unchanged. */}}
   <details id="ck-mq" class="ck-card">
     <summary class="ck-cardhead"><h2>Merge queue ({{ len .QueuedAgents }}){{ with .QueueNextETA }} · next merge {{ . }}{{ end }}</h2></summary>
     <div class="ck-tablewrap">
