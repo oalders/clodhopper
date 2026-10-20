@@ -2242,7 +2242,9 @@ func TestDashboardRendersActionButtonsOnlyWhenEnabled(t *testing.T) {
 	// disabled
 	off := base
 	off.ExecEnabled = false
-	if strings.Contains(renderDashboard(t, off), "data-action=") {
+	// Quoted: the template always quotes the attribute, while the page's CSS
+	// targets end with the unquoted [data-action=end].
+	if strings.Contains(renderDashboard(t, off), `data-action="`) {
 		t.Fatal("action buttons rendered while disabled")
 	}
 	// enabled
@@ -2357,17 +2359,22 @@ func TestDashboardRendersEndButtonOnlyWhenEnabled(t *testing.T) {
 }
 
 // Arming rebase/end used to widen their column until it wrapped and the confirm
-// button jumped left (issue #128). The fixed width must precede the phone rule of
-// equal specificity so phones still get a full-width column.
+// button jumped left (issue #128). Both fixed widths must precede the phone rule,
+// and be no more specific than it, so phones still get a full-width column.
 func TestDashboardFixesSessionActionsColumnWidth(t *testing.T) {
 	html := renderDashboard(t, dashboardData{})
-	fixed := regexp.MustCompile(`\.actcol\.sesscol\s*\{[^}]*\bwidth:`).FindStringIndex(html)
 	phone := regexp.MustCompile(`\.actrow\s+\.actcol\s*\{[^}]*\bwidth:\s*100%`).FindStringIndex(html)
-	if fixed == nil || phone == nil {
-		t.Fatalf("missing rule: sesscol at %v, phone at %v", fixed, phone)
+	if phone == nil {
+		t.Fatal("missing the phone full-width rule")
 	}
-	if fixed[0] > phone[0] {
-		t.Fatal("sesscol width must come before the phone full-width rule")
+	for _, sel := range []string{`\.sesscol`, `\.sesscol\.haspane`} {
+		fixed := regexp.MustCompile(`\n\s*` + sel + `\s*\{[^}]*\bwidth:`).FindStringIndex(html)
+		if fixed == nil {
+			t.Fatalf("missing the %s width rule", sel)
+		}
+		if fixed[0] > phone[0] {
+			t.Fatalf("%s width must come before the phone full-width rule", sel)
+		}
 	}
 }
 
@@ -2908,36 +2915,6 @@ func TestDashboardRendersRebaseButtonOnlyWhenEnabled(t *testing.T) {
 	// Destructive: it must keep the two-step arm/confirm flow.
 	if strings.Contains(html, `data-action="rebase" data-noconfirm`) {
 		t.Fatal("rebase must not opt out of the confirm step")
-	}
-}
-
-// Like End, rebase contributes string literals to the shared action JS: its
-// CAVEAT entry (the confirm-step warning) and its success wording. It must also
-// stay OUT of the row-clearing set — a rebase leaves the row in place.
-func TestDashboardWiresRebaseIntoActionScript(t *testing.T) {
-	on := dashboardData{
-		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		ExecEnabled: true,
-		CSRFToken:   "tok",
-	}
-	html := renderDashboard(t, on)
-	// caveatFor already prepends "<branch>: ", so the caveat itself must not
-	// re-name the branch — pin the exact literal that renders after that prefix.
-	const caveat = "rebase: 'asks the agent to run /kitchen-sink:git-rebase — it rebases onto the " +
-		"default branch, resolves any conflicts, and force-pushes, replacing the PR\\'s commits'"
-	if !strings.Contains(html, caveat) {
-		t.Errorf("CAVEAT.rebase literal changed; want %s", caveat)
-	}
-	if strings.Contains(html, "rebase: 'REWRITES THIS BRANCH") {
-		t.Error("caveat still restates the branch that caveatFor already prepends")
-	}
-	if !strings.Contains(html, "action === 'rebase' ? 'sent /kitchen-sink:git-rebase'") {
-		t.Error("rebase has no success wording")
-	}
-	// Assert the whole declaration: rebase must NOT have been added to it, and a
-	// substring match on 'rebase' alone would not prove that.
-	if !strings.Contains(html, "var clears = (action === 'end');") {
-		t.Error("clears set changed; rebase must not clear the row")
 	}
 }
 

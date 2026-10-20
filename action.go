@@ -126,8 +126,8 @@ type reportRow struct {
 // runAction runs bin with args in dir, capturing combined output. stdin is left
 // nil (closed): any interactive prompt then hits EOF and fails closed instead of
 // hanging a serve goroutine. The child gets its own process group so a
-// timeout can SIGKILL the whole tree (an in-flight `gh`/`git` child reparents and
-// survives if only the bash parent is signalled). The timeout is enforced by
+// timeout can SIGKILL the whole tree (a child `gh` spawns, such as `git`,
+// reparents and survives if only `gh` itself is signalled). The timeout is enforced by
 // context + Cmd.WaitDelay rather than by waiting on Wait(), so a grandchild that
 // escaped the process group cannot keep this call (and the caller's inflight
 // locks) alive by holding the output pipe open — see waitDelay. Best-effort by

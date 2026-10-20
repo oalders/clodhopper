@@ -42,9 +42,9 @@ Three subcommands, dispatched in `main.go`:
 - **`serve`** (`server.go`) — HTTP dashboard, renders `templates/dashboard.html`; read-only
   by default, plus an **opt-in** write path (`--enable-merge`) that runs allowlisted
   `merge-pr`/`gh pr ready` actions per roster row, plus tmux session actions
-  (including `rebase`, which just sends the fixed `/kitchen-sink:git-rebase`
-  to the row's live pane), plus an `end` action that runs
-  no subprocess at all and just calls `endSessions` to drop the row. Before any
+  (`monitor-ci`, `new-monitor`, `reload-plugins`, `rebase`; see
+  `runSessionAction`/`handleAction` in `action.go`), plus an `end` action that
+  runs no subprocess at all and just calls `endSessions` to drop the row. Before any
   of that, middleware around the whole mux (`newServeMux`) applies the security
   headers and the Host allowlist (`hostAllowed`, 421 on a miss) to every route,
   so a DNS-rebinding page cannot even read the read-only board (this is in
@@ -101,10 +101,10 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
    sends `Host: 127.0.0.1`), and restricted to a
    closed argv allowlist — no user-supplied string ever reaches a command line.
   The `end` action never reaches `actionArgv`: it execs nothing, and its
-  `session_id` travels only as a bound SQL parameter. `rebase` is a session
-  action like `reload-plugins`: fixed `send-keys` text into a pane resolved
-  server-side (`paneIDRe`), refused (409) for a prompt-blocked row. The merge-pr actions (`squash`, `squash-admin`,
-  `close`) never run as serve's subprocess: `startMergeWindow` opens a new tmux
+  `session_id` travels only as a bound SQL parameter. `rebase` is one of the tmux
+  session actions: fixed `send-keys` text into a server-resolved pane, never
+  through `actionArgv`. The merge-pr actions (`squash`, `squash-admin`, `close`)
+  never run as serve's subprocess: `startMergeWindow` opens a new tmux
   window in the row's own session running merge-pr (it may wait minutes on a
   merge queue) and returns at once; its varying argv elements are the
   `display-message` session id (validated), the stored absolute cwd (refused if

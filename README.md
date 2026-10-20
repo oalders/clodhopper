@@ -158,8 +158,10 @@ board used to expose.
 
 - `--enable-merge` (default off): turn on the roster's **PR-action buttons**.
   When set, each roster row gains squash / squash + admin / close / ready
-  buttons — plus the **session actions** (including **rebase**) and an **end**
-  button that just dismisses the row — behind a two-step confirm. **ready** runs
+  buttons, plus the **session actions** (including **rebase**) and an **end**
+  button that just dismisses the row. The destructive ones (**monitor ci**,
+  **rebase**, **end**, and the PR **run**) sit behind a two-step confirm;
+  **+ watcher** and **reload plugins** fire on one click. **ready** runs
   `gh pr ready` in that row's worktree. **squash** and **close** start your local
   `merge-pr` in a new `merge-pr` window of the row's own tmux session and return
   at once, so a merge queue can take as long as it needs: merge-pr merges or

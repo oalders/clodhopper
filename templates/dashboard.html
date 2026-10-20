@@ -409,8 +409,14 @@
     .actcol.prcol { flex: 1 1 320px; }
     /* Fixed width so arming a session action (confirm label, ✕, caveat) can't
        widen the column, wrap it and move the confirm button (#128); px tracks the
-       px type, and holds every button plus an armed one's ✓ confirm and ✕. */
-    .actcol.sesscol { width: 448px; }
+       px type. Each width is the widest armed line measured in JetBrains Mono
+       plus ~10% for a fallback font: 470px for a pane row's five buttons with
+       end armed (✓ confirm and ✕), 109px for a pane-less row's lone armed end,
+       which gets a little more so its caveat isn't one word per line.
+       e2e/tests/session.spec.ts checks arming moves nothing. A pane-less row
+       keeps the narrow width so its PR column isn't pushed onto its own line. */
+    .sesscol { width: 160px; }
+    .sesscol.haspane { width: 520px; }
     .sesscol .actmsg { overflow-wrap: anywhere; }
     .acteyebrow {
       font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.06em;
@@ -706,8 +712,12 @@
       .actpanel .prrun { grid-column: 1 / -1; }
       /* End closes the session cluster (alone on a pane-less row, fifth of five
          otherwise), so it would strand at half width in the two-track grid. Once
-         armed its ✕ is the last button, so confirm and ✕ share the line instead. */
-      .actpanel .actsession button.pract:last-of-type:not(.actcancel) { grid-column: 1 / -1; }
+         armed it gives up the span so ✓ confirm and its ✕ share the line. The
+         other confirm-guarded buttons (monitor ci, rebase) sit in the first
+         track for the same reason: an armed one's ✕ lands beside it, not on
+         the next line. The selector is unquoted so the page source never holds
+         the data-action="end" markup a disabled board must not render. */
+      .actpanel .actsession button.pract[data-action=end]:not(.confirm) { grid-column: 1 / -1; }
       /* Only the long free-text doing/summary field claims its own full-width
          line; branch now flows inline with ci / app / status, wrapping within
          its own cell when a name is genuinely too long. */
@@ -2882,18 +2892,18 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>{{ end }}
-          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · reload plugins · rebase · end · squash · admin · close · ready"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · rebase · reload plugins · end · squash · admin · close · ready"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}10{{ else }}9{{ end }}"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
         {{ if and $.ExecEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}10{{ else }}9{{ end }}"><div class="actpanel">
-            <div class="actcol sesscol" role="group" aria-label="session actions">
+            <div class="actcol sesscol{{ if .HasPane }} haspane{{ end }}" role="group" aria-label="session actions">
               <span class="acteyebrow">session</span>
               <span class="actgroup actsession" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}">
                 {{ if .HasPane }}<button type="button" class="pract" data-action="monitor-ci" title="/clear then /monitor-ci in the running pane">monitor ci</button>
                 <button type="button" class="pract" data-action="new-monitor" data-noconfirm="true" title="split a new pane running /monitor-ci">+ watcher</button>
-                <button type="button" class="pract" data-action="reload-plugins" data-noconfirm="true" title="send /reload-plugins to the running pane">reload plugins</button>
                 <button type="button" class="pract" data-action="rebase" aria-label="rebase{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }}: ask the agent to run /kitchen-sink:git-rebase" title="send /kitchen-sink:git-rebase to the running pane">rebase</button>
+                <button type="button" class="pract" data-action="reload-plugins" data-noconfirm="true" title="send /reload-plugins to the running pane">reload plugins</button>
                 {{ end }}<button type="button" class="pract" data-action="end" aria-label="end{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button>
                 <span class="actmsg"></span>
               </span>

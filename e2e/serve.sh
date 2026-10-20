@@ -3,7 +3,8 @@
 # throwaway DB with the worst-case fixtures, and serve it locked down — no real
 # DB, no real tmux, no host CLODHOPPER_* config, and no write path unless the
 # second argument is --enable-merge, which also turns on --pane-peek (the
-# restart, swap and merge specs, which stub every /api/action and /api/pane).
+# restart, swap, merge and session specs, which stub every /api/action and
+# /api/pane).
 #
 # usage: serve.sh PORT [--enable-merge]
 set -eu

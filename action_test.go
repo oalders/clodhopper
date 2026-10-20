@@ -1795,68 +1795,82 @@ func TestHandleActionSendsFixedCommandRefusedOnPrompt(t *testing.T) {
 }
 
 // After a /clear the old row lingers on the roster sharing the pane with the
-// new live session. Clicking reload on the old (waiting) row must still be
-// refused when the pane's current session is at a prompt: Enter lands on the
-// pane, not the session.
-func TestHandleActionReloadPluginsRefusedOnSharedPanePrompt(t *testing.T) {
-	db := openTestDB(t)
-	dir := t.TempDir()
-	insertEvent(db, Event{TS: "2026-08-12T09:00:00Z", SourceApp: "x", SessionID: "old", Cwd: dir, TmuxPane: "%4", EventType: "Stop", PayloadJSON: "{}"})
-	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "new", Cwd: dir, TmuxPane: "%4", EventType: "PermissionRequest", PayloadJSON: "{}"})
-	stub, logPath := tmuxLogStub(t)
-	cfg := newActionCfg("/bin/true", "/bin/true")
-	cfg.tmux = stub
+// new live session. Clicking reload or rebase on the old (waiting) row must
+// still be refused when the pane's current session is at a prompt: Enter lands
+// on the pane, not the session.
+func TestHandleActionSendsFixedCommandRefusedOnSharedPanePrompt(t *testing.T) {
+	for _, action := range []string{"reload-plugins", "rebase"} {
+		t.Run(action, func(t *testing.T) {
+			db := openTestDB(t)
+			dir := t.TempDir()
+			insertEvent(db, Event{TS: "2026-08-12T09:00:00Z", SourceApp: "x", SessionID: "old", Cwd: dir, TmuxPane: "%4", EventType: "Stop", PayloadJSON: "{}"})
+			insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "new", Cwd: dir, TmuxPane: "%4", EventType: "PermissionRequest", PayloadJSON: "{}"})
+			stub, logPath := tmuxLogStub(t)
+			cfg := newActionCfg("/bin/true", "/bin/true")
+			cfg.tmux = stub
 
-	w := httptest.NewRecorder()
-	handleAction(w, actionReq("old", "reload-plugins", false, "secret", "127.0.0.1"), db, cfg, time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC))
-	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), promptBlockedReason) {
-		t.Fatalf("code = %d body=%q, want 409 with the prompt reason", w.Code, w.Body.String())
-	}
-	if got, _ := os.ReadFile(logPath); len(got) != 0 {
-		t.Fatalf("tmux ran into a pane parked on a prompt: %q", got)
+			w := httptest.NewRecorder()
+			handleAction(w, actionReq("old", action, false, "secret", "127.0.0.1"), db, cfg, time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC))
+			if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), promptBlockedReason) {
+				t.Fatalf("code = %d body=%q, want 409 with the prompt reason", w.Code, w.Body.String())
+			}
+			if got, _ := os.ReadFile(logPath); len(got) != 0 {
+				t.Fatalf("tmux ran into a pane parked on a prompt: %q", got)
+			}
+		})
 	}
 }
 
 // Unlike the broadcast, an explicit per-row click on a WORKING session is sent
 // deliberately: the user chose that row, and the command just queues.
-func TestHandleActionReloadPluginsSentWhileWorking(t *testing.T) {
-	db := openTestDB(t)
-	insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "rp", Cwd: t.TempDir(), TmuxPane: "%4", EventType: "PreToolUse", PayloadJSON: "{}"})
-	stub, logPath := tmuxLogStub(t)
-	cfg := newActionCfg("/bin/true", "/bin/true")
-	cfg.tmux = stub
+func TestHandleActionSendsFixedCommandWhileWorking(t *testing.T) {
+	for action, want := range map[string]string{
+		"reload-plugins": "send-keys -t %4 /reload-plugins Enter\n",
+		"rebase":         "send-keys -t %4 /kitchen-sink:git-rebase Enter\n",
+	} {
+		t.Run(action, func(t *testing.T) {
+			db := openTestDB(t)
+			insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "rp", Cwd: t.TempDir(), TmuxPane: "%4", EventType: "PreToolUse", PayloadJSON: "{}"})
+			stub, logPath := tmuxLogStub(t)
+			cfg := newActionCfg("/bin/true", "/bin/true")
+			cfg.tmux = stub
 
-	w := httptest.NewRecorder()
-	handleAction(w, actionReq("rp", "reload-plugins", false, "secret", "127.0.0.1"), db, cfg, time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC))
-	if w.Code != http.StatusOK {
-		t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
-	}
-	got, _ := os.ReadFile(logPath)
-	if want := "send-keys -t %4 /reload-plugins Enter\n"; string(got) != want {
-		t.Fatalf("argv = %q, want %q", got, want)
+			w := httptest.NewRecorder()
+			handleAction(w, actionReq("rp", action, false, "secret", "127.0.0.1"), db, cfg, time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC))
+			if w.Code != http.StatusOK {
+				t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+			}
+			if got, _ := os.ReadFile(logPath); string(got) != want {
+				t.Fatalf("argv = %q, want %q", got, want)
+			}
+		})
 	}
 }
 
 // The pane lookup alone would find a valid pane for "ghost"; the guard must
 // still fail closed because the session has aged off the roster, so its status
 // (and so whether Enter would answer a prompt) is unknown.
-func TestHandleActionReloadPluginsUnknownSession(t *testing.T) {
-	db := openTestDB(t)
-	insertEvent(db, Event{TS: "2025-08-12T10:00:00Z", SourceApp: "x", SessionID: "ghost", Cwd: t.TempDir(), TmuxPane: "%4", EventType: "Stop", PayloadJSON: "{}"})
-	stub, logPath := tmuxLogStub(t)
-	cfg := newActionCfg("/bin/true", "/bin/true")
-	cfg.tmux = stub
+func TestHandleActionSendsFixedCommandUnknownSession(t *testing.T) {
+	for _, action := range []string{"reload-plugins", "rebase"} {
+		t.Run(action, func(t *testing.T) {
+			db := openTestDB(t)
+			insertEvent(db, Event{TS: "2025-08-12T10:00:00Z", SourceApp: "x", SessionID: "ghost", Cwd: t.TempDir(), TmuxPane: "%4", EventType: "Stop", PayloadJSON: "{}"})
+			stub, logPath := tmuxLogStub(t)
+			cfg := newActionCfg("/bin/true", "/bin/true")
+			cfg.tmux = stub
 
-	if pane, err := latestPaneForSession(db, "ghost"); err != nil || pane != "%4" {
-		t.Fatalf("latestPaneForSession = %q, %v; want %%4 so the roster check is what refuses", pane, err)
-	}
-	w := httptest.NewRecorder()
-	handleAction(w, actionReq("ghost", "reload-plugins", false, "secret", "127.0.0.1"), db, cfg, time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC))
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("code = %d, want 404; body=%s", w.Code, w.Body.String())
-	}
-	if got, _ := os.ReadFile(logPath); len(got) != 0 {
-		t.Fatalf("tmux ran for a session not on the roster: %q", got)
+			if pane, err := latestPaneForSession(db, "ghost"); err != nil || pane != "%4" {
+				t.Fatalf("latestPaneForSession = %q, %v; want %%4 so the roster check is what refuses", pane, err)
+			}
+			w := httptest.NewRecorder()
+			handleAction(w, actionReq("ghost", action, false, "secret", "127.0.0.1"), db, cfg, time.Date(2026, 8, 12, 10, 1, 0, 0, time.UTC))
+			if w.Code != http.StatusNotFound {
+				t.Fatalf("code = %d, want 404; body=%s", w.Code, w.Body.String())
+			}
+			if got, _ := os.ReadFile(logPath); len(got) != 0 {
+				t.Fatalf("tmux ran for a session not on the roster: %q", got)
+			}
+		})
 	}
 }
 
