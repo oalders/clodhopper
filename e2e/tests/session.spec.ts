@@ -51,9 +51,13 @@ async function openActions(page: Page, sess: string) {
   await expect(page.locator(group(sess))).toBeVisible();
 }
 
-// expectNear compares layout coordinates, which are fractional, within half a pixel.
+// TOL is how far, in px, two fractional layout coordinates may differ and
+// still count as the same; every geometry check here uses it.
+const TOL = 1;
+
+// expectNear compares layout coordinates within TOL.
 function expectNear(got: number, want: number, what: string) {
-  expect(Math.abs(got - want), `${what}: ${got} vs ${want}`).toBeLessThanOrEqual(0.5);
+  expect(Math.abs(got - want), `${what}: ${got} vs ${want}`).toBeLessThanOrEqual(TOL);
 }
 
 // armRebase arms and confirms the pane row's rebase.
@@ -94,12 +98,16 @@ const failures = [
 ];
 for (const f of failures) {
   test(`${f.name} rebase reports it and unlocks for a retry`, async ({ page }) => {
-    await stubAction(page, f.body);
+    const posts = await stubAction(page, f.body);
     await openActions(page, paneSess);
     const rebase = await armRebase(page);
     await expect(page.locator(`${group(paneSess)} .actmsg`)).toHaveText(f.want);
     await expect(rebase).toHaveText('rebase');
     await expect(rebase).toBeEnabled();
+    // The retry really goes out: arming and confirming again posts a second time.
+    await armRebase(page);
+    await expect.poll(() => posts.length).toBe(2);
+    expect(posts[1].postData()).toBe(`session_id=${paneSess}&action=rebase`);
   });
 }
 
@@ -109,6 +117,7 @@ test('a pane-less row offers only end, which posts end', async ({ page }) => {
   const g = page.locator(group(panelessSess));
   await expect(g.locator('button.pract')).toHaveCount(1);
   await expect(g.locator('button.pract[data-action="rebase"]')).toHaveCount(0);
+  await expect(g.getByRole('button', { name: /^end .*dismiss/ })).toBeVisible();
   const end = g.locator('button.pract[data-action="end"]');
   await end.click();
   await expect(end).toHaveText('✓ confirm');
@@ -145,7 +154,7 @@ async function expectArmingMovesNothing(page: Page, sess: string, actions: strin
     expectNear(after.y, before.y, `${action}: armed button y`);
     const armed = (await btn.boundingBox())!;
     const x = (await cancel.boundingBox())!;
-    expect(Math.abs((x.y + x.height / 2) - (armed.y + armed.height / 2)), `${action}: ✕ on the confirm line`).toBeLessThanOrEqual(1);
+    expectNear(x.y + x.height / 2, armed.y + armed.height / 2, `${action}: ✕ on the confirm line`);
 
     await cancel.click();
     await expect(btn).not.toHaveText('✓ confirm');
@@ -186,5 +195,5 @@ test('a pane-less row keeps its PR column on the session column line', async ({ 
   const row = page.locator(`#content tr.actrow[data-actions-row="${panelessSess}"]`);
   const sess = (await row.locator('.actcol.sesscol').boundingBox())!;
   const pr = (await row.locator('.actcol.prcol').boundingBox())!;
-  expect(Math.abs(pr.y - sess.y)).toBeLessThanOrEqual(2);
+  expectNear(pr.y, sess.y, 'PR column top');
 });

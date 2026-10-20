@@ -237,8 +237,9 @@ actions** that drive that pane directly (they do not touch a PR):
 - **rebase** sends `/kitchen-sink:git-rebase` into the agent's own pane, asking
   the agent to rebase onto the default branch, resolve any conflicts, and
   force-push. **This rewrites the branch's history.** There is no `/clear`
-  first: the agent's existing context helps it resolve conflicts. Like
-  **reload plugins**, it is refused for a prompt-blocked row.
+  first: the agent's existing context helps it resolve conflicts. Clicked
+  while the agent is working, it queues behind the current turn and runs when
+  that finishes. Like **reload plugins**, it is refused for a prompt-blocked row.
 
 A **reload plugins (all)** button above the roster sends `/reload-plugins` to
 every session at once and reports, per row, what it sent or skipped and why,

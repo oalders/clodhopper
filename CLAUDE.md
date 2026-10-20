@@ -103,8 +103,8 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   The `end` action never reaches `actionArgv`: it execs nothing, and its
   `session_id` travels only as a bound SQL parameter. `rebase`, like
   `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
-  never through `actionArgv`, and like every non-`end` action it is still behind
-  `execPeerAllowed`'s peer gate. The merge-pr actions (`squash`, `squash-admin`, `close`)
+  never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full
+  peer gate. The merge-pr actions (`squash`, `squash-admin`, `close`)
   never run as serve's subprocess: `startMergeWindow` opens a new tmux
   window in the row's own session running merge-pr (it may wait minutes on a
   merge queue) and returns at once; its varying argv elements are the
