@@ -141,14 +141,14 @@ test('end in the merge-queue section posts end for the queued session', async ({
   const end = page.locator('#ck-mq button.pract[data-action="end"]');
   // An empty result line must not open a second flex line under the controls. Not
   // toBeHidden: Playwright already counts an empty zero-height box as hidden.
-  await expect(page.locator('#ck-mq .actmsg')).toHaveCSS('display', 'none');
+  await expect(page.locator('#ck-mq td.actions .actmsg')).toHaveCSS('display', 'none');
   await end.click();
   await expect(end).toHaveText('✓ confirm');
   await end.click();
 
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0].postData()).toBe('session_id=e2e-queued-0000-1111-2222-333333333333&action=end');
-  const msg = page.locator('#ck-mq .actmsg');
+  const msg = page.locator('#ck-mq td.actions .actmsg');
   await expect(msg).toHaveText('dismissed — row will clear');
   // The fixed-width actions cell wraps the result onto its own line under ⤢, inside the cell.
   const cell = (await page.locator('#ck-mq td.actions').boundingBox())!;

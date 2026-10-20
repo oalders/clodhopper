@@ -68,6 +68,8 @@ Subcommands, dispatched in `main.go`:
   capability — the capture path stays read-only.
 - **`prune`** (`main.go`) — deletes events older than the retention window,
   plus blocks whose sessions have no events left.
+- **`end`** (`end.go`) — writes a synthetic `SessionEnd` for live sessions matching a branch, cwd or session-id prefix, so hard-killed agents leave the roster.
+- **`init`** (`init.go`) — wires the `clodhopper ingest` hooks into a project's `.claude/settings.json` (or `settings.local.json`), skipping ones already present.
 - **`block` / `unblock`** (`block.go`) — record or drop "this session waits on
   that one" in the `blocks` table. `applyBlocks` (server layer, after
   `dropDeadPanes`) relaxes a waiting/needs-you row to `statusBlocked` while its

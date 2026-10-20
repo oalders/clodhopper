@@ -4244,3 +4244,22 @@ func TestContentTemplate_BlockControls(t *testing.T) {
 		t.Error("a lone row renders a block picker with nothing to block on")
 	}
 }
+
+// A blocked row folded into the merge-queue table keeps its chip, so the block
+// stays visible and clearable there.
+func TestContentTemplate_QueuedBlockChip(t *testing.T) {
+	queued := []Agent{{SessionID: "qb", Branch: "fix-1236", CIQueue: "queued", Status: statusBlocked, BlockedOn: "fix-1235", BlockedOnSession: "blocker"}}
+	for _, exec := range []bool{false, true} {
+		var buf bytes.Buffer
+		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", dashboardData{ExecEnabled: exec, QueuedAgents: queued}); err != nil {
+			t.Fatal(err)
+		}
+		_, table, _ := strings.Cut(buf.String(), `<table class="mq">`)
+		if !strings.Contains(table, `data-jump="blocker"`) {
+			t.Errorf("exec=%v: queued blocked row has no chip", exec)
+		}
+		if got := strings.Contains(table, `data-action="unblock"`); got != exec {
+			t.Errorf("exec=%v: unblock ✕ rendered = %v", exec, got)
+		}
+	}
+}

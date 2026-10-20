@@ -88,7 +88,7 @@ func TestE2ESeed(t *testing.T) {
 	// Idle with a two-digit hour count; branchless, so the cwd basename stands in.
 	add(23*time.Hour, appB, "", "a-very-long-worktree-directory-name-standing-in-for-the-branch", "e2e-idle-0000-1111-2222-333333333333", "PreToolUse", "Read", "")
 
-	// block.spec.ts: fix-1234 is blocked on fix-1235, and fix-1236 on the queued row (the block rows are written below).
+	// block.spec.ts: fix-1234 is blocked on fix-1235, fix-1236 on the queued row, and the queued row on fix-1235 (the block rows are written below).
 	add(30*time.Minute, appB, "fix-1234", "worktree-blocked", blockedSess, "Stop", "", "")
 	add(40*time.Minute, appB, "fix-1235", "worktree-blocker", blockerSess, "Stop", "", "")
 	add(35*time.Minute, appB, "fix-1236", "worktree-blocked-on-queue", queueBlockedSess, "Stop", "", "")
@@ -123,7 +123,7 @@ func TestE2ESeed(t *testing.T) {
 		}
 	}
 	live := map[string]bool{blockedSess: true, blockerSess: true, queueBlockedSess: true, queuedSess: true}
-	for _, b := range []Block{{blockedSess, blockerSess}, {queueBlockedSess, queuedSess}} {
+	for _, b := range []Block{{blockedSess, blockerSess}, {queueBlockedSess, queuedSess}, {queuedSess, blockerSess}} {
 		if err := addBlock(db, b.Blocked, b.Blocker, live, now); err != nil {
 			t.Fatal(err)
 		}

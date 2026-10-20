@@ -33,8 +33,16 @@ var dashboardTmpl = template.Must(
 		"shortTS":     shortTS,
 		"rowClass":    rowClass,
 		"ciMarkSlots": ciMarkSlots,
+		"blockChip":   func(a Agent, exec bool) blockChipView { return blockChipView{a, exec} },
 	}).Parse(dashboardHTML),
 )
+
+// blockChipView feeds the "blockchip" template, which renders in both the
+// roster and the merge-queue table and gates its ✕ on Exec.
+type blockChipView struct {
+	Agent
+	Exec bool
+}
 
 // ciMarkSlots is the most 🔀/draft-chip/queue-pill/done-chip markers any one roster
 // row carries (0–2: GitHub never queues a draft or a finished PR, so those share a slot).
