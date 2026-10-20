@@ -411,10 +411,10 @@
        widen the column, wrap it and move the confirm button (#128); px tracks the
        px type. Each width is the widest armed line measured in JetBrains Mono
        plus ~10% for a fallback font: 470px for a pane row's five buttons with
-       end armed (✓ confirm and ✕), 109px for a pane-less row's lone armed end,
-       which gets a little more so its caveat isn't one word per line.
-       e2e/tests/session.spec.ts checks arming moves nothing. A pane-less row
-       keeps the narrow width so its PR column isn't pushed onto its own line. */
+       end armed (✓ confirm and ✕). A pane-less row's lone armed end measures
+       109px, but gets 160px: headroom so its caveat or result message doesn't
+       wrap one word per line, while staying narrow enough to keep the PR column
+       on the same line. e2e/tests/session.spec.ts checks arming moves nothing. */
     .sesscol { width: 160px; }
     .sesscol.haspane { width: 520px; }
     .sesscol .actmsg { overflow-wrap: anywhere; }
@@ -689,7 +689,7 @@
          cluster becomes a two-column grid of full-size buttons with force, the
          choices, the command preview, and the run button spanning both tracks. */
       .actrow .actpanel { flex-direction: column; gap: 16px; }
-      .actrow .actcol { width: 100%; }
+      .actrow .actcol { width: 100%; } /* must stay after the fixed .sesscol widths: they tie on specificity */
       .actpanel .actgroup { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 100%; }
       .actpanel button.pract, table.mq button.pract { min-height: 44px; font-size: var(--fs-sm); border-radius: var(--radius-sm); }
       .actpanel .actforce { grid-column: 1 / -1; min-height: 44px; font-size: var(--fs-sm); }
@@ -2902,7 +2902,7 @@
               <span class="actgroup actsession" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}">
                 {{ if .HasPane }}<button type="button" class="pract" data-action="monitor-ci" title="/clear then /monitor-ci in the running pane">monitor ci</button>
                 <button type="button" class="pract" data-action="new-monitor" data-noconfirm="true" title="split a new pane running /monitor-ci">+ watcher</button>
-                <button type="button" class="pract" data-action="rebase" aria-label="rebase{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }}: ask the agent to run /kitchen-sink:git-rebase" title="send /kitchen-sink:git-rebase to the running pane">rebase</button>
+                <button type="button" class="pract" data-action="rebase" aria-label="rebase{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }}: ask the agent to run /kitchen-sink:git-rebase" title="ask the agent to run /kitchen-sink:git-rebase">rebase</button>
                 <button type="button" class="pract" data-action="reload-plugins" data-noconfirm="true" title="send /reload-plugins to the running pane">reload plugins</button>
                 {{ end }}<button type="button" class="pract" data-action="end" aria-label="end{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button>
                 <span class="actmsg"></span>

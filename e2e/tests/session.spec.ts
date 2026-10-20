@@ -31,12 +31,14 @@ test.afterEach(async ({ page }) => {
   expect(unstubbed, 'exec endpoint requests with no stub').toEqual([]);
 });
 
-// stubAction answers every /api/action with success and returns the requests seen.
-async function stubAction(page: Page): Promise<Request[]> {
+// stubAction answers every /api/action with body (success by default) and
+// returns the requests seen.
+const okBody = { ok: true, exitCode: 0, timedOut: false, output: '' };
+async function stubAction(page: Page, body: object = okBody): Promise<Request[]> {
   const seen: Request[] = [];
   await page.route('**/api/action', (route) => {
     seen.push(route.request());
-    return route.fulfill({ json: { ok: true, exitCode: 0, timedOut: false, output: '' } });
+    return route.fulfill({ json: body });
   });
   return seen;
 }
@@ -49,10 +51,28 @@ async function openActions(page: Page, sess: string) {
   await expect(page.locator(group(sess))).toBeVisible();
 }
 
+// expectNear compares layout coordinates, which are fractional, within half a pixel.
+function expectNear(got: number, want: number, what: string) {
+  expect(Math.abs(got - want), `${what}: ${got} vs ${want}`).toBeLessThanOrEqual(0.5);
+}
+
+// armRebase arms and confirms the pane row's rebase.
+async function armRebase(page: Page) {
+  const rebase = page.locator(`${group(paneSess)} button.pract[data-action="rebase"]`);
+  await rebase.click();
+  await expect(rebase).toHaveText('✓ confirm');
+  await rebase.click();
+  return rebase;
+}
+
 test('rebase sends /kitchen-sink:git-rebase and leaves the row in place', async ({ page }) => {
   const posts = await stubAction(page);
   await openActions(page, paneSess);
   const g = page.locator(group(paneSess));
+  // The visible label is just "rebase"; screen readers get the branch and what it does.
+  await expect(page.locator(`#content tr.actrow[data-actions-row="${paneSess}"]`)
+    .getByRole('group', { name: 'session actions' })
+    .getByRole('button', { name: /^rebase .*git-rebase/ })).toBeVisible();
   const rebase = g.locator('button.pract[data-action="rebase"]');
   await rebase.click();
   await expect(rebase).toHaveText('✓ confirm');
@@ -67,6 +87,21 @@ test('rebase sends /kitchen-sink:git-rebase and leaves the row in place', async 
   await expect(rebase).toBeEnabled();
   await expect(page.locator(`#content button.actbtn[data-actions="${paneSess}"]`)).toBeVisible();
 });
+
+const failures = [
+  { name: 'a refused', body: { ok: false, exitCode: 1, timedOut: false, output: 'no pane' }, want: 'failed: no pane' },
+  { name: 'a timed-out', body: { ok: false, exitCode: -1, timedOut: true, output: '' }, want: 'timed out — verify before retrying' },
+];
+for (const f of failures) {
+  test(`${f.name} rebase reports it and unlocks for a retry`, async ({ page }) => {
+    await stubAction(page, f.body);
+    await openActions(page, paneSess);
+    const rebase = await armRebase(page);
+    await expect(page.locator(`${group(paneSess)} .actmsg`)).toHaveText(f.want);
+    await expect(rebase).toHaveText('rebase');
+    await expect(rebase).toBeEnabled();
+  });
+}
 
 test('a pane-less row offers only end, which posts end', async ({ page }) => {
   const posts = await stubAction(page);
@@ -83,44 +118,73 @@ test('a pane-less row offers only end, which posts end', async ({ page }) => {
   expect(posts[0].postData()).toBe(`session_id=${panelessSess}&action=end`);
 });
 
-// expectArmingMovesNothing arms each confirm-guarded session action in turn and
-// checks the #128 invariant: the column keeps its width, the armed button stays
-// put, and its ✓ confirm and ✕ share one line.
-async function expectArmingMovesNothing(page: Page) {
-  const g = page.locator(group(paneSess));
+// expectArmingMovesNothing arms each of the row's given session actions in turn
+// and checks the #128 invariant: the column keeps its width, the armed button
+// stays put, and its ✓ confirm and ✕ share one line.
+async function expectArmingMovesNothing(page: Page, sess: string, actions: string[]) {
+  const g = page.locator(group(sess));
   const col = g.locator('xpath=ancestor::div[contains(@class, "actcol")]');
-  for (const action of ['monitor-ci', 'rebase', 'end']) {
+  for (const action of actions) {
     const btn = g.locator(`button.pract[data-action="${action}"]`);
-    const width = (await col.boundingBox())!.width;
-    const before = (await btn.boundingBox())!;
+    // Positions are taken relative to the column: the click may scroll the
+    // page, which moves every viewport-relative box.
+    const rel = async () => {
+      const c = (await col.boundingBox())!;
+      const b = (await btn.boundingBox())!;
+      return { width: c.width, x: b.x - c.x, y: b.y - c.y };
+    };
+    const before = await rel();
     await btn.click();
     await expect(btn).toHaveText('✓ confirm');
     const cancel = g.locator('button.actcancel');
     await expect(cancel).toBeVisible();
 
-    expect((await col.boundingBox())!.width, `${action}: column width`).toBe(width);
-    const after = (await btn.boundingBox())!;
-    expect([after.x, after.y], `${action}: armed button position`).toEqual([before.x, before.y]);
+    const after = await rel();
+    expectNear(after.width, before.width, `${action}: column width`);
+    expectNear(after.x, before.x, `${action}: armed button x`);
+    expectNear(after.y, before.y, `${action}: armed button y`);
+    const armed = (await btn.boundingBox())!;
     const x = (await cancel.boundingBox())!;
-    expect(Math.abs((x.y + x.height / 2) - (after.y + after.height / 2)), `${action}: ✕ on the confirm line`).toBeLessThanOrEqual(1);
+    expect(Math.abs((x.y + x.height / 2) - (armed.y + armed.height / 2)), `${action}: ✕ on the confirm line`).toBeLessThanOrEqual(1);
 
     await cancel.click();
     await expect(btn).not.toHaveText('✓ confirm');
   }
 }
 
-test('arming a session action moves nothing on desktop', async ({ page }) => {
-  await openActions(page, paneSess);
-  await expectArmingMovesNothing(page);
-});
+const rows = [
+  { name: 'a pane row', sess: paneSess, actions: ['monitor-ci', 'rebase', 'end'] },
+  { name: 'a pane-less row', sess: panelessSess, actions: ['end'] },
+];
 
-test('arming a session action moves nothing on a phone, where end spans the row', async ({ page }) => {
-  await page.setViewportSize({ width: 375, height: 812 });
-  await openActions(page, paneSess);
-  const g = page.locator(group(paneSess));
-  const box = (await g.boundingBox())!;
-  const end = (await g.locator('button.pract[data-action="end"]').boundingBox())!;
-  expect(Math.abs(end.width - box.width)).toBeLessThanOrEqual(1);
-  await expectArmingMovesNothing(page);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+for (const r of rows) {
+  test(`arming a session action moves nothing on desktop, on ${r.name}`, async ({ page }) => {
+    await openActions(page, r.sess);
+    await expectArmingMovesNothing(page, r.sess, r.actions);
+  });
+
+  test(`arming a session action moves nothing on a phone, where end spans the row, on ${r.name}`, async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    await openActions(page, r.sess);
+    const g = page.locator(group(r.sess));
+    const box = (await g.boundingBox())!;
+    const end = g.locator('button.pract[data-action="end"]');
+    expectNear((await end.boundingBox())!.width, box.width, 'unarmed end width');
+    await expectArmingMovesNothing(page, r.sess, r.actions);
+    // Armed, end gives up the span so its ✕ fits beside it (the :not(.confirm) rule).
+    await end.click();
+    await expect(end).toHaveText('✓ confirm');
+    expect((await end.boundingBox())!.width).toBeLessThan(box.width - 1);
+    await g.locator('button.actcancel').click();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+}
+
+// The pane-less row's narrow session column leaves room for the PR column beside it.
+test('a pane-less row keeps its PR column on the session column line', async ({ page }) => {
+  await openActions(page, panelessSess);
+  const row = page.locator(`#content tr.actrow[data-actions-row="${panelessSess}"]`);
+  const sess = (await row.locator('.actcol.sesscol').boundingBox())!;
+  const pr = (await row.locator('.actcol.prcol').boundingBox())!;
+  expect(Math.abs(pr.y - sess.y)).toBeLessThanOrEqual(2);
 });

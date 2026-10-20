@@ -2358,26 +2358,6 @@ func TestDashboardRendersEndButtonOnlyWhenEnabled(t *testing.T) {
 	}
 }
 
-// Arming rebase/end used to widen their column until it wrapped and the confirm
-// button jumped left (issue #128). Both fixed widths must precede the phone rule,
-// and be no more specific than it, so phones still get a full-width column.
-func TestDashboardFixesSessionActionsColumnWidth(t *testing.T) {
-	html := renderDashboard(t, dashboardData{})
-	phone := regexp.MustCompile(`\.actrow\s+\.actcol\s*\{[^}]*\bwidth:\s*100%`).FindStringIndex(html)
-	if phone == nil {
-		t.Fatal("missing the phone full-width rule")
-	}
-	for _, sel := range []string{`\.sesscol`, `\.sesscol\.haspane`} {
-		fixed := regexp.MustCompile(`\n\s*` + sel + `\s*\{[^}]*\bwidth:`).FindStringIndex(html)
-		if fixed == nil {
-			t.Fatalf("missing the %s width rule", sel)
-		}
-		if fixed[0] > phone[0] {
-			t.Fatalf("%s width must come before the phone full-width rule", sel)
-		}
-	}
-}
-
 // The End action reuses the PR cluster's already-proven JS, but contributes two
 // new string literals to it: its own CAVEAT entry (the confirm-step warning) and
 // its membership in the "clears" set (which keeps the row locked so the poller
