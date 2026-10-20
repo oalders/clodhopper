@@ -2242,7 +2242,9 @@ func TestDashboardRendersActionButtonsOnlyWhenEnabled(t *testing.T) {
 	// disabled
 	off := base
 	off.ExecEnabled = false
-	if strings.Contains(renderDashboard(t, off), "data-action=") {
+	// Quoted: the template always quotes the attribute, while the page's CSS
+	// targets end with the unquoted [data-action=end].
+	if strings.Contains(renderDashboard(t, off), `data-action="`) {
 		t.Fatal("action buttons rendered while disabled")
 	}
 	// enabled
@@ -2300,6 +2302,18 @@ func TestDashboardRendersRestartOnlyWhenEnabled(t *testing.T) {
 	}
 }
 
+// sessionGroup returns the roster row's session action group, from its opening
+// tag up to the PR group that follows it.
+func sessionGroup(t *testing.T, html, sid string) string {
+	t.Helper()
+	start := strings.Index(html, `class="actgroup actsession" data-session="`+sid+`"`)
+	end := strings.Index(html, `class="actgroup prform" data-session="`+sid+`"`)
+	if start < 0 || end < start {
+		t.Fatalf("no session group before the PR group for %s", sid)
+	}
+	return html[start:end]
+}
+
 // The per-row End button (dismiss this roster row) is part of the opt-in write
 // surface, so it must be absent unless --enable-merge is on — and, unlike the
 // tmux session actions, it must render even for a row with no live pane, since
@@ -2321,27 +2335,26 @@ func TestDashboardRendersEndButtonOnlyWhenEnabled(t *testing.T) {
 	if on.Agents[0].HasPane {
 		t.Fatal("fixture unexpectedly has a pane")
 	}
-	if !strings.Contains(html, `class="actgroup rowform"`) {
-		t.Fatal("End button must sit in its own ungated row cluster")
+	// It sits in the session group, which renders even without a pane; the old
+	// right-hand row cluster is gone.
+	sess := sessionGroup(t, html, "s1")
+	if !strings.Contains(sess, `data-action="end"`) {
+		t.Fatal("End button must sit in the session group of a pane-less row")
+	}
+	if strings.Contains(sess, `data-action="monitor-ci"`) {
+		t.Fatal("pane-gated session actions rendered for a row with no pane")
+	}
+	if strings.Contains(html, "rowcol") || strings.Contains(html, `class="actgroup rowform"`) {
+		t.Fatal("the roster still renders the old row-actions cluster")
+	}
+	withPane := on
+	withPane.Agents = []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting, HasPane: true}}
+	if !strings.Contains(sessionGroup(t, renderDashboard(t, withPane), "s1"), `data-action="end"`) {
+		t.Fatal("End button must sit in the session group of a row with a pane")
 	}
 	// End keeps the two-step arm/confirm flow.
 	if strings.Contains(html, `data-action="end" data-noconfirm`) {
 		t.Fatal("End must not opt out of the confirm step")
-	}
-}
-
-// Arming rebase/end used to widen the row-actions column until it wrapped and
-// the confirm button jumped left (issue #128). The fixed width must precede the
-// phone rule of equal specificity so phones still get a full-width column.
-func TestDashboardFixesRowActionsColumnWidth(t *testing.T) {
-	html := renderDashboard(t, dashboardData{})
-	fixed := regexp.MustCompile(`\.actcol\.rowcol\s*\{[^}]*\bwidth:`).FindStringIndex(html)
-	phone := regexp.MustCompile(`\.actrow\s+\.actcol\s*\{[^}]*\bwidth:\s*100%`).FindStringIndex(html)
-	if fixed == nil || phone == nil {
-		t.Fatalf("missing rule: rowcol at %v, phone at %v", fixed, phone)
-	}
-	if fixed[0] > phone[0] {
-		t.Fatal("rowcol width must come before the phone full-width rule")
 	}
 }
 
@@ -2644,7 +2657,7 @@ func TestDashboardActionMessagePersistsOnlyFailuresAndMerges(t *testing.T) {
 
 	// Failure, timeout and a started merge share one note() call, placed after
 	// both writes.
-	fail := `              : 'timed out — verify before retrying';
+	fail := `            if (d.timedOut) msg.textContent = 'timed out — verify before retrying';
             if (!d.ok || d.timedOut || merges) noteMsg(group, msg.textContent);`
 	if !strings.Contains(html, fail) {
 		t.Errorf("failure/timeout/merge-started results are no longer remembered across repaints:\n%s", fail)
@@ -2668,7 +2681,7 @@ func TestDashboardActionMessagePersistsOnlyFailuresAndMerges(t *testing.T) {
 	if got := strings.Count(html, "noteMsg("); got != wantNoteMentions {
 		t.Errorf("noteMsg( appears %d time(s), want %d (its declaration, the failure/timeout/merge guard and the .catch branch); a new call site — e.g. on the success branch — must not remember its result across repaints", got, wantNoteMentions)
 	}
-	// Keyed by group class as well as session: three .actgroups share a session.
+	// Keyed by group class as well as session: .actgroups share a session.
 	if !strings.Contains(html, "var ACTMSG_GROUPS = ['actsession', 'prform', 'rowform'];") {
 		t.Error("remembered messages are no longer keyed by group class")
 	}
@@ -2857,12 +2870,12 @@ func TestDashboardSwapContentBuildsSubtreeOffline(t *testing.T) {
 	}
 }
 
-// The per-row rebase button is part of the opt-in write surface (it rewrites and
-// force-pushes a branch), so it must be absent unless --enable-merge is on. Like
-// End it lives in the ungated row cluster — a row with no live tmux pane is
-// still a branch worth rebasing.
+// The per-row rebase button is part of the opt-in write surface (the agent it
+// prompts rewrites and force-pushes a branch), so it must be absent unless
+// --enable-merge is on. It types into the agent's pane, so it sits with the other
+// session actions and needs a live pane.
 func TestDashboardRendersRebaseButtonOnlyWhenEnabled(t *testing.T) {
-	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}}
+	base := dashboardData{Agents: []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting, HasPane: true}}}
 	off := base // ExecEnabled false
 	if strings.Contains(renderDashboard(t, off), `data-action="rebase"`) {
 		t.Fatal("rebase button rendered while merge disabled")
@@ -2871,51 +2884,17 @@ func TestDashboardRendersRebaseButtonOnlyWhenEnabled(t *testing.T) {
 	on.ExecEnabled = true
 	on.CSRFToken = "tok"
 	html := renderDashboard(t, on)
-	if !strings.Contains(html, `data-action="rebase"`) {
-		t.Fatal("rebase button missing while merge enabled")
+	if !strings.Contains(sessionGroup(t, html, "s1"), `data-action="rebase"`) {
+		t.Fatal("rebase button missing from the session group while merge enabled")
 	}
-	if on.Agents[0].HasPane {
-		t.Fatal("fixture unexpectedly has a pane")
+	paneless := on
+	paneless.Agents = []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}}
+	if strings.Contains(renderDashboard(t, paneless), `data-action="rebase"`) {
+		t.Fatal("rebase button rendered for a row with no pane to type into")
 	}
 	// Destructive: it must keep the two-step arm/confirm flow.
 	if strings.Contains(html, `data-action="rebase" data-noconfirm`) {
 		t.Fatal("rebase must not opt out of the confirm step")
-	}
-}
-
-// Like End, rebase contributes string literals to the shared action JS: its
-// CAVEAT entry (the confirm-step warning) and its success wording. It must also
-// stay OUT of the row-clearing set — a rebase leaves the row in place.
-func TestDashboardWiresRebaseIntoActionScript(t *testing.T) {
-	on := dashboardData{
-		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
-		ExecEnabled: true,
-		CSRFToken:   "tok",
-	}
-	html := renderDashboard(t, on)
-	// caveatFor already prepends "<branch>: ", so the caveat itself must not
-	// re-name the branch — pin the exact literal that renders after that prefix.
-	const caveat = "rebase: 'REWRITTEN — rebased onto the default branch, then force-pushed " +
-		"(--force-with-lease), replacing the PR\\'s commits. On a conflict the rebase is aborted " +
-		"and nothing is pushed'"
-	if !strings.Contains(html, caveat) {
-		t.Errorf("CAVEAT.rebase literal changed; want %s", caveat)
-	}
-	if strings.Contains(html, "rebase: 'REWRITES THIS BRANCH") {
-		t.Error("caveat still restates the branch that caveatFor already prepends")
-	}
-	// A timed-out force-push may or may not have landed, so rebase needs wording
-	// that says WHAT to check rather than the generic "verify before retrying".
-	if !strings.Contains(html, "action === 'rebase'\n              ? 'timed out — the rebase/push may have partially completed; check the branch on GitHub before retrying'") {
-		t.Error("rebase has no timeout-specific wording")
-	}
-	if !strings.Contains(html, "action === 'rebase' ? 'rebased onto the default branch and force-pushed'") {
-		t.Error("rebase has no success wording")
-	}
-	// Assert the whole declaration: rebase must NOT have been added to it, and a
-	// substring match on 'rebase' alone would not prove that.
-	if !strings.Contains(html, "var clears = (action === 'end');") {
-		t.Error("clears set changed; rebase must not clear the row")
 	}
 }
 
@@ -3154,20 +3133,20 @@ func TestDashboardDisarmRestoresFocus(t *testing.T) {
 // naming nothing, so the branch clause is simply omitted.
 func TestDashboardRebaseLabelOmitsUnknownBranch(t *testing.T) {
 	withBranch := renderDashboard(t, dashboardData{
-		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting}},
+		Agents:      []Agent{{SessionID: "s1", Branch: "feature", Status: statusWaiting, HasPane: true}},
 		ExecEnabled: true, CSRFToken: "tok",
 	})
-	if !strings.Contains(withBranch, `aria-label="rebase feature onto the default branch and force-push"`) {
+	if !strings.Contains(withBranch, `aria-label="rebase feature: ask the agent to run /kitchen-sink:git-rebase"`) {
 		t.Error("a known branch is no longer named in the rebase label")
 	}
 	none := renderDashboard(t, dashboardData{
-		Agents:      []Agent{{SessionID: "s1", Status: statusWaiting}},
+		Agents:      []Agent{{SessionID: "s1", Status: statusWaiting, HasPane: true}},
 		ExecEnabled: true, CSRFToken: "tok",
 	})
-	if strings.Contains(none, "rebase (unknown) onto") {
+	if strings.Contains(none, "rebase (unknown)") {
 		t.Error("the rebase label still announces a placeholder branch")
 	}
-	if !strings.Contains(none, `aria-label="rebase onto the default branch and force-push"`) {
+	if !strings.Contains(none, `aria-label="rebase: ask the agent to run /kitchen-sink:git-rebase"`) {
 		t.Error("the branch clause was not omitted cleanly")
 	}
 }
@@ -3275,11 +3254,10 @@ func TestBuildDashboardDataRenderRunsTheFullGate(t *testing.T) {
 	}
 }
 
-// A row with a live pane renders THREE .actgroup elements sharing one
-// data-session (session / prform / rowform). The armed-confirm carry-over must
-// therefore key on something that tells them apart, or a rebase/end arm matches
-// the session group first (DOM order), finds no button for its action, and is
-// dropped — which is every row with a pane, i.e. the common case.
+// A roster row renders two .actgroup elements sharing one data-session (session
+// / prform). The armed-confirm carry-over must therefore key on something that
+// tells them apart, or a squash arm matches the session group first (DOM order),
+// finds no button for its action, and is dropped — every roster row.
 func TestDashboardArmRestoreDiscriminatesActionGroups(t *testing.T) {
 	html := renderDashboard(t, dashboardData{
 		Agents: []Agent{{
@@ -3289,14 +3267,14 @@ func TestDashboardArmRestoreDiscriminatesActionGroups(t *testing.T) {
 		ExecEnabled: true,
 		CSRFToken:   "tok",
 	})
-	// The premise: three groups, one session id, distinguished only by class.
-	for _, cls := range []string{"actgroup actsession", "actgroup prform", "actgroup rowform"} {
+	// The premise: two groups, one session id, distinguished only by class.
+	for _, cls := range []string{"actgroup actsession", "actgroup prform"} {
 		if !strings.Contains(html, `class="`+cls+`" data-session="s1"`) {
-			t.Fatalf("expected a %q group for the session: the discriminator test needs all three", cls)
+			t.Fatalf("expected a %q group for the session: the discriminator test needs both", cls)
 		}
 	}
-	// Only rowform holds rebase/end, so a snapshot that cannot name its group
-	// kind cannot find them again.
+	// A snapshot that cannot name its group kind cannot find its button again;
+	// rowform is the merge-queue section's end group.
 	for _, frag := range []string{
 		"function armGroupKind(g) {",
 		"if (g.classList.contains('prform')) return 'prform';",
@@ -3594,15 +3572,15 @@ func TestDashboardActionGroupsFallBackToTheBranchGuess(t *testing.T) {
 		ExecEnabled: true,
 		CSRFToken:   "tok",
 	})
-	// One per action group: session, pull request, row.
-	if got := strings.Count(html, `data-branch="guessed"`); got != 3 {
-		t.Errorf(`data-branch="guessed" appears %d times, want 3 (session, PR, row groups)`, got)
+	// One per action group: session, pull request.
+	if got := strings.Count(html, `data-branch="guessed"`); got != 2 {
+		t.Errorf(`data-branch="guessed" appears %d times, want 2 (session, PR groups)`, got)
 	}
 	if strings.Contains(html, `data-branch=""`) {
 		t.Error("an action group left data-branch empty despite a branch guess")
 	}
 	for _, want := range []string{
-		`aria-label="rebase guessed onto the default branch and force-push"`,
+		`aria-label="rebase guessed: ask the agent to run /kitchen-sink:git-rebase"`,
 		`aria-label="end guessed — dismiss this row from the dashboard"`,
 	} {
 		if !strings.Contains(html, want) {

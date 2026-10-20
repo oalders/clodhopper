@@ -41,11 +41,10 @@ Three subcommands, dispatched in `main.go`:
   writes one row, exits. This is what project hooks call on every tool use.
 - **`serve`** (`server.go`) — HTTP dashboard, renders `templates/dashboard.html`; read-only
   by default, plus an **opt-in** write path (`--enable-merge`) that runs allowlisted
-  `merge-pr`/`gh pr ready` actions per roster row, plus a `rebase` action that
-  runs a fixed `git` sequence (fetch / pull --rebase / push --force-with-lease,
-  explicit refspec, lease pinned to a pre-fetch SHA) onto the server-derived
-  default branch, plus an `end` action that runs
-  no subprocess at all and just calls `endSessions` to drop the row. Before any
+  `merge-pr`/`gh pr ready` actions per roster row, plus tmux session actions
+  (`monitor-ci`, `new-monitor`, `reload-plugins`, `rebase`; see
+  `runSessionAction`/`handleAction` in `action.go`), plus an `end` action that
+  runs no subprocess at all and just calls `endSessions` to drop the row. Before any
   of that, middleware around the whole mux (`newServeMux`) applies the security
   headers and the Host allowlist (`hostAllowed`, 421 on a miss) to every route,
   so a DNS-rebinding page cannot even read the read-only board (this is in
@@ -102,11 +101,11 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
    sends `Host: 127.0.0.1`), and restricted to a
    closed argv allowlist — no user-supplied string ever reaches a command line.
   The `end` action never reaches `actionArgv`: it execs nothing, and its
-  `session_id` travels only as a bound SQL parameter. `rebase` DOES exec, so it
-  goes through `actionArgv`; its one varying argv element is the default branch,
-  derived server-side from git refs and validated against `branchNameRe` before
-  it can reach a command line. The merge-pr actions (`squash`, `squash-admin`,
-  `close`) never run as serve's subprocess: `startMergeWindow` opens a new tmux
+  `session_id` travels only as a bound SQL parameter. `rebase`, like
+  `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
+  never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full
+  peer gate. The merge-pr actions (`squash`, `squash-admin`, `close`)
+  never run as serve's subprocess: `startMergeWindow` opens a new tmux
   window in the row's own session running merge-pr (it may wait minutes on a
   merge queue) and returns at once; its varying argv elements are the
   `display-message` session id (validated), the stored absolute cwd (refused if

@@ -158,9 +158,11 @@ board used to expose.
 
 - `--enable-merge` (default off): turn on the roster's **PR-action buttons**.
   When set, each roster row gains squash / squash + admin / close / ready
-  buttons — plus a **rebase** button and an **end** button that just dismisses
-  the row — behind a two-step confirm. **ready** and **rebase** run `gh pr ready`
-  or `git` in that row's worktree. **squash** and **close** start your local
+  buttons, plus the **session actions** (including **rebase**) and an **end**
+  button that just dismisses the row. The destructive ones (**monitor ci**,
+  **rebase**, **end**, and the PR **run**) sit behind a two-step confirm;
+  **+ watcher** and **reload plugins** fire on one click. **ready** runs
+  `gh pr ready` in that row's worktree. **squash** and **close** start your local
   `merge-pr` in a new `merge-pr` window of the row's own tmux session and return
   at once, so a merge queue can take as long as it needs: merge-pr merges or
   closes the real PR, removes the worktree, and kills that tmux session, same
@@ -173,7 +175,7 @@ board used to expose.
   authentication.
 
   Whatever address the server is bound to, every action that runs a command
-  (the PR actions, the session actions, and **rebase**) is accepted only from a
+  (the PR actions and the session actions) is accepted only from a
   **loopback or Tailscale peer** — `127.0.0.0/8`, `::1`, `100.64.0.0/10`, or
   `fd7a:115c:a1e0::/48`. A LAN peer reaching a `--host 0.0.0.0` dashboard (by an
   allowed `Host`) gets the read-only board and a `403` for anything else: no
@@ -218,35 +220,7 @@ plus two modifiers and a single **run** button:
   confirm: the first click states the consequence, the second fires it — so a
   stray click can never trigger a merge or close.
 
-The row cluster adds two more buttons, each with the same two-step confirm:
-
-- **rebase** runs `git fetch origin BASE`, `git pull --rebase origin BASE`, then
-  `git push --force-with-lease=BRANCH:SHA origin BRANCH` in that row's worktree —
-  so the PR is actually updated. `BASE` is the repo's default branch, resolved
-  server-side from `origin/HEAD`, falling back to `origin/main` / `origin/master`
-  **only when exactly one of them exists** (both, with no `origin/HEAD`, is
-  ambiguous and refuses); it is never supplied by the browser. The push names its
-  refspec explicitly, so a `push.default = matching` config cannot widen it, and
-  the lease is pinned to the `origin/BRANCH` SHA captured *before* the fetch, so
-  a concurrent fetch cannot quietly defeat it. A branch with no remote-tracking
-  ref is pushed without any force. **This rewrites the branch's history and
-  force-pushes it.** If the rebase hits a conflict it is aborted (`git rebase
-  --abort`, so the worktree is left clean), nothing is pushed, and the row reports
-  that the branch needs a manual rebase — or, if the abort itself failed, that
-  the worktree may be left mid-rebase. That warning is only raised when git
-  confirms a rebase really is in progress, so a `pull --rebase` that refused
-  *before* starting never sends you off to clean up a healthy worktree.
-  clodhopper refuses to run at all when the
-  default branch cannot be resolved or is ambiguous, when the worktree is
-  detached or mid-rebase, when it has uncommitted changes (`git pull --rebase`
-  would refuse anyway — commit or stash first), when it is sitting *on* the
-  default branch, or when its branch is `main`/`master` whatever the default
-  resolved to. The whole sequence
-  is bounded by an overall deadline as well as a per-step one, and every attempt
-  (including a refusal) writes one audit line to serve's stderr.
-- **end** just dismisses the roster row; it never touches the repo or the agent.
-
-When a row's Claude session is in a live tmux pane, it also gains three **session
+When a row's Claude session is in a live tmux pane, it also gains four **session
 actions** that drive that pane directly (they do not touch a PR):
 
 - **monitor ci** sends `/clear` then `/monitor-ci` into the agent's own pane.
@@ -260,6 +234,12 @@ actions** that drive that pane directly (they do not touch a PR):
 - **reload plugins** sends `/reload-plugins` into the agent's own pane. It is
   refused for a row blocked on a permission prompt or question, since the Enter
   would answer the prompt.
+- **rebase** sends `/kitchen-sink:git-rebase` into the agent's own pane, asking
+  the agent to rebase onto the default branch, resolve any conflicts, and
+  force-push. **This rewrites the branch's history.** There is no `/clear`
+  first: the agent's existing context helps it resolve conflicts. Clicked
+  while the agent is working, it queues behind the current turn and runs when
+  that finishes. Like **reload plugins**, it is refused for a prompt-blocked row.
 
 A **reload plugins (all)** button above the roster sends `/reload-plugins` to
 every session at once and reports, per row, what it sent or skipped and why,
@@ -290,7 +270,7 @@ pane already at a shell (a stale row) gets nothing at all (no
 reported as "exited but did not resume". Only UUID session ids are restarted,
 and each run writes one audit line to serve's stderr.
 
-Every row — pane or no pane — also gains an **end** button. It is the dashboard
+Every row — pane or no pane — also gains an **end** button in its session group. It is the dashboard
 equivalent of `clodhopper end --session <id>`: it writes the synthetic
 `SessionEnd` that drops the row from the roster, and does nothing else. No
 process is killed and no repo is touched, so it is the way to clear a stale row

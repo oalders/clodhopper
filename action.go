@@ -29,7 +29,7 @@ import (
 // actionArgv maps a validated dashboard action to the binary and exact argument
 // vector to run. This is the security boundary: only these fixed vectors are
 // ever executed, and no request string reaches the command line. binary is a
-// logical name ("merge-pr", "gh" or "git") that handleAction resolves to an
+// logical name ("merge-pr" or "gh") that handleAction resolves to an
 // injected path. inTmux is true for the merge-pr actions, which run detached in a
 // new window of the row's tmux session (see startMergeWindow) rather than as a
 // subprocess of serve. ok is false for any unknown action, which the caller
@@ -42,16 +42,6 @@ func actionArgv(action string, force bool) (binary string, args []string, inTmux
 		binary, args, inTmux = "merge-pr", []string{"--squash", "--admin"}, true
 	case "close":
 		binary, args, inTmux = "merge-pr", []string{"--close"}, true
-	case "rebase":
-		// rebase is a SEQUENCE of git invocations, not one argv, so the vector is
-		// built by rebaseSteps from a server-derived, regex-validated base branch
-		// (see runRebase). It still passes through this allowlist — the boundary
-		// for anything that execs — which is what makes "git" a legal binary at
-		// all; the argv itself is assembled below the line, never from a request
-		// string. Runs as a subprocess (not in tmux) and --force is
-		// meaningless here (ignored): the push safety comes from
-		// --force-with-lease.
-		return "git", nil, false, true
 	case "ready":
 		// gh pr ready is a quick subprocess, and --force is meaningless here
 		// (ignored).
@@ -87,7 +77,7 @@ func sidKey(sessionID string) string { return "sid:" + sessionID }
 
 // cwdKey normalises the path first: two spellings of ONE worktree ("/a/b" and
 // "/a/b/", or a symlinked and a real path) must take the SAME lock, or both
-// requests run git in the same directory concurrently — the thing the worktree
+// requests act on the same directory concurrently — the thing the worktree
 // lock exists to prevent. EvalSymlinks is best-effort (a path that no longer
 // exists keeps its cleaned form), which is fine: the fallback is the old
 // behaviour, never a wrongly SHARED key.
@@ -136,8 +126,8 @@ type reportRow struct {
 // runAction runs bin with args in dir, capturing combined output. stdin is left
 // nil (closed): any interactive prompt then hits EOF and fails closed instead of
 // hanging a serve goroutine. The child gets its own process group so a
-// timeout can SIGKILL the whole tree (an in-flight `gh`/`git` child reparents and
-// survives if only the bash parent is signalled). The timeout is enforced by
+// timeout can SIGKILL the whole tree (a child `gh` spawns, such as `git`,
+// reparents and survives if only `gh` itself is signalled). The timeout is enforced by
 // context + Cmd.WaitDelay rather than by waiting on Wait(), so a grandchild that
 // escaped the process group cannot keep this call (and the caller's inflight
 // locks) alive by holding the output pipe open — see waitDelay. Best-effort by
@@ -206,9 +196,9 @@ func runTmux(tmuxBin, dir string, args []string, timeout time.Duration) (stdout 
 
 // runSessionAction executes one of the tmux session actions against a pane the
 // caller has already resolved server-side and validated with paneIDRe. The
-// command strings (/clear, /monitor-ci, /reload-plugins, nn claude, nn --resume) are FIXED
-// constants; only pane ids vary, and any pane split-window emits is re-validated
-// before reuse.
+// command strings (/clear, /monitor-ci, /reload-plugins, /kitchen-sink:git-rebase,
+// nn claude, nn --resume) are FIXED constants; only pane ids vary, and any pane
+// split-window emits is re-validated before reuse.
 //
 //   - monitor-ci: send /clear into the agent's own pane, pause, then send
 //     /monitor-ci (/clear and /monitor-ci are literal keys, Enter is tmux's key
@@ -225,6 +215,9 @@ func runTmux(tmuxBin, dir string, args []string, timeout time.Duration) (stdout 
 //     does NOT tear the session down.
 //   - reload-plugins: send /reload-plugins into the agent's own pane. One
 //     send-keys call: nothing redraws first, so there is no swallowed-keys race.
+//   - rebase: send /kitchen-sink:git-rebase into the agent's own pane, the same
+//     single send-keys call. No /clear first: the agent's context helps it
+//     resolve conflicts.
 func runSessionAction(tmuxBin, action, pane, dir string, clearDelay time.Duration) actionResult {
 	switch action {
 	case "monitor-ci":
@@ -256,6 +249,10 @@ func runSessionAction(tmuxBin, action, pane, dir string, clearDelay time.Duratio
 	case "reload-plugins":
 		_, res := runTmux(tmuxBin, dir,
 			[]string{"send-keys", "-t", pane, "/reload-plugins", "Enter"}, tmuxTimeout)
+		return res
+	case "rebase":
+		_, res := runTmux(tmuxBin, dir,
+			[]string{"send-keys", "-t", pane, "/kitchen-sink:git-rebase", "Enter"}, tmuxTimeout)
 		return res
 	default:
 		return actionResult{ExitCode: -1, Output: "unknown session action"}
@@ -408,7 +405,7 @@ func remoteAllowed(remoteAddr string) bool {
 // just writes a synthetic SessionEnd to drop a roster row (the same reason it
 // deliberately never reaches actionArgv, the allowlist boundary for things that
 // do exec). Everything else - the merge-pr/gh PR actions, the tmux session
-// actions, rebase - runs tmux, gh or git.
+// actions (rebase included) - runs tmux or gh.
 //
 // Phrased as "is this the one exec-free action" rather than as a list of the
 // exec-backed ones so the gate fails CLOSED: an action added later is
@@ -523,63 +520,10 @@ const (
 	// little of the wait is left: display-message is a local RPC that answers in
 	// milliseconds, so a second is generous yet keeps the overrun small.
 	restartProbeFloor = time.Second
-	// rebaseTimeout bounds EACH step of the rebase sequence (fetch, pull
-	// --rebase, push). A fetch or a force-push against a slow remote can take a
-	// while, so it gets a generous ceiling.
-	rebaseTimeout = 120 * time.Second
-	// rebaseTotalTimeout bounds the WHOLE sequence, not just each step: without
-	// it three 120s steps plus an abort could pin a serve goroutine (and the
-	// row's inflight lock) for ~360s+. Each step gets min(rebaseTimeout,
-	// remaining budget), and an exhausted budget stops the sequence and reports a
-	// timeout instead of starting the next step. Ceiling for a rebase attempt:
-	// the probes that run BEFORE the budget starts (default branch, current
-	// branch, dirty check, lease — up to six sequential gitProbeTimeout calls),
-	// then rebaseTotalTimeout, then rebaseAbortTimeout for the cleanup.
-	rebaseTotalTimeout = 180 * time.Second
-	// rebaseAbortTimeout bounds `git rebase --abort`, deliberately OUTSIDE the
-	// sequence budget: the abort is the cleanup that keeps a work tree from being
-	// left mid-rebase, so a sequence that ran out of time must still get to run it.
-	rebaseAbortTimeout = 30 * time.Second
-	// gitProbeTimeout bounds the read-only ref lookups that resolve the default
-	// and current branch. Local ref reads, so a couple of seconds is plenty —
+	// gitProbeTimeout bounds gitProbe's read-only lookups (the peek's origin
+	// remote and worktree root). Local reads, so a couple of seconds is plenty —
 	// same tight, best-effort budget as gitBranch in the capture path.
 	gitProbeTimeout = 5 * time.Second
-)
-
-// branchNameRe is the strict shape a branch name must have before it may become
-// an argv element. Nothing user-supplied ever reaches here — the base is derived
-// server-side from git refs — but the rebase argv is the one place a *derived*
-// string joins a command line, so it is validated anyway: defence in depth
-// against a repo whose refs were crafted to look like git options or paths.
-// Leading "-" (an option), ".." (a range/traversal) and anything outside
-// [A-Za-z0-9._/-] fail closed.
-var branchNameRe = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._/-]*$`)
-
-// maxBranchNameLen caps how long a derived branch name may be before it becomes
-// an argv element. Git itself has no hard limit, but a pathological ref name is
-// never something we want to hand to a command line, so cap it well above any
-// real branch.
-const maxBranchNameLen = 255
-
-// validBranchName reports whether name is safe to place in an argv.
-func validBranchName(name string) bool {
-	return name != "" && len(name) <= maxBranchNameLen &&
-		!strings.Contains(name, "..") && branchNameRe.MatchString(name)
-}
-
-// leaseSHARe is the strict shape a captured lease SHA must have before it joins
-// a --force-with-lease argv. Same defence-in-depth posture as validBranchName:
-// the value is derived server-side from a git ref, but it is still validated
-// before it reaches a command line, and anything else refuses the whole action.
-var leaseSHARe = regexp.MustCompile(`^[0-9a-f]{7,64}$`)
-
-// The two ways resolving the default branch can fail, kept distinct so the row
-// can say which happened instead of blaming detection for a rejected name.
-var (
-	errNoDefaultBranch = errors.New("could not resolve the default branch " +
-		"(tried origin/HEAD, origin/main, origin/master); nothing was run")
-	errAmbiguousDefaultBranch = errors.New("origin/HEAD is missing and BOTH origin/main and " +
-		"origin/master exist; refusing to guess the default branch — nothing was run")
 )
 
 // gitProbe runs a READ-ONLY git command in dir and returns its trimmed stdout.
@@ -597,7 +541,7 @@ func gitProbe(gitBin, dir string, args ...string) (string, bool) {
 	// Same process-group + WaitDelay treatment runAction documents at length: a
 	// git that leaves a daemonising grandchild (credential cache, ssh
 	// ControlMaster) would otherwise outlive gitProbeTimeout holding the output
-	// pipe open, blocking the handler while it holds BOTH inflight locks.
+	// pipe open, blocking the caller.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = waitDelay
@@ -609,314 +553,10 @@ func gitProbe(gitBin, dir string, args ...string) (string, bool) {
 	return strings.TrimSpace(buf.String()), true
 }
 
-// defaultBranch resolves the repo's default branch for the work tree at dir:
-// origin/HEAD when the remote HEAD ref is present locally, else whichever of
-// origin/main / origin/master exists.
-//
-// The fallback is accepted ONLY when exactly one of the two conventional names
-// exists. If both do and origin/HEAD is unresolvable, the answer is genuinely
-// ambiguous — a stale origin/main lingering in a repo whose real default is,
-// say, develop would otherwise make the "never force-push the default branch"
-// guard compare against the wrong name and wave the real default through. Every
-// failure returns an error and callers treat it as "refuse, run nothing".
-func defaultBranch(gitBin, dir string) (string, error) {
-	if out, ok := gitProbe(gitBin, dir, "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"); ok {
-		if b, found := strings.CutPrefix(out, "origin/"); found && b != "" {
-			return b, nil
-		}
-	}
-	// origin/HEAD is only created by clone (or an explicit set-head), so plenty
-	// of worktrees lack it. Fall back to the two conventional names.
-	var found []string
-	for _, b := range []string{"main", "master"} {
-		if _, ok := gitProbe(gitBin, dir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+b); ok {
-			found = append(found, b)
-		}
-	}
-	switch len(found) {
-	case 1:
-		return found[0], nil
-	case 0:
-		return "", errNoDefaultBranch
-	default:
-		return "", errAmbiguousDefaultBranch
-	}
-}
-
-// worktreeBranch returns the branch currently checked out in dir, or "" if HEAD
-// is detached (including mid-rebase) or dir is not a repo. Unlike gitBranch it
-// takes the git binary by name so tests can inject a stub, and it deliberately
-// does NOT recover a mid-rebase branch: a work tree in that state must not be
-// rebased again.
-func worktreeBranch(gitBin, dir string) string {
-	out, _ := gitProbe(gitBin, dir, "symbolic-ref", "--quiet", "--short", "HEAD")
-	return out
-}
-
-// rebaseStep is one argument vector in the rebase sequence plus the metadata
-// the runner needs. abortOnFail says whether a failure at THIS step can have
-// left a half-applied rebase behind and therefore needs `git rebase --abort`.
-// Carrying it on the step (rather than keying cleanup off an index into the
-// slice) means inserting or reordering a step cannot silently detach the
-// cleanup from the step that needs it.
-type rebaseStep struct {
-	args        []string
-	abortOnFail bool
-}
-
-// rebaseSteps is the fixed argument-vector sequence the rebase action runs, in
-// order. Every element is a literal except base, cur and lease, none of which
-// runAction sees until validBranchName / leaseSHARe have accepted them. Kept
-// separate from the run loop so a test can assert the exact vectors.
-//
-// The push names its refspec explicitly (origin cur) rather than relying on a
-// bare `git push`: with push.default = matching, or a remote.origin.push
-// refspec in config, a bare force-push can rewrite EVERY matching local branch.
-// The lease is pinned to the SHA captured before the fetch, because a bare
-// --force-with-lease compares against the local remote-tracking ref, which any
-// intervening fetch (another agent, an IDE, a background job — all likely in
-// the worktrees clodhopper supervises) silently updates, defeating the lease.
-// An empty lease means the branch has no remote-tracking ref at all, i.e. it
-// was never pushed: creating it needs no force, and asking for one would only
-// fail.
-//
-// Every vector starts with `-C dir` exactly as the probes do, rather than
-// relying on cmd.Dir alone, so the exec path and the guard probes name their
-// directory the SAME way and cannot diverge. This is not an environment
-// defence: an exported GIT_DIR still wins over discovery, so `-C` alone would
-// not stop refs and objects coming from elsewhere. Scrubbing git's env is
-// deliberately out of scope.
-func rebaseSteps(dir, base, cur, lease string) []rebaseStep {
-	at := func(args ...string) []string { return append([]string{"-C", dir}, args...) }
-	push := at("push", "origin", cur)
-	if lease != "" {
-		push = at("push", "--force-with-lease="+cur+":"+lease, "origin", cur)
-	}
-	return []rebaseStep{
-		{args: at("fetch", "origin", base)},
-		// Only the rebase itself can stop mid-flight: a failed fetch has touched
-		// nothing, and a failed push happens after the rebase already succeeded.
-		{args: at("pull", "--rebase", "origin", base), abortOnFail: true},
-		{args: push},
-	}
-}
-
-// rebaseAbortArgv undoes a rebase that stopped on a conflict, so the work tree
-// is never left mid-rebase for the user to discover. `-C dir` for the same
-// reason rebaseSteps uses it.
-func rebaseAbortArgv(dir string) []string { return []string{"-C", dir, "rebase", "--abort"} }
-
-// rebaseInProgress reports whether dir is actually sitting mid-rebase, by asking
-// git where it would keep the interactive/apply state and checking whether that
-// path exists.
-//
-// This is what keeps the cleanup honest. `git pull --rebase` refuses BEFORE it
-// starts anything when the work tree has unstaged changes — the normal state of a
-// live agent's worktree — so an unconditional `git rebase --abort` there exits
-// 128 with "No rebase in progress?" and the user gets told their worktree may be
-// half-rebased when nothing was touched at all. Fails closed the other way: a
-// probe we cannot run reads as "no rebase in progress", which only skips a
-// cleanup that had nothing to clean.
-func rebaseInProgress(gitBin, dir string) bool {
-	for _, name := range []string{"rebase-merge", "rebase-apply"} {
-		p, ok := gitProbe(gitBin, dir, "rev-parse", "--git-path", name)
-		if !ok || p == "" {
-			continue
-		}
-		// --git-path answers relative to git's own working directory, which is dir.
-		if !filepath.IsAbs(p) {
-			p = filepath.Join(dir, p)
-		}
-		if _, err := os.Stat(p); err == nil {
-			return true
-		}
-	}
-	return false
-}
-
-// dirtyWorktree reports whether dir has uncommitted changes to TRACKED files
-// (ok=false when the probe itself could not run, which callers treat as "refuse,
-// run nothing").
-//
-// --untracked-files=no is the point: `git pull --rebase` refuses on modified
-// tracked files, but is perfectly happy with untracked ones. A live agent's
-// worktree almost always carries untracked scratch output, so counting those as
-// dirty would refuse the rebase button on worktrees git would rebase without
-// complaint.
-func dirtyWorktree(gitBin, dir string) (dirty, ok bool) {
-	out, ok := gitProbe(gitBin, dir, "status", "--porcelain", "--untracked-files=no")
-	return out != "", ok
-}
-
-// auditw is where the rebase and broadcast audit lines are written. A package
+// auditw is where the broadcast audit lines are written. A package
 // var so tests can capture it; serve leaves it on stderr next to the other
 // "clodhopper serve:" diagnostics.
 var auditw io.Writer = os.Stderr
-
-// auditRebase records one rebase attempt. Unlike debugf this is NOT gated on
-// CLODHOPPER_DEBUG: a rebase force-pushes rewritten history, the only
-// irreversible thing this tool does, so every attempt leaves a line behind
-// whether or not debugging is on.
-func auditRebase(now time.Time, sessionID, dir, base, cur, lease, outcome string) {
-	fmt.Fprintf(auditw, "clodhopper serve: audit rebase ts=%s session=%q cwd=%q base=%q cur=%q lease=%q outcome=%q\n",
-		now.UTC().Format(time.RFC3339), sessionID, dir, base, cur, lease, outcome)
-}
-
-// runRebase rebases the work tree at dir onto the repo's default branch and
-// force-pushes (with a pinned lease) so the PR is actually updated. Everything
-// it needs is derived server-side; the caller passes no request data at all.
-//
-// Refuses, running nothing, when the default branch cannot be resolved or is
-// ambiguous, when either branch name fails validation, when the work tree is not
-// on a branch (detached / mid-rebase), when it is sitting ON the default branch,
-// or when its branch is literally main/master (a hardcoded backstop that holds
-// even if detection resolved something else) — force-pushing the trunk is
-// exactly the accident these guards exist to prevent. A rebase that fails or
-// times out is aborted and reported as "needs manual rebase"; the push is never
-// reached. stepTimeout bounds each step, totalTimeout the whole sequence.
-func runRebase(gitBin, dir, sessionID string, stepTimeout, totalTimeout time.Duration, now time.Time) actionResult {
-	base, cur, lease := "", "", ""
-	outcome := "refused"
-	defer func() { auditRebase(now, sessionID, dir, base, cur, lease, outcome) }()
-	refuse := func(msg string) actionResult {
-		outcome = "refused: " + msg
-		return actionResult{ExitCode: -1, Output: msg}
-	}
-
-	base, err := defaultBranch(gitBin, dir)
-	if err != nil {
-		base = ""
-		return refuse(err.Error())
-	}
-	if !validBranchName(base) {
-		bad := base
-		base = ""
-		return refuse("the resolved default branch " + strconv.Quote(bad) +
-			" is not a name we will put on a command line; nothing was run")
-	}
-	cur = worktreeBranch(gitBin, dir)
-	if cur == "" {
-		return refuse("worktree is not on a named branch (detached HEAD or mid-rebase); nothing was run")
-	}
-	if !validBranchName(cur) {
-		bad := cur
-		cur = ""
-		return refuse("the checked-out branch " + strconv.Quote(bad) +
-			" is not a name we will put on a command line; nothing was run")
-	}
-	if cur == base {
-		return refuse("worktree is on the default branch (" + base + "); refusing to rebase and force-push it")
-	}
-	// Backstop independent of detection: whatever base resolved to, main and
-	// master are never rewritten from here.
-	if cur == "main" || cur == "master" {
-		return refuse("worktree is on " + cur + "; refusing to rebase and force-push it")
-	}
-
-	// Pre-flight the work tree's cleanliness. `git pull --rebase` refuses before
-	// starting when there are unstaged changes, which is the ordinary state of a
-	// live agent's worktree — the whole population this dashboard supervises — so
-	// without this the sequence would half-run and then report a cleanup scare.
-	// Refuse up front, accurately, having run nothing. A probe that could not run
-	// at all refuses too, matching every other guard here.
-	dirty, ok := dirtyWorktree(gitBin, dir)
-	if !ok {
-		return refuse("could not read the worktree's status (git status --porcelain failed); nothing was run")
-	}
-	if dirty {
-		return refuse("worktree has uncommitted changes; git pull --rebase would refuse to start. " +
-			"Commit or stash them first — nothing was run")
-	}
-
-	// Capture the lease BEFORE the fetch — that is the whole point. Pinning it
-	// afterwards would pin whatever the fetch just wrote, which is precisely the
-	// value a bare --force-with-lease already (uselessly) compares against.
-	if got, ok := gitProbe(gitBin, dir, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/"+cur); ok {
-		if !leaseSHARe.MatchString(got) {
-			return refuse("origin/" + cur + " resolved to something that is not a commit id; nothing was run")
-		}
-		lease = got
-	}
-
-	var out strings.Builder
-	// The budget is ELAPSED time, so it is measured against the wall clock, not
-	// against the injected now (which is the request timestamp and exists purely
-	// for the audit line). Mixing the two would make a caller that follows this
-	// repo's usual "fixed test date" convention see the budget as already spent
-	// before the first step.
-	deadline := time.Now().Add(totalTimeout)
-	for _, st := range rebaseSteps(dir, base, cur, lease) {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			// Nothing to abort: this step never started, so the work tree is in
-			// whatever (clean) state the previous step left it.
-			outcome = "timeout: overall budget exhausted"
-			out.WriteString("\nrebase timed out (overall budget " + totalTimeout.String() +
-				" exhausted); the remaining steps were not run\n")
-			return actionResult{ExitCode: -1, TimedOut: true, Output: out.String()}
-		}
-		fmt.Fprintf(&out, "$ git %s\n", strings.Join(st.args, " "))
-		res := runAction(gitBin, dir, st.args, min(stepTimeout, remaining))
-		out.WriteString(res.Output)
-		if res.ExitCode == 0 && !res.TimedOut {
-			continue
-		}
-		outcome = "failed: git " + stepName(st.args)
-		if res.TimedOut {
-			outcome = "timeout: git " + stepName(st.args)
-		}
-		return rebaseAbort(gitBin, dir, st, &out, res, &outcome)
-	}
-	outcome = "pushed"
-	return actionResult{ExitCode: 0, Output: out.String()}
-}
-
-// stepName is the git subcommand a step runs ("fetch", "pull", "push"), i.e. the
-// first argv element that is not part of the leading `-C dir`. Used for the
-// audit line, so it never reaches a command line itself.
-func stepName(args []string) string {
-	for i := 0; i < len(args); i++ {
-		if args[i] == "-C" {
-			i++
-			continue
-		}
-		return args[i]
-	}
-	return "git"
-}
-
-// rebaseAbort finishes a failed sequence: it runs `git rebase --abort` when the
-// step that failed was one that can leave a half-applied rebase behind, and
-// reports the abort's OWN outcome honestly — an abort that itself failed means
-// the work tree really is left mid-rebase, and saying otherwise would be a lie
-// the user only discovers later.
-func rebaseAbort(gitBin, dir string, st rebaseStep, out *strings.Builder, res actionResult, outcome *string) actionResult {
-	if st.abortOnFail && !rebaseInProgress(gitBin, dir) {
-		// The step that CAN leave a rebase half-applied failed without starting
-		// one — `git pull --rebase` refusing on a dirty tree is the common case.
-		// Aborting here would fail with "No rebase in progress?" and dispatch the
-		// operator to clean up a perfectly healthy worktree.
-		out.WriteString("\nno rebase was started (nothing to abort); the worktree is unchanged\n")
-		*outcome += "; no rebase started"
-		res.Output = out.String()
-		return res
-	}
-	if st.abortOnFail {
-		fmt.Fprintf(out, "$ git %s\n", strings.Join(rebaseAbortArgv(dir), " "))
-		abort := runAction(gitBin, dir, rebaseAbortArgv(dir), rebaseAbortTimeout)
-		out.WriteString(abort.Output)
-		if abort.ExitCode == 0 && !abort.TimedOut {
-			out.WriteString("\nrebase stopped and was aborted — needs manual rebase\n")
-			*outcome += "; aborted"
-		} else {
-			out.WriteString("\nrebase stopped AND `git rebase --abort` failed — " +
-				"the worktree may be left mid-rebase and needs manual cleanup\n")
-			*outcome += "; abort FAILED, worktree may be mid-rebase"
-		}
-	}
-	res.Output = out.String()
-	return res
-}
 
 // actionConfig is serve's write-path state. Binary names are injected so tests
 // substitute stubs; token is the per-serve CSRF secret; allowedHosts extends the
@@ -926,7 +566,6 @@ type actionConfig struct {
 	mergePR string // path/name of the merge-pr binary
 	gh      string // path/name of the gh binary
 	tmux    string // path/name of the tmux binary (session actions); tests stub it
-	git     string // path/name of the git binary (rebase action); tests stub it
 	// clearDelay is the pause monitor-ci leaves between its /clear and
 	// /monitor-ci send-keys calls (see runSessionAction). serve sets it to
 	// monitorCIClearDelay; the zero value sends both back to back, which is what
@@ -1002,13 +641,13 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		return
 	}
 
-	// Session actions (monitor-ci / new-monitor / reload-plugins) act on the
-	// agent's LIVE tmux pane rather than merging a PR, so they take a separate
-	// path: the pane is resolved server-side from session_id and validated
+	// Session actions (monitor-ci / new-monitor / reload-plugins / rebase) act on
+	// the agent's LIVE tmux pane rather than merging a PR, so they take a
+	// separate path: the pane is resolved server-side from session_id and validated
 	// against paneIDRe before any tmux command runs. They reuse every guard
 	// already checked above (enabled, method, host, token) plus the inflight
 	// dedupe below.
-	if action == "monitor-ci" || action == "new-monitor" || action == "reload-plugins" {
+	if action == "monitor-ci" || action == "new-monitor" || action == "reload-plugins" || action == "rebase" {
 		pane, err := latestPaneForSession(db, sessionID)
 		if err != nil {
 			http.Error(w, "lookup failed", http.StatusInternalServerError)
@@ -1021,15 +660,15 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 			http.Error(w, "unknown session", http.StatusNotFound)
 			return
 		}
-		// reload-plugins sends Enter, which would answer a pending prompt, so
-		// the same prompt check the broadcast applies holds for an explicit
-		// click too. Working rows stay allowed here: the command just queues.
+		// reload-plugins and rebase send Enter, which would answer a pending
+		// prompt, so the same prompt check the broadcast applies holds for an
+		// explicit click too. Working rows stay allowed here: the command just queues.
 		// The check is keyed on the PANE as well as the session: after a /clear
 		// the old row lingers on the roster sharing the pane with the new live
 		// session, and Enter lands on whatever owns the pane now. A session not
 		// on the roster is refused: the button is only offered on roster rows,
 		// so fail closed rather than send blind.
-		if action == "reload-plugins" {
+		if action == "reload-plugins" || action == "rebase" {
 			agents, err := agentRoster(db, time.Duration(waitingRetainHours())*time.Hour, now)
 			if err != nil {
 				http.Error(w, "lookup failed", http.StatusInternalServerError)
@@ -1118,7 +757,7 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		return
 	}
 
-	binary, args, inTmux, ok := actionArgv(action, force)
+	_, args, inTmux, ok := actionArgv(action, force)
 	if !ok {
 		http.Error(w, "unknown action", http.StatusBadRequest)
 		return
@@ -1166,9 +805,7 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 
 	// Dedupe on the WORK TREE as well as the session. Two roster rows can resolve
 	// to the same cwd (a resumed or restarted agent, a shared checkout), and two
-	// concurrent git runs in one directory means interleaved operations,
-	// index.lock contention, or a push firing against whatever branch the other
-	// one left checked out — which would sidestep the cur == base guard entirely.
+	// concurrent actions in one directory would race each other on one PR.
 	// The key is namespaced ("cwd:") so it cannot collide with a session id, and
 	// acquisition order is fixed (session, then cwd) so two requests can never
 	// deadlock against each other. The session lock is released by its defer.
@@ -1197,17 +834,7 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		return
 	}
 
-	// The git binary drives a multi-step sequence rather than one argv (see
-	// runRebase); actionArgv returned no args for it precisely because they are
-	// assembled server-side from a validated base branch. rebaseTimeout bounds
-	// each step; rebaseTotalTimeout bounds the sequence as a whole.
-	var res actionResult
-	if binary == "git" {
-		res = runRebase(cfg.git, cwd, sessionID, rebaseTimeout, rebaseTotalTimeout, now)
-	} else {
-		res = runAction(cfg.gh, cwd, args, readyTimeout)
-	}
-	writeActionResult(w, res)
+	writeActionResult(w, runAction(cfg.gh, cwd, args, readyTimeout))
 }
 
 // reloadSkipReason says why broadcast-reload must NOT send /reload-plugins to a
@@ -1238,7 +865,7 @@ const promptBlockedReason = "blocked on a prompt — Enter would answer it"
 
 // promptBlocked reports whether a roster status means the agent is parked on a
 // permission prompt or a question, where a send ending in Enter would answer it.
-// Shared by the per-row reload-plugins guard and the broadcast.
+// Shared by the per-row reload-plugins/rebase guard and the broadcast.
 func promptBlocked(status string) bool {
 	switch status {
 	case statusApproval, statusInput, statusNeedsYou:
@@ -1346,8 +973,7 @@ func broadcast(cfg *actionConfig, agents []Agent, skip func(Agent) string, send 
 
 // sessionIDRe is the shape a session id must have before it joins the resume
 // command line: a lowercase UUID, which is what Claude Code issues. The id comes
-// from a stored hook payload, so like branchNameRe for rebase this is defence in
-// depth against a crafted one smuggling options or shell syntax into the pane.
+// from a stored hook payload, so this is defence in depth against a crafted one smuggling options or shell syntax into the pane.
 var sessionIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // shellCommands are the pane foreground commands that mean claude has exited
@@ -1496,7 +1122,7 @@ func nonoReviewOnScreen(screen string) bool {
 // pollShell reads pane's foreground command every cfg.restartPoll until
 // whether it is a shell equals atShell, giving up after wait. A failed or empty
 // read never counts as a match either way, so a tmux error cannot pass for an exit
-// or a resume. Wall-clock bounded, like rebase's budget: each probe's tmux
+// or a resume. Wall-clock bounded: each probe's tmux
 // timeout is capped by the time left, so the whole wait overruns wait by at most
 // restartProbeFloor — the minimum a probe gets, so a zero wait still probes once.
 func pollShell(cfg *actionConfig, pane, dir string, atShell bool, wait time.Duration) bool {
