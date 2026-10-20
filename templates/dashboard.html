@@ -518,6 +518,8 @@
     .blockchip button.blockjump { all: unset; cursor: pointer; text-decoration: underline dotted; overflow-wrap: anywhere; }
     .blockchip button.blockjump:focus-visible { box-shadow: var(--shadow-focus); }
     .blockchip button.pract { padding: 0 4px; min-height: 0; }
+    .blockchip .actmsg:empty { display: none; }
+    .blockpick { max-width: 100%; min-width: 0; font-family: var(--font-mono); font-size: var(--fs-xs); padding: 3px 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--surface-2); color: var(--text-1); }
     /* After the base rule so it wins; the extra 6px each way is pulled back by the margin, keeping the 0 4px footprint. */
     @media (pointer: coarse) { .blockchip button.pract { padding: 6px 10px; margin: -6px -6px; } }
     tr.jumped > td { animation: ch-jump 1.6s var(--ease); }

@@ -105,6 +105,8 @@ test('a poll repaint keeps the picker choice and its focus', async ({ page }) =>
   await page.locator(`#content button.actbtn[data-actions="${blocker}"]`).click();
   const pick = page.locator(`${panel(blocker)} .blockpick`);
   const first = await pick.inputValue();
+  // The untouched picker sits on its first option, which is not the one chosen below.
+  expect(first).toBe(await pick.locator('option').first().getAttribute('value'));
   expect(first).not.toBe(queued);
   await pick.selectOption(queued);
   await pick.focus();
@@ -113,4 +115,32 @@ test('a poll repaint keeps the picker choice and its focus', async ({ page }) =>
   await expect(page.locator('.blockpick[data-old]')).toHaveCount(0);
   await expect(pick).toHaveValue(queued);
   await expect(pick).toBeFocused();
+});
+
+test('the chip label in the merge-queue fold jumps back to the roster blocker', async ({ page }) => {
+  await page.locator('#ck-mq > summary').click();
+  await page.locator(`#row-${queued} .blockchip`).getByRole('button', { name: 'blocked on fix-1235' }).click();
+  const row = page.locator(`#row-${blocker}`);
+  await expect(row).toBeFocused();
+  await expect(row).toHaveClass(/\bjumped\b/);
+});
+
+test('a picker whose chosen blocker left the board falls back to an offered row', async ({ page }) => {
+  await page.goto('/?refresh=1');
+  await page.locator(`#content button.actbtn[data-actions="${blocker}"]`).click();
+  const pick = page.locator(`${panel(blocker)} .blockpick`);
+  await pick.selectOption(queued);
+  const gone = new RegExp(`<option value="${queued}"[^>]*>[^<]*</option>`, 'g');
+  let polls = 0;
+  await page.route(/\/api\/state(\?|$)/, async (route) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    return route.fulfill({ response, json: { ...json, html: json.html.replace(gone, ''), signature: `gone-${++polls}` } });
+  });
+  await pick.evaluate((el) => el.setAttribute('data-old', '1'));
+  await expect(page.locator('.blockpick[data-old]')).toHaveCount(0);
+  await expect(pick.locator(`option[value="${queued}"]`)).toHaveCount(0);
+  const value = await pick.inputValue();
+  expect(value).not.toBe('');
+  expect(value).not.toBe(queued);
 });

@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 `clodhopper` is a project-agnostic observability tool for Claude Code. A single Go
-binary with three subcommands captures lifecycle events from any project's hooks
+binary with a handful of subcommands captures lifecycle events from any project's hooks
 into a local SQLite database and serves a read-only dashboard. See `README.md`
 for the user-facing design and configuration table.
 

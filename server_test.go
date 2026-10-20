@@ -4254,7 +4254,10 @@ func TestContentTemplate_QueuedBlockChip(t *testing.T) {
 		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", dashboardData{ExecEnabled: exec, QueuedAgents: queued}); err != nil {
 			t.Fatal(err)
 		}
-		_, table, _ := strings.Cut(buf.String(), `<table class="mq">`)
+		_, table, found := strings.Cut(buf.String(), `<table class="mq">`)
+		if !found {
+			t.Fatalf("exec=%v: no merge-queue table rendered", exec)
+		}
 		if !strings.Contains(table, `data-jump="blocker"`) {
 			t.Errorf("exec=%v: queued blocked row has no chip", exec)
 		}
