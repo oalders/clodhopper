@@ -3879,6 +3879,20 @@ func TestSplitQueued(t *testing.T) {
 	}
 }
 
+// applyBlocks runs first and rewrites waiting for you to blocked; a queued blocked row must still fold (#195).
+func TestSplitQueued_BlockedFolds(t *testing.T) {
+	now := time.Unix(100_000, 0)
+	agents := []Agent{
+		{SessionID: "blocked", CIQueue: "queued", Status: statusWaiting},
+		{SessionID: "blocker", Status: statusWorking},
+	}
+	applyBlocks(agents, []Block{{Blocked: "blocked", Blocker: "blocker"}})
+	roster, queued := splitQueued(agents, now)
+	if len(roster) != 1 || roster[0].SessionID != "blocker" || len(queued) != 1 || queued[0].Status != statusBlocked {
+		t.Errorf("roster = %+v, queued = %+v; want the blocked row folded into the queue", roster, queued)
+	}
+}
+
 // A row overdue on its ETA is not demoted, so it lands back in the roster as needing you.
 func TestSplitQueued_OverdueStaysAlert(t *testing.T) {
 	now := time.Unix(100_000, 0)
@@ -4194,7 +4208,8 @@ func TestBlockLapsesWhenBlockerLeaves(t *testing.T) {
 }
 
 // The chip's ✕ and the block picker are write controls, so they render only
-// with the CSRF-gated exec UI; the picker never offers the row itself.
+// with the CSRF-gated exec UI; the picker never offers the row itself, and a
+// lone row gets none.
 func TestContentTemplate_BlockControls(t *testing.T) {
 	agents := []Agent{
 		{SessionID: "blocked", Branch: "fix-1234", Status: statusBlocked, BlockedOn: "fix-1235", BlockedOnSession: "blocker"},
@@ -4223,5 +4238,9 @@ func TestContentTemplate_BlockControls(t *testing.T) {
 	panel, _, _ = strings.Cut(panel, "</select>")
 	if !strings.Contains(panel, `value="blocker"`) || strings.Contains(panel, `value="blocked"`) {
 		t.Errorf("blocked row's picker = %q, want only the other row", panel)
+	}
+	agents = agents[1:]
+	if lone := render(true); strings.Contains(lone, "blockform") {
+		t.Error("a lone row renders a block picker with nothing to block on")
 	}
 }

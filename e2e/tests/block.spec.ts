@@ -2,11 +2,15 @@ import type { Page, Request } from '@playwright/test';
 import { test, expect, abortUnstubbedExec } from './fixtures';
 
 // The blocked-on chip and the row panel's block picker (#210), against
-// serve.sh's exec server; e2e_seed_test.go blocks fix-1234 on fix-1235.
+// serve.sh's exec server; e2e_seed_test.go blocks fix-1234 on fix-1235 and
+// fix-1236 on the queued row.
 
 const blocked = 'e2e-blocked-0000-1111-2222-333333333333';
 const blocker = 'e2e-blocker-0000-1111-2222-333333333333';
+const queueBlocked = 'e2e-queueblocked-0000-1111-2222-333333333333';
+const queued = 'e2e-queued-0000-1111-2222-333333333333';
 const chip = `#row-${blocked} .blockchip`;
+const panel = (sess: string) => `#content tr.actrow[data-actions-row="${sess}"] .blockform`;
 
 let unstubbed: string[] = [];
 
@@ -55,11 +59,49 @@ test('the row panel blocks on the picked row', async ({ page }) => {
   const posts = await stubAction(page);
   await page.evaluate(() => { (window as unknown as { __ckActionBusy: number }).__ckActionBusy = 1; });
   await page.locator(`#content button.actbtn[data-actions="${blocker}"]`).click();
-  const form = page.locator(`#content tr.actrow[data-actions-row="${blocker}"] .blockform`);
+  const form = page.locator(panel(blocker));
   await expect(form.locator(`option[value="${blocker}"]`)).toHaveCount(0);
+  await expect(form.locator(`option[value="${queued}"]`)).toHaveCount(1);
   await form.getByRole('combobox', { name: 'block this row on' }).selectOption(blocked);
   await form.getByRole('button', { name: 'block fix-1235 on the selected row' }).click();
   await expect(form.locator('.actmsg')).toHaveText('blocked — row will update');
   expect(posts).toHaveLength(1);
   expect(posts[0].postData()).toBe(`session_id=${blocker}&action=block&blocker_session_id=${blocked}`);
+});
+
+test('the chip label opens the merge-queue fold to reach a queued blocker', async ({ page }) => {
+  // The fold remembers being opened; start from its collapsed default.
+  await page.evaluate(() => localStorage.clear());
+  await page.reload();
+  const mq = page.locator('#ck-mq');
+  await expect(mq).not.toHaveAttribute('open');
+  await page.locator(`#row-${queueBlocked} .blockjump`).click();
+  await expect(mq).toHaveAttribute('open');
+  const row = page.locator(`#row-${queued}`);
+  await expect(row).toBeFocused();
+  await expect(row).toHaveClass(/\bjumped\b/);
+});
+
+test('a poll repaint keeps the picker choice and its focus', async ({ page }) => {
+  let polls = 0;
+  await page.route('**/api/state?*', async (route) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    return route.fulfill({ response, json: { ...json, signature: `block-${++polls}` } });
+  });
+  await page.addInitScript(() => {
+    (window as unknown as { __swaps: number }).__swaps = 0;
+    document.addEventListener('ch:contentswap', () => (window as unknown as { __swaps: number }).__swaps++);
+  });
+  await page.goto('/?refresh=1');
+  await page.locator(`#content button.actbtn[data-actions="${blocker}"]`).click();
+  const pick = page.locator(`${panel(blocker)} .blockpick`);
+  const first = await pick.inputValue();
+  expect(first).not.toBe(queued);
+  await pick.selectOption(queued);
+  await pick.focus();
+  const before = await page.evaluate(() => (window as unknown as { __swaps: number }).__swaps);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __swaps: number }).__swaps)).toBeGreaterThan(before);
+  await expect(pick).toHaveValue(queued);
+  await expect(pick).toBeFocused();
 });

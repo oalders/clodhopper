@@ -1235,8 +1235,8 @@ func queueStuck(a Agent, now time.Time) bool {
 	return a.CIQueueSince != 0 && now.Unix()-a.CIQueueSince > queueStaleSecs
 }
 
-// splitQueued folds set-and-forget rows — queued; waiting for you, waiting or
-// idle (not "needs you"); not stuck — off the roster into the merge-queue
+// splitQueued folds set-and-forget rows — queued; waiting for you, waiting,
+// idle or blocked (not "needs you"); not stuck — off the roster into the merge-queue
 // section, so only rows needing you stay, ordered by ETA (unknown last). Run it
 // before demotePendingCI. It partitions agents in place and returns views of it,
 // so later edits through agents (demotion, live-pane flags) reach both halves.
@@ -1244,7 +1244,7 @@ func splitQueued(agents []Agent, now time.Time) (roster, queued []Agent) {
 	var q []Agent
 	n := 0
 	for _, a := range agents {
-		if a.CIQueue == "queued" && (a.Status == statusWaiting || a.Status == statusBackground || a.Status == statusIdle) && !queueStuck(a, now) {
+		if a.CIQueue == "queued" && (a.Status == statusWaiting || a.Status == statusBackground || a.Status == statusIdle || a.Status == statusBlocked) && !queueStuck(a, now) {
 			q = append(q, a)
 		} else {
 			agents[n] = a

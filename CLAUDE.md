@@ -35,7 +35,7 @@ The defining constraint is **capture and viewing are decoupled through the share
 SQLite file**. `ingest` (write) never depends on `serve` (read); the dashboard
 being down never loses events.
 
-Three subcommands, dispatched in `main.go`:
+Subcommands, dispatched in `main.go`:
 
 - **`ingest`** (`ingest.go`) — reads ONE hook event as JSON on stdin, scrubs it,
   writes one row, exits. This is what project hooks call on every tool use.
@@ -53,7 +53,7 @@ Three subcommands, dispatched in `main.go`:
   loopback or Tailscale only, whatever `--host` binds to, with no override — and
   the request is refused outright when a forwarding header (`X-Forwarded-For`,
   `X-Real-IP`, `Forwarded`, `X-Forwarded-Host`) is *present* — for EVERY action,
-  including the exec-free `end`, because behind a proxy every peer looks like
+  including the exec-free `end`/`block`/`unblock`, because behind a proxy every peer looks like
   loopback and no peer can be attributed at all. All three checks (proxy
   refusal, Host allowlist, peer network) live in ONE helper, `execPeerAllowed`,
   shared by handleAction and handlePane so they cannot drift. **Never run
@@ -63,7 +63,7 @@ Three subcommands, dispatched in `main.go`:
   streams live transcript text, and being a GET it carries no CSRF token, so the
   Host allowlist is what stops a DNS-rebinding page from walking pane ids.
   The CSRF token is emitted into the page only for a peer that passes the gate,
-  so a peer that fails it gets a genuinely read-only board (no `end` either).
+  so a peer that fails it gets a genuinely read-only board (no `end`/`block`/`unblock` either).
   `ingest` never gains write-to-repo
   capability — the capture path stays read-only.
 - **`prune`** (`main.go`) — deletes events older than the retention window,
@@ -72,6 +72,7 @@ Three subcommands, dispatched in `main.go`:
   that one" in the `blocks` table. `applyBlocks` (server layer, after
   `dropDeadPanes`) relaxes a waiting/needs-you row to `statusBlocked` while its
   blocker session is still on the roster; `agentRoster` itself never sees blocks.
+  They never touch `ingest` or the capture path.
 
 `store.go` owns the schema, the `Event`/`Agent`/`SourceCount` types, and all
 queries. The dashboard's two main views are both derived here: `agentRoster`
@@ -107,7 +108,7 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
    closed argv allowlist — no user-supplied string ever reaches a command line.
   The `end` action never reaches `actionArgv`: it execs nothing, and its
   `session_id` travels only as a bound SQL parameter. `block`/`unblock` are
-  exec-free the same way (`actionExecs`); `block` checks both ids against a
+  exec-free like `end` (`actionExecs`; they never reach `actionArgv`); `block` checks both ids against a
   fresh `agentRoster()` before writing the `blocks` row. `rebase`, like
   `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
   never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full

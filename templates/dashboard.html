@@ -311,6 +311,7 @@
          padding grows its hit area without moving the header; as with .copycwd,
          the th's overflow:hidden still clips it to the header row's height. */
       button.sortbtn { padding: 15px 8px; margin: -15px -8px; }
+      .blockchip button.pract { padding: 6px 8px; margin: -6px -4px; }
     }
     /* The glyph is transparent at rest rather than absent: one ⧉ per roster row
        is a column of noise, but the span stays in the flow at all times — never
@@ -998,6 +999,15 @@
         if (arows[ai].hidden) continue;
         openActs.push(arows[ai].getAttribute('data-actions-row'));
       }
+      // A block picker's choice survives the swap too, keyed by its blockform's
+      // session, so a poll cannot reset it mid-choice onto the wrong row.
+      var picks = {};
+      var pickEls = document.querySelectorAll('#content .blockform .blockpick');
+      for (var bp = 0; bp < pickEls.length; bp++) {
+        picks[pickEls[bp].closest('.blockform').getAttribute('data-session')] = pickEls[bp].value;
+      }
+      var bkeep = active && active.classList && active.classList.contains('blockpick') ? active.closest('.blockform') : null;
+      var bkey = bkeep ? bkeep.getAttribute('data-session') : null;
       try { document.dispatchEvent(new CustomEvent('ch:contentswap')); } catch (e) {}
       // Build the new subtree in a disconnected <template>, then swap it into the
       // live #content in one shot. The old form assigned html straight to the
@@ -1108,6 +1118,18 @@
       // re-opened) and before focus restore.
       var armRefocused = false;
       try { if (armedState && window.__ckArmRestore) armRefocused = !!window.__ckArmRestore(armedState); } catch (e) {}
+      var newPicks = document.querySelectorAll('#content .blockform .blockpick');
+      var pickFocus = null;
+      for (var np = 0; np < newPicks.length; np++) {
+        var psess = newPicks[np].closest('.blockform').getAttribute('data-session');
+        var pwant = picks[psess];
+        // Only a value still on offer: a blocker that left the board falls back to the default.
+        for (var po = 0; pwant && po < newPicks[np].options.length; po++) {
+          if (newPicks[np].options[po].value === pwant) { newPicks[np].value = pwant; break; }
+        }
+        if (psess === bkey) pickFocus = newPicks[np];
+      }
+      if (pickFocus) { pickFocus.focus({ preventScroll: true }); return true; }
       if (key) {
         var btns = document.querySelectorAll('#content .copycwd');
         for (var i = 0; i < btns.length; i++) {
@@ -2955,14 +2977,15 @@
                 <span class="actmsg"></span>
               </span>
             </div>
-            <div class="actcol blockcol" role="group" aria-label="block actions">
+            {{/* This row is one of .Agents, so another row exists only if .Agents has two or a row is queued. */}}
+            {{ if or (gt (len $.Agents) 1) $.QueuedAgents }}<div class="actcol blockcol" role="group" aria-label="block actions">
               <span class="acteyebrow">block</span>
               {{ $self := .SessionID }}<span class="actgroup blockform" data-session="{{ .SessionID }}">
                 <select class="blockpick" aria-label="block this row on">{{ range $.Agents }}{{ if and .SessionID (ne .SessionID $self) }}<option value="{{ .SessionID }}">{{ .BlockLabel }}{{ if .Branch }} · {{ short .SessionID }}{{ end }}</option>{{ end }}{{ end }}{{ range $.QueuedAgents }}{{ if .SessionID }}<option value="{{ .SessionID }}">{{ .BlockLabel }}{{ if .Branch }} · {{ short .SessionID }}{{ end }}</option>{{ end }}{{ end }}</select>
                 <button type="button" class="pract" data-action="block" data-noconfirm="true" aria-label="block{{ if .Branch }} {{ .Branch }}{{ end }} on the selected row" title="relax this row out of the alert band until the chosen row leaves the board">block</button>
                 <span class="actmsg"></span>
               </span>
-            </div>
+            </div>{{ end }}
           </div></td></tr>{{ end }}
         {{ end }}
       </tbody>
