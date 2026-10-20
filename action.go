@@ -401,17 +401,24 @@ func remoteAllowed(remoteAddr string) bool {
 }
 
 // actionExecs reports whether an action can run a command on the host, which is
-// what remoteAllowed gates. Only "end" is exempt: it execs nothing at all, it
-// just writes a synthetic SessionEnd to drop a roster row (the same reason it
-// deliberately never reaches actionArgv, the allowlist boundary for things that
-// do exec). Everything else - the merge-pr/gh PR actions, the tmux session
-// actions (rebase included) - runs tmux or gh.
+// what remoteAllowed gates. Only "end", "block" and "unblock" are exempt: they
+// exec nothing at all, they just write a synthetic SessionEnd or a blocks row to
+// change how a roster row shows (the same reason they deliberately never reach
+// actionArgv, the allowlist boundary for things that do exec). Everything else -
+// the merge-pr/gh PR actions, the tmux session actions (rebase included) - runs
+// tmux or gh.
 //
-// Phrased as "is this the one exec-free action" rather than as a list of the
+// Phrased as "is this an exec-free action" rather than as a list of the
 // exec-backed ones so the gate fails CLOSED: an action added later is
 // network-gated automatically instead of quietly skipping the check. An unknown
 // action is likewise gated, and still 400s afterwards.
-func actionExecs(action string) bool { return action != "end" }
+func actionExecs(action string) bool {
+	switch action {
+	case "end", "block", "unblock":
+		return false
+	}
+	return true
+}
 
 // forwardingHeaders are the headers a reverse proxy adds when it relays a
 // request. Their presence — never their value — is what the peer gate refuses
@@ -443,9 +450,9 @@ func forwardingHeader(h http.Header) string {
 //   - hostAllowed, the DNS-rebinding defence. Without it an attacker page that
 //     rebinds its own name to 127.0.0.1 is same-origin under that name, and a GET
 //     endpoint (/api/pane) needs no token at all.
-//   - remoteAllowed, the peer-network gate, but only when execs is true. "end" is
-//     the sole exec-free action and stays reachable from any attributable peer on
-//     an allowed Host.
+//   - remoteAllowed, the peer-network gate, but only when execs is true. The
+//     exec-free actions (see actionExecs) stay reachable from any attributable
+//     peer on an allowed Host.
 //
 // It NEVER consults a forwarding header's value — see remoteAllowed.
 func execPeerAllowed(r *http.Request, bindHost string, allowed []string, execs bool) (bool, string) {
@@ -754,6 +761,23 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		}
 		defer cfg.inflight.release(sessionLock)
 		writeActionResult(w, endSession(db, sessionID, now))
+		return
+	}
+
+	// "block" marks this row blocked on another (see applyBlocks) and "unblock"
+	// clears that. Like "end" they run no subprocess and never reach actionArgv;
+	// both ids are checked against a fresh roster and only ever travel as bound
+	// SQL parameters.
+	if action == "block" || action == "unblock" {
+		if sessionID == "" {
+			http.Error(w, "unknown session", http.StatusNotFound)
+			return
+		}
+		if action == "unblock" {
+			writeActionResult(w, unblockAction(db, sessionID))
+		} else {
+			writeActionResult(w, blockAction(db, sessionID, r.FormValue("blocker_session_id"), now))
+		}
 		return
 	}
 
@@ -1161,6 +1185,42 @@ func endSession(db *sql.DB, sessionID string, now time.Time) actionResult {
 	}
 	if n == 0 {
 		return actionResult{ExitCode: -1, Output: "no live session matched (already ended?)"}
+	}
+	return actionResult{ExitCode: 0}
+}
+
+// blockAction records that sessionID is blocked on blockerID for the dashboard's
+// block action. Both must be live on a fresh roster (the picker only offers
+// roster rows, so fail closed on anything else); a self-block or a cycle is
+// refused with its reason. A lookup error stays server-side, as in endSession.
+func blockAction(db *sql.DB, sessionID, blockerID string, now time.Time) actionResult {
+	agents, err := agentRoster(db, time.Duration(waitingRetainHours())*time.Hour, now)
+	if err != nil {
+		debugf("action: block %s: %v", sessionID, err)
+		return actionResult{ExitCode: -1, Output: "could not block session"}
+	}
+	live := map[string]bool{}
+	for _, a := range agents {
+		live[a.SessionID] = true
+	}
+	if !live[sessionID] || !live[blockerID] {
+		return actionResult{ExitCode: -1, Output: "both rows must be live on the roster"}
+	}
+	if err := addBlock(db, sessionID, blockerID, live, now); err != nil {
+		if errors.Is(err, errSelfBlock) || errors.Is(err, errBlockCycle) {
+			return actionResult{ExitCode: -1, Output: err.Error()}
+		}
+		debugf("action: block %s: %v", sessionID, err)
+		return actionResult{ExitCode: -1, Output: "could not block session"}
+	}
+	return actionResult{ExitCode: 0}
+}
+
+// unblockAction drops every block on sessionID for the chip's ✕.
+func unblockAction(db *sql.DB, sessionID string) actionResult {
+	if _, err := unblockSession(db, sessionID); err != nil {
+		debugf("action: unblock %s: %v", sessionID, err)
+		return actionResult{ExitCode: -1, Output: "could not unblock session"}
 	}
 	return actionResult{ExitCode: 0}
 }

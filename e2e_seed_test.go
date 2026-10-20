@@ -59,6 +59,7 @@ func TestE2ESeed(t *testing.T) {
 
 	// Widest badge: "waiting on 12 agents · 23h" — 12 subagents started 23h ago,
 	// each heard from a minute ago, then the main turn's Stop.
+	const blockedSess, blockerSess = "e2e-blocked-0000-1111-2222-333333333333", "e2e-blocker-0000-1111-2222-333333333333"
 	sub := "e2e-subagents-0000-1111-2222-333333333333"
 	for i := range 12 {
 		add(23*time.Hour, appA, longBranch, "worktree-subagents", sub, "SubagentStart", "", fmt.Sprintf(`{"agent_id":"agent-%02d"}`, i))
@@ -81,6 +82,10 @@ func TestE2ESeed(t *testing.T) {
 	add(21*time.Hour, appA, "main", "worktree-waiting", "e2e-twin-0000-1111-2222-333333333333", "Stop", "", "")
 	// Idle with a two-digit hour count; branchless, so the cwd basename stands in.
 	add(23*time.Hour, appB, "", "a-very-long-worktree-directory-name-standing-in-for-the-branch", "e2e-idle-0000-1111-2222-333333333333", "PreToolUse", "Read", "")
+
+	// block.spec.ts: fix-1234 is blocked on fix-1235 (the block row is written below).
+	add(30*time.Minute, appB, "fix-1234", "worktree-blocked", blockedSess, "Stop", "", "")
+	add(40*time.Minute, appB, "fix-1235", "worktree-blocker", blockerSess, "Stop", "", "")
 
 	// Merge-queue rows for queue.spec.ts: e2e/serve.sh creates these dirs under
 	// CLODHOPPER_E2E_REPOS, and its stub gh reports one queued, one ejected and one merged.
@@ -110,6 +115,9 @@ func TestE2ESeed(t *testing.T) {
 		if err := insertEvent(db, ev); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := addBlock(db, blockedSess, blockerSess, map[string]bool{blockedSess: true, blockerSess: true}, now); err != nil {
+		t.Fatal(err)
 	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&n); err != nil {
 		t.Fatal(err)

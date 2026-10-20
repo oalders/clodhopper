@@ -1035,8 +1035,10 @@ func TestActionExecs(t *testing.T) {
 			t.Errorf("actionExecs(%q) = false, want true", a)
 		}
 	}
-	if actionExecs("end") {
-		t.Error(`actionExecs("end") = true, want false (end runs no subprocess)`)
+	for _, a := range []string{"end", "block", "unblock"} {
+		if actionExecs(a) {
+			t.Errorf("actionExecs(%q) = true, want false (it runs no subprocess)", a)
+		}
 	}
 }
 
@@ -2202,5 +2204,86 @@ func TestHandleActionBroadcastRestartPollsUntilShell(t *testing.T) {
 	}
 	if n := len(slices.DeleteFunc(slices.Clone(calls[:resume]), func(c string) bool { return c != probe })); n != 4 {
 		t.Fatalf("probed %d times before resuming, want 4 (the pre-check, two busy, then the shell): %q", n, calls)
+	}
+}
+
+// blockReq is actionReq for the block action, which also names the blocker.
+func blockReq(sessionID, blockerID, token string) *http.Request {
+	form := url.Values{"session_id": {sessionID}, "action": {"block"}, "blocker_session_id": {blockerID}}
+	r := httptest.NewRequest(http.MethodPost, "/api/action", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	if token != "" {
+		r.Header.Set("X-Clodhopper-Token", token)
+	}
+	r.Host = "127.0.0.1"
+	r.RemoteAddr = "127.0.0.1:54321"
+	return r
+}
+
+// The dashboard's block action records a block between two live rows and
+// refuses a row that is not live, a self-block and a cycle with a visible
+// reason; unblock drops it again. None of it execs, so the binaries are unusable.
+func TestHandleActionBlockAndUnblock(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	for _, s := range []string{"a", "b"} {
+		insertEvent(db, Event{TS: "2026-10-20T09:00:00Z", SourceApp: "x", SessionID: s, EventType: "Stop", PayloadJSON: "{}"})
+	}
+	insertEvent(db, Event{TS: "2026-10-20T09:00:00Z", SourceApp: "x", SessionID: "ended", EventType: "SessionEnd", PayloadJSON: "{}"})
+	cfg := newActionCfg("/nonexistent/merge-pr", "/nonexistent/gh")
+	post := func(r *http.Request) actionJSON {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handleAction(w, r, db, cfg, now)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d body=%s", w.Code, w.Body.String())
+		}
+		return decodeActionJSON(t, w)
+	}
+
+	for name, r := range map[string]*http.Request{
+		"unknown blocker": blockReq("a", "ghost", "secret"),
+		"ended blocker":   blockReq("a", "ended", "secret"),
+		"unknown blocked": blockReq("ghost", "a", "secret"),
+		"self":            blockReq("a", "a", "secret"),
+	} {
+		if got := post(r); got.OK || got.Output == "" {
+			t.Errorf("%s: resp = %+v, want a non-ok result with a message", name, got)
+		}
+	}
+	if got := post(blockReq("a", "b", "secret")); !got.OK {
+		t.Fatalf("a on b: resp = %+v, want ok", got)
+	}
+	if got := post(blockReq("b", "a", "secret")); got.OK || !strings.Contains(got.Output, "cycle") {
+		t.Errorf("cycle: resp = %+v, want refused as a cycle", got)
+	}
+	if blocks, _ := listBlocks(db); !slices.Equal(blocks, []Block{{"a", "b"}}) {
+		t.Fatalf("blocks = %v, want only a on b", blocks)
+	}
+	if got := post(actionReq("a", "unblock", false, "secret", "127.0.0.1")); !got.OK {
+		t.Fatalf("unblock: resp = %+v, want ok", got)
+	}
+	if blocks, _ := listBlocks(db); len(blocks) != 0 {
+		t.Errorf("blocks after unblock = %v, want none", blocks)
+	}
+}
+
+// A missing or wrong CSRF token is refused before anything is written.
+func TestHandleActionBlockRejectsBadToken(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	for _, s := range []string{"a", "b"} {
+		insertEvent(db, Event{TS: "2026-10-20T09:00:00Z", SourceApp: "x", SessionID: s, EventType: "Stop", PayloadJSON: "{}"})
+	}
+	cfg := newActionCfg("/bin/true", "/bin/true")
+	for _, token := range []string{"", "wrong"} {
+		w := httptest.NewRecorder()
+		handleAction(w, blockReq("a", "b", token), db, cfg, now)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("token %q: code = %d, want 403", token, w.Code)
+		}
+	}
+	if blocks, _ := listBlocks(db); len(blocks) != 0 {
+		t.Errorf("blocks = %v, want none written", blocks)
 	}
 }

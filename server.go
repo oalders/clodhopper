@@ -927,6 +927,12 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	setWorktrees(agents, peek.roots, now)
 	// Before enrichCI, so no CI is fetched for a row that will not render.
 	agents = dropDeadPanes(agents, peek.cache.panes(now))
+	// After dropDeadPanes, so a blocker whose pane died already counts as gone.
+	blocks, err := listBlocks(db)
+	if err != nil {
+		return dashboardData{}, fmt.Errorf("blocks: %w", err)
+	}
+	applyBlocks(agents, blocks)
 	enrichCI(agents, ci, now)
 	suppressWatchedCI(agents, now)
 	// Before demotePendingCI, so a queued "needs you" row is not folded away (#195).
@@ -1050,7 +1056,7 @@ func viewSignature(d dashboardData) string {
 			// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
 			// Launcher feeds the 🔒/🤖 marker, which a resume can flip in place.
 			// Likewise the queue pill's anchors are hashed, its ticking CIQueueLabel is not.
-			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%t:%q:%q:%d:%d:%d:%q:%q:%d:%d:%d:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIDraft, a.CIDone, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree)
+			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%t:%q:%q:%d:%d:%d:%q:%q:%d:%d:%d:%q:%q:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIDraft, a.CIDone, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree, a.BlockedOn, a.BlockedOnSession)
 		}
 	}
 
@@ -1175,6 +1181,43 @@ func demotePendingCI(agents []Agent, now time.Time) {
 			agents[i].StatusRank = rankBackground
 		}
 	}
+}
+
+// applyBlocks marks each row of agents that a stored block holds on another row
+// (see `clodhopper block`). A block applies only while BOTH sessions are in
+// agents, so it lapses once the blocker ends, ages out or loses its pane, and a
+// later session on the blocker's branch has a new id and cannot revive it. A
+// "waiting for you"/"needs you" row is relaxed to statusBlocked at rankBackground:
+// nothing done in its pane helps until the blocker lands. A permission prompt or
+// question is left alone, as in demotePendingCI, since it blocks on the user
+// regardless; it and a working/idle row keep their status and just get the chip.
+func applyBlocks(agents []Agent, blocks []Block) {
+	idx := make(map[string]int, len(agents))
+	for i, a := range agents {
+		idx[a.SessionID] = i
+	}
+	for _, b := range blocks {
+		i, ok := idx[b.Blocked]
+		j, ok2 := idx[b.Blocker]
+		if !ok || !ok2 {
+			continue
+		}
+		agents[i].BlockedOn = agents[j].BlockLabel()
+		agents[i].BlockedOnSession = b.Blocker
+		if agents[i].Status == statusNeedsYou || agents[i].Status == statusWaiting {
+			agents[i].Status = statusBlocked
+			agents[i].StatusRank = rankBackground
+		}
+	}
+}
+
+// BlockLabel names a row as the "blocked on" chip and the block picker show it:
+// its branch, else its session id as the roster abbreviates it.
+func (a Agent) BlockLabel() string {
+	if a.Branch != "" {
+		return a.Branch
+	}
+	return shortID(a.SessionID)
 }
 
 // A queued PR past its ETA by queueOverdueSecs, or with no ETA queued longer
