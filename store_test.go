@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -532,5 +534,87 @@ func TestLegacyControlCharCwdRefusedOnRead(t *testing.T) {
 	}
 	if len(agents) != 1 || agents[0].Cwd != "" || agents[0].LaunchCwd != "" {
 		t.Errorf("roster = %+v; want one row with cwd refused", agents)
+	}
+}
+
+// A block names one row on each side: a branch shared by two live sessions is
+// refused like an ambiguous prefix, and an ended session does not resolve.
+func TestResolveLiveSession(t *testing.T) {
+	db := openTestDB(t)
+	ts := time.Now().UTC().Add(-3 * time.Minute).Format(time.RFC3339)
+	ins := func(sess, branch, etype string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: branch, Cwd: "/w", SessionID: sess, EventType: etype, PayloadJSON: "{}"})
+	}
+	ins("fc49aaaa", "shared", "Stop")
+	ins("fc49bbbb", "shared", "Stop")
+	ins("abcd0000", "solo", "Stop")
+	ins("dead0000", "gone", "SessionEnd")
+
+	if id, err := resolveLiveSession(db, EndSelector{Branch: "solo"}); err != nil || id != "abcd0000" {
+		t.Errorf("solo branch = %q, %v; want abcd0000", id, err)
+	}
+	_, err := resolveLiveSession(db, EndSelector{SessionID: "fc49"})
+	if _, ok := errors.AsType[*AmbiguousSessionError](err); !ok {
+		t.Errorf("ambiguous prefix err = %v, want *AmbiguousSessionError", err)
+	}
+	if _, err := resolveLiveSession(db, EndSelector{Branch: "shared"}); err == nil || !strings.Contains(err.Error(), "fc49aaaa, fc49bbbb") {
+		t.Errorf("shared branch err = %v, want both candidates listed", err)
+	}
+	if _, err := resolveLiveSession(db, EndSelector{Branch: "gone"}); err == nil {
+		t.Error("an ended session resolved as live")
+	}
+}
+
+// addBlock refuses a self-block and any cycle through live edges, but an edge
+// through a session that has left is inert and refuses nothing.
+func TestAddBlockRefusesSelfAndCycle(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	live := map[string]bool{"a": true, "b": true, "c": true}
+	if err := addBlock(db, "a", "a", live, now); !errors.Is(err, errSelfBlock) {
+		t.Errorf("self-block err = %v, want errSelfBlock", err)
+	}
+	if err := addBlock(db, "a", "b", live, now); err != nil {
+		t.Fatalf("a on b: %v", err)
+	}
+	if err := addBlock(db, "b", "c", live, now); err != nil {
+		t.Fatalf("b on c: %v", err)
+	}
+	if err := addBlock(db, "b", "a", live, now); !errors.Is(err, errBlockCycle) {
+		t.Errorf("direct cycle err = %v, want errBlockCycle", err)
+	}
+	if err := addBlock(db, "c", "a", live, now); !errors.Is(err, errBlockCycle) {
+		t.Errorf("transitive cycle err = %v, want errBlockCycle", err)
+	}
+	// With b gone, a->b->c is inert, so c may block on a.
+	delete(live, "b")
+	if err := addBlock(db, "c", "a", live, now); err != nil {
+		t.Errorf("cycle through a departed session refused: %v", err)
+	}
+}
+
+// prune sweeps a block once either of its sessions has no events left.
+func TestPruneOldSweepsOrphanedBlocks(t *testing.T) {
+	db := openTestDB(t)
+	old := time.Now().UTC().AddDate(0, 0, -30).Format(time.RFC3339)
+	recent := time.Now().UTC().Format(time.RFC3339)
+	for sess, ts := range map[string]string{"old": old, "new1": recent, "new2": recent} {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", SessionID: sess, EventType: "Stop", PayloadJSON: "{}"})
+	}
+	live := map[string]bool{"old": true, "new1": true, "new2": true}
+	for _, b := range []Block{{"new1", "old"}, {"old", "new2"}, {"new1", "new2"}} {
+		if err := addBlock(db, b.Blocked, b.Blocker, live, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pruneOld(db, 14); err != nil {
+		t.Fatalf("pruneOld: %v", err)
+	}
+	got, err := listBlocks(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []Block{{"new1", "new2"}}; !slices.Equal(got, want) {
+		t.Errorf("blocks after prune = %v, want %v", got, want)
 	}
 }

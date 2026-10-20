@@ -51,6 +51,10 @@ func run(args []string) int {
 		return runInit(rest)
 	case "end":
 		return runEnd(rest)
+	case "block":
+		return runBlock(rest)
+	case "unblock":
+		return runUnblock(rest)
 	case "-h", "--help", "help":
 		usage()
 		return 0
@@ -94,6 +98,8 @@ USAGE
   clodhopper prune [--days N]           delete events older than N days
   clodhopper init [--project|--local]   wire clodhopper hooks into .claude/settings(.local).json
   clodhopper end --branch B | --cwd D | --session PREFIX   mark matching live sessions ended (--session takes the roster id fragment)
+  clodhopper block --branch B | --session PREFIX  --on-branch B | --on-session PREFIX   relax a row out of the alert band until the blocker session leaves the roster
+  clodhopper unblock --branch B | --session PREFIX   drop every block on the matching live sessions
   clodhopper --version                  print version and build metadata
 
 ENV
