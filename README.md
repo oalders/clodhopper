@@ -99,7 +99,26 @@ clodhopper ingest --source-app myapp       # reads one hook event as JSON on std
 clodhopper serve [--port 4555] [--host H | --tailscale] [--pane-peek [--pane-lines N]] [--enable-merge] # dashboard (read-only unless --enable-merge; default 127.0.0.1)
 clodhopper prune [--days 14]              # delete events older than N days
 clodhopper end --branch B                  # mark matching live sessions ended (teardown)
+clodhopper block --branch B --on-branch C  # relax B's row until C's session leaves the board
+clodhopper unblock --branch B              # drop B's blocks
 ```
+
+### Blocking one row on another
+
+When one agent cannot move until another lands (say `fix-1234` waits for
+`fix-1235` to merge), `clodhopper block --branch fix-1234 --on-branch fix-1235`
+records that. Each side may be named with `--branch` / `--on-branch` or a
+session-id prefix (`--session` / `--on-session`) and must resolve to exactly
+one live session; an ambiguous match is refused with the candidates listed, as
+are a self-block and a cycle. While the blocker is on the board, a blocked row
+that is **waiting** or **needs you** drops to the background band as
+**blocked**; one that needs approval or input keeps its status, since those
+are still yours to answer. Either way the row shows a muted
+"⛓ blocked on fix-1235" chip; its label jumps to the blocker's row. The block
+names the blocker *session*, so it lapses on its own once that session leaves
+the roster (merged, ended, or its pane gone), and a later session on the same
+branch does not revive it. `clodhopper prune` sweeps blocks whose sessions have
+no events left.
 
 By default the dashboard binds `127.0.0.1` (loopback only). If your browser runs
 on a different machine or namespace than the server (e.g. inside a container or
@@ -277,14 +296,18 @@ process is killed and no repo is touched, so it is the way to clear a stale row
 left behind by a hard-killed agent. The row comes back if that session ever
 emits another event.
 
+The row panel's **block** control does what `clodhopper block` does, against a
+picker of the other rows on the board, and the blocked-on chip gains an **✕**
+that unblocks. Like **end**, both only write clodhopper's own database.
+
 > **Exposure:** this is a **write** capability, not just a read one. It is
 > gated behind CSRF (a custom header token, checked in constant time), a
 > Host-header allowlist (`CLODHOPPER_ALLOWED_HOSTS`) that defends against DNS
 > rebinding, and a closed argv allowlist — no free-form string from the
 > request ever reaches a command line. None of that changes who it acts as: it
 > runs with **your** credentials against **your** repos. The session actions
-> additionally send **keystrokes into live tmux panes**. (**end** is the mild
-> one: it only writes a row to clodhopper's own database.) Everything here is
+> additionally send **keystrokes into live tmux panes**. (**end**, **block** and
+> **unblock** are the mild ones: they only write clodhopper's own database.) Everything here is
 > gated behind `--enable-merge` **and** restricted to loopback/Tailscale
 > peers, so enable it only on a **trusted, single-operator network**
 > (loopback, or your tailnet via `--tailscale`), never on a public bind.

@@ -66,7 +66,12 @@ Three subcommands, dispatched in `main.go`:
   so a peer that fails it gets a genuinely read-only board (no `end` either).
   `ingest` never gains write-to-repo
   capability — the capture path stays read-only.
-- **`prune`** (`main.go`) — deletes events older than the retention window.
+- **`prune`** (`main.go`) — deletes events older than the retention window,
+  plus blocks whose sessions have no events left.
+- **`block` / `unblock`** (`block.go`) — record or drop "this session waits on
+  that one" in the `blocks` table. `applyBlocks` (server layer, after
+  `dropDeadPanes`) relaxes a waiting/needs-you row to `statusBlocked` while its
+  blocker session is still on the roster; `agentRoster` itself never sees blocks.
 
 `store.go` owns the schema, the `Event`/`Agent`/`SourceCount` types, and all
 queries. The dashboard's two main views are both derived here: `agentRoster`
@@ -101,7 +106,9 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
    sends `Host: 127.0.0.1`), and restricted to a
    closed argv allowlist — no user-supplied string ever reaches a command line.
   The `end` action never reaches `actionArgv`: it execs nothing, and its
-  `session_id` travels only as a bound SQL parameter. `rebase`, like
+  `session_id` travels only as a bound SQL parameter. `block`/`unblock` are
+  exec-free the same way (`actionExecs`); `block` checks both ids against a
+  fresh `agentRoster()` before writing the `blocks` row. `rebase`, like
   `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
   never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full
   peer gate. The merge-pr actions (`squash`, `squash-admin`, `close`)
