@@ -67,6 +67,9 @@ func TestParsePRView(t *testing.T) {
 		{"draft gate named after a finished job is green", `{"isDraft":true,"statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"StatusContext","context":"ci","state":"PENDING"}]}`, ciResult{State: "green", Passes: 1, Draft: true}},
 		{"merged drops the stale verdict", `{"state":"MERGED","isDraft":true,"mergeStateStatus":"DIRTY","statusCheckRollup":[` + failed + `]}`, ciResult{Done: "merged"}},
 		{"closed drops the stale verdict", `{"state":"CLOSED","isDraft":true,"mergeStateStatus":"DIRTY","statusCheckRollup":[` + failed + `]}`, ciResult{Done: "closed"}},
+		{"open keeps its number and repo", `{"number":7,"url":"https://github.com/o/r/pull/7","state":"OPEN","statusCheckRollup":[` + passed + `]}`, ciResult{State: "green", Passes: 1, PRNumber: 7, PRRepo: "o/r"}},
+		{"merged keeps its number, repo and merge time", `{"number":7,"url":"https://github.com/o/r/pull/7","state":"MERGED","mergedAt":"2026-10-21T11:00:00Z"}`, ciResult{Done: "merged", PRNumber: 7, PRRepo: "o/r", MergedAt: time.Date(2026, 10, 21, 11, 0, 0, 0, time.UTC)}},
+		{"a non-github url yields no repo", `{"number":7,"url":"https://ghe.example/o/r/pull/7","state":"CLOSED"}`, ciResult{Done: "closed", PRNumber: 7}},
 		{"rollup since is the newest check start", `{"statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-18T11:30:00Z"},{"__typename":"StatusContext","state":"SUCCESS","startedAt":"2026-10-18T11:40:00Z"},{"__typename":"CheckRun","status":"QUEUED","startedAt":"0001-01-01T00:00:00Z"}]}`, ciResult{State: "pending", Passes: 2, RollupSince: time.Date(2026, 10, 18, 11, 40, 0, 0, time.UTC)}},
 		{"malformed", `not json`, ciResult{}},
 	}

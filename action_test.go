@@ -1035,7 +1035,7 @@ func TestActionExecs(t *testing.T) {
 			t.Errorf("actionExecs(%q) = false, want true", a)
 		}
 	}
-	for _, a := range []string{"end", "block", "unblock"} {
+	for _, a := range []string{"end", "block", "unblock", "dismiss"} {
 		if actionExecs(a) {
 			t.Errorf("actionExecs(%q) = true, want false (it runs no subprocess)", a)
 		}
@@ -1378,6 +1378,23 @@ func TestHandleActionEndRefusedThroughProxy(t *testing.T) {
 				t.Fatal("a proxied peer dismissed a roster row")
 			}
 		})
+	}
+}
+
+// dismiss is exec-free like end, and refused through a proxy just the same.
+func TestHandleActionDismissRefusedThroughProxy(t *testing.T) {
+	db, cfg, _ := gatedCfg(t)
+	cfg.ledger, _ = testLedger(nil)
+	cfg.ledger.record([]Agent{queuedRow("live-1")}, ledgerNow)
+	r := actionReq("live-1", "dismiss", false, "secret", "127.0.0.1")
+	r.Header.Set("X-Forwarded-For", "203.0.113.9")
+	w := httptest.NewRecorder()
+	handleAction(w, r, db, cfg, ledgerNow)
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "through a proxy") {
+		t.Fatalf("%d %q, want 403 with the proxy reason", w.Code, w.Body.String())
+	}
+	if !cfg.ledger.dismiss("live-1") {
+		t.Fatal("a proxied peer dismissed a ledger row")
 	}
 }
 

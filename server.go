@@ -262,8 +262,9 @@ func assignSessColors(agents []Agent, events []Event) map[string]string {
 // dashboardData is the view model rendered by the dashboard template.
 type dashboardData struct {
 	Agents         []Agent
-	QueuedAgents   []Agent // set-and-forget merge-queue rows, folded under the roster; see splitQueued
-	QueueNextETA   string  // earliest queued ETA as an etaPhrase; "" when none is known
+	QueuedAgents   []Agent     // set-and-forget merge-queue rows, folded under the roster; see splitQueued
+	QueueNextETA   string      // earliest queued ETA as an etaPhrase; "" when none is known
+	LedgerRows     []ledgerRow // rows that left the merge queue, kept in its table until dismissed; see queueLedger
 	Activity       []SourceCount
 	Events         []Event
 	EventRows      []EventRow // Events folded for display; see foldToolEvents
@@ -403,6 +404,7 @@ func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool
 		allowedHosts:      allowed,
 		inflight:          newInflightSet(),
 		panes:             peek.cache,
+		ledger:            newQueueLedger(),
 	}
 	return peek, act
 }
@@ -529,6 +531,7 @@ func runServe(args []string) int {
 // cwdCache memoises per-cwd lookups (CI status; the peek's GitHub repo) so the
 // dashboard (which auto-refreshes) does not shell out on every render. Keyed by
 // cwd; entries expire after cwdTTL, or early once expire marks them stale.
+// The key need not be a cwd: queueLedger's finals use "owner/repo#N".
 type cwdCache[T any] struct {
 	mu       sync.Mutex
 	m        map[string]cwdEntry[T]
@@ -643,6 +646,9 @@ type ciResult struct {
 	QueueETA    time.Time // expected merge time, zero when GitHub gave no estimate
 	QueueSince  time.Time // when the PR entered the queue, zero when not queued
 	QueueReason string    // GitHub's reason for an "ejected" PR's removal from the queue
+	PRNumber    int       // the PR's number, in every state
+	PRRepo      string    // the PR's GitHub "owner/repo", parsed from its url; "" if not github.com
+	MergedAt    time.Time // when a merged PR merged, zero otherwise
 	RollupSince time.Time // newest check start in the rollup, zero when none reported one
 }
 
@@ -655,21 +661,27 @@ func lookupCI(cwd string) ciResult {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", "--json", "id,state,isDraft,mergeStateStatus,statusCheckRollup")
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", "--json", "id,number,url,state,mergedAt,isDraft,mergeStateStatus,statusCheckRollup")
 	cmd.Dir = cwd
 	out, err := cmd.Output()
 	if err != nil {
 		return ciResult{} // no PR for branch, not a repo, gh unauth, or timeout
 	}
 	r, id := parsePRView(out)
+	// Queue checks run on a temporary gh-readonly-queue commit the rollup never
+	// sees, so ask for the queue entry directly (#183); same ctx, same deadline.
+	return withMergeQueue(ctx, cwd, r, id)
+}
+
+// withMergeQueue folds open PR id's merge-queue entry into r via gh, run in dir
+// under ctx's deadline. Best-effort: no id or any error leaves r unchanged.
+func withMergeQueue(ctx context.Context, dir string, r ciResult, id string) ciResult {
 	if id == "" {
 		return r
 	}
-	// Queue checks run on a temporary gh-readonly-queue commit the rollup never
-	// sees, so ask for the queue entry directly (#183); same ctx, same deadline.
-	cmd = exec.CommandContext(ctx, "gh", "api", "graphql", "-f", "id="+id, "-f", "query="+mergeQueueQuery)
-	cmd.Dir = cwd
-	out, err = cmd.Output()
+	cmd := exec.CommandContext(ctx, "gh", "api", "graphql", "-f", "id="+id, "-f", "query="+mergeQueueQuery)
+	cmd.Dir = dir
+	out, err := cmd.Output()
 	if err != nil {
 		return r // no queue signal, never an error
 	}
@@ -746,16 +758,20 @@ type rollupNode struct {
 	State      string    `json:"state"`
 }
 
-// parsePRView turns `gh pr view --json id,state,isDraft,mergeStateStatus,statusCheckRollup`
+// parsePRView turns `gh pr view --json id,number,url,state,mergedAt,isDraft,mergeStateStatus,statusCheckRollup`
 // output into a ciResult, plus the PR's node id when it is still OPEN (only an
-// open PR can be in the merge queue). The rollup drives the state;
+// open PR can be in the merge queue). The PR's number, repo and merge time are
+// kept in every state, for the merge-queue ledger (see queueLedger). The rollup drives the state;
 // mergeStateStatus only refines it, because BLOCKED also means "review missing"
 // with green checks. UNKNOWN never flags a conflict: every fresh PR is UNKNOWN
 // for a moment. A MERGED or CLOSED PR yields only Done: its rollup is stale.
 func parsePRView(out []byte) (ciResult, string) {
 	var pr struct {
 		ID                string       `json:"id"`
+		Number            int          `json:"number"`
+		URL               string       `json:"url"`
 		State             string       `json:"state"`
+		MergedAt          time.Time    `json:"mergedAt"`
 		IsDraft           bool         `json:"isDraft"`
 		MergeStateStatus  string       `json:"mergeStateStatus"`
 		StatusCheckRollup []rollupNode `json:"statusCheckRollup"`
@@ -763,10 +779,12 @@ func parsePRView(out []byte) (ciResult, string) {
 	if err := json.Unmarshal(out, &pr); err != nil {
 		return ciResult{}, ""
 	}
+	repoURL, _, _ := strings.Cut(pr.URL, "/pull/")
 	if pr.State == "MERGED" || pr.State == "CLOSED" {
-		return ciResult{Done: strings.ToLower(pr.State)}, ""
+		return ciResult{Done: strings.ToLower(pr.State), PRNumber: pr.Number, PRRepo: parseGitHubRepo(repoURL), MergedAt: pr.MergedAt}, ""
 	}
 	r := classifyRollup(pr.StatusCheckRollup)
+	r.PRNumber, r.PRRepo = pr.Number, parseGitHubRepo(repoURL)
 	if r.State == "failing" && pr.MergeStateStatus == "UNSTABLE" {
 		r.State = "soft-failing" // GitHub says only non-required checks failed
 	}
@@ -994,9 +1012,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	applyBlocks(agents, blocks)
 	enrichCI(agents, ci, now)
 	suppressWatchedCI(agents, now)
-	// Before demotePendingCI, so a queued "needs you" row is not folded away (#195).
-	roster, queued := splitQueued(agents, now)
-	demotePendingCI(agents, now)
+	// Before the split, so queued, ledgered and roster rows all keep their peek.
 	if peek.enabled {
 		for i := range agents {
 			agents[i].LiveTmux = agents[i].TmuxPane != "" && peek.cache.live(agents[i].TmuxPane, now)
@@ -1005,6 +1021,12 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 			}
 		}
 	}
+	// Before demotePendingCI, so a queued "needs you" row is not folded away (#195).
+	roster, queued := splitQueued(agents, now)
+	act.ledger.record(queued, now)
+	// Before demotePendingCI too, which relaxes every merged "needs you" row.
+	roster, ledger := act.ledger.carryOver(roster, queued, now)
+	demotePendingCI(agents, now)
 
 	// Live labels from dropDeadPanes, so activity rows match the roster's (#180).
 	labels := map[string]string{}
@@ -1043,6 +1065,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	data := dashboardData{
 		Agents:         roster,
 		QueuedAgents:   queued,
+		LedgerRows:     ledger,
 		QueueNextETA:   queueNextETA(queued, now),
 		Activity:       activity,
 		Events:         events,
@@ -1117,6 +1140,11 @@ func viewSignature(d dashboardData) string {
 			// Likewise the queue pill's anchors are hashed, its ticking CIQueueLabel is not.
 			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%t:%q:%q:%d:%d:%d:%q:%q:%d:%d:%d:%q:%q:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIDraft, a.CIDone, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree, a.BlockedOn, a.BlockedOnSession)
 		}
+	}
+
+	// Ledger rows come sorted; PRMergedAt is hashed, its ticking MergedAgo is not.
+	for _, r := range d.LedgerRows {
+		fmt.Fprintf(h, "|l:%q:%q:%q:%q:%q:%t:%q:%d:%q:%d:%d", r.SessionID, r.TmuxSession, r.SourceApp, r.Branch, r.Worktree, r.LiveTmux, r.Final, r.PRMergedAt, r.PRRepo, r.PRNumber, r.CIQueuePos)
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)
@@ -1301,12 +1329,12 @@ func queueStuck(a Agent, now time.Time) bool {
 // idle or blocked (not "needs you"); not stuck — off the roster into the merge-queue
 // section, so only rows needing you stay, ordered by ETA (unknown last). Run it
 // before demotePendingCI. It partitions agents in place and returns views of it,
-// so later edits through agents (demotion, live-pane flags) reach both halves.
+// so later edits through agents (demotion) reach both halves.
 func splitQueued(agents []Agent, now time.Time) (roster, queued []Agent) {
 	var q []Agent
 	n := 0
 	for _, a := range agents {
-		if a.CIQueue == "queued" && (a.Status == statusWaiting || a.Status == statusBackground || a.Status == statusIdle || a.Status == statusBlocked) && !queueStuck(a, now) {
+		if a.CIQueue == "queued" && setAndForget(a.Status) && !queueStuck(a, now) {
 			q = append(q, a)
 		} else {
 			agents[n] = a
@@ -1320,6 +1348,12 @@ func splitQueued(agents []Agent, now time.Time) (roster, queued []Agent) {
 	})
 	copy(agents[n:], q)
 	return agents[:n], agents[n:]
+}
+
+// setAndForget reports whether a row with status can leave the roster for the
+// merge-queue table: nothing in it is waiting on you.
+func setAndForget(status string) bool {
+	return status == statusWaiting || status == statusBackground || status == statusIdle || status == statusBlocked
 }
 
 // queueNextETA is the earliest known ETA among queued as an etaPhrase, or "".
@@ -1364,29 +1398,38 @@ func setWorktrees(agents []Agent, roots *cwdCache[string], now time.Time) {
 	}
 }
 
-// lookupCwds resolves each distinct non-empty cwd through c concurrently, so a
-// roster of N worktrees costs one slow round-trip, not N sequential ones.
+// lookupCwds resolves each distinct non-empty cwd through c; see lookupKeys.
 func lookupCwds[T any](agents []Agent, c *cwdCache[T], now time.Time) map[string]T {
+	cwds := make([]string, 0, len(agents))
+	for _, a := range agents {
+		cwds = append(cwds, a.Cwd)
+	}
+	return lookupKeys(cwds, c, now)
+}
+
+// lookupKeys resolves each distinct non-empty key through c concurrently, so a
+// roster of N worktrees costs one slow round-trip, not N sequential ones.
+func lookupKeys[T any](keys []string, c *cwdCache[T], now time.Time) map[string]T {
 	results := make(map[string]T)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 6)
 	seen := map[string]bool{}
-	for _, a := range agents {
-		if a.Cwd == "" || seen[a.Cwd] {
+	for _, k := range keys {
+		if k == "" || seen[k] {
 			continue
 		}
-		seen[a.Cwd] = true
+		seen[k] = true
 		wg.Add(1)
-		go func(cwd string) {
+		go func(key string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			s := c.get(cwd, now)
+			s := c.get(key, now)
 			mu.Lock()
-			results[cwd] = s
+			results[key] = s
 			mu.Unlock()
-		}(a.Cwd)
+		}(k)
 	}
 	wg.Wait()
 	return results
@@ -1399,6 +1442,7 @@ func enrichCI(agents []Agent, ci *cwdCache[ciResult], now time.Time) {
 		r := results[agents[i].Cwd]
 		agents[i].CI, agents[i].CIFails, agents[i].CIPasses, agents[i].CIConflict = r.State, r.Fails, r.Passes, r.Conflict
 		agents[i].CIDraft, agents[i].CIDone = r.Draft, r.Done
+		agents[i].PRNumber, agents[i].PRRepo, agents[i].PRMergedAt = r.PRNumber, r.PRRepo, unixOrZero(r.MergedAt)
 		agents[i].CIQueue, agents[i].CIQueueReason = r.Queue, r.QueueReason
 		if r.Queue != "" {
 			agents[i].CIQueuePos, agents[i].CIQueueETA, agents[i].CIQueueSince = r.QueuePos, unixOrZero(r.QueueETA), unixOrZero(r.QueueSince)

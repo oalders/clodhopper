@@ -302,6 +302,16 @@ The row panel's **blocked on** picker and **mark blocked** button do what
 not the other way round. The blocked-on chip gains an **✕** that unblocks.
 Like **end**, these only write clodhopper's own database.
 
+A row that leaves the merge-queue section stays there with its PR's outcome:
+**merged** (with when) or **closed**, muted; **left queue**, as an alert, if
+the PR is still open but out of the queue; or **gone — state unknown**. A row
+that needs you goes back to the roster instead. Once its session is gone the
+state comes from `gh pr view N --repo OWNER/REPO` plus the merge-queue lookup,
+so a PR still waiting its turn shows **still queued · session gone**. Its
+**dismiss** button drops the row from the merge-queue table (a live session
+returns to the roster); it touches nothing else. These rows live in serve's memory only (24h,
+at most 100), so a restart clears them.
+
 > **Exposure:** this is a **write** capability, not just a read one. It is
 > gated behind CSRF (a custom header token, checked in constant time), a
 > Host-header allowlist (`CLODHOPPER_ALLOWED_HOSTS`) that defends against DNS
@@ -309,7 +319,8 @@ Like **end**, these only write clodhopper's own database.
 > request ever reaches a command line. None of that changes who it acts as: it
 > runs with **your** credentials against **your** repos. The session actions
 > additionally send **keystrokes into live tmux panes**. (**end**, **block** and
-> **unblock** are the mild ones: they only write clodhopper's own database.) Everything here is
+> **unblock** are the mild ones: they only write clodhopper's own database;
+> **dismiss** writes nothing to the database.) Everything here is
 > gated behind `--enable-merge` **and** restricted to loopback/Tailscale
 > peers, so enable it only on a **trusted, single-operator network**
 > (loopback, or your tailnet via `--tailscale`), never on a public bind.

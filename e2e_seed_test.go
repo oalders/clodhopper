@@ -94,9 +94,13 @@ func TestE2ESeed(t *testing.T) {
 	add(35*time.Minute, appB, "fix-1236", "worktree-blocked-on-queue", queueBlockedSess, "Stop", "", "")
 
 	// Merge-queue rows for queue.spec.ts: e2e/serve.sh creates these dirs under
-	// CLODHOPPER_E2E_REPOS, and its stub gh reports one queued, one ejected and one merged.
+	// CLODHOPPER_E2E_REPOS, and its stub gh reports one queued, one ejected and one
+	// merged, plus, on the exec server only, one queued then merged (ledger.spec.ts).
 	if repos := os.Getenv("CLODHOPPER_E2E_REPOS"); repos != "" {
-		for _, name := range []string{"queued", "ejected", "merged"} {
+		for _, name := range []string{"queued", "ejected", "merged", "landing"} {
+			if _, err := os.Stat(filepath.Join(repos, name)); err != nil {
+				continue
+			}
 			evs = append(evs, Event{
 				TS: now.Add(-time.Hour).UTC().Format(time.RFC3339), SourceApp: appA, Branch: "main",
 				Cwd: filepath.Join(repos, name), SessionID: "e2e-" + name + "-0000-1111-2222-333333333333",

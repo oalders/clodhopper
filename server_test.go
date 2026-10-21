@@ -2380,7 +2380,7 @@ func TestDashboardWiresEndIntoActionScript(t *testing.T) {
 	// substring: that also appears in other branches of the action handler, so a
 	// loose match still passes when end is dropped from the clears set — the very
 	// regression this guards.
-	if !strings.Contains(html, "var clears = (action === 'end');") {
+	if !strings.Contains(html, "var clears = (action === 'end' || action === 'dismiss');") {
 		t.Error("end is not included in the row-clearing (clears) set")
 	}
 }
@@ -3093,7 +3093,7 @@ func TestDashboardArmedConfirmAutoDisarms(t *testing.T) {
 		t.Error("fire does not cancel the idle disarm timer on confirm")
 	}
 	// The row-clearing action list must still exclude rebase (it leaves the row up).
-	if !strings.Contains(html, "var clears = (action === 'end');") {
+	if !strings.Contains(html, "var clears = (action === 'end' || action === 'dismiss');") {
 		t.Error("the row-clearing action list changed (rebase must stay out of it)")
 	}
 }
@@ -3976,6 +3976,15 @@ func TestViewSignature_TracksQueueSection(t *testing.T) {
 	q.QueueNextETA = queueNextETA([]Agent{a}, now.Add(time.Minute))
 	if viewSignature(q) == sig {
 		t.Error("signature unchanged when the next-merge countdown ticked")
+	}
+	l := ledgerRow{Agent: a}
+	if viewSignature(dashboardData{LedgerRows: []ledgerRow{l}}) == viewSignature(dashboardData{QueuedAgents: []Agent{a}}) {
+		t.Error("signature unchanged when a row moved into the ledger")
+	}
+	sig = viewSignature(dashboardData{LedgerRows: []ledgerRow{l}})
+	l.Final = "merged"
+	if viewSignature(dashboardData{LedgerRows: []ledgerRow{l}}) == sig {
+		t.Error("signature unchanged when a ledger row's PR merged")
 	}
 }
 

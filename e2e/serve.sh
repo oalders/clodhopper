@@ -43,15 +43,27 @@ STUB
 chmod +x "$tmp/bin/tmux"
 # A stub gh puts the seeded merge-queue rows (e2e_seed_test.go) in the queue or
 # ejects them, and reports the merged row's PR merged, keyed on the row's cwd;
-# every other cwd has no PR.
+# every other cwd has no PR. The exec server also gets a "landing" row, queued
+# on its first lookup (serve's first render) and merged after, for ledger.spec.ts.
+# Single-shot: landing.seen never resets and ledger.spec.ts dismisses the row, so that spec cannot retry.
 export CLODHOPPER_E2E_REPOS="$tmp/repos"
 mkdir -p "$CLODHOPPER_E2E_REPOS/queued" "$CLODHOPPER_E2E_REPOS/ejected" "$CLODHOPPER_E2E_REPOS/merged"
+[ -z "${2-}" ] || mkdir "$CLODHOPPER_E2E_REPOS/landing"
 cat >"$tmp/bin/gh" <<'STUB'
 #!/bin/sh
 dir=$(basename "$(pwd)")
-case "$dir" in queued | ejected | merged) ;; *) exit 1 ;; esac
+case "$dir" in queued | ejected | merged | landing) ;; *) exit 1 ;; esac
 case "${1-}" in
 pr)
+	if [ "$dir" = landing ]; then
+		if [ -e ../landing.seen ]; then
+			echo '{"id":"PR_e2e","number":42,"url":"https://github.com/e2e/landing/pull/42","state":"MERGED","mergedAt":"2026-01-01T00:00:00Z","statusCheckRollup":[]}'
+		else
+			touch ../landing.seen
+			echo '{"id":"PR_e2e","number":42,"url":"https://github.com/e2e/landing/pull/42","state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[]}'
+		fi
+		exit 0
+	fi
 	# merged: the stale failing rollup and DIRTY must not render for a finished PR (#204).
 	if [ "$dir" = merged ]; then
 		echo '{"id":"PR_e2e","state":"MERGED","mergeStateStatus":"DIRTY","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]}'
@@ -60,7 +72,7 @@ pr)
 	fi
 	;;
 api)
-	if [ "$dir" = queued ]; then
+	if [ "$dir" = queued ] || [ "$dir" = landing ]; then
 		echo '{"data":{"node":{"mergeQueueEntry":{"state":"QUEUED","position":1,"estimatedTimeToMerge":3600,"enqueuedAt":null},"timelineItems":{"nodes":[]}}}}'
 	else
 		echo '{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[{"__typename":"RemovedFromMergeQueueEvent","reason":"merge conflict"}]}}}}'

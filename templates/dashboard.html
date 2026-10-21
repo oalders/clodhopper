@@ -257,6 +257,8 @@
     table.mq td.actions .rowform { display: contents; }
     table.mq td.actions .actmsg { flex-basis: 100%; overflow-wrap: anywhere; }
     table.mq td.actions .actmsg:empty { display: none; } /* else its 100% basis opens an empty second line */
+    table.mq tr.done td { color: var(--text-2); } /* a merged/closed ledger row: nothing left to do */
+    #ck-mq .mqleft { color: var(--attention); font-weight: 600; } /* a PR out of the queue unmerged needs you, even folded */
     td.idle { font-variant-numeric: tabular-nums; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
     td.summary em { font-style: italic; color: var(--text-3); } /* a completed phase, not one in progress */
@@ -595,8 +597,8 @@
       /* sum of the fixed cols (122ch, plus the CI col's --ci-w, plus 10ch each for the debug id and actions cols when present) + 20ch reserved for the flexible session-name column */
       table.roster { min-width: calc(142ch + var(--ci-w){{ if .Debug }} + 10ch{{ end }}{{ if or .PeekEnabled .ExecEnabled }} + 10ch{{ end }}); }
       table.counts { min-width: 48ch; }
-      /* the fixed cols (92ch, plus 20ch for the actions col when present: room for ⤢ + an armed "✓ confirm ✕") + 20ch for the flexible session col */
-      table.mq { min-width: calc(112ch{{ if or .PeekEnabled .ExecEnabled }} + 20ch{{ end }}); }
+      /* the fixed cols (96ch, plus 20ch for the actions col when present: room for ⤢ + an armed "✓ confirm ✕") + 20ch for the flexible session col */
+      table.mq { min-width: calc(116ch{{ if or .PeekEnabled .ExecEnabled }} + 20ch{{ end }}); }
     }
 
     /* ≤640px (phones): the table shape can't fit, so each row becomes a card.
@@ -2109,6 +2111,7 @@
       ready: 'mark PR ready?',
       'monitor-ci': '/clear then /monitor-ci — drops the agent\'s current context',
       end: 'dismiss this row from the dashboard — the agent is NOT stopped, and the row returns if it emits another event',
+      dismiss: 'drop this row from the merge queue — its PR left the queue unmerged and this row is the only alert; the agent is not touched',
       rebase: 'asks the agent to run /kitchen-sink:git-rebase — it rebases onto the default branch, resolves any conflicts, and force-pushes, replacing the PR\'s commits',
       'broadcast-restart': 'restart every idle / waiting-for-you session: /exit kills each claude, then it is resumed with its session id once its pane is back at a shell in the directory it was launched from'
     };
@@ -2362,12 +2365,13 @@
       })
         .then(function (resp) { return resp.json().catch(function () { return { ok: false, output: 'HTTP ' + resp.status }; }); })
         .then(function (d) {
-          // Only 'end' clears the row: it writes a synthetic SessionEnd, so the
-          // next /api/state poll no longer lists the session. A merge/close only
+          // Only 'end' and 'dismiss' clear the row: end writes a synthetic
+          // SessionEnd and dismiss drops the ledger entry, so the next
+          // /api/state poll no longer lists it there. A merge/close only
           // STARTS merge-pr in a tmux window (its row drops later, once merge-pr
           // kills the session), so it leaves the row in place like ready and the
           // session actions.
-          var clears = (action === 'end');
+          var clears = (action === 'end' || action === 'dismiss');
           var merges = (action === 'squash' || action === 'squash-admin' || action === 'close');
           // IMPORTANT: assign result via textContent, never innerHTML — output is
           // raw git/gh text; scrubString removed secrets but not HTML.
@@ -2378,7 +2382,7 @@
           // any other success either clears its row or needs no second look.
           if (msg) {
             msg.textContent = d.ok
-              ? (action === 'end' ? 'dismissed — row will clear'
+              ? (clears ? 'dismissed — row will clear'
                  : merges ? d.output
                  : action === 'ready' ? 'PR marked ready'
                  : action === 'monitor-ci' ? 'sent /monitor-ci'
@@ -3002,14 +3006,14 @@
     {{ end }}
   </section>
 
-  {{ if .QueuedAgents }}
-  {{/* Queued set-and-forget rows (splitQueued). The end button reuses the roster's end markup in its own rowform group, so the delegated arm/confirm JS applies unchanged. */}}
+  {{ if or .QueuedAgents .LedgerRows }}
+  {{/* Queued set-and-forget rows (splitQueued), then the ledger's rows that have left the queue (queueLedger). The end and dismiss buttons reuse the roster's end markup in their own rowform group, so the delegated arm/confirm JS applies unchanged. */}}
   <details id="ck-mq" class="ck-card">
-    <summary class="ck-cardhead"><h2>Merge queue ({{ len .QueuedAgents }}){{ with .QueueNextETA }} · next merge {{ . }}{{ end }}</h2></summary>
+    <summary class="ck-cardhead"><h2>Merge queue ({{ len .QueuedAgents }}){{ with .LedgerTally }}{{ with .Finished }} · {{ . }} finished{{ end }}{{ with .Left }} · <span class="mqleft">{{ . }} left queue</span>{{ end }}{{ end }}{{ with .QueueNextETA }} · next merge {{ . }}{{ end }}</h2></summary>
     <div class="ck-tablewrap">
     <table class="mq">
       <colgroup>
-        <col style="width: 24ch"><col style="width: 18ch"><col style="width: 6ch"><col style="width: 44ch"><col>{{ if or .PeekEnabled .ExecEnabled }}<col style="width: 20ch">{{ end }}
+        <col style="width: 24ch"><col style="width: 18ch"><col style="width: 10ch"><col style="width: 44ch"><col>{{ if or .PeekEnabled .ExecEnabled }}<col style="width: 20ch">{{ end }}
       </colgroup>
       <thead>
         <tr><th>branch</th><th>app</th><th class="ci">queue</th><th>detail</th><th>session</th>{{ if or .PeekEnabled .ExecEnabled }}<th>actions</th>{{ end }}</tr>
@@ -3023,6 +3027,17 @@
           <td data-label="detail">{{ .CIQueueLabel }}{{ template "blockchip" (blockChip . $.ExecEnabled) }}</td>
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
           {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}"><button type="button" class="pract" data-action="end" aria-label="end{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button><span class="actmsg"></span></span>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+        </tr>
+        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="6"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
+        {{ end }}
+        {{ range .LedgerRows }}
+        <tr{{ if .SessionID }} id="row-{{ .SessionID }}"{{ end }} class="{{ if eq .Final "open" }}alert{{ else if or (eq .Final "merged") (eq .Final "closed") }}done{{ end }}">
+          <td class="branch" data-label="branch">{{ template "branchinnerroster" .Agent }}</td>
+          <td data-label="app">{{ .SourceApp }}</td>
+          <td class="ci" data-label="state">{{ if or (eq .Final "merged") (eq .Final "closed") }}<span class="cibadge done" role="img" aria-label="pull request {{ .Final }}" title="pull request {{ .Final }}">{{ .Final }}</span>{{ else }}<span aria-hidden="true">—</span>{{ end }}</td>
+          <td data-label="detail">{{ if eq .Final "open" }}left queue{{ else if eq .Final "queued" }}still queued{{ with .CIQueuePos }} · position {{ . }}{{ end }} · session gone{{ else if not .Final }}gone — state unknown{{ else }}{{ .MergedAgo }}{{ end }}{{ if and .PRRepo .PRNumber }} <a href="https://github.com/{{ .PRRepo }}/pull/{{ .PRNumber }}" target="_blank" rel="noopener noreferrer" aria-label="PR #{{ .PRNumber }} (opens in a new tab)">#{{ .PRNumber }}</a>{{ end }}</td>
+          <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
+          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" .Agent }}{{ end }}{{ if $act }}<span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}"><button type="button" class="pract" data-action="dismiss"{{ if ne .Final "open" }} data-noconfirm="true"{{ end }} aria-label="dismiss{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} from the merge queue" title="drop this row from the merge queue (does not touch the agent)">dismiss</button><span class="actmsg"></span></span>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="6"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
         {{ end }}
