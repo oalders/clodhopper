@@ -109,8 +109,9 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
    a forwarding header — the Host allowlist alone cannot stop a LAN peer that
    sends `Host: 127.0.0.1`), and restricted to a
    closed argv allowlist — no user-supplied string ever reaches a command line.
-  serve's read-only ledger lookup (`gh pr view N --repo=OWNER/REPO`,
-  `prFinalArgs` in `ledger.go`) is likewise built only from validated
+  serve's read-only ledger lookup (`lookupPRFinal` in `ledger.go`: `gh pr view
+  N --repo=OWNER/REPO` via `prFinalArgs`, then the same `mergeQueueQuery` call
+  with the node id gh returned) is likewise built only from validated
   gh-derived values, never client input.
   The `end` action never reaches `actionArgv`: it execs nothing, and its
   `session_id` travels only as a bound SQL parameter. `block`/`unblock` are
@@ -158,7 +159,8 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   the removal (`RollupSince`). Like `gitBranch`, it is strictly best-effort: missing `gh`, no PR, or a
   timeout yields "".
   Rows `splitQueued` folds into the queue are kept in memory by `queueLedger`
-  (`ledger.go`; its doc comment gives the lifecycle and bounds) until dismissed.
+  (`ledger.go`; its doc comment gives the lifecycle and bounds) until dismissed
+  or expired.
   The same generic `cwdCache` type also backs the pane peek's GitHub owner/repo for the
   footer's PR #N link (`newRepoCache`/`lookupRepo`, via `git remote get-url origin`),
   resolved per live-pane row (not concurrently) and likewise best-effort: a

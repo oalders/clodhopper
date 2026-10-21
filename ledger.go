@@ -218,7 +218,8 @@ func prFinalArgs(key string) ([]string, bool) {
 
 // lookupPRFinal resolves a gone session's PR through gh, an open one's merge
 // queue entry too, as lookupCI does. Best-effort, like lookupCI: invalid input,
-// a missing gh, an error or a timeout yield the zero ciResult.
+// a missing gh, an error or a timeout yield the zero ciResult. It skips the
+// rollup, so RollupSince stays zero and an ejection never lapses here (#218).
 func lookupPRFinal(key string) ciResult {
 	args, ok := prFinalArgs(key)
 	if !ok {
