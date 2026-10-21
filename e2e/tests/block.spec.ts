@@ -36,7 +36,7 @@ async function stubAction(page: Page): Promise<Request[]> {
 test('a blocked row is relaxed and its chip names the blocker', async ({ page }) => {
   await expect(page.locator(`#row-${blocked} td.status`)).toHaveClass(/\bbackground\b/);
   await expect(page.locator(`#row-${blocked} .ck-badge`)).toHaveText('blocked');
-  await expect(page.locator(chip).getByRole('button', { name: 'blocked on fix-1235' })).toBeVisible();
+  await expect(page.locator(chip).getByRole('button', { name: 'blocked on fix-1235' })).toHaveText('fix-1235');
 });
 
 test('the chip ✕ sends unblock for the blocked row', async ({ page }) => {

@@ -514,10 +514,10 @@
     .status.idle { color: var(--idle); font-weight: normal; }
     .status.ended { color: var(--text-3); font-weight: normal; }
     /* Muted like the draft chip: a blocked row is waiting on another row, not on you. */
-    .blockchip { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-left: 6px; padding: 0 .3em; border: 1px solid var(--text-2); border-radius: var(--radius-xs); color: var(--text-2); font-size: var(--fs-2xs); font-weight: normal; white-space: normal; }
+    .blockchip { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: 6px; padding: 1px 6px; border: 1px solid var(--text-2); border-radius: var(--radius-xs); color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: normal; white-space: normal; }
     .blockchip button.blockjump { all: unset; cursor: pointer; text-decoration: underline dotted; overflow-wrap: anywhere; }
     .blockchip button.blockjump:focus-visible { box-shadow: var(--shadow-focus); }
-    .blockchip button.pract { padding: 0 4px; min-height: 0; }
+    .blockchip button.pract { padding: 0 4px; min-height: 0; font-size: var(--fs-sm); }
     .blockchip .actmsg:empty { display: none; }
     .blockpick { max-width: 100%; min-width: 0; font-family: var(--font-mono); font-size: var(--fs-xs); padding: 3px 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--surface-2); color: var(--text-1); }
     /* After the base rule so it wins; the extra 6px each way is pulled back by the margin, keeping the 0 4px footprint. */
@@ -2915,7 +2915,7 @@
 {{/* launcher marks how the session was started (#152) in its own unheaded
      column between CI and branch: 🔒 for the nono sandbox, 🤖 for plain claude. */}}
 {{/* blockchip takes a blockChipView: the ✕ needs ExecEnabled, which a define cannot read off $. */}}
-{{ define "blockchip" }}{{ if .BlockedOn }}<span class="blockchip"><span aria-hidden="true">⛓ </span><button type="button" class="blockjump" data-jump="{{ .BlockedOnSession }}" title="show the blocking row">blocked on {{ .BlockedOn }}</button>{{ if and .Exec .SessionID }}<span class="actgroup unblockform" data-session="{{ .SessionID }}"><button type="button" class="pract" data-action="unblock" data-noconfirm="true" aria-label="unblock{{ if .Branch }} {{ .Branch }}{{ end }} from {{ .BlockedOn }}" title="clear this block">✕</button><span class="actmsg"></span></span>{{ end }}</span>{{ end }}{{ end }}
+{{ define "blockchip" }}{{ if .BlockedOn }}<span class="blockchip"><button type="button" class="blockjump" data-jump="{{ .BlockedOnSession }}" aria-label="blocked on {{ .BlockedOn }}" title="blocked on {{ .BlockedOn }}: show that row">{{ .BlockedOn }}</button>{{ if and .Exec .SessionID }}<span class="actgroup unblockform" data-session="{{ .SessionID }}"><button type="button" class="pract" data-action="unblock" data-noconfirm="true" aria-label="unblock{{ if .Branch }} {{ .Branch }}{{ end }} from {{ .BlockedOn }}" title="clear this block">✕</button><span class="actmsg"></span></span>{{ end }}</span>{{ end }}{{ end }}
 
 {{ define "launcher" }}<td class="launcher" data-label="launcher">{{ if eq .Launcher "nono" }}<span role="img" aria-label="nono sandbox" title="launched in the nono sandbox">🔒</span>{{ else if eq .Launcher "claude" }}<span role="img" aria-label="plain claude" title="launched as plain claude">🤖</span>{{ end }}</td>{{ end }}
 

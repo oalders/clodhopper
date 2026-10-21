@@ -114,7 +114,8 @@ are a self-block and a cycle. While the blocker is on the board, a blocked row
 that is **waiting** or **needs you** drops to the background band as
 **blocked**; one that needs approval or input keeps its status, since those
 are still yours to answer. Either way the row shows a muted
-"⛓ blocked on fix-1235" chip; its label jumps to the blocker's row. The block
+chip naming the blocker's branch (e.g. "fix-1235"); its label jumps to the
+blocker's row. The block
 names the blocker *session*, so it lapses on its own once that session leaves
 the roster (merged, ended, or its pane gone), and a later session on the same
 branch does not revive it. `clodhopper prune` sweeps blocks whose sessions have
