@@ -2123,6 +2123,9 @@ func TestContentTemplate_PeekControlsCellA11yAndEmptyState(t *testing.T) {
 // The merge-queue table gains an actions column under peek OR merge (#199): every
 // row must render as many cells as the header, the peek panerow (spanning them
 // all) only for a live pane with peek on, and a row with neither control "—".
+// mqRowRe splits the queue table into rows; a row carries an id only when it has a session (the block chip's jump target).
+var mqRowRe = regexp.MustCompile(`<tr(?: id="[^"]*")?>`)
+
 func TestContentTemplate_QueueActionsColumn(t *testing.T) {
 	tdRe, dashRe := regexp.MustCompile(`<td[\s>]`), regexp.MustCompile(`class="ctrlwrap">\s*—\s*</div>`)
 	queued := []Agent{
@@ -2148,7 +2151,7 @@ func TestContentTemplate_QueueActionsColumn(t *testing.T) {
 			table, _, _ = strings.Cut(table, "</table>")
 			head, body, _ := strings.Cut(table, "</thead>")
 			ths := strings.Count(head, "<th>") + strings.Count(head, "<th ")
-			rows := strings.Split(body, "<tr>")[1:]
+			rows := mqRowRe.Split(body, -1)[1:]
 			if len(rows) != len(queued) {
 				t.Fatalf("inspected %d rows, want %d:\n%s", len(rows), len(queued), body)
 			}
@@ -2681,8 +2684,8 @@ func TestDashboardActionMessagePersistsOnlyFailuresAndMerges(t *testing.T) {
 	if got := strings.Count(html, "noteMsg("); got != wantNoteMentions {
 		t.Errorf("noteMsg( appears %d time(s), want %d (its declaration, the failure/timeout/merge guard and the .catch branch); a new call site — e.g. on the success branch — must not remember its result across repaints", got, wantNoteMentions)
 	}
-	// Keyed by group class as well as session: .actgroups share a session.
-	if !strings.Contains(html, "var ACTMSG_GROUPS = ['actsession', 'prform', 'rowform'];") {
+	// Keyed by group class as well as session: several .actgroups share a session.
+	if !strings.Contains(html, "var ACTMSG_GROUPS = ['actsession', 'prform', 'rowform', 'blockform', 'unblockform'];") {
 		t.Error("remembered messages are no longer keyed by group class")
 	}
 }
@@ -3876,6 +3879,20 @@ func TestSplitQueued(t *testing.T) {
 	}
 }
 
+// applyBlocks runs first and rewrites waiting for you to blocked; a queued blocked row must still fold (#195).
+func TestSplitQueued_BlockedFolds(t *testing.T) {
+	now := time.Unix(100_000, 0)
+	agents := []Agent{
+		{SessionID: "blocked", CIQueue: "queued", Status: statusWaiting},
+		{SessionID: "blocker", Status: statusWorking},
+	}
+	applyBlocks(agents, []Block{{Blocked: "blocked", Blocker: "blocker"}})
+	roster, queued := splitQueued(agents, now)
+	if len(roster) != 1 || roster[0].SessionID != "blocker" || len(queued) != 1 || queued[0].Status != statusBlocked {
+		t.Errorf("roster = %+v, queued = %+v; want the blocked row folded into the queue", roster, queued)
+	}
+}
+
 // A row overdue on its ETA is not demoted, so it lands back in the roster as needing you.
 func TestSplitQueued_OverdueStaysAlert(t *testing.T) {
 	now := time.Unix(100_000, 0)
@@ -4103,5 +4120,173 @@ func TestContentTemplate_LauncherMarker(t *testing.T) {
 	}
 	if html := render(""); !strings.Contains(html, `<td class="launcher" data-label="launcher"></td>`) {
 		t.Errorf("unknown launcher must leave the launcher cell empty:\n%s", html)
+	}
+}
+
+// applyBlocks relaxes a waiting/needs-you row blocked on a row that is present,
+// leaves a prompt's status alone (chip only), and does nothing when the blocker
+// is not in agents.
+func TestApplyBlocks(t *testing.T) {
+	agents := []Agent{
+		{SessionID: "waiting", Status: statusWaiting, StatusRank: 0},
+		{SessionID: "needs", Status: statusNeedsYou, StatusRank: 1},
+		{SessionID: "approval", Status: statusApproval, StatusRank: 1},
+		{SessionID: "input", Status: statusInput, StatusRank: 1},
+		{SessionID: "working", Status: statusWorking, StatusRank: 5},
+		{SessionID: "orphan", Status: statusWaiting, StatusRank: 0},
+		{SessionID: "blocker", Branch: "fix-1235", Status: statusWorking, StatusRank: 5},
+		{SessionID: "0123456789abcdef", Status: statusIdle, StatusRank: 6}, // branchless blocker
+	}
+	applyBlocks(agents, []Block{
+		{"waiting", "blocker"}, {"needs", "blocker"}, {"approval", "blocker"}, {"input", "blocker"},
+		{"working", "0123456789abcdef"}, {"orphan", "gone"},
+	})
+	got := map[string]Agent{}
+	for _, a := range agents {
+		got[a.SessionID] = a
+	}
+	for _, id := range []string{"waiting", "needs"} {
+		if a := got[id]; a.Status != statusBlocked || a.StatusRank != rankBackground || a.BlockedOn != "fix-1235" || a.BlockedOnSession != "blocker" {
+			t.Errorf("%s = %q rank %d on %q/%q, want %q rank %d on fix-1235/blocker", id, a.Status, a.StatusRank, a.BlockedOn, a.BlockedOnSession, statusBlocked, rankBackground)
+		}
+	}
+	for id, want := range map[string]string{"approval": statusApproval, "input": statusInput} {
+		if a := got[id]; a.Status != want || a.BlockedOn != "fix-1235" {
+			t.Errorf("%s = %q on %q, want %q kept with the chip", id, a.Status, a.BlockedOn, want)
+		}
+	}
+	if a := got["working"]; a.Status != statusWorking || a.BlockedOn != "01234567" {
+		t.Errorf("working = %q on %q, want working on the blocker's id prefix", a.Status, a.BlockedOn)
+	}
+	if a := got["orphan"]; a.Status != statusWaiting || a.BlockedOn != "" || a.BlockedOnSession != "" {
+		t.Errorf("orphan = %q on %q, want untouched (blocker absent)", a.Status, a.BlockedOn)
+	}
+}
+
+// A block holds the blocker SESSION: once it ends, the block lapses, and a new
+// session on the same branch does not bring it back.
+func TestBlockLapsesWhenBlockerLeaves(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	ins := func(mins int, sess, branch, etype string) {
+		insertEvent(db, Event{TS: now.Add(-time.Duration(mins) * time.Minute).Format(time.RFC3339), SourceApp: "x", Branch: branch, Cwd: "/w/" + branch, SessionID: sess, EventType: etype, PayloadJSON: "{}"})
+	}
+	ins(10, "blocked", "fix-1234", "Stop")
+	ins(9, "blocker", "fix-1235", "Stop")
+	if err := addBlock(db, "blocked", "blocker", map[string]bool{"blocked": true, "blocker": true}, now); err != nil {
+		t.Fatal(err)
+	}
+	status := func() Agent {
+		t.Helper()
+		agents, err := agentRoster(db, 16*time.Hour, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		blocks, err := listBlocks(db)
+		if err != nil {
+			t.Fatal(err)
+		}
+		applyBlocks(agents, blocks)
+		for _, a := range agents {
+			if a.SessionID == "blocked" {
+				return a
+			}
+		}
+		t.Fatal("blocked row missing from roster")
+		return Agent{}
+	}
+	if a := status(); a.Status != statusBlocked {
+		t.Fatalf("before = %q, want %q", a.Status, statusBlocked)
+	}
+	if _, err := endSessions(db, EndSelector{SessionID: "blocker"}, now); err != nil {
+		t.Fatal(err)
+	}
+	ins(1, "successor", "fix-1235", "Stop")
+	if a := status(); a.Status != statusWaiting || a.BlockedOn != "" {
+		t.Errorf("after = %q on %q, want %q with no chip", a.Status, a.BlockedOn, statusWaiting)
+	}
+}
+
+// The picker leads with the row's own app, then the rest alphabetically,
+// keeping board order (roster before queued) within each group.
+func TestBlockGroups(t *testing.T) {
+	agents := []Agent{
+		{SessionID: "z1", SourceApp: "zeta"},
+		{SessionID: "self", SourceApp: "mine"},
+		{SessionID: "a1", SourceApp: "alpha"},
+		{SessionID: "m1", SourceApp: "mine"},
+	}
+	queued := []Agent{{SessionID: "m2", SourceApp: "mine"}, {SessionID: "a2", SourceApp: "alpha"}}
+	var got []string
+	for _, g := range blockGroups(agents, queued, agents[1]) {
+		ids := []string{}
+		for _, a := range g.Rows {
+			ids = append(ids, a.SessionID)
+		}
+		got = append(got, g.App+":"+strings.Join(ids, ","))
+	}
+	want := []string{"mine:m1,m2", "alpha:a1,a2", "zeta:z1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("blockGroups = %q, want %q", got, want)
+	}
+}
+
+// The chip's ✕ and the block picker are write controls, so they render only
+// with the CSRF-gated exec UI; the picker never offers the row itself, and a
+// lone row gets none.
+func TestContentTemplate_BlockControls(t *testing.T) {
+	agents := []Agent{
+		{SessionID: "blocked", Branch: "fix-1234", Status: statusBlocked, BlockedOn: "fix-1235", BlockedOnSession: "blocker"},
+		{SessionID: "blocker", Branch: "fix-1235", Status: statusWaiting},
+	}
+	render := func(exec bool) string {
+		t.Helper()
+		var buf bytes.Buffer
+		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", dashboardData{ExecEnabled: exec, Agents: agents}); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
+	}
+	ro := render(false)
+	if !strings.Contains(ro, `data-jump="blocker"`) || !strings.Contains(ro, "blocked on fix-1235") {
+		t.Error("read-only board lost the block chip")
+	}
+	if strings.Contains(ro, `data-action="unblock"`) || strings.Contains(ro, `data-action="block"`) {
+		t.Error("read-only board renders block/unblock controls")
+	}
+	rw := render(true)
+	if !strings.Contains(rw, `data-action="unblock"`) {
+		t.Error("exec board has no unblock ✕ on the chip")
+	}
+	_, panel, _ := strings.Cut(rw, `<span class="actgroup blockform" data-session="blocked">`)
+	panel, _, _ = strings.Cut(panel, "</select>")
+	if !strings.Contains(panel, `value="blocker"`) || strings.Contains(panel, `value="blocked"`) {
+		t.Errorf("blocked row's picker = %q, want only the other row", panel)
+	}
+	agents = agents[1:]
+	if lone := render(true); strings.Contains(lone, "blockform") {
+		t.Error("a lone row renders a block picker with nothing to block on")
+	}
+}
+
+// A blocked row folded into the merge-queue table keeps its chip, so the block
+// stays visible and clearable there.
+func TestContentTemplate_QueuedBlockChip(t *testing.T) {
+	queued := []Agent{{SessionID: "qb", Branch: "fix-1236", CIQueue: "queued", Status: statusBlocked, BlockedOn: "fix-1235", BlockedOnSession: "blocker"}}
+	for _, exec := range []bool{false, true} {
+		var buf bytes.Buffer
+		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", dashboardData{ExecEnabled: exec, QueuedAgents: queued}); err != nil {
+			t.Fatal(err)
+		}
+		_, table, found := strings.Cut(buf.String(), `<table class="mq">`)
+		if !found {
+			t.Fatalf("exec=%v: no merge-queue table rendered", exec)
+		}
+		if !strings.Contains(table, `data-jump="blocker"`) {
+			t.Errorf("exec=%v: queued blocked row has no chip", exec)
+		}
+		if got := strings.Contains(table, `data-action="unblock"`); got != exec {
+			t.Errorf("exec=%v: unblock ✕ rendered = %v", exec, got)
+		}
 	}
 }

@@ -407,6 +407,7 @@
     .actpanel { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 24px; padding: 12px; }
     .actcol { display: flex; flex-direction: column; gap: 6px; }
     .actcol.prcol { flex: 1 1 320px; }
+    .actcol.blockcol { width: 224px; }
     /* Fixed width so arming a session action (confirm label, ✕, caveat) can't
        widen the column, wrap it and move the confirm button (#128); px tracks the
        px type. Each width is the widest armed line measured in JetBrains Mono
@@ -512,6 +513,17 @@
     .status.working { color: var(--working); }
     .status.idle { color: var(--idle); font-weight: normal; }
     .status.ended { color: var(--text-3); font-weight: normal; }
+    /* Muted like the draft chip: a blocked row is waiting on another row, not on you. */
+    .blockchip { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: 6px; padding: 1px 6px; border: 1px solid var(--text-2); border-radius: var(--radius-xs); color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: normal; white-space: normal; }
+    .blockchip button.blockjump { all: unset; cursor: pointer; text-decoration: underline dotted; overflow-wrap: anywhere; }
+    .blockchip button.blockjump:focus-visible { box-shadow: var(--shadow-focus); }
+    .blockchip button.pract { padding: 0 4px; min-height: 0; font-size: var(--fs-sm); }
+    .blockchip .actmsg:empty { display: none; }
+    .blockpick { max-width: 100%; min-width: 0; font-family: var(--font-mono); font-size: var(--fs-xs); padding: 3px 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--surface-2); color: var(--text-1); }
+    /* After the base rule so it wins; the extra 6px each way is pulled back by the margin, keeping the 0 4px footprint. */
+    @media (pointer: coarse) { .blockchip button.pract { padding: 6px 10px; margin: -6px -6px; } }
+    tr.jumped > td { animation: ch-jump 1.6s var(--ease); }
+    @keyframes ch-jump { from { background: var(--brand-soft); } }
     .status.working .ck-dot { animation: ch-pulse 1.8s var(--ease) infinite; }
     .status.waiting .ck-dot, .status.needs .ck-dot, .status.approval .ck-dot, .status.input .ck-dot {
       box-shadow: 0 0 0 3px color-mix(in srgb, var(--attention) 22%, transparent);
@@ -718,6 +730,8 @@
          the next line. The selector is unquoted so the page source never holds
          the data-action="end" markup a disabled board must not render. */
       .actpanel .actsession button.pract[data-action=end]:not(.confirm) { grid-column: 1 / -1; }
+      .actpanel .blockform > * { grid-column: 1 / -1; }
+      .actpanel .blockpick { min-height: 44px; font-size: var(--fs-sm); }
       /* Only the long free-text doing/summary field claims its own full-width
          line; branch now flows inline with ci / app / status, wrapping within
          its own cell when a name is genuinely too long. */
@@ -988,6 +1002,15 @@
         if (arows[ai].hidden) continue;
         openActs.push(arows[ai].getAttribute('data-actions-row'));
       }
+      // A block picker's choice survives the swap too, keyed by its blockform's
+      // session, so a poll cannot reset it mid-choice onto the wrong row.
+      var picks = {};
+      var pickEls = document.querySelectorAll('#content .blockform .blockpick');
+      for (var bp = 0; bp < pickEls.length; bp++) {
+        picks[pickEls[bp].closest('.blockform').getAttribute('data-session')] = pickEls[bp].value;
+      }
+      var bkeep = active && active.classList && active.classList.contains('blockpick') ? active.closest('.blockform') : null;
+      var bkey = bkeep ? bkeep.getAttribute('data-session') : null;
       try { document.dispatchEvent(new CustomEvent('ch:contentswap')); } catch (e) {}
       // Build the new subtree in a disconnected <template>, then swap it into the
       // live #content in one shot. The old form assigned html straight to the
@@ -1098,6 +1121,18 @@
       // re-opened) and before focus restore.
       var armRefocused = false;
       try { if (armedState && window.__ckArmRestore) armRefocused = !!window.__ckArmRestore(armedState); } catch (e) {}
+      var newPicks = document.querySelectorAll('#content .blockform .blockpick');
+      var pickFocus = null;
+      for (var np = 0; np < newPicks.length; np++) {
+        var psess = newPicks[np].closest('.blockform').getAttribute('data-session');
+        var pwant = picks[psess];
+        // Only a value still on offer: a blocker that left the board falls back to the default.
+        for (var po = 0; pwant && po < newPicks[np].options.length; po++) {
+          if (newPicks[np].options[po].value === pwant) { newPicks[np].value = pwant; break; }
+        }
+        if (psess === bkey) pickFocus = newPicks[np];
+      }
+      if (pickFocus) { pickFocus.focus({ preventScroll: true }); return true; }
       if (key) {
         var btns = document.querySelectorAll('#content .copycwd');
         for (var i = 0; i < btns.length; i++) {
@@ -1271,6 +1306,21 @@
       try { localStorage.setItem('ch-mq-open', ev.target.open ? 'open' : 'closed'); } catch (e) {}
     }, true);
   })();
+
+  // A blocked row's chip label jumps to its blocker, opening the merge-queue fold if it hides there.
+  document.addEventListener('click', function (ev) {
+    var b = ev.target && ev.target.closest ? ev.target.closest('.blockjump') : null;
+    var row = b && document.getElementById('row-' + b.getAttribute('data-jump'));
+    if (!row) return;
+    var fold = row.closest('details');
+    if (fold) fold.open = true;
+    row.classList.remove('jumped');
+    void row.offsetWidth; // restart the highlight animation on a repeat click
+    row.classList.add('jumped');
+    row.tabIndex = -1;
+    row.focus({ preventScroll: true });
+    row.scrollIntoView({ block: 'center' });
+  });
 
   // Debug toggle: the Activity + Recent-events sections are diagnostics nobody
   // reads in normal use (and most of the scroll on a phone), so the server only
@@ -1999,13 +2049,13 @@
     // So remember failure/timeout results here and re-apply them across each
     // swapContent for at least this long.
     var ACTMSG_MIN_MS = 5000;
-    // Keyed by session id AND group class: a roster session renders two
-    // .actgroups (actsession / prform) and a queued one a rowform, each with its
-    // own .actmsg.
-    var ACTMSG_GROUPS = ['actsession', 'prform', 'rowform'];
+    // Keyed by session id AND group class: a roster session renders several
+    // .actgroups (actsession / prform / blockform, plus unblockform on its chip)
+    // and a queued one a rowform, each with its own .actmsg.
+    var ACTMSG_GROUPS = ['actsession', 'prform', 'rowform', 'blockform', 'unblockform'];
     var actMsgs = {};
 
-    // actMsgKey returns '' for anything that is not one of the three keyable
+    // actMsgKey returns '' for anything that is not one of the keyable
     // clusters, so note/clear/restore simply no-op on it.
     function actMsgKey(group) {
       if (!group) return '';
@@ -2217,6 +2267,8 @@
       for (var k = 0; k < radios.length; k++) radios[k].disabled = false;
       var admin = group.querySelector('.practadmin');
       if (admin) admin.disabled = false;
+      var pick = group.querySelector('.blockpick');
+      if (pick) pick.disabled = false;
       // Restore the form's mode-dependent disabled/greyed state (unlock just
       // re-enabled everything unconditionally).
       if (group.classList.contains('prform')) syncForm(group);
@@ -2289,6 +2341,8 @@
       for (var k = 0; k < radios.length; k++) radios[k].disabled = true;
       var admin = group.querySelector('.practadmin');
       if (admin) admin.disabled = true;
+      var pick = group.querySelector('.blockpick');
+      if (pick) pick.disabled = true;
       window.__ckActionBusy++;
       // Mark this group as in-flight so __ckDisarm won't tear it down: unlocking
       // a fired group would drop the "working…" state and re-enable its buttons
@@ -2304,6 +2358,7 @@
         body: 'session_id=' + encodeURIComponent(sess)
             + '&action=' + encodeURIComponent(action)
             + ((action !== 'ready' && forceOn(group)) ? '&force=true' : '')
+            + (pick ? '&blocker_session_id=' + encodeURIComponent(pick.value) : '')
       })
         .then(function (resp) { return resp.json().catch(function () { return { ok: false, output: 'HTTP ' + resp.status }; }); })
         .then(function (d) {
@@ -2330,6 +2385,8 @@
                  : action === 'new-monitor' ? 'watcher started'
                  : action === 'reload-plugins' ? 'sent /reload-plugins'
                  : action === 'rebase' ? 'sent /kitchen-sink:git-rebase'
+                 : action === 'block' ? 'marked blocked — row will update'
+                 : action === 'unblock' ? 'unblocked — row will update'
                  : 'done')
               : ('failed: ' + (d.output || ('exit ' + d.exitCode)));
             if (d.timedOut) msg.textContent = 'timed out — verify before retrying';
@@ -2857,6 +2914,9 @@
 
 {{/* launcher marks how the session was started (#152) in its own unheaded
      column between CI and branch: 🔒 for the nono sandbox, 🤖 for plain claude. */}}
+{{/* blockchip takes a blockChipView: the ✕ needs ExecEnabled, which a define cannot read off $. */}}
+{{ define "blockchip" }}{{ if .BlockedOn }}<span class="blockchip"><button type="button" class="blockjump" data-jump="{{ .BlockedOnSession }}" aria-label="blocked on {{ .BlockedOn }}" title="blocked on {{ .BlockedOn }}: show that row">{{ .BlockedOn }}</button>{{ if and .Exec .SessionID }}<span class="actgroup unblockform" data-session="{{ .SessionID }}"><button type="button" class="pract" data-action="unblock" data-noconfirm="true" aria-label="unblock{{ if .Branch }} {{ .Branch }}{{ end }} from {{ .BlockedOn }}" title="clear this block">✕</button><span class="actmsg"></span></span>{{ end }}</span>{{ end }}{{ end }}
+
 {{ define "launcher" }}<td class="launcher" data-label="launcher">{{ if eq .Launcher "nono" }}<span role="img" aria-label="nono sandbox" title="launched in the nono sandbox">🔒</span>{{ else if eq .Launcher "claude" }}<span role="img" aria-label="plain claude" title="launched as plain claude">🤖</span>{{ end }}</td>{{ end }}
 
 {{ define "content" }}
@@ -2883,16 +2943,16 @@
       </thead>
       <tbody>
         {{ range .Agents }}
-        <tr data-group="{{ .GroupKey }}"{{ with rowClass . }} class="{{ . }}"{{ end }}>
+        <tr data-group="{{ .GroupKey }}"{{ if .SessionID }} id="row-{{ .SessionID }}"{{ end }}{{ with rowClass . }} class="{{ . }}"{{ end }}>
           <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}"><span class="ci-main">{{ if and (eq .CI "green") .CIPasses }}<span class="cibadge ok" role="img" aria-label="CI passing, {{ .CIPasses }} passed" title="{{ .CIPasses }} passed">{{ .CIPasses }}</span>{{ else if eq .CI "green" }}<span role="img" aria-label="CI passing">🟢</span>{{ else if eq .CI "pending" }}<span role="img" aria-label="CI pending">🟡</span>{{ else if eq .CI "failing" }}<span class="cibadge fail" role="img" aria-label="CI failing, {{ .CIFails }} failed" title="{{ .CIFails }} failed">{{ .CIFails }}</span>{{ else if eq .CI "soft-failing" }}<span class="cibadge soft" role="img" aria-label="non-required check failing, {{ .CIFails }} failed" title="{{ .CIFails }} non-required failed">{{ .CIFails }}</span>{{ else if eq .CI "ejected" }}<span class="cibadge fail" role="img" aria-label="removed from merge queue{{ if .CIQueueReason }}: {{ .CIQueueReason }}{{ end }}" title="removed from merge queue{{ if .CIQueueReason }}: {{ .CIQueueReason }}{{ end }}">⏏</span>{{ else if .CIDone }}<span aria-hidden="true">—</span>{{ else }}<span role="img" aria-label="no CI">—</span>{{ end }}</span><span class="ci-marks">{{ if .CIConflict }}<span role="img" aria-label="merge conflict with base" title="merge conflict with base">🔀</span>{{ end }}{{ if .CIDraft }}<span class="cibadge draft" role="img" aria-label="draft pull request" title="draft pull request">draft</span>{{ end }}{{ if .CIDone }}<span class="cibadge done" role="img" aria-label="pull request {{ .CIDone }}" title="pull request {{ .CIDone }}">{{ .CIDone }}</span>{{ end }}{{ if .CIQueue }}<span class="cibadge queue{{ if eq .CIQueue "queue-failing" }} failing{{ end }}" role="img" aria-label="{{ .CIQueueLabel }}" title="{{ .CIQueueLabel }}">{{ .CIQueuePos }}</span>{{ end }}</span></td>
           {{ template "launcher" . }}
           {{ template "branchcellroster" . }}
           <td data-label="app">{{ .SourceApp }}</td>
-          <td data-label="status" data-rank="{{ .StatusRank }}" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if or (eq .Status "waiting") (eq .Status "waiting on agents") }}background{{ else if eq .Status "working" }}working{{ else if eq .Status "idle" }}idle{{ else if eq .Status "ended" }}ended{{ end }}"><span class="ck-badge"{{ if .WaitingOnDetail }} title="{{ .WaitingOnDetail }}"{{ end }}><span class="ck-dot"></span>{{ if eq .Status "waiting on agents" }}waiting on {{ .WaitingOn }}{{ if .WaitingOnDetail }}<span class="ck-sr"> ({{ .WaitingOnDetail }})</span>{{ end }} <span aria-hidden="true">·</span> <span class="ck-sr">running </span><span data-since="{{ .SubagentSince }}">{{ .SubagentAge }}</span>{{ else }}{{ .Status }}{{ end }}</span></td>
+          <td data-label="status" data-rank="{{ .StatusRank }}" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if eq .Status "needs you" }}needs{{ else if or (eq .Status "waiting") (eq .Status "waiting on agents") (eq .Status "blocked") }}background{{ else if eq .Status "working" }}working{{ else if eq .Status "idle" }}idle{{ else if eq .Status "ended" }}ended{{ end }}"><span class="ck-badge"{{ if .WaitingOnDetail }} title="{{ .WaitingOnDetail }}"{{ end }}><span class="ck-dot"></span>{{ if eq .Status "waiting on agents" }}waiting on {{ .WaitingOn }}{{ if .WaitingOnDetail }}<span class="ck-sr"> ({{ .WaitingOnDetail }})</span>{{ end }} <span aria-hidden="true">·</span> <span class="ck-sr">running </span><span data-since="{{ .SubagentSince }}">{{ .SubagentAge }}</span>{{ else }}{{ .Status }}{{ end }}</span>{{ template "blockchip" (blockChip . $.ExecEnabled) }}</td>
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>{{ end }}
-          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · rebase · reload plugins · end · squash · admin · close · ready"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · rebase · reload plugins · end · squash · admin · close · ready · mark blocked"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}10{{ else }}9{{ end }}"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
@@ -2923,6 +2983,15 @@
                 <span class="actmsg"></span>
               </span>
             </div>
+            {{/* This row is one of .Agents, so another row exists only if .Agents has two or a row is queued. */}}
+            {{ if or (gt (len $.Agents) 1) $.QueuedAgents }}<div class="actcol blockcol" role="group" aria-label="mark this row blocked">
+              <span class="acteyebrow">blocked on</span>
+              <span class="actgroup blockform" data-session="{{ .SessionID }}">
+                <select class="blockpick" aria-label="this row is blocked on">{{ range blockGroups $.Agents $.QueuedAgents . }}<optgroup label="{{ if .App }}{{ .App }}{{ else }}no app{{ end }}">{{ range .Rows }}<option value="{{ .SessionID }}">{{ if .SourceApp }}{{ .SourceApp }} · {{ end }}{{ .BlockLabel }}</option>{{ end }}</optgroup>{{ end }}</select>
+                <button type="button" class="pract" data-action="block" data-noconfirm="true" aria-label="mark{{ if .Branch }} {{ .Branch }}{{ else }} this row{{ end }} as blocked on the selected row" title="this row waits on the chosen row: it leaves the alert band until that row leaves the board">mark blocked</button>
+                <span class="actmsg"></span>
+              </span>
+            </div>{{ end }}
           </div></td></tr>{{ end }}
         {{ end }}
       </tbody>
@@ -2947,11 +3016,11 @@
       </thead>
       <tbody>
         {{ range .QueuedAgents }}
-        <tr>
+        <tr{{ if .SessionID }} id="row-{{ .SessionID }}"{{ end }}>
           <td class="branch" data-label="branch">{{ template "branchinnerroster" . }}</td>
           <td data-label="app">{{ .SourceApp }}</td>
           <td class="ci" data-label="queue"><span class="cibadge queue" aria-hidden="true">{{ .CIQueuePos }}</span></td>
-          <td data-label="detail">{{ .CIQueueLabel }}</td>
+          <td data-label="detail">{{ .CIQueueLabel }}{{ template "blockchip" (blockChip . $.ExecEnabled) }}</td>
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
           {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}"><button type="button" class="pract" data-action="end" aria-label="end{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button><span class="actmsg"></span></span>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
         </tr>

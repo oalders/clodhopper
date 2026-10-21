@@ -33,8 +33,52 @@ var dashboardTmpl = template.Must(
 		"shortTS":     shortTS,
 		"rowClass":    rowClass,
 		"ciMarkSlots": ciMarkSlots,
+		"blockChip":   func(a Agent, exec bool) blockChipView { return blockChipView{a, exec} },
+		"blockGroups": blockGroups,
 	}).Parse(dashboardHTML),
 )
+
+// blockGroup is one <optgroup> of the block picker: the rows of one app.
+type blockGroup struct {
+	App  string
+	Rows []Agent
+}
+
+// blockGroups lists the rows self could be blocked on, grouped by app: self's
+// own app first (a block is usually within one project), then the rest
+// alphabetically. Rows keep their board order within a group, roster before
+// queued.
+func blockGroups(agents, queued []Agent, self Agent) []blockGroup {
+	byApp := map[string][]Agent{}
+	for _, a := range append(slices.Clone(agents), queued...) {
+		if a.SessionID == "" || a.SessionID == self.SessionID {
+			continue
+		}
+		byApp[a.SourceApp] = append(byApp[a.SourceApp], a)
+	}
+	apps := make([]string, 0, len(byApp))
+	for app := range byApp {
+		apps = append(apps, app)
+	}
+	sort.Slice(apps, func(i, j int) bool {
+		if (apps[i] == self.SourceApp) != (apps[j] == self.SourceApp) {
+			return apps[i] == self.SourceApp
+		}
+		return apps[i] < apps[j]
+	})
+	groups := make([]blockGroup, len(apps))
+	for i, app := range apps {
+		groups[i] = blockGroup{App: app, Rows: byApp[app]}
+	}
+	return groups
+}
+
+// blockChipView feeds the "blockchip" template, which renders in both the
+// roster and the merge-queue table and gates its ✕ on Exec.
+type blockChipView struct {
+	Agent
+	Exec bool
+}
 
 // ciMarkSlots is the most 🔀/draft-chip/queue-pill/done-chip markers any one roster
 // row carries (0–2: GitHub never queues a draft or a finished PR, so those share a slot).
@@ -927,6 +971,12 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	setWorktrees(agents, peek.roots, now)
 	// Before enrichCI, so no CI is fetched for a row that will not render.
 	agents = dropDeadPanes(agents, peek.cache.panes(now))
+	// After dropDeadPanes, so a blocker whose pane died already counts as gone.
+	blocks, err := listBlocks(db)
+	if err != nil {
+		return dashboardData{}, fmt.Errorf("blocks: %w", err)
+	}
+	applyBlocks(agents, blocks)
 	enrichCI(agents, ci, now)
 	suppressWatchedCI(agents, now)
 	// Before demotePendingCI, so a queued "needs you" row is not folded away (#195).
@@ -1050,7 +1100,7 @@ func viewSignature(d dashboardData) string {
 			// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
 			// Launcher feeds the 🔒/🤖 marker, which a resume can flip in place.
 			// Likewise the queue pill's anchors are hashed, its ticking CIQueueLabel is not.
-			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%t:%q:%q:%d:%d:%d:%q:%q:%d:%d:%d:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIDraft, a.CIDone, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree)
+			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%t:%q:%q:%d:%d:%d:%q:%q:%d:%d:%d:%q:%q:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIDraft, a.CIDone, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree, a.BlockedOn, a.BlockedOnSession)
 		}
 	}
 
@@ -1177,6 +1227,46 @@ func demotePendingCI(agents []Agent, now time.Time) {
 	}
 }
 
+// applyBlocks marks each row of agents that a stored block holds on another row
+// (see `clodhopper block`). A block applies only while BOTH sessions are in
+// agents, so it lapses once the blocker ends, ages out or loses its pane, and a
+// later session on the blocker's branch has a new id and cannot revive it. A
+// "waiting for you"/"needs you" row is relaxed to statusBlocked at rankBackground:
+// nothing done in its pane helps until the blocker lands. A permission prompt or
+// question is left alone, as in demotePendingCI, since it blocks on the user
+// regardless; it and a working/idle row keep their status and just get the chip.
+func applyBlocks(agents []Agent, blocks []Block) {
+	idx := make(map[string]int, len(agents))
+	for i, a := range agents {
+		idx[a.SessionID] = i
+	}
+	for _, b := range blocks {
+		i, ok := idx[b.Blocked]
+		j, ok2 := idx[b.Blocker]
+		if !ok || !ok2 {
+			continue
+		}
+		agents[i].BlockedOn = agents[j].BlockLabel()
+		agents[i].BlockedOnSession = b.Blocker
+		if agents[i].Status == statusNeedsYou || agents[i].Status == statusWaiting {
+			agents[i].Status = statusBlocked
+			agents[i].StatusRank = rankBackground
+		}
+	}
+}
+
+// BlockLabel names a row as the "blocked on" chip and the block picker show it:
+// its branch, else its worktree dir, else its session id as the roster abbreviates it.
+func (a Agent) BlockLabel() string {
+	if a.Branch != "" {
+		return a.Branch
+	}
+	if a.BranchGuess != "" {
+		return a.BranchGuess
+	}
+	return shortID(a.SessionID)
+}
+
 // A queued PR past its ETA by queueOverdueSecs, or with no ETA queued longer
 // than queueStaleSecs, has likely stalled and needs you again (#195).
 const (
@@ -1192,8 +1282,8 @@ func queueStuck(a Agent, now time.Time) bool {
 	return a.CIQueueSince != 0 && now.Unix()-a.CIQueueSince > queueStaleSecs
 }
 
-// splitQueued folds set-and-forget rows — queued; waiting for you, waiting or
-// idle (not "needs you"); not stuck — off the roster into the merge-queue
+// splitQueued folds set-and-forget rows — queued; waiting for you, waiting,
+// idle or blocked (not "needs you"); not stuck — off the roster into the merge-queue
 // section, so only rows needing you stay, ordered by ETA (unknown last). Run it
 // before demotePendingCI. It partitions agents in place and returns views of it,
 // so later edits through agents (demotion, live-pane flags) reach both halves.
@@ -1201,7 +1291,7 @@ func splitQueued(agents []Agent, now time.Time) (roster, queued []Agent) {
 	var q []Agent
 	n := 0
 	for _, a := range agents {
-		if a.CIQueue == "queued" && (a.Status == statusWaiting || a.Status == statusBackground || a.Status == statusIdle) && !queueStuck(a, now) {
+		if a.CIQueue == "queued" && (a.Status == statusWaiting || a.Status == statusBackground || a.Status == statusIdle || a.Status == statusBlocked) && !queueStuck(a, now) {
 			q = append(q, a)
 		} else {
 			agents[n] = a

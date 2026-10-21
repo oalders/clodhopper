@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
@@ -71,6 +72,12 @@ var migrations = []string{
 	`ALTER TABLE events ADD COLUMN slash_command TEXT`,
 	`ALTER TABLE events ADD COLUMN tmux_pane TEXT`,
 	`ALTER TABLE events ADD COLUMN launcher TEXT`,
+	// A block relates two sessions rather than happening in one, so it is not an event row; see applyBlocks.
+	`CREATE TABLE IF NOT EXISTS blocks (
+	   blocked_session TEXT NOT NULL,
+	   blocker_session TEXT NOT NULL,
+	   ts              TEXT NOT NULL,
+	   PRIMARY KEY (blocked_session, blocker_session))`,
 }
 
 // defaultDBPath returns CLODHOPPER_DB if set, else ~/.claude/clodhopper/var/events.db.
@@ -147,10 +154,10 @@ type EndSelector struct {
 	Cwd       string
 }
 
-// AmbiguousSessionError is returned by endSessions when a --session prefix
+// AmbiguousSessionError is returned by liveSessions when a --session prefix
 // matches more than one live session. The roster only shows a leading fragment
-// of each session id, so a short prefix can be ambiguous; rather than end the
-// wrong agent, endSessions reports the candidates so the caller can retry with a
+// of each session id, so a short prefix can be ambiguous; rather than act on the
+// wrong agent, liveSessions reports the candidates so the caller can retry with a
 // longer prefix.
 type AmbiguousSessionError struct {
 	Prefix string
@@ -171,18 +178,18 @@ func likePrefix(s string) string {
 	return r.Replace(s) + "%"
 }
 
-// endSessions writes a synthetic SessionEnd row for every currently-live session
-// (one whose latest event is not already SessionEnd) matching sel, so an agent
-// that was hard-killed — and therefore never emitted its own SessionEnd — drops
-// off the roster at once instead of lingering until the waiting cap. It returns
-// the number of sessions ended. now is injected for deterministic tests.
-//
-// SessionID is matched as a prefix so the leading fragment shown on the roster
-// resolves a session; if that prefix matches more than one live session, nothing
-// is ended and an *AmbiguousSessionError lists the candidates.
-func endSessions(db *sql.DB, sel EndSelector, now time.Time) (int, error) {
-	// Resolve the selector against the latest row of each session, so branch/cwd
-	// match the session's current values.
+// liveSession is one session whose latest event is not a SessionEnd, with that
+// event's identifying columns.
+type liveSession struct{ sess, app, branch, cwd string }
+
+// liveSessions returns every live session (one whose latest event is not
+// already SessionEnd) matching sel; an empty sel matches them all. Branch and
+// cwd are matched against each session's latest row, so they reflect its
+// current values. SessionID is matched as a prefix so the leading fragment shown
+// on the roster resolves a session; if that prefix matches more than one live
+// session, an *AmbiguousSessionError lists the candidates rather than guess.
+// (Branch/cwd are intentionally bulk selectors, so they are exempt.)
+func liveSessions(db *sql.DB, sel EndSelector) ([]liveSession, error) {
 	q := `SELECT session_id, source_app, COALESCE(branch,''), COALESCE(cwd,''), event_type
 	      FROM events e
 	      WHERE session_id IS NOT NULL AND session_id <> ''
@@ -202,39 +209,51 @@ func endSessions(db *sql.DB, sel EndSelector, now time.Time) (int, error) {
 	}
 	rows, err := db.Query(q, args...)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer rows.Close()
 
-	type live struct{ sess, app, branch, cwd string }
-	var targets []live
+	var live []liveSession
 	for rows.Next() {
-		var l live
+		var l liveSession
 		var etype string
 		if err := rows.Scan(&l.sess, &l.app, &l.branch, &l.cwd, &etype); err != nil {
-			return 0, err
+			return nil, err
 		}
 		if etype == "SessionEnd" {
 			continue // already ended
 		}
-		targets = append(targets, l)
+		live = append(live, l)
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if sel.SessionID != "" && len(live) > 1 {
+		return nil, &AmbiguousSessionError{Prefix: sel.SessionID, IDs: sessionIDs(live)}
+	}
+	return live, nil
+}
+
+// sessionIDs returns the sorted ids of live, for listing candidates.
+func sessionIDs(live []liveSession) []string {
+	ids := make([]string, len(live))
+	for i, l := range live {
+		ids[i] = l.sess
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// endSessions writes a synthetic SessionEnd row for every live session matching
+// sel (see liveSessions), so an agent that was hard-killed — and therefore never
+// emitted its own SessionEnd — drops off the roster at once instead of lingering
+// until the waiting cap. It returns the number of sessions ended; an ambiguous
+// session prefix ends nothing. now is injected for deterministic tests.
+func endSessions(db *sql.DB, sel EndSelector, now time.Time) (int, error) {
+	targets, err := liveSessions(db, sel)
+	if err != nil {
 		return 0, err
 	}
-
-	// A session prefix that resolves to more than one live session is ambiguous:
-	// end nothing and report the candidates rather than guess. (Branch/cwd are
-	// intentionally bulk selectors, so they are exempt.)
-	if sel.SessionID != "" && len(targets) > 1 {
-		ids := make([]string, len(targets))
-		for i, l := range targets {
-			ids[i] = l.sess
-		}
-		sort.Strings(ids)
-		return 0, &AmbiguousSessionError{Prefix: sel.SessionID, IDs: ids}
-	}
-
 	ts := now.UTC().Format(time.RFC3339)
 	for _, l := range targets {
 		ev := Event{
@@ -247,6 +266,110 @@ func endSessions(db *sql.DB, sel EndSelector, now time.Time) (int, error) {
 		}
 	}
 	return len(targets), nil
+}
+
+// Block records that the Blocked session cannot move until the Blocker session
+// lands. Both are full session ids, resolved when the block was created.
+type Block struct {
+	Blocked string
+	Blocker string
+}
+
+var (
+	errSelfBlock  = errors.New("a session cannot be blocked on itself")
+	errBlockCycle = errors.New("the blocker is already (transitively) blocked on this session; that cycle would silence both rows")
+)
+
+// resolveLiveSession resolves sel to exactly one live session id. Unlike end,
+// a block names ONE row on each side, so a branch shared by several live
+// sessions is refused with the candidates, like an ambiguous prefix.
+func resolveLiveSession(db *sql.DB, sel EndSelector) (string, error) {
+	live, err := liveSessions(db, sel)
+	if err != nil {
+		return "", err
+	}
+	switch len(live) {
+	case 0:
+		return "", errors.New("no live session matches")
+	case 1:
+		return live[0].sess, nil
+	}
+	return "", fmt.Errorf("%d live sessions match; pick one by session id prefix: %s",
+		len(live), strings.Join(sessionIDs(live), ", "))
+}
+
+// listBlocks returns every stored block in a stable order, live or not:
+// applyBlocks decides which still apply.
+func listBlocks(db *sql.DB) ([]Block, error) {
+	rows, err := db.Query(`SELECT blocked_session, blocker_session FROM blocks ORDER BY blocked_session, blocker_session`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Block
+	for rows.Next() {
+		var b Block
+		if err := rows.Scan(&b.Blocked, &b.Blocker); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// blockedOn reports whether from is (transitively) blocked on to, following
+// only edges whose two sessions are both in live — any other edge is inert, so
+// it must not refuse a block either.
+func blockedOn(blocks []Block, live map[string]bool, from, to string) bool {
+	seen := map[string]bool{}
+	next := []string{from}
+	for len(next) > 0 {
+		s := next[len(next)-1]
+		next = next[:len(next)-1]
+		if seen[s] {
+			continue
+		}
+		seen[s] = true
+		for _, b := range blocks {
+			if b.Blocked != s || !live[b.Blocked] || !live[b.Blocker] {
+				continue
+			}
+			if b.Blocker == to {
+				return true
+			}
+			next = append(next, b.Blocker)
+		}
+	}
+	return false
+}
+
+// addBlock records that blocked waits on blocker, refusing a self-block and a
+// cycle through the live edges (live holds the ids that count as live). Both
+// ids travel only as bound parameters. now is injected for deterministic tests.
+func addBlock(db *sql.DB, blocked, blocker string, live map[string]bool, now time.Time) error {
+	if blocked == blocker {
+		return errSelfBlock
+	}
+	blocks, err := listBlocks(db)
+	if err != nil {
+		return err
+	}
+	if blockedOn(blocks, live, blocker, blocked) {
+		return errBlockCycle
+	}
+	_, err = db.Exec(`INSERT OR REPLACE INTO blocks (blocked_session, blocker_session, ts) VALUES (?, ?, ?)`,
+		blocked, blocker, now.UTC().Format(time.RFC3339))
+	return err
+}
+
+// unblockSession drops every block whose blocked side is sessionID and returns
+// how many it removed.
+func unblockSession(db *sql.DB, sessionID string) (int64, error) {
+	res, err := db.Exec(`DELETE FROM blocks WHERE blocked_session = ?`, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // latestCwdForSession returns the worktree cwd of sessionID's most recent event
@@ -295,8 +418,8 @@ func latestPaneForSession(db *sql.DB, sessionID string) (string, error) {
 	return pane, nil
 }
 
-// pruneOld deletes events older than the given number of days and returns the
-// number of rows removed.
+// pruneOld deletes events older than the given number of days, and the blocks
+// left without a session, and returns the number of events removed.
 func pruneOld(db *sql.DB, days int) (int64, error) {
 	if days <= 0 {
 		return 0, nil
@@ -304,6 +427,12 @@ func pruneOld(db *sql.DB, days int) (int64, error) {
 	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339)
 	res, err := db.Exec(`DELETE FROM events WHERE ts < ?`, cutoff)
 	if err != nil {
+		return 0, err
+	}
+	// A block whose session has no events left is inert (applyBlocks skips it); sweep it.
+	if _, err := db.Exec(`DELETE FROM blocks
+		WHERE NOT EXISTS (SELECT 1 FROM events WHERE session_id = blocked_session)
+		   OR NOT EXISTS (SELECT 1 FROM events WHERE session_id = blocker_session)`); err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
@@ -437,6 +566,8 @@ type Agent struct {
 	CIQueueSince     int64  // unix seconds the PR entered the queue; 0 when unknown
 	CIQueueLabel     string // the pill's title/aria-label, built from the three above at render time
 	CIQueueReason    string // why GitHub removed an "ejected" PR from the merge queue, shown in the badge's label
+	BlockedOn        string // the blocker row's BlockLabel while a block applies (see applyBlocks), shown as the "blocked on" chip; "" otherwise
+	BlockedOnSession string // the blocker's session id, so the chip can jump to its row
 	GroupStart       bool   // true on the first roster row of each (SourceApp, Branch) group except the very first row overall; drives the divider between branch groups in the dashboard
 	Grouped          bool   // true when this row's (SourceApp, Branch) group has 2+ live members; drives the left accent bar that binds a multi-session branch cluster (a worktree with several agents). Singleton branches stay false (no bar)
 	GroupKey         string // hex of the internal group key (per (SourceApp, Branch); per-session for branchless rows). Stable across polls and HTML-attribute-safe, so the dashboard's "pin order" toggle can hold each group's rows together while freezing group order. Not displayed
@@ -454,6 +585,7 @@ const (
 	statusWorking    = "working"
 	statusIdle       = "idle"
 	statusEnded      = "ended"
+	statusBlocked    = "blocked" // set only by the server layer (applyBlocks): waiting on another session, not on the user
 )
 
 // rankBackground is the sort/style rank for statusBackground. It sits above the
