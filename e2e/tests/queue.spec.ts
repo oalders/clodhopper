@@ -52,5 +52,6 @@ test('a conflicted draft keeps its draft chip clear of the 🔀', async ({ page 
   const row = page.locator('table.roster tr', { has: page.locator('.copycwd[data-cwd$="/draft-conflict"]') });
   const conflict = (await row.getByRole('img', { name: 'merge conflict with base' }).boundingBox())!;
   const draft = (await row.getByRole('img', { name: 'draft pull request' }).boundingBox())!;
+  // The gap is 4px; allow a pixel of sub-pixel rounding.
   expect(draft.x - (conflict.x + conflict.width)).toBeGreaterThanOrEqual(3);
 });
