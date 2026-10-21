@@ -67,6 +67,7 @@ func TestParsePRView(t *testing.T) {
 		{"draft gate named after a finished job is green", `{"isDraft":true,"statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"StatusContext","context":"ci","state":"PENDING"}]}`, ciResult{State: "green", Passes: 1, Draft: true}},
 		{"merged drops the stale verdict", `{"state":"MERGED","isDraft":true,"mergeStateStatus":"DIRTY","statusCheckRollup":[` + failed + `]}`, ciResult{Done: "merged"}},
 		{"closed drops the stale verdict", `{"state":"CLOSED","isDraft":true,"mergeStateStatus":"DIRTY","statusCheckRollup":[` + failed + `]}`, ciResult{Done: "closed"}},
+		{"rollup since is the newest check start", `{"statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-18T11:30:00Z"},{"__typename":"StatusContext","state":"SUCCESS","createdAt":"2026-10-18T11:40:00Z"},{"__typename":"CheckRun","status":"QUEUED","startedAt":"0001-01-01T00:00:00Z"}]}`, ciResult{State: "pending", Passes: 2, RollupSince: time.Date(2026, 10, 18, 11, 40, 0, 0, time.UTC)}},
 		{"malformed", `not json`, ciResult{}},
 	}
 	for _, c := range cases {
@@ -86,12 +87,16 @@ func TestParsePRViewIDOnlyWhenOpen(t *testing.T) {
 }
 
 // A live entry marks the row queued; with none, a removal as the newest event
-// is an ejection that overrides the head commit's green.
+// is an ejection that overrides the head commit's green until a check starts
+// after it.
 func TestApplyMergeQueue(t *testing.T) {
 	now := time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)
-	green := ciResult{State: "green", Passes: 4}
+	green := ciResult{State: "green", Passes: 4, RollupSince: now.Add(-30 * time.Minute)}
 	const added = `{"__typename":"AddedToMergeQueueEvent"}`
-	const removed = `{"__typename":"RemovedFromMergeQueueEvent","reason":"merge\n conflict\u0007"}`
+	const removed = `{"__typename":"RemovedFromMergeQueueEvent","reason":"merge\n conflict\u0007","createdAt":"2026-10-18T11:45:00Z"}`
+	const removedBeforeChecks = `{"__typename":"RemovedFromMergeQueueEvent","reason":"x","createdAt":"2026-10-18T11:15:00Z"}`
+	const removedNoTime = `{"__typename":"RemovedFromMergeQueueEvent","reason":"x"}`
+	const removedBadTime = `{"__typename":"RemovedFromMergeQueueEvent","reason":"x","createdAt":"yesterday"}`
 	out := func(entry, nodes string) string {
 		return `{"data":{"node":{"mergeQueueEntry":` + entry + `,"timelineItems":{"nodes":[` + nodes + `]}}}}`
 	}
@@ -100,11 +105,14 @@ func TestApplyMergeQueue(t *testing.T) {
 		out  string
 		want ciResult
 	}{
-		{"queued", out(`{"state":"QUEUED","position":2,"estimatedTimeToMerge":360,"enqueuedAt":"2026-10-18T11:48:00Z"}`, added), ciResult{State: "green", Passes: 4, Queue: "queued", QueuePos: 2, QueueETA: now.Add(6 * time.Minute), QueueSince: now.Add(-12 * time.Minute)}},
-		{"queued, no estimate", out(`{"state":"QUEUED","position":1,"estimatedTimeToMerge":null,"enqueuedAt":"2026-10-18T11:48:00Z"}`, added), ciResult{State: "green", Passes: 4, Queue: "queued", QueuePos: 1, QueueSince: now.Add(-12 * time.Minute)}},
-		{"queued but unmergeable", out(`{"state":"UNMERGEABLE"}`, added), ciResult{State: "green", Passes: 4, Queue: "queue-failing"}},
-		{"ejected, reason stripped of controls", out(`null`, added+","+removed), ciResult{State: "ejected", Passes: 4, QueueReason: "merge conflict"}},
-		{"ejected then re-queued", out(`{"state":"AWAITING_CHECKS"}`, removed+","+added), ciResult{State: "green", Passes: 4, Queue: "queued"}},
+		{"queued", out(`{"state":"QUEUED","position":2,"estimatedTimeToMerge":360,"enqueuedAt":"2026-10-18T11:48:00Z"}`, added), ciResult{State: "green", Passes: 4, Queue: "queued", QueuePos: 2, QueueETA: now.Add(6 * time.Minute), QueueSince: now.Add(-12 * time.Minute), RollupSince: green.RollupSince}},
+		{"queued, no estimate", out(`{"state":"QUEUED","position":1,"estimatedTimeToMerge":null,"enqueuedAt":"2026-10-18T11:48:00Z"}`, added), ciResult{State: "green", Passes: 4, Queue: "queued", QueuePos: 1, QueueSince: now.Add(-12 * time.Minute), RollupSince: green.RollupSince}},
+		{"queued but unmergeable", out(`{"state":"UNMERGEABLE"}`, added), ciResult{State: "green", Passes: 4, Queue: "queue-failing", RollupSince: green.RollupSince}},
+		{"ejected after every check, reason stripped of controls", out(`null`, added+","+removed), ciResult{State: "ejected", Passes: 4, QueueReason: "merge conflict", RollupSince: green.RollupSince}},
+		{"checks started since the ejection keep the rollup", out(`null`, added+","+removedBeforeChecks), green},
+		{"ejected, removal time missing", out(`null`, removedNoTime), ciResult{State: "ejected", Passes: 4, QueueReason: "x", RollupSince: green.RollupSince}},
+		{"ejected, removal time unparseable", out(`null`, removedBadTime), ciResult{State: "ejected", Passes: 4, QueueReason: "x", RollupSince: green.RollupSince}},
+		{"ejected then re-queued", out(`{"state":"AWAITING_CHECKS"}`, removed+","+added), ciResult{State: "green", Passes: 4, Queue: "queued", RollupSince: green.RollupSince}},
 		{"never queued", out(`null`, ``), green},
 		{"added with no live entry", out(`null`, added), green},
 		{"malformed", `not json`, green},
@@ -113,6 +121,17 @@ func TestApplyMergeQueue(t *testing.T) {
 		if got := applyMergeQueue(green, []byte(c.out), now); got != c.want {
 			t.Errorf("%s: applyMergeQueue = %+v, want %+v", c.name, got, c.want)
 		}
+	}
+}
+
+// #215: once a fix is pushed and CI re-runs green after an ejection, the board
+// shows the green pass count again, not a stale eject.
+func TestEjectionExpiresWhenCIReruns(t *testing.T) {
+	pr := `{"id":"PR_1","state":"OPEN","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-18T11:50:00Z"},{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-18T11:52:00Z"}]}`
+	queue := `{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[{"__typename":"AddedToMergeQueueEvent"},{"__typename":"RemovedFromMergeQueueEvent","reason":"CI failed","createdAt":"2026-10-18T11:40:00Z"}]}}}}`
+	r, _ := parsePRView([]byte(pr))
+	if got := applyMergeQueue(r, []byte(queue), time.Time{}); got.State != "green" || got.Passes != 2 {
+		t.Errorf("applyMergeQueue = %+v, want green with 2 passes", got)
 	}
 }
 
