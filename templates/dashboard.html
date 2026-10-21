@@ -2385,7 +2385,7 @@
                  : action === 'new-monitor' ? 'watcher started'
                  : action === 'reload-plugins' ? 'sent /reload-plugins'
                  : action === 'rebase' ? 'sent /kitchen-sink:git-rebase'
-                 : action === 'block' ? 'blocked — row will update'
+                 : action === 'block' ? 'marked blocked — row will update'
                  : action === 'unblock' ? 'unblocked — row will update'
                  : 'done')
               : ('failed: ' + (d.output || ('exit ' + d.exitCode)));
@@ -2952,7 +2952,7 @@
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
           {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>{{ end }}
-          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · rebase · reload plugins · end · squash · admin · close · ready · block"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · rebase · reload plugins · end · squash · admin · close · ready · mark blocked"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}10{{ else }}9{{ end }}"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
@@ -2984,11 +2984,11 @@
               </span>
             </div>
             {{/* This row is one of .Agents, so another row exists only if .Agents has two or a row is queued. */}}
-            {{ if or (gt (len $.Agents) 1) $.QueuedAgents }}<div class="actcol blockcol" role="group" aria-label="block actions">
-              <span class="acteyebrow">block</span>
+            {{ if or (gt (len $.Agents) 1) $.QueuedAgents }}<div class="actcol blockcol" role="group" aria-label="mark this row blocked">
+              <span class="acteyebrow">blocked on</span>
               {{ $self := .SessionID }}<span class="actgroup blockform" data-session="{{ .SessionID }}">
-                <select class="blockpick" aria-label="block this row on">{{ range $.Agents }}{{ if and .SessionID (ne .SessionID $self) }}<option value="{{ .SessionID }}">{{ .BlockLabel }}{{ if .Branch }} · {{ short .SessionID }}{{ end }}</option>{{ end }}{{ end }}{{ range $.QueuedAgents }}{{ if .SessionID }}<option value="{{ .SessionID }}">{{ .BlockLabel }}{{ if .Branch }} · {{ short .SessionID }}{{ end }}</option>{{ end }}{{ end }}</select>
-                <button type="button" class="pract" data-action="block" data-noconfirm="true" aria-label="block{{ if .Branch }} {{ .Branch }}{{ end }} on the selected row" title="relax this row out of the alert band until the chosen row leaves the board">block</button>
+                <select class="blockpick" aria-label="this row is blocked on">{{ range $.Agents }}{{ if and .SessionID (ne .SessionID $self) }}<option value="{{ .SessionID }}">{{ .BlockLabel }}{{ if .Branch }} · {{ short .SessionID }}{{ end }}</option>{{ end }}{{ end }}{{ range $.QueuedAgents }}{{ if .SessionID }}<option value="{{ .SessionID }}">{{ .BlockLabel }}{{ if .Branch }} · {{ short .SessionID }}{{ end }}</option>{{ end }}{{ end }}</select>
+                <button type="button" class="pract" data-action="block" data-noconfirm="true" aria-label="mark{{ if .Branch }} {{ .Branch }}{{ else }} this row{{ end }} as blocked on the selected row" title="this row waits on the chosen row: it leaves the alert band until that row leaves the board">mark blocked</button>
                 <span class="actmsg"></span>
               </span>
             </div>{{ end }}

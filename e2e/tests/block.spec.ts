@@ -62,9 +62,9 @@ test('the row panel blocks on the picked row', async ({ page }) => {
   const form = page.locator(panel(blocker));
   await expect(form.locator(`option[value="${blocker}"]`)).toHaveCount(0);
   await expect(form.locator(`option[value="${queued}"]`)).toHaveCount(1);
-  await form.getByRole('combobox', { name: 'block this row on' }).selectOption(blocked);
-  await form.getByRole('button', { name: 'block fix-1235 on the selected row' }).click();
-  await expect(form.locator('.actmsg')).toHaveText('blocked — row will update');
+  await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption(blocked);
+  await form.getByRole('button', { name: 'mark fix-1235 as blocked on the selected row' }).click();
+  await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');
   expect(posts).toHaveLength(1);
   expect(posts[0].postData()).toBe(`session_id=${blocker}&action=block&blocker_session_id=${blocked}`);
 });

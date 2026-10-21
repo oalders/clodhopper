@@ -296,9 +296,10 @@ process is killed and no repo is touched, so it is the way to clear a stale row
 left behind by a hard-killed agent. The row comes back if that session ever
 emits another event.
 
-The row panel's **block** control does what `clodhopper block` does, against a
-picker of the other rows on the board, and the blocked-on chip gains an **✕**
-that unblocks. Like **end**, both only write clodhopper's own database.
+The row panel's **blocked on** picker and **mark blocked** button do what
+`clodhopper block` does: they mark *this* row as waiting on the row you pick,
+not the other way round. The blocked-on chip gains an **✕** that unblocks.
+Like **end**, these only write clodhopper's own database.
 
 > **Exposure:** this is a **write** capability, not just a read one. It is
 > gated behind CSRF (a custom header token, checked in constant time), a
