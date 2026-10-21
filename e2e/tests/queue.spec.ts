@@ -5,8 +5,8 @@ const storage = (page: Page, key: string) =>
   page.evaluate((k) => localStorage.getItem(k), key);
 
 // serve.sh's stub gh queues two seeded rows, one on a permission prompt (#219),
-// ejects another (#195), and reports a fourth row's PR merged over a stale
-// failing, conflicted rollup (#204).
+// ejects another (#195), reports a fourth row's PR merged over a stale failing,
+// conflicted rollup (#204), and a fifth's a conflicted draft (#207).
 test('queued rows fold into a collapsed merge-queue section that remembers being opened', async ({ page }) => {
   await page.goto('/?refresh=0');
   const mq = page.locator('#ck-mq');
@@ -45,4 +45,12 @@ test('a merged PR shows a merged chip, not its stale CI', async ({ page }) => {
   await expect(merged.getByRole('img', { name: 'no CI' })).toHaveCount(0);
   // Seeded "waiting for you" (a Stop); a finished PR relaxes it to background.
   await expect(merged.locator('td.status')).toHaveText(/^waiting$/);
+});
+
+test('a conflicted draft keeps its draft chip clear of the 🔀', async ({ page }) => {
+  await page.goto('/?refresh=0');
+  const row = page.locator('table.roster tr', { has: page.locator('.copycwd[data-cwd$="/draft-conflict"]') });
+  const conflict = (await row.getByRole('img', { name: 'merge conflict with base' }).boundingBox())!;
+  const draft = (await row.getByRole('img', { name: 'draft pull request' }).boundingBox())!;
+  expect(draft.x - (conflict.x + conflict.width)).toBeGreaterThanOrEqual(3);
 });
