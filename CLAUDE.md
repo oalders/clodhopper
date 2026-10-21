@@ -109,8 +109,9 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
    a forwarding header — the Host allowlist alone cannot stop a LAN peer that
    sends `Host: 127.0.0.1`), and restricted to a
    closed argv allowlist — no user-supplied string ever reaches a command line.
-   (serve's read-only ledger lookup builds `gh pr view N --repo=OWNER/REPO` from
-   stored gh output, never client input, validated in `ledger.go`.)
+  The one exec outside `actionArgv` is serve's read-only ledger lookup,
+  `gh pr view N --repo=OWNER/REPO` (see `prFinalArgs` in `ledger.go`), built
+  only from validated gh-derived values, never client input.
   The `end` action never reaches `actionArgv`: it execs nothing, and its
   `session_id` travels only as a bound SQL parameter. `block`/`unblock` are
   exec-free like `end` (`actionExecs`; they never reach `actionArgv`); `block` checks both ids against a
@@ -156,11 +157,10 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   or the "ejected" state (⏏). Like `gitBranch`, it is strictly best-effort: missing `gh`, no PR, or a
   timeout yields "".
   Every row `splitQueued` folds into the queue is remembered in memory by
-  `queueLedger` (`ledger.go`, whose doc comment gives its bounds; never the DB), so it stays in
-  that table with its PR's outcome until dismissed; once its session is gone
-  the state comes from a validated `gh pr view N --repo=OWNER/REPO` (plus
-  `mergeQueueQuery` while open), memoised
-  in a `cwdCache` and equally best-effort.
+  `queueLedger` (`ledger.go`, whose doc comment gives its bounds; never the
+  DB), so it stays in that table with its PR's outcome until dismissed; a gone
+  session's PR is looked up by number, memoised in a `cwdCache`, equally
+  best-effort.
   The same generic `cwdCache` type also backs the pane peek's GitHub owner/repo for the
   footer's PR #N link (`newRepoCache`/`lookupRepo`, via `git remote get-url origin`),
   resolved per live-pane row (not concurrently) and likewise best-effort: a

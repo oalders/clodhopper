@@ -257,7 +257,8 @@
     table.mq td.actions .rowform { display: contents; }
     table.mq td.actions .actmsg { flex-basis: 100%; overflow-wrap: anywhere; }
     table.mq td.actions .actmsg:empty { display: none; } /* else its 100% basis opens an empty second line */
-    table.mq tr.done td { color: var(--text-2); } /* a merged/closed ledger row: nothing left to do */
+    table.mq tr.done td { color: var(--text-2); }
+    #ck-mq .mqleft { color: var(--attention); font-weight: 600; } /* a PR out of the queue unmerged needs you, even folded */ /* a merged/closed ledger row: nothing left to do */
     td.idle { font-variant-numeric: tabular-nums; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
     td.summary em { font-style: italic; color: var(--text-3); } /* a completed phase, not one in progress */
@@ -3007,7 +3008,7 @@
   {{ if or .QueuedAgents .LedgerRows }}
   {{/* Queued set-and-forget rows (splitQueued), then the ledger's rows that have left the queue (queueLedger). The end and dismiss buttons reuse the roster's end markup in their own rowform group, so the delegated arm/confirm JS applies unchanged. */}}
   <details id="ck-mq" class="ck-card">
-    <summary class="ck-cardhead"><h2>Merge queue ({{ len .QueuedAgents }}){{ with .LedgerRows }} · {{ len . }} left{{ end }}{{ with .QueueNextETA }} · next merge {{ . }}{{ end }}</h2></summary>
+    <summary class="ck-cardhead"><h2>Merge queue ({{ len .QueuedAgents }}){{ with .LedgerTally }}{{ with .Finished }} · {{ . }} finished{{ end }}{{ with .Left }} · <span class="mqleft">{{ . }} left queue</span>{{ end }}{{ end }}{{ with .QueueNextETA }} · next merge {{ . }}{{ end }}</h2></summary>
     <div class="ck-tablewrap">
     <table class="mq">
       <colgroup>

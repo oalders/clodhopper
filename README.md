@@ -320,7 +320,7 @@ at most 100), so a restart clears them.
 > runs with **your** credentials against **your** repos. The session actions
 > additionally send **keystrokes into live tmux panes**. (**end**, **block** and
 > **unblock** are the mild ones: they only write clodhopper's own database;
-> **dismiss** writes nothing.) Everything here is
+> **dismiss** writes nothing to the database.) Everything here is
 > gated behind `--enable-merge` **and** restricted to loopback/Tailscale
 > peers, so enable it only on a **trusted, single-operator network**
 > (loopback, or your tailnet via `--tailscale`), never on a public bind.

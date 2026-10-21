@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test';
 import { test, expect, abortUnstubbedExec } from './fixtures';
 
 // A row stays in the merge-queue table once its PR merges, until dismissed
@@ -7,11 +8,25 @@ import { test, expect, abortUnstubbedExec } from './fixtures';
 
 const landing = 'e2e-landing-0000-1111-2222-333333333333';
 const row = `#ck-mq #row-${landing}`;
+const dismiss = (page: Page) => page.locator(row).getByRole('button', { name: /^dismiss / });
+
+// The fixture is single-shot (see serve.sh): the 404 test must leave the row in
+// place for the dismiss test, and a retry would find it already dismissed.
+test.describe.configure({ mode: 'serial', retries: 0 });
 
 let unstubbed: string[] = [];
 
 test.beforeEach(async ({ page }) => {
   unstubbed = await abortUnstubbedExec(page);
+  // Without force=1 the cached queued answer stands for cwdTTL (60s); force is
+  // throttled server-side, hence the poll.
+  await expect.poll(async () => {
+    await page.request.get('/api/state?force=1');
+    await page.goto('/?refresh=1', { waitUntil: 'domcontentloaded' });
+    return page.locator(`${row}.done`).count();
+  }, { timeout: 30_000, intervals: [1_000, 3_000, 5_000] }).toBe(1);
+  await page.evaluate(() => { (window as unknown as { __ckActionBusy: number }).__ckActionBusy = 1; });
+  await page.locator('#ck-mq > summary').click();
 });
 
 test.afterEach(async ({ page }) => {
@@ -19,37 +34,50 @@ test.afterEach(async ({ page }) => {
   expect(unstubbed, 'exec endpoint requests with no stub').toEqual([]);
 });
 
-test('a merged PR stays in the merge-queue table until dismissed', async ({ page }) => {
-  // force=1 expires the CI cache (throttled server-side), so the merged answer lands.
-  await expect.poll(async () => {
-    await page.request.get('/api/state?force=1');
-    await page.goto('/?refresh=1', { waitUntil: 'domcontentloaded' });
-    return page.locator(`${row}.done`).count();
-  }, { timeout: 30_000, intervals: [1_000, 3_000, 5_000] }).toBe(1);
+// let through sends this test's dismiss posts to the real handler, as body when given.
+async function letThrough(page: Page, body?: string): Promise<string[]> {
+  const posts: string[] = [];
+  await page.route('**/api/action', (route) => {
+    const sent = route.request().postData() ?? '';
+    if (!sent.endsWith('&action=dismiss')) return route.fallback();
+    posts.push(sent);
+    return route.continue(body ? { postData: body } : undefined);
+  });
+  return posts;
+}
 
-  await page.evaluate(() => { (window as unknown as { __ckActionBusy: number }).__ckActionBusy = 1; });
-  await page.locator('#ck-mq > summary').click();
+test('a dismiss the server refuses reports the failure', async ({ page }) => {
+  await letThrough(page, 'session_id=e2e-ghost&action=dismiss');
+  await dismiss(page).click();
+  await expect(page.locator(`${row} .actmsg`)).toHaveText('failed: HTTP 404');
+});
+
+test('a merged PR stays in the merge-queue table until dismissed', async ({ page }) => {
   const chip = page.locator(row).getByRole('img', { name: 'pull request merged' });
   await expect(chip).toBeVisible();
   expect(await chip.evaluate((el) => el.closest('td')!.scrollWidth <= el.closest('td')!.clientWidth)).toBe(true);
   await expect(page.locator(row).getByRole('link', { name: 'PR #42 (opens in a new tab)' }))
     .toHaveAttribute('href', 'https://github.com/e2e/landing/pull/42');
   await expect(page.locator(`table.roster #row-${landing}`)).toHaveCount(0);
+  await expect(page.locator('#ck-mq > summary')).toContainText('1 finished');
 
-  // Dismiss execs nothing, so it alone goes through to the real handler.
-  const posts: string[] = [];
-  await page.route('**/api/action', (route) => {
-    const body = route.request().postData() ?? '';
-    if (!body.endsWith('&action=dismiss')) return route.fallback();
-    posts.push(body);
-    return route.continue();
-  });
+  // On a phone the dismiss button is a 44px touch target and the page never scrolls sideways.
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect((await dismiss(page).boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+
+  const posts = await letThrough(page);
   const response = page.waitForResponse('**/api/action');
-  await page.locator(row).getByRole('button', { name: /^dismiss / }).click();
+  await dismiss(page).click();
   expect(await (await response).json()).toMatchObject({ ok: true });
   expect(posts).toEqual([`session_id=${landing}&action=dismiss`]);
   await expect(page.locator(`${row} .actmsg`)).toHaveText('dismissed — row will clear');
 
+  // The busy flag held repaints off; released, the next poll drops the row and its tally.
+  await page.evaluate(() => { (window as unknown as { __ckActionBusy: number }).__ckActionBusy = 0; });
+  await expect(page.locator(row)).toHaveCount(0);
+  await expect(page.locator('#ck-mq > summary')).not.toContainText('finished');
+
   await page.goto('/?refresh=1', { waitUntil: 'domcontentloaded' });
-  await expect(page.locator(`#ck-mq #row-${landing}`)).toHaveCount(0);
+  await expect(page.locator(row)).toHaveCount(0);
 });

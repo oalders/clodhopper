@@ -179,6 +179,48 @@ func TestQueueLedgerEvictsLeastRecentlySeen(t *testing.T) {
 	}
 }
 
+// A final looked up for one PR is not kept on an entry re-recorded for another.
+func TestQueueLedgerKeepFinalChecksPR(t *testing.T) {
+	l, _ := testLedger(nil)
+	l.record([]Agent{queuedRow("s1")}, ledgerNow)
+	l.keepFinal("s1", "o/r#8", ciResult{Done: "merged"})
+	if e := l.m["s1"]; e.final.Done != "" {
+		t.Errorf("kept %+v for o/r#8 on an o/r#7 entry", e.final)
+	}
+}
+
+// Through the real build, a live merged queued row that is waiting moves to
+// the ledger, while one that needs you stays on the roster: carryOver must see
+// the status from before demotePendingCI relaxes it.
+func TestBuildDashboardDataLedgersMergedRow(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+	ts := now.UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "w", Cwd: "/w", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "n", Cwd: "/n", EventType: "Notification", PayloadJSON: "{}"})
+	// Stamped an hour ahead so cwdTTL cannot lapse mid-test and gh is never run.
+	ci := newCICache()
+	for _, cwd := range []string{"/w", "/n"} {
+		ci.m[cwd] = cwdEntry[ciResult]{val: ciResult{Done: "merged"}, at: now.Add(time.Hour)}
+	}
+	l, _ := testLedger(nil)
+	l.record([]Agent{queuedRow("w"), queuedRow("n")}, now)
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "127.0.0.1:5555"
+	r.Host = "127.0.0.1:4555"
+	data, err := buildDashboardData(r, db, ci, &peekConfig{cache: newPaneCache()}, &actionConfig{ledger: l})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roster []string
+	for _, a := range data.Agents {
+		roster = append(roster, a.SessionID)
+	}
+	if !slices.Equal(roster, []string{"n"}) || !slices.Equal(ledgerIDs(data.LedgerRows), []string{"w"}) {
+		t.Errorf("roster %v, ledger %v; want [n] and [w]", roster, ledgerIDs(data.LedgerRows))
+	}
+}
+
 // Dismissing drops the entry, and reports whether there was one.
 func TestQueueLedgerDismiss(t *testing.T) {
 	l, _ := testLedger(nil)
@@ -280,14 +322,14 @@ func TestDashboardRendersLedgerRows(t *testing.T) {
 	queued := ledgerRow{Agent: Agent{SessionID: "q", Branch: "bq", CIQueuePos: 2}, Final: "queued"}
 	gone := ledgerRow{Agent: Agent{SessionID: "g", Branch: "bg"}}
 	html := renderDashboard(t, dashboardData{LedgerRows: []ledgerRow{merged, left, queued, gone}, ExecEnabled: true, CSRFToken: "tok"})
-	if !strings.Contains(html, "Merge queue (0) · 4 left") {
-		t.Error("heading does not count the ledger rows")
+	if want := `Merge queue (0) · 3 finished · <span class="mqleft">1 left queue</span>`; !strings.Contains(html, want) {
+		t.Errorf("heading does not tally the ledger rows as %q", want)
 	}
 	for id, want := range map[string][]string{
 		"m": {`class="done"`, `aria-label="pull request merged"`, "5m ago", `href="https://github.com/o/r/pull/7"`, `data-action="dismiss"`},
 		"l": {`class="alert"`, "left queue"},
-		"q": {`class=""`, "still queued · position 2 · session gone"},
-		"g": {`class=""`, "gone — state unknown"},
+		"q": {"still queued · position 2 · session gone"},
+		"g": {"gone — state unknown"},
 	} {
 		row := ledgerRowHTML(t, html, id)
 		for _, w := range want {

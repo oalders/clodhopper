@@ -127,7 +127,7 @@ func (l *queueLedger) carryOver(roster, queued []Agent, now time.Time) ([]Agent,
 			f := e.final
 			if f.Done == "" {
 				f = finals[finalKey(e.snap)]
-				l.keepFinal(id, f)
+				l.keepFinal(id, finalKey(e.snap), f)
 			}
 			r.Final, r.PRMergedAt, r.CIQueuePos, r.LiveTmux = finalState(f), unixOrZero(f.MergedAt), f.QueuePos, false
 		}
@@ -157,14 +157,28 @@ func (l *queueLedger) carryOver(roster, queued []Agent, now time.Time) ([]Agent,
 	return roster[:n], rows
 }
 
-// keepFinal stores f on id's entry once it is terminal (merged or closed).
-func (l *queueLedger) keepFinal(id string, f ciResult) {
+// LedgerTally counts the ledger rows for the merge-queue heading, apart from
+// the "left queue" alerts, which must show while the section is folded.
+func (d dashboardData) LedgerTally() (t struct{ Finished, Left int }) {
+	for _, r := range d.LedgerRows {
+		if r.Final == "open" {
+			t.Left++
+		} else {
+			t.Finished++
+		}
+	}
+	return t
+}
+
+// keepFinal stores f, key's state, on id's entry once it is terminal (merged
+// or closed), unless the entry was re-recorded for another PR meanwhile.
+func (l *queueLedger) keepFinal(id, key string, f ciResult) {
 	if f.Done == "" {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if e, ok := l.m[id]; ok {
+	if e, ok := l.m[id]; ok && finalKey(e.snap) == key {
 		e.final = f
 		l.m[id] = e
 	}

@@ -45,6 +45,7 @@ chmod +x "$tmp/bin/tmux"
 # ejects them, and reports the merged row's PR merged, keyed on the row's cwd;
 # every other cwd has no PR. The exec server also gets a "landing" row, queued
 # on its first lookup (serve's first render) and merged after, for ledger.spec.ts.
+# Single-shot: landing.seen never resets and ledger.spec.ts dismisses the row, so that spec cannot retry.
 export CLODHOPPER_E2E_REPOS="$tmp/repos"
 mkdir -p "$CLODHOPPER_E2E_REPOS/queued" "$CLODHOPPER_E2E_REPOS/ejected" "$CLODHOPPER_E2E_REPOS/merged"
 [ -z "${2-}" ] || mkdir "$CLODHOPPER_E2E_REPOS/landing"
