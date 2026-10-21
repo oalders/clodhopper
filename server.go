@@ -80,8 +80,8 @@ type blockChipView struct {
 	Exec bool
 }
 
-// ciMarkSlots is the most 🔀/draft-chip/queue-pill/done-chip markers any one roster
-// row carries (0–2: GitHub never queues a draft or a finished PR, so those share a slot).
+// ciMarkSlots is the most 🔀/draft-chip/done-chip markers any one roster row
+// carries (0–2: a finished PR carries no draft flag, so those share a slot).
 // The template turns it into a ci-mN class on the table, which sizes the CI
 // column to fit, so a board with no markers spends no width on them. It is
 // recomputed on every render, so the column follows /api/state polls.
@@ -92,7 +92,7 @@ func ciMarkSlots(agents []Agent) int {
 		if a.CIConflict {
 			n++
 		}
-		if a.CIQueue != "" || a.CIDraft || a.CIDone != "" {
+		if a.CIDraft || a.CIDone != "" {
 			n++
 		}
 		most = max(most, n)
@@ -1021,7 +1021,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 			}
 		}
 	}
-	// The fold keys on CIQueue alone, so its order against demotePendingCI is moot (#219).
+	// splitQueued and demotePendingCI both key on CIQueue, so their order does not matter (#219).
 	roster, queued := splitQueued(agents, now)
 	act.ledger.record(queued, now)
 	// Before demotePendingCI, which relaxes every merged "needs you" row.
@@ -1370,7 +1370,8 @@ func setAndForget(status string) bool {
 func queueNextETA(queued []Agent, now time.Time) string {
 	var next int64
 	for _, a := range queued {
-		if a.CIQueueETA != 0 && (next == 0 || a.CIQueueETA < next) {
+		// A stalled entry's past ETA would pin the header at "now".
+		if !a.CIQueueStuck && a.CIQueueETA != 0 && (next == 0 || a.CIQueueETA < next) {
 			next = a.CIQueueETA
 		}
 	}

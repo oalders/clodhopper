@@ -533,15 +533,14 @@
 
     /* CI is a status dot (emoji) — on green/red/orange a CSS circle with the
        passed/failed count inside, spelled out in its aria-label and title — plus a 🔀 on a merge
-       conflict and/or a merge-queue position pill or draft/merged/closed chip, in a snug single-line column.
+       conflict and/or a draft/merged/closed chip, in a snug single-line column (queued rows live in #ck-mq).
        Two slots, left-aligned rather than centered, so a row's markers never shift its badge:
        .ci-main always starts at the same x and is wide enough for a two-digit badge, and .ci-marks
        follows it. The column is only as wide as the most-marked row needs: ciMarkSlots puts a
        ci-mN class on the table and --ci-w below is cell padding + .ci-main, plus for markers the
-       .ci-marks margin, ~1.3em for the emoji, ~3.2em for the draft chip (wider than a two-digit pill,
-       and GitHub never queues a draft, so they share a slot; a merged/closed chip, ~3.7em, takes it
-       too but never pairs with 🔀, so only ci-m1 grows for it, widening boards with just a draft
-       chip, queue pill or 🔀 too) and the gap between them. Keep those
+       .ci-marks margin, ~1.3em for the emoji, ~3.2em for the draft chip (a merged/closed chip, ~3.7em,
+       shares its slot but never pairs with 🔀, so only ci-m1 grows for it, widening boards with just
+       a draft chip or 🔀 too) and the gap between them. Keep those
        sums in sync. Anything longer is clipped to "…" by the th,td overflow rule, which is why the
        count is not "N failed". */
     td.ci, th.ci { padding-left: 4px; padding-right: 4px; white-space: nowrap; }
@@ -2949,7 +2948,7 @@
       <tbody>
         {{ range .Agents }}
         <tr data-group="{{ .GroupKey }}"{{ if .SessionID }} id="row-{{ .SessionID }}"{{ end }}{{ with rowClass . }} class="{{ . }}"{{ end }}>
-          <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}"><span class="ci-main">{{ if and (eq .CI "green") .CIPasses }}<span class="cibadge ok" role="img" aria-label="CI passing, {{ .CIPasses }} passed" title="{{ .CIPasses }} passed">{{ .CIPasses }}</span>{{ else if eq .CI "green" }}<span role="img" aria-label="CI passing">🟢</span>{{ else if eq .CI "pending" }}<span role="img" aria-label="CI pending">🟡</span>{{ else if eq .CI "failing" }}<span class="cibadge fail" role="img" aria-label="CI failing, {{ .CIFails }} failed" title="{{ .CIFails }} failed">{{ .CIFails }}</span>{{ else if eq .CI "soft-failing" }}<span class="cibadge soft" role="img" aria-label="non-required check failing, {{ .CIFails }} failed" title="{{ .CIFails }} non-required failed">{{ .CIFails }}</span>{{ else if eq .CI "ejected" }}<span class="cibadge fail" role="img" aria-label="removed from merge queue{{ if .CIQueueReason }}: {{ .CIQueueReason }}{{ end }}" title="removed from merge queue{{ if .CIQueueReason }}: {{ .CIQueueReason }}{{ end }}">⏏</span>{{ else if .CIDone }}<span aria-hidden="true">—</span>{{ else }}<span role="img" aria-label="no CI">—</span>{{ end }}</span><span class="ci-marks">{{ if .CIConflict }}<span role="img" aria-label="merge conflict with base" title="merge conflict with base">🔀</span>{{ end }}{{ if .CIDraft }}<span class="cibadge draft" role="img" aria-label="draft pull request" title="draft pull request">draft</span>{{ end }}{{ if .CIDone }}<span class="cibadge done" role="img" aria-label="pull request {{ .CIDone }}" title="pull request {{ .CIDone }}">{{ .CIDone }}</span>{{ end }}{{ if .CIQueue }}<span class="cibadge queue{{ if eq .CIQueue "queue-failing" }} failing{{ end }}" role="img" aria-label="{{ .CIQueueLabel }}" title="{{ .CIQueueLabel }}">{{ .CIQueuePos }}</span>{{ end }}</span></td>
+          <td data-label="CI" class="ci {{ if .CI }}{{ .CI }}{{ else }}none{{ end }}"><span class="ci-main">{{ if and (eq .CI "green") .CIPasses }}<span class="cibadge ok" role="img" aria-label="CI passing, {{ .CIPasses }} passed" title="{{ .CIPasses }} passed">{{ .CIPasses }}</span>{{ else if eq .CI "green" }}<span role="img" aria-label="CI passing">🟢</span>{{ else if eq .CI "pending" }}<span role="img" aria-label="CI pending">🟡</span>{{ else if eq .CI "failing" }}<span class="cibadge fail" role="img" aria-label="CI failing, {{ .CIFails }} failed" title="{{ .CIFails }} failed">{{ .CIFails }}</span>{{ else if eq .CI "soft-failing" }}<span class="cibadge soft" role="img" aria-label="non-required check failing, {{ .CIFails }} failed" title="{{ .CIFails }} non-required failed">{{ .CIFails }}</span>{{ else if eq .CI "ejected" }}<span class="cibadge fail" role="img" aria-label="removed from merge queue{{ if .CIQueueReason }}: {{ .CIQueueReason }}{{ end }}" title="removed from merge queue{{ if .CIQueueReason }}: {{ .CIQueueReason }}{{ end }}">⏏</span>{{ else if .CIDone }}<span aria-hidden="true">—</span>{{ else }}<span role="img" aria-label="no CI">—</span>{{ end }}</span><span class="ci-marks">{{ if .CIConflict }}<span role="img" aria-label="merge conflict with base" title="merge conflict with base">🔀</span>{{ end }}{{ if .CIDraft }}<span class="cibadge draft" role="img" aria-label="draft pull request" title="draft pull request">draft</span>{{ end }}{{ if .CIDone }}<span class="cibadge done" role="img" aria-label="pull request {{ .CIDone }}" title="pull request {{ .CIDone }}">{{ .CIDone }}</span>{{ end }}</span></td>
           {{ template "launcher" . }}
           {{ template "branchcellroster" . }}
           <td data-label="app">{{ .SourceApp }}</td>

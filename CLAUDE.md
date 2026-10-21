@@ -156,10 +156,10 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   queue, because queue checks run on a temporary commit the rollup never sees;
   `applyMergeQueue`'s doc comment says when that yields a queue-position pill
   or the "ejected" state (⏏), which lapses once a rollup check starts after
-  the removal (`RollupSince`). Any row with a queue entry folds into the
-  merge-queue section whatever its status (`splitQueued`) and is relaxed to
-  non-alert (`demotePendingCI`); `queueStuck` only marks its pill. Like `gitBranch`, it is strictly best-effort: missing `gh`, no PR, or a
-  timeout yields "".
+  the removal (`RollupSince`). Like `gitBranch`, it is strictly best-effort: missing `gh`, no PR, or a
+  timeout yields "". Any row with a queue entry folds into the merge-queue
+  section whatever its status (`splitQueued`) and is relaxed to non-alert
+  (`demotePendingCI`); `queueStuck` only marks its pill.
   Rows `splitQueued` folds into the queue are kept in memory by `queueLedger`
   (`ledger.go`; its doc comment gives the lifecycle and bounds) until dismissed
   or expired.

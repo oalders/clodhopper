@@ -3954,7 +3954,7 @@ func TestSplitQueued_BlockedFolds(t *testing.T) {
 }
 
 // The fold ignores status, and the demotion after it reaches both halves.
-func TestSplitQueued_BeforeDemotion(t *testing.T) {
+func TestSplitQueued_DemotionReachesBothHalves(t *testing.T) {
 	now := time.Unix(100_000, 0)
 	agents := []Agent{
 		{SessionID: "needs", CIQueue: "queued", Status: statusNeedsYou, StatusRank: 1},
@@ -4001,6 +4001,8 @@ func TestQueueNextETA(t *testing.T) {
 	}{
 		{"earliest wins", []Agent{{CIQueueETA: now.Unix() + 3600}, {}, {CIQueueETA: now.Unix() + 300}}, "in ~5m"},
 		{"already due", []Agent{{CIQueueETA: now.Unix() - 60}}, "now"},
+		{"stuck skipped", []Agent{{CIQueueETA: now.Unix() - 3600, CIQueueStuck: true}, {CIQueueETA: now.Unix() + 300}}, "in ~5m"},
+		{"only stuck", []Agent{{CIQueueETA: now.Unix() - 3600, CIQueueStuck: true}}, ""},
 		{"no ETA", []Agent{{}}, ""},
 	} {
 		if got := queueNextETA(tc.queued, now); got != tc.want {
@@ -4049,19 +4051,33 @@ func TestDashboardRendersQueueSection(t *testing.T) {
 	}
 }
 
-// The ejected badge carries GitHub's reason; the queue position pill sits after the badge.
+// The section's queue pill keeps its colours: red for queue-failing, amber plus a text marker when stuck.
+func TestDashboardRendersQueuePill(t *testing.T) {
+	html := renderDashboard(t, dashboardData{QueuedAgents: []Agent{
+		{SessionID: "stuck", Branch: "a", CIQueue: "queued", CIQueuePos: 1, CIQueueStuck: true, CIQueueLabel: "merge queue position 1"},
+		{SessionID: "failing", Branch: "b", CIQueue: "queue-failing", CIQueuePos: 2, CIQueueLabel: "merge queue position 2, failing"},
+	}})
+	for _, want := range []string{
+		`<span class="cibadge queue stuck" aria-hidden="true">1</span></td>
+          <td data-label="detail">likely stalled · merge queue position 1`,
+		`<span class="cibadge queue failing" aria-hidden="true">2</span></td>
+          <td data-label="detail">merge queue position 2, failing`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing %s in:\n%s", want, html)
+		}
+	}
+}
+
+// The ejected badge carries GitHub's reason.
 func TestDashboardRendersMergeQueue(t *testing.T) {
 	html := renderDashboard(t, dashboardData{Agents: []Agent{
 		{SessionID: "ejected", Branch: "a", CI: "ejected", CIQueueReason: "merge conflict"},
-		{SessionID: "queued", Branch: "b", CI: "green", CIQueue: "queued", CIQueuePos: 2, CIQueueLabel: "merge queue position 2"},
 		{SessionID: "ejected-bare", Branch: "c", CI: "ejected"},
-		{SessionID: "queue-failing", Branch: "d", CI: "green", CIQueue: "queue-failing", CIQueuePos: 12, CIQueueLabel: "merge queue position 12, failing"},
 	}})
 	for _, want := range []string{
 		`<td data-label="CI" class="ci ejected"><span class="ci-main"><span class="cibadge fail" role="img" aria-label="removed from merge queue: merge conflict" title="removed from merge queue: merge conflict">⏏</span></span><span class="ci-marks"></span></td>`,
-		`<span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"><span class="cibadge queue" role="img" aria-label="merge queue position 2" title="merge queue position 2">2</span></span></td>`,
 		`<span class="cibadge fail" role="img" aria-label="removed from merge queue" title="removed from merge queue">⏏</span></span><span class="ci-marks"></span></td>`,
-		`<span role="img" aria-label="CI passing">🟢</span></span><span class="ci-marks"><span class="cibadge queue failing" role="img" aria-label="merge queue position 12, failing" title="merge queue position 12, failing">12</span></span></td>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("missing %s in:\n%s", want, html)
@@ -4104,7 +4120,7 @@ func TestQueueLabel(t *testing.T) {
 	}
 }
 
-// The CI column is sized by the most-marked row: a conflict and a queue or draft
+// The CI column is sized by the most-marked row: a conflict and a draft or done
 // marker each take a slot, and the table carries the count as its ci-mN class.
 func TestCIMarkSlots(t *testing.T) {
 	for _, tc := range []struct {
@@ -4115,18 +4131,16 @@ func TestCIMarkSlots(t *testing.T) {
 		{"empty board", nil, 0},
 		{"no markers", []Agent{{CI: "failing", CIFails: 12}, {CI: "ejected"}}, 0},
 		{"conflict", []Agent{{}, {CIConflict: true}}, 1},
-		{"queued", []Agent{{CI: "green", CIQueue: "queued"}}, 1},
 		{"draft", []Agent{{CI: "green", CIDraft: true}}, 1},
 		{"merged", []Agent{{CIDone: "merged"}}, 1},
-		{"split across rows", []Agent{{CIConflict: true}, {CIQueue: "queue-failing"}}, 1},
-		{"both on one row", []Agent{{}, {CIConflict: true, CIQueue: "queued"}}, 2},
+		{"split across rows", []Agent{{CIConflict: true}, {CIDone: "closed"}}, 1},
 		{"conflict and draft on one row", []Agent{{CIConflict: true, CIDraft: true}}, 2},
 	} {
 		if got := ciMarkSlots(tc.agents); got != tc.want {
 			t.Errorf("%s: ciMarkSlots = %d, want %d", tc.name, got, tc.want)
 		}
 	}
-	html := renderDashboard(t, dashboardData{Agents: []Agent{{SessionID: "s", CIConflict: true, CIQueue: "queued"}}})
+	html := renderDashboard(t, dashboardData{Agents: []Agent{{SessionID: "s", CIConflict: true, CIDraft: true}}})
 	if !strings.Contains(html, `<table class="roster ci-m2">`) {
 		t.Errorf("roster table should carry ci-m2:\n%s", html)
 	}

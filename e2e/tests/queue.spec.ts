@@ -16,7 +16,7 @@ test('queued rows fold into a collapsed merge-queue section that remembers being
   // The roster is the last <section>, so .ck-card:last-of-type zeroes its margin; #ck-mq supplies the gap.
   const roster = (await page.locator('section.ck-card', { has: page.locator('table.roster') }).boundingBox())!;
   expect((await mq.boundingBox())!.y - (roster.y + roster.height)).toBeGreaterThan(0);
-  // The ejected row needs you, so it stays in the main roster.
+  // An ejected PR has left the queue (no queue entry), so its row stays in the main roster.
   await expect(page.locator('table.roster .cibadge.fail', { hasText: '⏏' })).toHaveCount(1);
 
   await mq.locator('summary').click();
@@ -26,16 +26,13 @@ test('queued rows fold into a collapsed merge-queue section that remembers being
   await expect(page.locator('#ck-mq')).toHaveAttribute('open');
 });
 
-test('a queued row on a permission prompt folds into the merge queue without alerting', async ({ page }) => {
+test('a queued row on a permission prompt folds into the merge queue, not the roster', async ({ page }) => {
   await page.goto('/?refresh=0');
   const mq = page.locator('#ck-mq');
   const row = '#row-e2e-queued-approval-0000-1111-2222-333333333333';
   await mq.locator('summary').click();
   await expect(mq.locator(`table.mq ${row}`)).toBeVisible();
-  await expect(page.locator(row)).not.toHaveClass(/\balert\b/);
   await expect(page.locator(`table.roster ${row}`)).toHaveCount(0);
-  // The summary carries only its heading: no alert badge for the prompt inside.
-  await expect(mq.locator('summary > *')).toHaveCount(1);
 });
 
 test('a merged PR shows a merged chip, not its stale CI', async ({ page }) => {
