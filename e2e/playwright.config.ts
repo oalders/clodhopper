@@ -13,7 +13,7 @@ const port = 9324;
 // write path on for every other spec.
 const execPort = 9325;
 // Anchored: testMatch/testIgnore regexes run against the absolute file path.
-const execSpec = /(^|\/)(restart|swap|merge|session|block)\.spec\.ts$/;
+const execSpec = /(^|\/)(restart|swap|merge|session|block|ledger)\.spec\.ts$/;
 
 const server = (p: number, flags = '') => ({
   command: `./serve.sh ${p}${flags}`,

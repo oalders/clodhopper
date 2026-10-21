@@ -262,8 +262,9 @@ func assignSessColors(agents []Agent, events []Event) map[string]string {
 // dashboardData is the view model rendered by the dashboard template.
 type dashboardData struct {
 	Agents         []Agent
-	QueuedAgents   []Agent // set-and-forget merge-queue rows, folded under the roster; see splitQueued
-	QueueNextETA   string  // earliest queued ETA as an etaPhrase; "" when none is known
+	QueuedAgents   []Agent     // set-and-forget merge-queue rows, folded under the roster; see splitQueued
+	QueueNextETA   string      // earliest queued ETA as an etaPhrase; "" when none is known
+	LedgerRows     []ledgerRow // rows that left the merge queue, kept in its table until dismissed; see queueLedger
 	Activity       []SourceCount
 	Events         []Event
 	EventRows      []EventRow // Events folded for display; see foldToolEvents
@@ -403,6 +404,7 @@ func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool
 		allowedHosts:      allowed,
 		inflight:          newInflightSet(),
 		panes:             peek.cache,
+		ledger:            newQueueLedger(),
 	}
 	return peek, act
 }
@@ -643,6 +645,9 @@ type ciResult struct {
 	QueueETA    time.Time // expected merge time, zero when GitHub gave no estimate
 	QueueSince  time.Time // when the PR entered the queue, zero when not queued
 	QueueReason string    // GitHub's reason for an "ejected" PR's removal from the queue
+	PRNumber    int       // the PR's number, in every state
+	PRRepo      string    // the PR's GitHub "owner/repo", parsed from its url; "" if not github.com
+	MergedAt    time.Time // when a merged PR merged, zero otherwise
 }
 
 // lookupCI shells out to `gh pr view` in cwd and summarises the result. It is
@@ -654,7 +659,7 @@ func lookupCI(cwd string) ciResult {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "gh", "pr", "view", "--json", "id,state,isDraft,mergeStateStatus,statusCheckRollup")
+	cmd := exec.CommandContext(ctx, "gh", "pr", "view", "--json", "id,number,url,state,mergedAt,isDraft,mergeStateStatus,statusCheckRollup")
 	cmd.Dir = cwd
 	out, err := cmd.Output()
 	if err != nil {
@@ -736,16 +741,20 @@ type rollupNode struct {
 	State      string `json:"state"`
 }
 
-// parsePRView turns `gh pr view --json id,state,isDraft,mergeStateStatus,statusCheckRollup`
+// parsePRView turns `gh pr view --json id,number,url,state,mergedAt,isDraft,mergeStateStatus,statusCheckRollup`
 // output into a ciResult, plus the PR's node id when it is still OPEN (only an
-// open PR can be in the merge queue). The rollup drives the state;
+// open PR can be in the merge queue). The PR's number, repo and merge time are
+// kept in every state, for the merge-queue ledger (see queueLedger). The rollup drives the state;
 // mergeStateStatus only refines it, because BLOCKED also means "review missing"
 // with green checks. UNKNOWN never flags a conflict: every fresh PR is UNKNOWN
 // for a moment. A MERGED or CLOSED PR yields only Done: its rollup is stale.
 func parsePRView(out []byte) (ciResult, string) {
 	var pr struct {
 		ID                string       `json:"id"`
+		Number            int          `json:"number"`
+		URL               string       `json:"url"`
 		State             string       `json:"state"`
+		MergedAt          time.Time    `json:"mergedAt"`
 		IsDraft           bool         `json:"isDraft"`
 		MergeStateStatus  string       `json:"mergeStateStatus"`
 		StatusCheckRollup []rollupNode `json:"statusCheckRollup"`
@@ -753,10 +762,12 @@ func parsePRView(out []byte) (ciResult, string) {
 	if err := json.Unmarshal(out, &pr); err != nil {
 		return ciResult{}, ""
 	}
+	repoURL, _, _ := strings.Cut(pr.URL, "/pull/")
 	if pr.State == "MERGED" || pr.State == "CLOSED" {
-		return ciResult{Done: strings.ToLower(pr.State)}, ""
+		return ciResult{Done: strings.ToLower(pr.State), PRNumber: pr.Number, PRRepo: parseGitHubRepo(repoURL), MergedAt: pr.MergedAt}, ""
 	}
 	r := classifyRollup(pr.StatusCheckRollup)
+	r.PRNumber, r.PRRepo = pr.Number, parseGitHubRepo(repoURL)
 	if r.State == "failing" && pr.MergeStateStatus == "UNSTABLE" {
 		r.State = "soft-failing" // GitHub says only non-required checks failed
 	}
@@ -990,6 +1001,9 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 			}
 		}
 	}
+	// After the live-pane flags, so a snapshot and a carried-over live row keep their peek.
+	act.ledger.record(queued, now)
+	roster, ledger := act.ledger.carryOver(roster, queued, now)
 
 	// Live labels from dropDeadPanes, so activity rows match the roster's (#180).
 	labels := map[string]string{}
@@ -1028,6 +1042,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	data := dashboardData{
 		Agents:         roster,
 		QueuedAgents:   queued,
+		LedgerRows:     ledger,
 		QueueNextETA:   queueNextETA(queued, now),
 		Activity:       activity,
 		Events:         events,
@@ -1102,6 +1117,11 @@ func viewSignature(d dashboardData) string {
 			// Likewise the queue pill's anchors are hashed, its ticking CIQueueLabel is not.
 			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%t:%q:%q:%d:%d:%d:%q:%q:%d:%d:%d:%q:%q:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIDraft, a.CIDone, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree, a.BlockedOn, a.BlockedOnSession)
 		}
+	}
+
+	// Ledger rows come sorted; PRMergedAt is hashed, its ticking MergedAgo is not.
+	for _, r := range d.LedgerRows {
+		fmt.Fprintf(h, "|l:%q:%q:%q:%q:%q:%t:%q:%d:%q:%d", r.SessionID, r.TmuxSession, r.SourceApp, r.Branch, r.Worktree, r.LiveTmux, r.Final, r.PRMergedAt, r.PRRepo, r.PRNumber)
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)
@@ -1384,6 +1404,7 @@ func enrichCI(agents []Agent, ci *cwdCache[ciResult], now time.Time) {
 		r := results[agents[i].Cwd]
 		agents[i].CI, agents[i].CIFails, agents[i].CIPasses, agents[i].CIConflict = r.State, r.Fails, r.Passes, r.Conflict
 		agents[i].CIDraft, agents[i].CIDone = r.Draft, r.Done
+		agents[i].PRNumber, agents[i].PRRepo, agents[i].PRMergedAt = r.PRNumber, r.PRRepo, unixOrZero(r.MergedAt)
 		agents[i].CIQueue, agents[i].CIQueueReason = r.Queue, r.QueueReason
 		if r.Queue != "" {
 			agents[i].CIQueuePos, agents[i].CIQueueETA, agents[i].CIQueueSince = r.QueuePos, unixOrZero(r.QueueETA), unixOrZero(r.QueueSince)

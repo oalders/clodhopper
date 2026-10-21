@@ -53,7 +53,7 @@ Subcommands, dispatched in `main.go`:
   loopback or Tailscale only, whatever `--host` binds to, with no override — and
   the request is refused outright when a forwarding header (`X-Forwarded-For`,
   `X-Real-IP`, `Forwarded`, `X-Forwarded-Host`) is *present* — for EVERY action,
-  including the exec-free `end`/`block`/`unblock`, because behind a proxy every peer looks like
+  including the exec-free `end`/`block`/`unblock`/`dismiss`, because behind a proxy every peer looks like
   loopback and no peer can be attributed at all. All three checks (proxy
   refusal, Host allowlist, peer network) live in ONE helper, `execPeerAllowed`,
   shared by handleAction and handlePane so they cannot drift. **Never run
@@ -63,7 +63,7 @@ Subcommands, dispatched in `main.go`:
   streams live transcript text, and being a GET it carries no CSRF token, so the
   Host allowlist is what stops a DNS-rebinding page from walking pane ids.
   The CSRF token is emitted into the page only for a peer that passes the gate,
-  so a peer that fails it gets a genuinely read-only board (no `end`/`block`/`unblock` either).
+  so a peer that fails it gets a genuinely read-only board (no `end`/`block`/`unblock`/`dismiss` either).
   `ingest` never gains write-to-repo
   capability — the capture path stays read-only.
 - **`prune`** (`main.go`) — deletes events older than the retention window,
@@ -111,7 +111,8 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   The `end` action never reaches `actionArgv`: it execs nothing, and its
   `session_id` travels only as a bound SQL parameter. `block`/`unblock` are
   exec-free like `end` (`actionExecs`; they never reach `actionArgv`); `block` checks both ids against a
-  fresh `agentRoster()` before writing the `blocks` row. `rebase`, like
+  fresh `agentRoster()` before writing the `blocks` row. `dismiss` is exec-free too and only
+  drops an in-memory `queueLedger` entry (404 for an unknown id). `rebase`, like
   `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
   never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full
   peer gate. The merge-pr actions (`squash`, `squash-admin`, `close`)
@@ -151,6 +152,11 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   `applyMergeQueue`'s doc comment says when that yields a queue-position pill
   or the "ejected" state (⏏). Like `gitBranch`, it is strictly best-effort: missing `gh`, no PR, or a
   timeout yields "".
+  Every row `splitQueued` folds into the queue is remembered in memory by
+  `queueLedger` (`ledger.go`; 24h, 100 entries, never the DB), so it stays in
+  that table with its PR's outcome until dismissed; once its session is gone
+  the state comes from a validated `gh pr view N --repo=OWNER/REPO`, memoised
+  in a `cwdCache` and equally best-effort.
   The same generic `cwdCache` type also backs the pane peek's GitHub owner/repo for the
   footer's PR #N link (`newRepoCache`/`lookupRepo`, via `git remote get-url origin`),
   resolved per live-pane row (not concurrently) and likewise best-effort: a

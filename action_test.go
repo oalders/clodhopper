@@ -1035,7 +1035,7 @@ func TestActionExecs(t *testing.T) {
 			t.Errorf("actionExecs(%q) = false, want true", a)
 		}
 	}
-	for _, a := range []string{"end", "block", "unblock"} {
+	for _, a := range []string{"end", "block", "unblock", "dismiss"} {
 		if actionExecs(a) {
 			t.Errorf("actionExecs(%q) = true, want false (it runs no subprocess)", a)
 		}

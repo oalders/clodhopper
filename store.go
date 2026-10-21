@@ -566,6 +566,9 @@ type Agent struct {
 	CIQueueSince     int64  // unix seconds the PR entered the queue; 0 when unknown
 	CIQueueLabel     string // the pill's title/aria-label, built from the three above at render time
 	CIQueueReason    string // why GitHub removed an "ejected" PR from the merge queue, shown in the badge's label
+	PRNumber         int    // the PR's number, 0 if none; with PRRepo, links a merge-queue ledger row to its PR
+	PRRepo           string // the PR's GitHub "owner/repo", "" if unknown
+	PRMergedAt       int64  // unix seconds the PR merged; 0 when not merged or unknown
 	BlockedOn        string // the blocker row's BlockLabel while a block applies (see applyBlocks), shown as the "blocked on" chip; "" otherwise
 	BlockedOnSession string // the blocker's session id, so the chip can jump to its row
 	GroupStart       bool   // true on the first roster row of each (SourceApp, Branch) group except the very first row overall; drives the divider between branch groups in the dashboard

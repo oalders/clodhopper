@@ -18,6 +18,8 @@ const sess = 'e2e-waiting-0000-1111-2222-333333333333';
 const actBtn = `#content button.actbtn[data-actions="${sess}"]`;
 const prform = `#content tr.actrow[data-actions-row="${sess}"] .prform`;
 const started = 'merge started in tmux window merge-pr';
+// The queued fixture's row; serve.sh's landing fixture can share the merge-queue table.
+const mqRow = '#row-e2e-queued-0000-1111-2222-333333333333';
 
 let unstubbed: string[] = [];
 
@@ -138,21 +140,21 @@ test('end in the merge-queue section posts end for the queued session', async ({
   const posts = await stubAction(page, { ok: true, exitCode: 0, timedOut: false, output: '' });
   await page.evaluate(() => { window.__ckActionBusy = 1; });
   await page.locator('#ck-mq summary').click();
-  const end = page.locator('#ck-mq button.pract[data-action="end"]');
+  const end = page.locator(`${mqRow} button.pract[data-action="end"]`);
   // An empty result line must not open a second flex line under the controls. Not
   // toBeHidden: Playwright already counts an empty zero-height box as hidden.
-  await expect(page.locator('#ck-mq td.actions .actmsg')).toHaveCSS('display', 'none');
+  await expect(page.locator(`${mqRow} td.actions .actmsg`)).toHaveCSS('display', 'none');
   await end.click();
   await expect(end).toHaveText('✓ confirm');
   await end.click();
 
   await expect.poll(() => posts.length).toBe(1);
   expect(posts[0].postData()).toBe('session_id=e2e-queued-0000-1111-2222-333333333333&action=end');
-  const msg = page.locator('#ck-mq td.actions .actmsg');
+  const msg = page.locator(`${mqRow} td.actions .actmsg`);
   await expect(msg).toHaveText('dismissed — row will clear');
   // The fixed-width actions cell wraps the result onto its own line under ⤢, inside the cell.
-  const cell = (await page.locator('#ck-mq td.actions').boundingBox())!;
-  const peek = (await page.locator('#ck-mq button.peek').boundingBox())!;
+  const cell = (await page.locator(`${mqRow} td.actions`).boundingBox())!;
+  const peek = (await page.locator(`${mqRow} button.peek`).boundingBox())!;
   const box = (await msg.boundingBox())!;
   expect(box.x).toBeLessThanOrEqual(peek.x);
   expect(box.y).toBeGreaterThanOrEqual(peek.y + peek.height);
@@ -163,11 +165,11 @@ test('end in the merge-queue section posts end for the queued session', async ({
 test('the merge-queue session name and its peek + end controls are not clipped', async ({ page }) => {
   await page.evaluate(() => { window.__ckActionBusy = 1; });
   await page.locator('#ck-mq summary').click();
-  const name = page.locator('#ck-mq td.tmux');
+  const name = page.locator(`${mqRow} td.tmux`);
   await expect(name).toHaveText('seeded-merge-queue-session-name');
   const clipped = (el: Element) => el.scrollWidth > el.clientWidth;
   expect(await name.evaluate(clipped)).toBe(false);
-  const actions = page.locator('#ck-mq td.actions');
+  const actions = page.locator(`${mqRow} td.actions`);
   await expect(actions.locator('button.peek')).toBeVisible();
   const end = actions.locator('button.pract[data-action="end"]');
   await expect(end).toBeVisible();
@@ -191,9 +193,9 @@ test('the merge-queue session name and its peek + end controls are not clipped',
 test('the merge-queue actions cell fits a phone', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.locator('#ck-mq summary').click();
-  const peek = (await page.locator('#ck-mq td.actions button.peek').boundingBox())!;
+  const peek = (await page.locator(`${mqRow} td.actions button.peek`).boundingBox())!;
   expect(peek.height).toBeGreaterThanOrEqual(44);
-  const end = (await page.locator('#ck-mq td.actions button.pract[data-action="end"]').boundingBox())!;
+  const end = (await page.locator(`${mqRow} td.actions button.pract[data-action="end"]`).boundingBox())!;
   expect(end.height).toBeGreaterThanOrEqual(44);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

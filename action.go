@@ -401,9 +401,10 @@ func remoteAllowed(remoteAddr string) bool {
 }
 
 // actionExecs reports whether an action can run a command on the host, which is
-// what remoteAllowed gates. Only "end", "block" and "unblock" are exempt: they
-// exec nothing at all, they just write a synthetic SessionEnd or a blocks row to
-// change how a roster row shows (the same reason they deliberately never reach
+// what remoteAllowed gates. Only "end", "block", "unblock" and "dismiss" are
+// exempt: they exec nothing at all, they just write a synthetic SessionEnd or a
+// blocks row, or drop a merge-queue ledger entry, to change how a row shows
+// (the same reason they deliberately never reach
 // actionArgv, the allowlist boundary for things that do exec). Everything else -
 // the merge-pr/gh PR actions, the tmux session actions (rebase included) - runs
 // tmux or gh.
@@ -414,7 +415,7 @@ func remoteAllowed(remoteAddr string) bool {
 // action is likewise gated, and still 400s afterwards.
 func actionExecs(action string) bool {
 	switch action {
-	case "end", "block", "unblock":
+	case "end", "block", "unblock", "dismiss":
 		return false
 	}
 	return true
@@ -591,6 +592,10 @@ type actionConfig struct {
 	// panes is the live tmux pane listing (shared with the peek) the broadcast
 	// uses to skip rows whose pane has died; nil lists nothing and skips none.
 	panes *paneCache
+	// ledger keeps rows that left the merge queue on the board (see
+	// queueLedger); it lives here so "dismiss" can reach it, but serve records
+	// into it whether or not the write path is enabled.
+	ledger *queueLedger
 }
 
 // randomToken returns a 256-bit hex CSRF secret, regenerated each serve start.
@@ -761,6 +766,17 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		}
 		defer cfg.inflight.release(sessionLock)
 		writeActionResult(w, endSession(db, sessionID, now))
+		return
+	}
+
+	// "dismiss" drops a row from the merge-queue table's ledger and does nothing
+	// else: no SessionEnd, no subprocess, never actionArgv.
+	if action == "dismiss" {
+		if !cfg.ledger.dismiss(sessionID) {
+			http.Error(w, "unknown session", http.StatusNotFound)
+			return
+		}
+		writeActionResult(w, actionResult{ExitCode: 0})
 		return
 	}
 
