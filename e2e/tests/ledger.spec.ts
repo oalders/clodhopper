@@ -51,6 +51,24 @@ async function letThrough(page: Page, body?: string): Promise<string[]> {
   return posts;
 }
 
+// A left-queue row's dismiss arms first, as the render test pins (no data-noconfirm);
+// the merged landing row stands in for one by losing the attribute. Stubbed, so the row survives.
+test('a left-queue dismiss arms with its caveat before it posts', async ({ page }) => {
+  const posts: string[] = [];
+  await page.route('**/api/action', (route) => {
+    posts.push(route.request().postData() ?? '');
+    return route.fulfill({ json: { ok: true, exitCode: 0, timedOut: false, output: '' } });
+  });
+  await dismiss(page).evaluate((el) => el.removeAttribute('data-noconfirm'));
+  await dismiss(page).click();
+  await expect(dismiss(page)).toHaveText('✓ confirm');
+  await expect(page.locator(`${row} .actmsg`)).toHaveText(/: drop this row from the merge queue — its PR left the queue unmerged/);
+  expect(posts).toEqual([]);
+  await dismiss(page).click();
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]).toBe(`session_id=${landing}&action=dismiss`);
+});
+
 // Must run before the dismiss test below, which consumes the single-shot row.
 test('a dismiss the server refuses reports the failure', async ({ page }) => {
   await letThrough(page, 'session_id=e2e-ghost&action=dismiss');
