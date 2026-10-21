@@ -629,8 +629,8 @@ func (c *cwdCache[T]) get(cwd string, now time.Time) T {
 
 // ciResult is one PR's CI verdict: State is "", "pending", "green", "failing",
 // "soft-failing" (only non-required checks failed) or "ejected" (removed from
-// the merge queue, with no check started since); Fails and Passes count failed and passed checks (skips
-// are neither).
+// the merge queue, with no check started since); Fails and Passes count failed
+// and passed checks (skips are neither).
 type ciResult struct {
 	State       string
 	Fails       int
@@ -684,9 +684,9 @@ const mergeQueueQuery = `query($id:ID!){node(id:$id){... on PullRequest{mergeQue
 // Queue; with none, a removal as the newest event means the PR was ejected,
 // which overrides the head commit's (possibly green) state until a check starts
 // after the removal (#215); a removal time that won't parse keeps the ejection
-// (fail toward showing it). Any other or
-// unparseable output leaves r unchanged. The relative ETA is pinned to now, as
-// the result sits in cwdCache and a relative one would drift.
+// (fail toward showing it). Any other or unparseable output leaves r unchanged.
+// The relative ETA is pinned to now, as the result sits in cwdCache and a
+// relative one would drift.
 func applyMergeQueue(r ciResult, out []byte, now time.Time) ciResult {
 	var resp struct {
 		Data struct {
@@ -734,7 +734,8 @@ func applyMergeQueue(r ciResult, out []byte, now time.Time) ciResult {
 }
 
 // rollupNode is one statusCheckRollup entry: a CheckRun (name/status/conclusion)
-// or a StatusContext (context/state), told apart by __typename.
+// or a StatusContext (context/state), told apart by __typename. gh reports both
+// kinds' start as startedAt (a StatusContext's is its createdAt).
 type rollupNode struct {
 	Typename   string    `json:"__typename"`
 	Name       string    `json:"name"`
@@ -743,7 +744,6 @@ type rollupNode struct {
 	StartedAt  time.Time `json:"startedAt"`
 	Context    string    `json:"context"`
 	State      string    `json:"state"`
-	CreatedAt  time.Time `json:"createdAt"`
 }
 
 // parsePRView turns `gh pr view --json id,state,isDraft,mergeStateStatus,statusCheckRollup`
@@ -773,10 +773,8 @@ func parsePRView(out []byte) (ciResult, string) {
 	r.Conflict = pr.MergeStateStatus == "DIRTY"
 	r.Draft = pr.IsDraft
 	for _, n := range pr.StatusCheckRollup {
-		for _, t := range []time.Time{n.StartedAt, n.CreatedAt} {
-			if t.After(r.RollupSince) {
-				r.RollupSince = t
-			}
+		if n.StartedAt.After(r.RollupSince) {
+			r.RollupSince = n.StartedAt
 		}
 	}
 	if pr.State != "OPEN" {

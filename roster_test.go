@@ -67,7 +67,7 @@ func TestParsePRView(t *testing.T) {
 		{"draft gate named after a finished job is green", `{"isDraft":true,"statusCheckRollup":[{"__typename":"CheckRun","name":"ci","status":"COMPLETED","conclusion":"SUCCESS"},{"__typename":"StatusContext","context":"ci","state":"PENDING"}]}`, ciResult{State: "green", Passes: 1, Draft: true}},
 		{"merged drops the stale verdict", `{"state":"MERGED","isDraft":true,"mergeStateStatus":"DIRTY","statusCheckRollup":[` + failed + `]}`, ciResult{Done: "merged"}},
 		{"closed drops the stale verdict", `{"state":"CLOSED","isDraft":true,"mergeStateStatus":"DIRTY","statusCheckRollup":[` + failed + `]}`, ciResult{Done: "closed"}},
-		{"rollup since is the newest check start", `{"statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-18T11:30:00Z"},{"__typename":"StatusContext","state":"SUCCESS","createdAt":"2026-10-18T11:40:00Z"},{"__typename":"CheckRun","status":"QUEUED","startedAt":"0001-01-01T00:00:00Z"}]}`, ciResult{State: "pending", Passes: 2, RollupSince: time.Date(2026, 10, 18, 11, 40, 0, 0, time.UTC)}},
+		{"rollup since is the newest check start", `{"statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-18T11:30:00Z"},{"__typename":"StatusContext","state":"SUCCESS","startedAt":"2026-10-18T11:40:00Z"},{"__typename":"CheckRun","status":"QUEUED","startedAt":"0001-01-01T00:00:00Z"}]}`, ciResult{State: "pending", Passes: 2, RollupSince: time.Date(2026, 10, 18, 11, 40, 0, 0, time.UTC)}},
 		{"malformed", `not json`, ciResult{}},
 	}
 	for _, c := range cases {
@@ -121,6 +121,11 @@ func TestApplyMergeQueue(t *testing.T) {
 		if got := applyMergeQueue(green, []byte(c.out), now); got != c.want {
 			t.Errorf("%s: applyMergeQueue = %+v, want %+v", c.name, got, c.want)
 		}
+	}
+	// no check started yet (all QUEUED after a re-push): the ejection stands
+	queued := ciResult{State: "pending"}
+	if got, want := applyMergeQueue(queued, []byte(out(`null`, removed)), now), (ciResult{State: "ejected", QueueReason: "merge conflict"}); got != want {
+		t.Errorf("zero rollup since: applyMergeQueue = %+v, want %+v", got, want)
 	}
 }
 
