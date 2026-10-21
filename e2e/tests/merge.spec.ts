@@ -17,6 +17,8 @@ declare global {
 const sess = 'e2e-waiting-0000-1111-2222-333333333333';
 const actBtn = `#content button.actbtn[data-actions="${sess}"]`;
 const prform = `#content tr.actrow[data-actions-row="${sess}"] .prform`;
+// The seeded queued row with a pane; the queue section also holds a pane-less one.
+const mqRow = '#row-e2e-queued-0000-1111-2222-333333333333';
 const started = 'merge started in tmux window merge-pr';
 // The queued fixture's row; serve.sh's landing fixture can share the merge-queue table.
 const mqRow = '#row-e2e-queued-0000-1111-2222-333333333333';

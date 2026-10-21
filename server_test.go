@@ -1487,16 +1487,18 @@ func TestDemotePendingCI(t *testing.T) {
 		{SessionID: "working", Status: statusWorking, StatusRank: 5, CI: "pending"},                                     // not an alert: untouched
 		{SessionID: "needs-nocheck", Status: statusNeedsYou, StatusRank: 1, CI: ""},                                     // no CI info: untouched
 		{SessionID: "queued", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queued"},                     // the queue has the next move
-		{SessionID: "queue-failing", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queue-failing"},       // likely needs you: untouched
-		{SessionID: "queue-stuck", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queued", CIQueueETA: 1}, // stalled: needs you again
+		{SessionID: "queue-failing", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queue-failing"},       // the queue section never alerts (#219)
+		{SessionID: "queue-stuck", Status: statusWaiting, StatusRank: 0, CI: "green", CIQueue: "queued", CIQueueETA: 1}, // stalled: only its pill says so
+		{SessionID: "queue-approval", Status: statusApproval, StatusRank: 1, CIQueue: "queued"},                         // even a prompt, once queued
+		{SessionID: "queue-working", Status: statusWorking, StatusRank: 5, CIQueue: "queued"},                           // not an alert: untouched
 		{SessionID: "merged", Status: statusNeedsYou, StatusRank: 1, CIDone: "merged"},                                  // finished PR: nothing to act on
 	}
-	demotePendingCI(agents, time.Unix(1+queueOverdueSecs+1, 0))
+	demotePendingCI(agents)
 	got := map[string]Agent{}
 	for _, a := range agents {
 		got[a.SessionID] = a
 	}
-	for _, id := range []string{"needs", "waiting", "soft", "queued", "merged"} {
+	for _, id := range []string{"needs", "waiting", "soft", "queued", "queue-failing", "queue-stuck", "queue-approval", "merged"} {
 		if a := got[id]; a.Status != statusBackground || a.StatusRank != rankBackground {
 			t.Errorf("%s with pending CI should demote to %q rank %d, got %q rank %d", id, statusBackground, rankBackground, a.Status, a.StatusRank)
 		}
@@ -1504,11 +1506,8 @@ func TestDemotePendingCI(t *testing.T) {
 	if a := got["approval"]; a.Status != statusApproval {
 		t.Errorf("a permission prompt must survive pending CI, got %q", a.Status)
 	}
-	if a := got["queue-failing"]; a.Status != statusWaiting {
-		t.Errorf("a failing queue entry must stay an alert, got %q", a.Status)
-	}
-	if a := got["queue-stuck"]; a.Status != statusWaiting {
-		t.Errorf("a stuck queue entry must stay an alert, got %q", a.Status)
+	if a := got["queue-working"]; a.Status != statusWorking {
+		t.Errorf("a working queued row must be untouched, got %q", a.Status)
 	}
 	if a := got["needs-green"]; a.Status != statusNeedsYou {
 		t.Errorf("green CI must not demote, got %q", a.Status)
@@ -3845,37 +3844,98 @@ func TestViewSignature_TracksCIDetail(t *testing.T) {
 	if viewSignature(queued) == viewSignature(dashboardData{Agents: []Agent{{SessionID: "s1", CI: "green", CIQueue: "queued", CIQueuePos: 1}}}) {
 		t.Error("signature unchanged when the merge-queue position changed")
 	}
+	if viewSignature(queued) == viewSignature(dashboardData{Agents: []Agent{{SessionID: "s1", CI: "green", CIQueue: "queued", CIQueuePos: 2, CIQueueStuck: true}}}) {
+		t.Error("signature unchanged when the queue entry went stuck")
+	}
 	if viewSignature(base) == viewSignature(dashboardData{Agents: []Agent{{SessionID: "s1", CI: "failing", CIFails: 1, CIQueueReason: "merge conflict"}}}) {
 		t.Error("signature unchanged when the queue removal reason changed")
 	}
 }
 
-// Only a queued, waiting-for-you, parked or idle, not-stuck row leaves the roster for the merge-queue section (#195).
+// statusRanks pairs every status with the rank deriveStatus or the server layer gives it.
+var statusRanks = map[string]int{
+	statusWaiting: 0, statusNeedsYou: 1, statusApproval: 1, statusInput: 1,
+	statusBackground: rankBackground, statusSubagents: rankBackground, statusWorking: 5,
+	statusIdle: 6, statusEnded: 9, statusBlocked: rankBackground,
+}
+
+// Any merge-queue row folds whatever its status, and none of them alerts once demoted (#219).
 func TestSplitQueued(t *testing.T) {
+	now := time.Unix(100_000, 0)
+	for status, rank := range statusRanks {
+		for _, q := range []string{"queued", "queue-failing"} {
+			agents := []Agent{{SessionID: "s", Status: status, StatusRank: rank, CIQueue: q}}
+			roster, queued := splitQueued(agents, now)
+			demotePendingCI(agents)
+			if len(roster) != 0 || len(queued) != 1 {
+				t.Errorf("%s %s: roster=%d queued=%d, want it folded", q, status, len(roster), len(queued))
+				continue
+			}
+			if queued[0].StatusRank <= 1 {
+				t.Errorf("%s %s: still alerts as %q rank %d", q, status, queued[0].Status, queued[0].StatusRank)
+			}
+		}
+		for _, a := range []Agent{{Status: status}, {Status: status, CI: "ejected"}} {
+			if roster, queued := splitQueued([]Agent{a}, now); len(roster) != 1 || len(queued) != 0 {
+				t.Errorf("CI %q %s: roster=%d queued=%d, want it kept on the roster", a.CI, status, len(roster), len(queued))
+			}
+		}
+	}
+}
+
+// A stalled entry still folds, marked stuck for its pill, and does not alert.
+func TestSplitQueued_Stuck(t *testing.T) {
 	now := time.Unix(100_000, 0)
 	t0 := now.Unix()
 	cases := []struct {
-		name   string
-		a      Agent
-		queued bool
+		name  string
+		a     Agent
+		stuck bool
 	}{
-		{"queued waiting", Agent{CIQueue: "queued", Status: statusBackground, CIQueueETA: t0 + 60}, true},
-		{"queued idle", Agent{CIQueue: "queued", Status: statusIdle}, true},
-		{"queued waiting for you", Agent{CIQueue: "queued", Status: statusWaiting}, true},
-		{"queued needs you", Agent{CIQueue: "queued", Status: statusNeedsYou}, false},
-		{"queued working", Agent{CIQueue: "queued", Status: statusWorking}, false},
-		{"queued needs approval", Agent{CIQueue: "queued", Status: statusApproval}, false},
-		{"ejected", Agent{CI: "ejected", Status: statusBackground}, false},
-		{"queue-failing", Agent{CIQueue: "queue-failing", Status: statusBackground}, false},
-		{"ETA just reached", Agent{CIQueue: "queued", Status: statusBackground, CIQueueETA: t0 - queueOverdueSecs}, true},
-		{"no ETA, recently queued", Agent{CIQueue: "queued", Status: statusBackground, CIQueueSince: t0 - queueStaleSecs}, true},
-		{"no ETA, queued too long", Agent{CIQueue: "queued", Status: statusBackground, CIQueueSince: t0 - queueStaleSecs - 1}, false},
+		{"ETA ahead", Agent{CIQueueETA: t0 + 60}, false},
+		{"ETA just reached", Agent{CIQueueETA: t0 - queueOverdueSecs}, false},
+		{"ETA overdue", Agent{CIQueueETA: t0 - queueOverdueSecs - 1}, true},
+		{"no ETA, recently queued", Agent{CIQueueSince: t0 - queueStaleSecs}, false},
+		{"no ETA, queued too long", Agent{CIQueueSince: t0 - queueStaleSecs - 1}, true},
 	}
 	for _, c := range cases {
-		roster, queued := splitQueued([]Agent{c.a}, now)
-		if got := len(queued) == 1; got != c.queued || len(roster)+len(queued) != 1 {
-			t.Errorf("%s: queued=%v roster=%d, want queued=%v", c.name, got, len(roster), c.queued)
+		c.a.CIQueue, c.a.Status, c.a.StatusRank = "queued", statusWaiting, 0
+		agents := []Agent{c.a}
+		roster, queued := splitQueued(agents, now)
+		demotePendingCI(agents)
+		if len(roster) != 0 || len(queued) != 1 || queued[0].CIQueueStuck != c.stuck || queued[0].StatusRank <= 1 {
+			t.Errorf("%s: roster=%+v queued=%+v, want folded, stuck=%v, not alerting", c.name, roster, queued, c.stuck)
 		}
+	}
+}
+
+// A queued agent waiting on its own background shell (fix-1301) folds and stays quiet (#219).
+func TestSplitQueued_WaitingOnShell(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, etype, tool, payload string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-1301", SessionID: "s", EventType: etype, ToolName: tool, PayloadJSON: payload})
+	}
+	ins(at(3), "PostToolUse", "Bash", `{"background_task_id":"bjji7f6yz"}`)
+	ins(at(2), "Stop", "", "{}")
+	ins(at(1), "Notification", "", `{"notification_type":"idle_prompt"}`)
+	agents, err := agentRoster(db, 16*time.Hour, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].Status != statusSubagents {
+		t.Fatalf("agents = %+v, want one %q row", agents, statusSubagents)
+	}
+	agents[0].CIQueue = "queued"
+	roster, queued := splitQueued(agents, now)
+	demotePendingCI(agents)
+	if len(roster) != 0 || len(queued) != 1 || queued[0].StatusRank <= 1 {
+		t.Errorf("roster=%+v queued=%+v, want it folded and not alerting", roster, queued)
 	}
 }
 
@@ -3893,32 +3953,22 @@ func TestSplitQueued_BlockedFolds(t *testing.T) {
 	}
 }
 
-// A row overdue on its ETA is not demoted, so it lands back in the roster as needing you.
-func TestSplitQueued_OverdueStaysAlert(t *testing.T) {
-	now := time.Unix(100_000, 0)
-	agents := []Agent{{SessionID: "s", CIQueue: "queued", Status: statusWaiting, CIQueueETA: now.Unix() - queueOverdueSecs - 1}}
-	roster, queued := splitQueued(agents, now)
-	demotePendingCI(agents, now)
-	if len(queued) != 0 || len(roster) != 1 || roster[0].Status != statusWaiting {
-		t.Errorf("overdue queued row: roster=%+v queued=%+v, want it in the roster still waiting for you", roster, queued)
-	}
-}
-
-// The split decides on the pre-demotion status, and the demotion after it reaches both halves.
+// The fold ignores status, and the demotion after it reaches both halves.
 func TestSplitQueued_BeforeDemotion(t *testing.T) {
 	now := time.Unix(100_000, 0)
 	agents := []Agent{
-		{SessionID: "needs", CIQueue: "queued", Status: statusNeedsYou},
+		{SessionID: "needs", CIQueue: "queued", Status: statusNeedsYou, StatusRank: 1},
 		{SessionID: "waiting", CIQueue: "queued", Status: statusWaiting},
-		{SessionID: "working", Status: statusWorking},
+		{SessionID: "pending", CI: "pending", Status: statusWaiting},
+		{SessionID: "working", Status: statusWorking, StatusRank: 5},
 	}
 	roster, queued := splitQueued(agents, now)
-	demotePendingCI(agents, now)
-	if len(roster) != 2 || roster[0].SessionID != "needs" || roster[1].SessionID != "working" || roster[0].Status != statusBackground {
-		t.Errorf("roster = %+v, want needs (demoted) then working", roster)
+	demotePendingCI(agents)
+	if len(roster) != 2 || roster[0].SessionID != "pending" || roster[1].SessionID != "working" || roster[0].Status != statusBackground {
+		t.Errorf("roster = %+v, want pending (demoted) then working", roster)
 	}
-	if len(queued) != 1 || queued[0].SessionID != "waiting" || queued[0].Status != statusBackground {
-		t.Errorf("queued = %+v, want waiting (demoted)", queued)
+	if len(queued) != 2 || queued[0].SessionID != "needs" || queued[1].SessionID != "waiting" || queued[0].Status != statusBackground || queued[1].Status != statusBackground {
+		t.Errorf("queued = %+v, want needs then waiting, both demoted", queued)
 	}
 }
 

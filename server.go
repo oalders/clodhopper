@@ -262,7 +262,7 @@ func assignSessColors(agents []Agent, events []Event) map[string]string {
 // dashboardData is the view model rendered by the dashboard template.
 type dashboardData struct {
 	Agents         []Agent
-	QueuedAgents   []Agent     // set-and-forget merge-queue rows, folded under the roster; see splitQueued
+	QueuedAgents   []Agent     // every merge-queue row, folded under the roster; see splitQueued
 	QueueNextETA   string      // earliest queued ETA as an etaPhrase; "" when none is known
 	LedgerRows     []ledgerRow // rows that left the merge queue, kept in its table until dismissed; see queueLedger
 	Activity       []SourceCount
@@ -1021,12 +1021,12 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 			}
 		}
 	}
-	// Before demotePendingCI, so a queued "needs you" row is not folded away (#195).
+	// The fold keys on CIQueue alone, so its order against demotePendingCI is moot (#219).
 	roster, queued := splitQueued(agents, now)
 	act.ledger.record(queued, now)
-	// Before demotePendingCI too, which relaxes every merged "needs you" row.
+	// Before demotePendingCI, which relaxes every merged "needs you" row.
 	roster, ledger := act.ledger.carryOver(roster, queued, now)
-	demotePendingCI(agents, now)
+	demotePendingCI(agents)
 
 	// Live labels from dropDeadPanes, so activity rows match the roster's (#180).
 	labels := map[string]string{}
@@ -1137,8 +1137,9 @@ func viewSignature(d dashboardData) string {
 			// Subagents, Shells and SubagentSince feed the "waiting on N agents" badge: the
 			// start anchor is hashed, the ticking elapsed (SubagentAge) is not.
 			// Launcher feeds the 🔒/🤖 marker, which a resume can flip in place.
-			// Likewise the queue pill's anchors are hashed, its ticking CIQueueLabel is not.
-			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%t:%q:%q:%d:%d:%d:%q:%q:%d:%d:%d:%q:%q:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIDraft, a.CIDone, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree, a.BlockedOn, a.BlockedOnSession)
+			// Likewise the queue pill's anchors are hashed, its ticking CIQueueLabel is not;
+			// CIQueueStuck flips with time while those anchors hold, so it is hashed too.
+			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%t:%q:%q:%d:%d:%d:%t:%q:%q:%d:%d:%d:%q:%q:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIDraft, a.CIDone, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueStuck, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree, a.BlockedOn, a.BlockedOnSession)
 		}
 	}
 
@@ -1241,26 +1242,33 @@ func isCIWatchCommand(cmd string) bool {
 
 // demotePendingCI relaxes a "needs you"/"waiting for you" row to the non-urgent
 // statusBackground when its CI is still running, only non-required checks
-// failed (the PR is still mergeable), or the PR sits in the merge queue (the
-// queue, not the user, has the next move; a "queue-failing" entry is left
-// alone, as it will likely be ejected and need you), or the PR is merged or
-// closed (nothing is left to act on; end dismisses the row). A pending check
-// means the agent most likely pushed and is waiting on that run, not blocked on
-// the user — so the alert styling would be misleading (issue #31). This runs in
-// the server layer, not in deriveStatus, because CI is fetched here via gh and
-// is deliberately kept out of the deterministic roster.
+// failed (the PR is still mergeable), or the PR is merged or closed (nothing is
+// left to act on; end dismisses the row). A pending check means the agent most
+// likely pushed and is waiting on that run, not blocked on the user — so the
+// alert styling would be misleading (issue #31). This runs in the server layer,
+// not in deriveStatus, because CI is fetched here via gh and is deliberately
+// kept out of the deterministic roster.
 //
 // Tradeoff (intentional, matching the roster's other heuristics): an agent that
 // genuinely finished and is awaiting you, but whose earlier push still has CI in
 // flight, is also relaxed for as long as that run stays pending. We accept that
 // over the louder false positive of flagging a busy-waiting agent as needing
 // you. A real "needs approval" (a permission prompt) is left alone — that blocks
-// on you regardless of CI. Nor is a stuck queue entry (queueStuck): it needs you
-// again. now is injected for that check.
-func demotePendingCI(agents []Agent, now time.Time) {
+// on you regardless of CI.
+//
+// A row in the merge queue (any CIQueue, stuck or failing included) is the
+// exception: splitQueued has folded it into the merge-queue section, which never
+// alerts (#219), so every alert status there, approval and input too, is relaxed.
+func demotePendingCI(agents []Agent) {
 	for i := range agents {
-		inQueue := agents[i].CIQueue == "queued" && !queueStuck(agents[i], now)
-		if agents[i].CI != "pending" && agents[i].CI != "soft-failing" && !inQueue && agents[i].CIDone == "" {
+		if agents[i].CIQueue != "" {
+			if agents[i].StatusRank <= 1 {
+				agents[i].Status = statusBackground
+				agents[i].StatusRank = rankBackground
+			}
+			continue
+		}
+		if agents[i].CI != "pending" && agents[i].CI != "soft-failing" && agents[i].CIDone == "" {
 			continue
 		}
 		if agents[i].Status == statusNeedsYou || agents[i].Status == statusWaiting {
@@ -1311,7 +1319,7 @@ func (a Agent) BlockLabel() string {
 }
 
 // A queued PR past its ETA by queueOverdueSecs, or with no ETA queued longer
-// than queueStaleSecs, has likely stalled and needs you again (#195).
+// than queueStaleSecs, has likely stalled; its queue pill says so (#195, #219).
 const (
 	queueOverdueSecs = 10 * 60
 	queueStaleSecs   = 45 * 60
@@ -1325,16 +1333,18 @@ func queueStuck(a Agent, now time.Time) bool {
 	return a.CIQueueSince != 0 && now.Unix()-a.CIQueueSince > queueStaleSecs
 }
 
-// splitQueued folds set-and-forget rows — queued; waiting for you, waiting,
-// idle or blocked (not "needs you"); not stuck — off the roster into the merge-queue
-// section, so only rows needing you stay, ordered by ETA (unknown last). Run it
-// before demotePendingCI. It partitions agents in place and returns views of it,
-// so later edits through agents (demotion) reach both halves.
+// splitQueued folds every merge-queue row (any CIQueue, whatever its status,
+// stuck included) off the roster into the merge-queue section, ordered by ETA
+// (unknown last): the queue has the next move, and a stalled entry only marks
+// its pill (CIQueueStuck) rather than alerting (#219). It partitions agents in
+// place and returns views of it, so later edits through agents (demotion)
+// reach both halves.
 func splitQueued(agents []Agent, now time.Time) (roster, queued []Agent) {
 	var q []Agent
 	n := 0
 	for _, a := range agents {
-		if a.CIQueue == "queued" && setAndForget(a.Status) && !queueStuck(a, now) {
+		if a.CIQueue != "" {
+			a.CIQueueStuck = queueStuck(a, now)
 			q = append(q, a)
 		} else {
 			agents[n] = a

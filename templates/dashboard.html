@@ -565,7 +565,8 @@
     .ci .cibadge.soft { background: var(--attention); }
     /* --background is the .status.background blue, not the page --bg. Solid, because blue text on a tinted row was hard to read. */
     .ci .cibadge.queue { background: var(--background); }
-    .ci .cibadge.queue.failing { background: var(--fail); }
+    .ci .cibadge.queue.stuck { background: var(--attention); }
+    .ci .cibadge.queue.failing { background: var(--fail); } /* after .stuck, so a failing entry stays red */
     .ci .cibadge.draft, .ci .cibadge.done { height: calc(1.6 * var(--fs-xs)); padding: 0 .3em; border: 1px solid var(--text-2); color: var(--text-2); font-size: var(--fs-2xs); font-weight: normal; }
 
     /* Per-session colour key: a small swatch whose colour comes from SessColors
@@ -3007,7 +3008,7 @@
   </section>
 
   {{ if or .QueuedAgents .LedgerRows }}
-  {{/* Queued set-and-forget rows (splitQueued), then the ledger's rows that have left the queue (queueLedger). The end and dismiss buttons reuse the roster's end markup in their own rowform group, so the delegated arm/confirm JS applies unchanged. */}}
+  {{/* Every merge-queue row, never alerting (splitQueued), then the ledger's rows that have left the queue (queueLedger). The end and dismiss buttons reuse the roster's end markup in their own rowform group, so the delegated arm/confirm JS applies unchanged. */}}
   <details id="ck-mq" class="ck-card">
     <summary class="ck-cardhead"><h2>Merge queue ({{ len .QueuedAgents }}){{ with .LedgerTally }}{{ with .Finished }} · {{ . }} finished{{ end }}{{ with .Left }} · <span class="mqleft">{{ . }} left queue</span>{{ end }}{{ end }}{{ with .QueueNextETA }} · next merge {{ . }}{{ end }}</h2></summary>
     <div class="ck-tablewrap">
@@ -3023,8 +3024,8 @@
         <tr{{ if .SessionID }} id="row-{{ .SessionID }}"{{ end }}>
           <td class="branch" data-label="branch">{{ template "branchinnerroster" . }}</td>
           <td data-label="app">{{ .SourceApp }}</td>
-          <td class="ci" data-label="queue"><span class="cibadge queue" aria-hidden="true">{{ .CIQueuePos }}</span></td>
-          <td data-label="detail">{{ .CIQueueLabel }}{{ template "blockchip" (blockChip . $.ExecEnabled) }}</td>
+          <td class="ci" data-label="queue"><span class="cibadge queue{{ if eq .CIQueue "queue-failing" }} failing{{ end }}{{ if .CIQueueStuck }} stuck{{ end }}" aria-hidden="true">{{ .CIQueuePos }}</span></td>
+          <td data-label="detail">{{ if .CIQueueStuck }}likely stalled · {{ end }}{{ .CIQueueLabel }}{{ template "blockchip" (blockChip . $.ExecEnabled) }}</td>
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
           {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}"><button type="button" class="pract" data-action="end" aria-label="end{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} — dismiss this row from the dashboard" title="dismiss this row from the dashboard (does not touch the agent)">end</button><span class="actmsg"></span></span>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
         </tr>

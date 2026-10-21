@@ -564,6 +564,7 @@ type Agent struct {
 	CIQueuePos       int    // 1-based merge-queue position shown in that pill
 	CIQueueETA       int64  // unix seconds the PR is expected to merge; 0 when unknown
 	CIQueueSince     int64  // unix seconds the PR entered the queue; 0 when unknown
+	CIQueueStuck     bool   // the queue entry has likely stalled (queueStuck), marked on the pill; set by splitQueued
 	CIQueueLabel     string // the pill's title/aria-label, built from the three above at render time
 	CIQueueReason    string // why GitHub removed an "ejected" PR from the merge queue, shown in the badge's label
 	PRNumber         int    // the PR's number, 0 if none; with PRRepo, links a merge-queue ledger row to its PR
