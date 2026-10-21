@@ -4207,6 +4207,30 @@ func TestBlockLapsesWhenBlockerLeaves(t *testing.T) {
 	}
 }
 
+// The picker leads with the row's own app, then the rest alphabetically,
+// keeping board order (roster before queued) within each group.
+func TestBlockGroups(t *testing.T) {
+	agents := []Agent{
+		{SessionID: "z1", SourceApp: "zeta"},
+		{SessionID: "self", SourceApp: "mine"},
+		{SessionID: "a1", SourceApp: "alpha"},
+		{SessionID: "m1", SourceApp: "mine"},
+	}
+	queued := []Agent{{SessionID: "m2", SourceApp: "mine"}, {SessionID: "a2", SourceApp: "alpha"}}
+	var got []string
+	for _, g := range blockGroups(agents, queued, agents[1]) {
+		ids := []string{}
+		for _, a := range g.Rows {
+			ids = append(ids, a.SessionID)
+		}
+		got = append(got, g.App+":"+strings.Join(ids, ","))
+	}
+	want := []string{"mine:m1,m2", "alpha:a1,a2", "zeta:z1"}
+	if !slices.Equal(got, want) {
+		t.Errorf("blockGroups = %q, want %q", got, want)
+	}
+}
+
 // The chip's ✕ and the block picker are write controls, so they render only
 // with the CSRF-gated exec UI; the picker never offers the row itself, and a
 // lone row gets none.

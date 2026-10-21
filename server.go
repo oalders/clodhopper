@@ -34,8 +34,44 @@ var dashboardTmpl = template.Must(
 		"rowClass":    rowClass,
 		"ciMarkSlots": ciMarkSlots,
 		"blockChip":   func(a Agent, exec bool) blockChipView { return blockChipView{a, exec} },
+		"blockGroups": blockGroups,
 	}).Parse(dashboardHTML),
 )
+
+// blockGroup is one <optgroup> of the block picker: the rows of one app.
+type blockGroup struct {
+	App  string
+	Rows []Agent
+}
+
+// blockGroups lists the rows self could be blocked on, grouped by app: self's
+// own app first (a block is usually within one project), then the rest
+// alphabetically. Rows keep their board order within a group, roster before
+// queued.
+func blockGroups(agents, queued []Agent, self Agent) []blockGroup {
+	byApp := map[string][]Agent{}
+	for _, a := range append(slices.Clone(agents), queued...) {
+		if a.SessionID == "" || a.SessionID == self.SessionID {
+			continue
+		}
+		byApp[a.SourceApp] = append(byApp[a.SourceApp], a)
+	}
+	apps := make([]string, 0, len(byApp))
+	for app := range byApp {
+		apps = append(apps, app)
+	}
+	sort.Slice(apps, func(i, j int) bool {
+		if (apps[i] == self.SourceApp) != (apps[j] == self.SourceApp) {
+			return apps[i] == self.SourceApp
+		}
+		return apps[i] < apps[j]
+	})
+	groups := make([]blockGroup, len(apps))
+	for i, app := range apps {
+		groups[i] = blockGroup{App: app, Rows: byApp[app]}
+	}
+	return groups
+}
 
 // blockChipView feeds the "blockchip" template, which renders in both the
 // roster and the merge-queue table and gates its ✕ on Exec.
@@ -1220,10 +1256,13 @@ func applyBlocks(agents []Agent, blocks []Block) {
 }
 
 // BlockLabel names a row as the "blocked on" chip and the block picker show it:
-// its branch, else its session id as the roster abbreviates it.
+// its branch, else its worktree dir, else its session id as the roster abbreviates it.
 func (a Agent) BlockLabel() string {
 	if a.Branch != "" {
 		return a.Branch
+	}
+	if a.BranchGuess != "" {
+		return a.BranchGuess
 	}
 	return shortID(a.SessionID)
 }

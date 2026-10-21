@@ -2986,8 +2986,8 @@
             {{/* This row is one of .Agents, so another row exists only if .Agents has two or a row is queued. */}}
             {{ if or (gt (len $.Agents) 1) $.QueuedAgents }}<div class="actcol blockcol" role="group" aria-label="mark this row blocked">
               <span class="acteyebrow">blocked on</span>
-              {{ $self := .SessionID }}<span class="actgroup blockform" data-session="{{ .SessionID }}">
-                <select class="blockpick" aria-label="this row is blocked on">{{ range $.Agents }}{{ if and .SessionID (ne .SessionID $self) }}<option value="{{ .SessionID }}">{{ .BlockLabel }}{{ if .Branch }} · {{ short .SessionID }}{{ end }}</option>{{ end }}{{ end }}{{ range $.QueuedAgents }}{{ if .SessionID }}<option value="{{ .SessionID }}">{{ .BlockLabel }}{{ if .Branch }} · {{ short .SessionID }}{{ end }}</option>{{ end }}{{ end }}</select>
+              <span class="actgroup blockform" data-session="{{ .SessionID }}">
+                <select class="blockpick" aria-label="this row is blocked on">{{ range blockGroups $.Agents $.QueuedAgents . }}<optgroup label="{{ if .App }}{{ .App }}{{ else }}no app{{ end }}">{{ range .Rows }}<option value="{{ .SessionID }}">{{ if .SourceApp }}{{ .SourceApp }} · {{ end }}{{ .BlockLabel }}</option>{{ end }}</optgroup>{{ end }}</select>
                 <button type="button" class="pract" data-action="block" data-noconfirm="true" aria-label="mark{{ if .Branch }} {{ .Branch }}{{ else }} this row{{ end }} as blocked on the selected row" title="this row waits on the chosen row: it leaves the alert band until that row leaves the board">mark blocked</button>
                 <span class="actmsg"></span>
               </span>

@@ -55,6 +55,15 @@ test('the chip label jumps to the blocker row', async ({ page }) => {
   await expect(row).toHaveClass(/\bjumped\b/);
 });
 
+test('the picker leads with the row\'s own app even when it sorts last', async ({ page }) => {
+  await page.evaluate(() => { (window as unknown as { __ckActionBusy: number }).__ckActionBusy = 1; });
+  const working = 'e2e-working-0000-1111-2222-333333333333';
+  await page.locator(`#content button.actbtn[data-actions="${working}"]`).click();
+  const groups = page.locator(`${panel(working)} optgroup`);
+  await expect(groups.first()).toHaveAttribute('label', 'clodhopper');
+  await expect(groups.nth(1)).toHaveAttribute('label', 'a-second-project-with-a-long-source-app-name');
+});
+
 test('the row panel blocks on the picked row', async ({ page }) => {
   const posts = await stubAction(page);
   await page.evaluate(() => { (window as unknown as { __ckActionBusy: number }).__ckActionBusy = 1; });
@@ -62,6 +71,12 @@ test('the row panel blocks on the picked row', async ({ page }) => {
   const form = page.locator(panel(blocker));
   await expect(form.locator(`option[value="${blocker}"]`)).toHaveCount(0);
   await expect(form.locator(`option[value="${queued}"]`)).toHaveCount(1);
+  // Grouped by app, the row's own app first.
+  await expect(form.locator('optgroup').first()).toHaveAttribute('label', 'a-second-project-with-a-long-source-app-name');
+  // "app · branch", or the worktree dir for a branchless row; never the session id.
+  await expect(form.locator(`option[value="${blocked}"]`)).toHaveText('a-second-project-with-a-long-source-app-name · fix-1234');
+  await expect(form.locator('option[value="e2e-idle-0000-1111-2222-333333333333"]'))
+    .toHaveText('a-second-project-with-a-long-source-app-name · a-very-long-worktree-directory-name-standing-in-for-the-branch');
   await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption(blocked);
   await form.getByRole('button', { name: 'mark fix-1235 as blocked on the selected row' }).click();
   await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');
