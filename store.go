@@ -560,13 +560,13 @@ type Agent struct {
 	CIConflict       bool   // the PR has a merge conflict with its base branch
 	CIDraft          bool   // the PR is a draft, shown as a muted chip after the badge
 	CIDone           string // "merged" or "closed" once the PR is no longer open, shown as a muted chip like CIDraft
-	CIQueue          string // merge-queue state ("", "queued", "queue-failing"), the colour of the position pill after the badge
+	CIQueue          string // merge-queue state ("", "queued", "queue-failing"), the merge-queue section's pill state
 	CIQueuePos       int    // 1-based merge-queue position shown in that pill
 	CIQueueETA       int64  // unix seconds the PR is expected to merge; 0 when unknown
 	CIQueueSince     int64  // unix seconds the PR entered the queue; 0 when unknown
-	CIQueueStuck     bool   // the queue entry has likely stalled (queueStuck), marked on the pill; set by splitQueued
 	CIQueueLabel     string // the pill's title/aria-label, built from the three above at render time
 	CIQueueReason    string // why GitHub removed an "ejected" PR from the merge queue, shown in the badge's label
+	CIQueueStuck     bool   // the queue entry has likely stalled (queueStuck), marked on the pill; set by splitQueued
 	PRNumber         int    // the PR's number, 0 if none; with PRRepo, links a merge-queue ledger row to its PR
 	PRRepo           string // the PR's GitHub "owner/repo", "" if unknown
 	PRMergedAt       int64  // unix seconds the PR merged; 0 when not merged or unknown

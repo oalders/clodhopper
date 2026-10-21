@@ -4056,15 +4056,17 @@ func TestDashboardRendersQueuePill(t *testing.T) {
 	html := renderDashboard(t, dashboardData{QueuedAgents: []Agent{
 		{SessionID: "stuck", Branch: "a", CIQueue: "queued", CIQueuePos: 1, CIQueueStuck: true, CIQueueLabel: "merge queue position 1"},
 		{SessionID: "failing", Branch: "b", CIQueue: "queue-failing", CIQueuePos: 2, CIQueueLabel: "merge queue position 2, failing"},
+		{SessionID: "plain", Branch: "c", CIQueue: "queued", CIQueuePos: 3, CIQueueLabel: "merge queue position 3"},
 	}})
-	for _, want := range []string{
-		`<span class="cibadge queue stuck" aria-hidden="true">1</span></td>
-          <td data-label="detail">likely stalled · merge queue position 1`,
-		`<span class="cibadge queue failing" aria-hidden="true">2</span></td>
-          <td data-label="detail">merge queue position 2, failing`,
+	for want, n := range map[string]int{
+		`class="cibadge queue stuck"`:             1,
+		`class="cibadge queue failing"`:           1,
+		`class="cibadge queue"`:                   1, // the plain row: neither class
+		`likely stalled · merge queue position 1`: 1,
+		`likely stalled`:                          1, // only the stuck row
 	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("missing %s in:\n%s", want, html)
+		if got := strings.Count(html, want); got != n {
+			t.Errorf("%s rendered %d times, want %d in:\n%s", want, got, n, html)
 		}
 	}
 }
