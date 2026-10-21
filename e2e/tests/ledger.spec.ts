@@ -101,8 +101,8 @@ test('a merged PR stays in the merge-queue table until dismissed', async ({ page
   // The busy flag held repaints off; released, the next poll drops the row and its tally.
   await setBusy(page, 0);
   await expect(page.locator(row)).toHaveCount(0);
-  // The queued fixture keeps the section up; only its tally goes.
-  await expect(page.locator('#ck-mq > summary')).toContainText('Merge queue (1)');
+  // The two queued fixtures keep the section up; only its tally goes.
+  await expect(page.locator('#ck-mq > summary')).toContainText('Merge queue (2)');
   await expect(page.locator('#ck-mq > summary')).not.toContainText('finished');
 
   await page.goto('/?refresh=1', { waitUntil: 'domcontentloaded' });

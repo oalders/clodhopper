@@ -94,7 +94,7 @@ func TestE2ESeed(t *testing.T) {
 	add(35*time.Minute, appB, "fix-1236", "worktree-blocked-on-queue", queueBlockedSess, "Stop", "", "")
 
 	// Merge-queue rows for queue.spec.ts: e2e/serve.sh creates these dirs under
-	// CLODHOPPER_E2E_REPOS, and its stub gh reports one queued, one ejected and one
+	// CLODHOPPER_E2E_REPOS, and its stub gh reports two queued, one ejected and one
 	// merged, plus, on the exec server only, one queued then merged (ledger.spec.ts).
 	if repos := os.Getenv("CLODHOPPER_E2E_REPOS"); repos != "" {
 		for _, name := range []string{"queued", "ejected", "merged", "landing"} {
@@ -107,6 +107,12 @@ func TestE2ESeed(t *testing.T) {
 				EventType: "Stop", PayloadJSON: "{}",
 			})
 		}
+		// Queued but on a permission prompt: it still folds into the queue section, without alerting (#219).
+		evs = append(evs, Event{
+			TS: now.Add(-time.Hour).UTC().Format(time.RFC3339), SourceApp: appA, Branch: "main",
+			Cwd: filepath.Join(repos, "queued-approval"), SessionID: "e2e-queued-approval-0000-1111-2222-333333333333",
+			EventType: "PermissionRequest", ToolName: "Bash", PayloadJSON: "{}",
+		})
 	}
 
 	// Peek-able rows for swap.spec.ts, the queued one included: e2e/serve.sh's stub tmux lists exactly these pane ids.

@@ -74,7 +74,7 @@ func TestQueueLedgerMovesLiveMergedRowOffRoster(t *testing.T) {
 }
 
 // A live merged row that is busy or needs you stays on the roster with its
-// merged chip, as splitQueued would keep it, so no prompt is hidden.
+// merged chip, so no prompt is hidden.
 func TestQueueLedgerKeepsBusyMergedRowOnRoster(t *testing.T) {
 	l, _ := testLedger(nil)
 	l.record([]Agent{queuedRow("s1")}, ledgerNow)
