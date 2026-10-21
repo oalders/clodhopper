@@ -31,6 +31,7 @@ test('a queued row on a permission prompt folds into the merge queue, not the ro
   const mq = page.locator('#ck-mq');
   const row = '#row-e2e-queued-approval-0000-1111-2222-333333333333';
   await mq.locator('summary').click();
+  await expect(mq.locator(row)).toBeVisible();
   await expect(mq.locator(row)).toContainText('merge queue position 2');
   await expect(page.locator(`table.roster ${row}`)).toHaveCount(0);
 });

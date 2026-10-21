@@ -1500,7 +1500,7 @@ func TestDemotePendingCI(t *testing.T) {
 	}
 	for _, id := range []string{"needs", "waiting", "soft", "queued", "queue-failing", "queue-stuck", "queue-approval", "merged"} {
 		if a := got[id]; a.Status != statusBackground || a.StatusRank != rankBackground {
-			t.Errorf("%s with pending CI should demote to %q rank %d, got %q rank %d", id, statusBackground, rankBackground, a.Status, a.StatusRank)
+			t.Errorf("%s should demote to %q rank %d, got %q rank %d", id, statusBackground, rankBackground, a.Status, a.StatusRank)
 		}
 	}
 	if a := got["approval"]; a.Status != statusApproval {
@@ -4057,13 +4057,15 @@ func TestDashboardRendersQueuePill(t *testing.T) {
 		{SessionID: "stuck", Branch: "a", CIQueue: "queued", CIQueuePos: 1, CIQueueStuck: true, CIQueueLabel: "merge queue position 1"},
 		{SessionID: "failing", Branch: "b", CIQueue: "queue-failing", CIQueuePos: 2, CIQueueLabel: "merge queue position 2, failing"},
 		{SessionID: "plain", Branch: "c", CIQueue: "queued", CIQueuePos: 3, CIQueueLabel: "merge queue position 3"},
+		{SessionID: "failing-stuck", Branch: "d", CIQueue: "queue-failing", CIQueuePos: 4, CIQueueStuck: true, CIQueueLabel: "merge queue position 4, failing"},
 	}})
 	for want, n := range map[string]int{
 		`class="cibadge queue stuck"`:             1,
 		`class="cibadge queue failing"`:           1,
+		`class="cibadge queue failing stuck"`:     1, // failing before stuck
 		`class="cibadge queue"`:                   1, // the plain row: neither class
 		`likely stalled · merge queue position 1`: 1,
-		`likely stalled`:                          1, // only the stuck row
+		`likely stalled`:                          2, // only the stuck rows
 	} {
 		if got := strings.Count(html, want); got != n {
 			t.Errorf("%s rendered %d times, want %d in:\n%s", want, got, n, html)
