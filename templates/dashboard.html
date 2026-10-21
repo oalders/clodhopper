@@ -257,8 +257,8 @@
     table.mq td.actions .rowform { display: contents; }
     table.mq td.actions .actmsg { flex-basis: 100%; overflow-wrap: anywhere; }
     table.mq td.actions .actmsg:empty { display: none; } /* else its 100% basis opens an empty second line */
-    table.mq tr.done td { color: var(--text-2); }
-    #ck-mq .mqleft { color: var(--attention); font-weight: 600; } /* a PR out of the queue unmerged needs you, even folded */ /* a merged/closed ledger row: nothing left to do */
+    table.mq tr.done td { color: var(--text-2); } /* a merged/closed ledger row: nothing left to do */
+    #ck-mq .mqleft { color: var(--attention); font-weight: 600; } /* a PR out of the queue unmerged needs you, even folded */
     td.idle { font-variant-numeric: tabular-nums; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
     td.summary em { font-style: italic; color: var(--text-3); } /* a completed phase, not one in progress */
@@ -3036,7 +3036,7 @@
           <td class="ci" data-label="state">{{ if or (eq .Final "merged") (eq .Final "closed") }}<span class="cibadge done" role="img" aria-label="pull request {{ .Final }}" title="pull request {{ .Final }}">{{ .Final }}</span>{{ else }}<span aria-hidden="true">—</span>{{ end }}</td>
           <td data-label="detail">{{ if eq .Final "open" }}left queue{{ else if eq .Final "queued" }}still queued{{ with .CIQueuePos }} · position {{ . }}{{ end }} · session gone{{ else if not .Final }}gone — state unknown{{ else }}{{ .MergedAgo }}{{ end }}{{ if and .PRRepo .PRNumber }} <a href="https://github.com/{{ .PRRepo }}/pull/{{ .PRNumber }}" target="_blank" rel="noopener noreferrer" aria-label="PR #{{ .PRNumber }} (opens in a new tab)">#{{ .PRNumber }}</a>{{ end }}</td>
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
-          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" .Agent }}{{ end }}{{ if $act }}<span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}"><button type="button" class="pract" data-action="dismiss" data-noconfirm="true" aria-label="dismiss{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} from the merge queue" title="drop this row from the merge queue (does not touch the agent)">dismiss</button><span class="actmsg"></span></span>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" .Agent }}{{ end }}{{ if $act }}<span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}"><button type="button" class="pract" data-action="dismiss"{{ if ne .Final "open" }} data-noconfirm="true"{{ end }} aria-label="dismiss{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} from the merge queue" title="drop this row from the merge queue (does not touch the agent)">dismiss</button><span class="actmsg"></span></span>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="6"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
         {{ end }}

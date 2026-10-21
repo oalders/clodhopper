@@ -277,6 +277,7 @@ func TestPRFinalArgs(t *testing.T) {
 // queue is "queued", with its position; one out of it "left" ("open").
 func TestFinalStateFold(t *testing.T) {
 	merged, _ := parsePRView([]byte(`{"number":7,"state":"MERGED","mergedAt":"2026-10-21T11:00:00Z"}`))
+	closed, _ := parsePRView([]byte(`{"number":7,"state":"CLOSED"}`))
 	open, id := parsePRView([]byte(`{"id":"PR_1","number":7,"state":"OPEN"}`))
 	queued := applyMergeQueue(open, []byte(`{"data":{"node":{"mergeQueueEntry":{"state":"QUEUED","position":3}}}}`), ledgerNow)
 	left := applyMergeQueue(open, []byte(`{"data":{"node":{"mergeQueueEntry":null}}}`), ledgerNow)
@@ -287,7 +288,7 @@ func TestFinalStateFold(t *testing.T) {
 	for _, c := range []struct {
 		r    ciResult
 		want string
-	}{{merged, "merged"}, {queued, "queued"}, {left, "open"}, {unknown, ""}} {
+	}{{merged, "merged"}, {closed, "closed"}, {queued, "queued"}, {left, "open"}, {unknown, ""}} {
 		if got := finalState(c.r); got != c.want {
 			t.Errorf("finalState(%+v) = %q, want %q", c.r, got, c.want)
 		}
@@ -322,8 +323,8 @@ func TestDashboardRendersLedgerRows(t *testing.T) {
 	queued := ledgerRow{Agent: Agent{SessionID: "q", Branch: "bq", CIQueuePos: 2}, Final: "queued"}
 	gone := ledgerRow{Agent: Agent{SessionID: "g", Branch: "bg"}}
 	html := renderDashboard(t, dashboardData{LedgerRows: []ledgerRow{merged, left, queued, gone}, ExecEnabled: true, CSRFToken: "tok"})
-	if want := `Merge queue (0) · 3 finished · <span class="mqleft">1 left queue</span>`; !strings.Contains(html, want) {
-		t.Errorf("heading does not tally the ledger rows as %q", want)
+	if !strings.Contains(html, `<span class="mqleft">1 left queue</span>`) {
+		t.Error("heading does not show the left-queue alert")
 	}
 	for id, want := range map[string][]string{
 		"m": {`class="done"`, `aria-label="pull request merged"`, "5m ago", `href="https://github.com/o/r/pull/7"`, `data-action="dismiss"`},
@@ -337,5 +338,23 @@ func TestDashboardRendersLedgerRows(t *testing.T) {
 				t.Errorf("row %s: missing %q in %s", id, w, row)
 			}
 		}
+	}
+	// Dismissing the only alert for a PR out of the queue is armed and confirmed.
+	if row := ledgerRowHTML(t, html, "l"); strings.Contains(row, "data-noconfirm") {
+		t.Errorf("left-queue row dismisses without confirm: %s", row)
+	}
+	if row := ledgerRowHTML(t, html, "m"); !strings.Contains(row, `data-noconfirm="true"`) {
+		t.Errorf("merged row asks to confirm its dismiss: %s", row)
+	}
+}
+
+// Only merged or closed rows are finished; a still-queued or unknown one is neither that nor an alert.
+func TestLedgerTally(t *testing.T) {
+	var d dashboardData
+	for _, f := range []string{"merged", "closed", "open", "queued", ""} {
+		d.LedgerRows = append(d.LedgerRows, ledgerRow{Final: f})
+	}
+	if got := d.LedgerTally(); got.Finished != 2 || got.Left != 1 {
+		t.Errorf("tally = %+v, want 2 finished, 1 left", got)
 	}
 }

@@ -157,14 +157,15 @@ func (l *queueLedger) carryOver(roster, queued []Agent, now time.Time) ([]Agent,
 	return roster[:n], rows
 }
 
-// LedgerTally counts the ledger rows for the merge-queue heading, apart from
-// the "left queue" alerts, which must show while the section is folded.
+// LedgerTally counts the merge-queue heading's merged or closed ledger rows
+// and, apart, the "left queue" alerts, which must show while it is folded.
 func (d dashboardData) LedgerTally() (t struct{ Finished, Left int }) {
 	for _, r := range d.LedgerRows {
-		if r.Final == "open" {
-			t.Left++
-		} else {
+		switch r.Final {
+		case "merged", "closed":
 			t.Finished++
+		case "open":
+			t.Left++
 		}
 	}
 	return t
