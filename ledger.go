@@ -2,10 +2,8 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"maps"
 	"os/exec"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,34 +21,29 @@ const (
 // queueLedger remembers every row splitQueued folded into the merge queue, so
 // the row can stay in that table with its PR's final state once it leaves the
 // queue, its pane dies or its session ends, until dismissed or expired (#211).
-// It lives in memory only: serve never writes the DB for it.
+// It lives in memory only, bounded by ledgerTTL and ledgerMax: serve never
+// writes the DB for it.
 type queueLedger struct {
 	mu     sync.Mutex
 	m      map[string]ledgerEntry // by session id
-	finals *cwdCache[prFinal]     // by "owner/repo#N"; see lookupPRFinal
+	finals *cwdCache[ciResult]    // by "owner/repo#N"; see lookupPRFinal
 }
 
 type ledgerEntry struct {
-	snap Agent     // the row as last seen queued
-	seen time.Time // when it was last seen queued
+	snap  Agent     // the row as last seen queued
+	seen  time.Time // when it was last seen queued
+	final ciResult  // a gone session's PR once merged or closed: it cannot change, so it is never looked up again
 }
 
 // ledgerRow is one carried-over row of the merge-queue table.
 type ledgerRow struct {
 	Agent
-	Final     string // "merged", "closed", "open" (left the queue) or "" (session gone, state unknown)
+	Final     string // see finalState
 	MergedAgo string // time since PRMergedAt ("5m ago"); "" when unknown
 }
 
-// prFinal is a ledgered PR's state looked up by number once its session is
-// gone: State is "merged", "closed", "open" or "" when the lookup failed.
-type prFinal struct {
-	State    string
-	MergedAt time.Time
-}
-
 func newQueueLedger() *queueLedger {
-	return &queueLedger{m: map[string]ledgerEntry{}, finals: &cwdCache[prFinal]{m: map[string]cwdEntry[prFinal]{}, lookup: lookupPRFinal}}
+	return &queueLedger{m: map[string]ledgerEntry{}, finals: &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{}, lookup: lookupPRFinal}}
 }
 
 // record refreshes the entry of every queued row, then applies ledgerTTL and
@@ -94,9 +87,11 @@ func (l *queueLedger) dismiss(sessionID string) bool {
 
 // carryOver returns the ledger rows for every entry not in queued, most
 // recently queued first, plus roster minus the rows they replace. A session
-// still on the roster shows its own CI: merged or closed moves it to the
-// ledger, anything else (ejected, say) leaves it on the roster with no ledger
-// row. A gone session's PR is looked up by number. now is injected for testing.
+// still on the roster shows its own CI: merged or closed moves it to the ledger
+// only if setAndForget would fold it (so pass the status from before
+// demotePendingCI); anything else leaves it on the roster with no ledger row.
+// A gone session's PR is looked up by number. roster is partitioned in place,
+// as in splitQueued, so the caller's slice keeps every row. now is injected for testing.
 func (l *queueLedger) carryOver(roster, queued []Agent, now time.Time) ([]Agent, []ledgerRow) {
 	if l == nil {
 		return roster, nil
@@ -111,17 +106,30 @@ func (l *queueLedger) carryOver(roster, queued []Agent, now time.Time) ([]Agent,
 	for _, a := range roster {
 		live[a.SessionID] = a
 	}
+	var keys []string
+	for id, e := range entries {
+		if _, ok := live[id]; !ok && e.final.Done == "" {
+			keys = append(keys, finalKey(e.snap))
+		}
+	}
+	finals := lookupKeys(keys, l.finals, now)
 	var rows []ledgerRow
+	moved := map[string]bool{}
 	for id, e := range entries {
 		r := ledgerRow{Agent: e.snap}
 		if a, ok := live[id]; ok {
-			if a.CIDone == "" {
+			if a.CIDone == "" || !setAndForget(a.Status) {
 				continue
 			}
 			r = ledgerRow{Agent: a, Final: a.CIDone}
+			moved[id] = true
 		} else {
-			f := l.finals.get(e.snap.PRRepo+"#"+strconv.Itoa(e.snap.PRNumber), now)
-			r.Final, r.PRMergedAt, r.LiveTmux = f.State, unixOrZero(f.MergedAt), false
+			f := e.final
+			if f.Done == "" {
+				f = finals[finalKey(e.snap)]
+				l.keepFinal(id, f)
+			}
+			r.Final, r.PRMergedAt, r.CIQueuePos, r.LiveTmux = finalState(f), unixOrZero(f.MergedAt), f.QueuePos, false
 		}
 		if r.PRMergedAt != 0 {
 			r.MergedAgo = humanizeSeconds(int(max(0, now.Unix()-r.PRMergedAt))) + " ago"
@@ -135,13 +143,50 @@ func (l *queueLedger) carryOver(roster, queued []Agent, now time.Time) ([]Agent,
 		}
 		return rows[i].SessionID < rows[j].SessionID
 	})
-	if len(rows) > 0 {
-		// Cloned: roster is a view of the caller's agents, which must keep every row.
-		roster = slices.DeleteFunc(slices.Clone(roster), func(a Agent) bool {
-			return slices.ContainsFunc(rows, func(r ledgerRow) bool { return r.SessionID == a.SessionID })
-		})
+	var tail []Agent
+	n := 0
+	for _, a := range roster {
+		if moved[a.SessionID] {
+			tail = append(tail, a)
+		} else {
+			roster[n] = a
+			n++
+		}
 	}
-	return roster, rows
+	copy(roster[n:], tail)
+	return roster[:n], rows
+}
+
+// keepFinal stores f on id's entry once it is terminal (merged or closed).
+func (l *queueLedger) keepFinal(id string, f ciResult) {
+	if f.Done == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if e, ok := l.m[id]; ok {
+		e.final = f
+		l.m[id] = e
+	}
+}
+
+func finalKey(a Agent) string {
+	return a.PRRepo + "#" + strconv.Itoa(a.PRNumber)
+}
+
+// finalState names a gone session's PR for its ledger row: "merged" or
+// "closed"; "queued" while still in the merge queue; "open" once it left the
+// queue unmerged; "" when the lookup failed (no number came back).
+func finalState(r ciResult) string {
+	switch {
+	case r.Done != "":
+		return r.Done
+	case r.PRNumber == 0:
+		return ""
+	case r.Queue != "":
+		return "queued"
+	}
+	return "open"
 }
 
 // prFinalArgs is the gh argv that looks up key ("owner/repo#N"), or false when
@@ -153,38 +198,23 @@ func prFinalArgs(key string) ([]string, bool) {
 	if err != nil || num <= 0 || repo == "" || parseGitHubRepo("https://github.com/"+repo) != repo {
 		return nil, false
 	}
-	return []string{"pr", "view", strconv.Itoa(num), "--repo=" + repo, "--json", "state,mergedAt"}, true
+	return []string{"pr", "view", strconv.Itoa(num), "--repo=" + repo, "--json", "id,number,state,mergedAt"}, true
 }
 
-// lookupPRFinal resolves a gone session's PR state through gh. Best-effort,
-// like lookupCI: invalid input, a missing gh, an error or a timeout yield "".
-func lookupPRFinal(key string) prFinal {
+// lookupPRFinal resolves a gone session's PR through gh, an open one's merge
+// queue entry too, as lookupCI does. Best-effort, like lookupCI: invalid input,
+// a missing gh, an error or a timeout yield the zero ciResult.
+func lookupPRFinal(key string) ciResult {
 	args, ok := prFinalArgs(key)
 	if !ok {
-		return prFinal{}
+		return ciResult{}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "gh", args...).Output()
 	if err != nil {
-		return prFinal{}
+		return ciResult{}
 	}
-	return parsePRFinal(out)
-}
-
-// parsePRFinal turns `gh pr view --json state,mergedAt` output into a prFinal;
-// anything unparseable or an unexpected state is "unknown".
-func parsePRFinal(out []byte) prFinal {
-	var pr struct {
-		State    string    `json:"state"`
-		MergedAt time.Time `json:"mergedAt"`
-	}
-	if err := json.Unmarshal(out, &pr); err != nil {
-		return prFinal{}
-	}
-	switch pr.State {
-	case "MERGED", "CLOSED", "OPEN":
-		return prFinal{State: strings.ToLower(pr.State), MergedAt: pr.MergedAt}
-	}
-	return prFinal{}
+	r, id := parsePRView(out)
+	return withMergeQueue(ctx, "", r, id)
 }

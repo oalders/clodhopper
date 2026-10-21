@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -14,10 +15,13 @@ var ledgerNow = time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
 
 // testLedger is a ledger whose final-state lookup answers from finals and logs
 // each key it was asked for, so no test reaches gh.
-func testLedger(finals map[string]prFinal) (*queueLedger, *[]string) {
+func testLedger(finals map[string]ciResult) (*queueLedger, *[]string) {
 	l := newQueueLedger()
 	var asked []string
-	l.finals.lookup = func(key string) prFinal {
+	var mu sync.Mutex // gone sessions are looked up concurrently
+	l.finals.lookup = func(key string) ciResult {
+		mu.Lock()
+		defer mu.Unlock()
 		asked = append(asked, key)
 		return finals[key]
 	}
@@ -55,7 +59,7 @@ func TestQueueLedgerRecordsQueuedRows(t *testing.T) {
 func TestQueueLedgerMovesLiveMergedRowOffRoster(t *testing.T) {
 	l, asked := testLedger(nil)
 	l.record([]Agent{queuedRow("s1")}, ledgerNow)
-	merged := Agent{SessionID: "s1", CIDone: "merged", PRRepo: "o/r", PRNumber: 7, PRMergedAt: ledgerNow.Add(-5 * time.Minute).Unix(), LiveTmux: true}
+	merged := Agent{SessionID: "s1", Status: statusWaiting, CIDone: "merged", PRRepo: "o/r", PRNumber: 7, PRMergedAt: ledgerNow.Add(-5 * time.Minute).Unix(), LiveTmux: true}
 	other := Agent{SessionID: "s2"}
 	roster, rows := l.carryOver([]Agent{other, merged}, nil, ledgerNow)
 	if len(roster) != 1 || roster[0].SessionID != "s2" {
@@ -69,9 +73,39 @@ func TestQueueLedgerMovesLiveMergedRowOffRoster(t *testing.T) {
 	}
 }
 
+// A live merged row that is busy or needs you stays on the roster with its
+// merged chip, as splitQueued would keep it, so no prompt is hidden.
+func TestQueueLedgerKeepsBusyMergedRowOnRoster(t *testing.T) {
+	l, _ := testLedger(nil)
+	l.record([]Agent{queuedRow("s1")}, ledgerNow)
+	working := Agent{SessionID: "s1", Status: statusWorking, CIDone: "merged"}
+	roster, rows := l.carryOver([]Agent{working}, nil, ledgerNow)
+	if len(roster) != 1 || len(rows) != 0 {
+		t.Errorf("roster = %+v rows = %+v, want the row on the roster only", roster, rows)
+	}
+}
+
+// A row queued again is not a ledger row, and its entry is refreshed so it
+// expires ledgerTTL after this latest sighting.
+func TestQueueLedgerRequeued(t *testing.T) {
+	l, _ := testLedger(nil)
+	a := queuedRow("s1")
+	l.record([]Agent{a}, ledgerNow)
+	l.record(nil, ledgerNow.Add(time.Hour))
+	later := ledgerNow.Add(2 * time.Hour)
+	l.record([]Agent{a}, later)
+	if _, rows := l.carryOver(nil, []Agent{a}, later); len(rows) != 0 {
+		t.Fatalf("re-queued row carried over: %+v", rows)
+	}
+	l.record(nil, ledgerNow.Add(ledgerTTL))
+	if _, rows := l.carryOver(nil, nil, later); len(rows) != 1 {
+		t.Errorf("re-queued entry expired by its first sighting: rows = %+v", rows)
+	}
+}
+
 // A gone session renders from its snapshot, with its PR's state looked up by number.
 func TestQueueLedgerLooksUpGoneSession(t *testing.T) {
-	l, asked := testLedger(map[string]prFinal{"o/r#7": {State: "merged", MergedAt: ledgerNow.Add(-2 * time.Hour)}})
+	l, asked := testLedger(map[string]ciResult{"o/r#7": {Done: "merged", PRNumber: 7, MergedAt: ledgerNow.Add(-2 * time.Hour)}})
 	l.record([]Agent{queuedRow("s1")}, ledgerNow)
 	_, rows := l.carryOver(nil, nil, ledgerNow)
 	if len(rows) != 1 {
@@ -86,10 +120,28 @@ func TestQueueLedgerLooksUpGoneSession(t *testing.T) {
 	}
 }
 
+// A gone session's merged PR cannot change, so it is looked up once, even
+// after the lookup cache's TTL; a still-open one is looked up again.
+func TestQueueLedgerKeepsTerminalFinal(t *testing.T) {
+	l, asked := testLedger(map[string]ciResult{"o/r#7": {Done: "merged", PRNumber: 7}, "o/r#8": {PRNumber: 8}})
+	open := queuedRow("s2")
+	open.PRNumber = 8
+	l.record([]Agent{queuedRow("s1"), open}, ledgerNow)
+	l.carryOver(nil, nil, ledgerNow)
+	_, rows := l.carryOver(nil, nil, ledgerNow.Add(2*cwdTTL))
+	if len(rows) != 2 || rows[0].Final != "merged" {
+		t.Fatalf("rows = %+v, want s1 merged and s2", rows)
+	}
+	slices.Sort(*asked)
+	if !slices.Equal(*asked, []string{"o/r#7", "o/r#8", "o/r#8"}) {
+		t.Errorf("looked up %v, want o/r#7 once and o/r#8 twice", *asked)
+	}
+}
+
 // A live row still open (ejected, say) stays on the roster only, and its entry
 // is kept, so it shows once the session is gone.
 func TestQueueLedgerLeavesOpenLiveRowOnRoster(t *testing.T) {
-	l, _ := testLedger(map[string]prFinal{"o/r#7": {State: "open"}})
+	l, _ := testLedger(map[string]ciResult{"o/r#7": {PRNumber: 7}})
 	l.record([]Agent{queuedRow("s1")}, ledgerNow)
 	ejected := Agent{SessionID: "s1", CI: "ejected"}
 	roster, rows := l.carryOver([]Agent{ejected}, nil, ledgerNow)
@@ -123,7 +175,7 @@ func TestQueueLedgerEvictsLeastRecentlySeen(t *testing.T) {
 	}
 	_, rows := l.carryOver(nil, nil, ledgerNow)
 	if ids := ledgerIDs(rows); len(ids) != ledgerMax || slices.Contains(ids, "s000") || ids[0] != fmt.Sprintf("s%03d", ledgerMax) {
-		t.Errorf("%d rows, first %q; want %d, newest first, without s000", len(ids), ids[0], ledgerMax)
+		t.Errorf("%d rows (%.3v…); want %d, newest first, without s000", len(ids), ids, ledgerMax)
 	}
 }
 
@@ -169,7 +221,7 @@ func TestHandleActionDismiss(t *testing.T) {
 
 // Only a valid repo and a positive number reach gh, always as --repo=.
 func TestPRFinalArgs(t *testing.T) {
-	if args, ok := prFinalArgs("o-1/r.x_y#42"); !ok || strings.Join(args, " ") != "pr view 42 --repo=o-1/r.x_y --json state,mergedAt" {
+	if args, ok := prFinalArgs("o-1/r.x_y#42"); !ok || strings.Join(args, " ") != "pr view 42 --repo=o-1/r.x_y --json id,number,state,mergedAt" {
 		t.Errorf("valid key: %v %v", args, ok)
 	}
 	for _, key := range []string{"#7", "o/r#0", "o/r#-1", "o/r#x", "o/r", "o/r/x#7", "o/..#7", "o r/x#7", "o/r.git#7"} {
@@ -179,20 +231,45 @@ func TestPRFinalArgs(t *testing.T) {
 	}
 }
 
-func TestParsePRFinal(t *testing.T) {
-	at := time.Date(2026, 10, 21, 11, 0, 0, 0, time.UTC)
-	cases := map[string]prFinal{
-		`{"state":"MERGED","mergedAt":"2026-10-21T11:00:00Z"}`: {State: "merged", MergedAt: at},
-		`{"state":"CLOSED","mergedAt":null}`:                   {State: "closed"},
-		`{"state":"OPEN","mergedAt":null}`:                     {State: "open"},
-		`{"state":"DRAFTY"}`:                                   {},
-		`not json`:                                             {},
+// A gone session's PR folds to its row state: an open PR still in the merge
+// queue is "queued", with its position; one out of it "left" ("open").
+func TestFinalStateFold(t *testing.T) {
+	merged, _ := parsePRView([]byte(`{"number":7,"state":"MERGED","mergedAt":"2026-10-21T11:00:00Z"}`))
+	open, id := parsePRView([]byte(`{"id":"PR_1","number":7,"state":"OPEN"}`))
+	queued := applyMergeQueue(open, []byte(`{"data":{"node":{"mergeQueueEntry":{"state":"QUEUED","position":3}}}}`), ledgerNow)
+	left := applyMergeQueue(open, []byte(`{"data":{"node":{"mergeQueueEntry":null}}}`), ledgerNow)
+	unknown, _ := parsePRView([]byte(`not json`))
+	if id != "PR_1" {
+		t.Errorf("open PR id = %q, want PR_1 for the queue lookup", id)
 	}
-	for out, want := range cases {
-		if got := parsePRFinal([]byte(out)); got != want {
-			t.Errorf("%s: %+v, want %+v", out, got, want)
+	for _, c := range []struct {
+		r    ciResult
+		want string
+	}{{merged, "merged"}, {queued, "queued"}, {left, "open"}, {unknown, ""}} {
+		if got := finalState(c.r); got != c.want {
+			t.Errorf("finalState(%+v) = %q, want %q", c.r, got, c.want)
 		}
 	}
+	if queued.QueuePos != 3 {
+		t.Errorf("queued position = %d, want 3", queued.QueuePos)
+	}
+}
+
+// ledgerRowHTML is the <tr> of session id's row inside the merge-queue section.
+func ledgerRowHTML(t *testing.T, html, id string) string {
+	t.Helper()
+	_, mq, ok := strings.Cut(html, `id="ck-mq"`)
+	if !ok {
+		t.Fatal("no merge-queue section")
+	}
+	_, row, ok := strings.Cut(mq, `id="row-`+id+`"`)
+	if !ok {
+		t.Fatalf("no row %q in the merge-queue section", id)
+	}
+	tr := mq[:len(mq)-len(row)]
+	tr = tr[strings.LastIndex(tr, "<tr"):]
+	row, _, _ = strings.Cut(row, "</tr>")
+	return tr + row
 }
 
 // Ledger rows render in the merge-queue table with their state, the PR link and
@@ -200,17 +277,23 @@ func TestParsePRFinal(t *testing.T) {
 func TestDashboardRendersLedgerRows(t *testing.T) {
 	merged := ledgerRow{Agent: Agent{SessionID: "m", Branch: "bm", PRRepo: "o/r", PRNumber: 7}, Final: "merged", MergedAgo: "5m ago"}
 	left := ledgerRow{Agent: Agent{SessionID: "l", Branch: "bl"}, Final: "open"}
+	queued := ledgerRow{Agent: Agent{SessionID: "q", Branch: "bq", CIQueuePos: 2}, Final: "queued"}
 	gone := ledgerRow{Agent: Agent{SessionID: "g", Branch: "bg"}}
-	html := renderDashboard(t, dashboardData{LedgerRows: []ledgerRow{merged, left, gone}, ExecEnabled: true, CSRFToken: "tok"})
-	for _, want := range []string{
-		"Merge queue (0) · 3 left",
-		`class="done"`, `aria-label="pull request merged"`, "merged 5m ago", `href="https://github.com/o/r/pull/7"`,
-		`class="alert"`, "left queue",
-		"gone — state unknown",
-		`data-action="dismiss"`,
+	html := renderDashboard(t, dashboardData{LedgerRows: []ledgerRow{merged, left, queued, gone}, ExecEnabled: true, CSRFToken: "tok"})
+	if !strings.Contains(html, "Merge queue (0) · 4 left") {
+		t.Error("heading does not count the ledger rows")
+	}
+	for id, want := range map[string][]string{
+		"m": {`class="done"`, `aria-label="pull request merged"`, "5m ago", `href="https://github.com/o/r/pull/7"`, `data-action="dismiss"`},
+		"l": {`class="alert"`, "left queue"},
+		"q": {`class=""`, "still queued · position 2 · session gone"},
+		"g": {`class=""`, "gone — state unknown"},
 	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("missing %q", want)
+		row := ledgerRowHTML(t, html, id)
+		for _, w := range want {
+			if !strings.Contains(row, w) {
+				t.Errorf("row %s: missing %q in %s", id, w, row)
+			}
 		}
 	}
 }

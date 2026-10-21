@@ -531,6 +531,7 @@ func runServe(args []string) int {
 // cwdCache memoises per-cwd lookups (CI status; the peek's GitHub repo) so the
 // dashboard (which auto-refreshes) does not shell out on every render. Keyed by
 // cwd; entries expire after cwdTTL, or early once expire marks them stale.
+// The key need not be a cwd: queueLedger's finals use "owner/repo#N".
 type cwdCache[T any] struct {
 	mu       sync.Mutex
 	m        map[string]cwdEntry[T]
@@ -666,14 +667,20 @@ func lookupCI(cwd string) ciResult {
 		return ciResult{} // no PR for branch, not a repo, gh unauth, or timeout
 	}
 	r, id := parsePRView(out)
+	// Queue checks run on a temporary gh-readonly-queue commit the rollup never
+	// sees, so ask for the queue entry directly (#183); same ctx, same deadline.
+	return withMergeQueue(ctx, cwd, r, id)
+}
+
+// withMergeQueue folds open PR id's merge-queue entry into r via gh, run in dir
+// under ctx's deadline. Best-effort: no id or any error leaves r unchanged.
+func withMergeQueue(ctx context.Context, dir string, r ciResult, id string) ciResult {
 	if id == "" {
 		return r
 	}
-	// Queue checks run on a temporary gh-readonly-queue commit the rollup never
-	// sees, so ask for the queue entry directly (#183); same ctx, same deadline.
-	cmd = exec.CommandContext(ctx, "gh", "api", "graphql", "-f", "id="+id, "-f", "query="+mergeQueueQuery)
-	cmd.Dir = cwd
-	out, err = cmd.Output()
+	cmd := exec.CommandContext(ctx, "gh", "api", "graphql", "-f", "id="+id, "-f", "query="+mergeQueueQuery)
+	cmd.Dir = dir
+	out, err := cmd.Output()
 	if err != nil {
 		return r // no queue signal, never an error
 	}
@@ -990,9 +997,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	applyBlocks(agents, blocks)
 	enrichCI(agents, ci, now)
 	suppressWatchedCI(agents, now)
-	// Before demotePendingCI, so a queued "needs you" row is not folded away (#195).
-	roster, queued := splitQueued(agents, now)
-	demotePendingCI(agents, now)
+	// Before the split, so queued, ledgered and roster rows all keep their peek.
 	if peek.enabled {
 		for i := range agents {
 			agents[i].LiveTmux = agents[i].TmuxPane != "" && peek.cache.live(agents[i].TmuxPane, now)
@@ -1001,9 +1006,12 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 			}
 		}
 	}
-	// After the live-pane flags, so a snapshot and a carried-over live row keep their peek.
+	// Before demotePendingCI, so a queued "needs you" row is not folded away (#195).
+	roster, queued := splitQueued(agents, now)
 	act.ledger.record(queued, now)
+	// Before demotePendingCI too, which relaxes every merged "needs you" row.
 	roster, ledger := act.ledger.carryOver(roster, queued, now)
+	demotePendingCI(agents, now)
 
 	// Live labels from dropDeadPanes, so activity rows match the roster's (#180).
 	labels := map[string]string{}
@@ -1121,7 +1129,7 @@ func viewSignature(d dashboardData) string {
 
 	// Ledger rows come sorted; PRMergedAt is hashed, its ticking MergedAgo is not.
 	for _, r := range d.LedgerRows {
-		fmt.Fprintf(h, "|l:%q:%q:%q:%q:%q:%t:%q:%d:%q:%d", r.SessionID, r.TmuxSession, r.SourceApp, r.Branch, r.Worktree, r.LiveTmux, r.Final, r.PRMergedAt, r.PRRepo, r.PRNumber)
+		fmt.Fprintf(h, "|l:%q:%q:%q:%q:%q:%t:%q:%d:%q:%d:%d", r.SessionID, r.TmuxSession, r.SourceApp, r.Branch, r.Worktree, r.LiveTmux, r.Final, r.PRMergedAt, r.PRRepo, r.PRNumber, r.CIQueuePos)
 	}
 
 	activity := append([]SourceCount(nil), d.Activity...)
@@ -1306,12 +1314,12 @@ func queueStuck(a Agent, now time.Time) bool {
 // idle or blocked (not "needs you"); not stuck — off the roster into the merge-queue
 // section, so only rows needing you stay, ordered by ETA (unknown last). Run it
 // before demotePendingCI. It partitions agents in place and returns views of it,
-// so later edits through agents (demotion, live-pane flags) reach both halves.
+// so later edits through agents (demotion) reach both halves.
 func splitQueued(agents []Agent, now time.Time) (roster, queued []Agent) {
 	var q []Agent
 	n := 0
 	for _, a := range agents {
-		if a.CIQueue == "queued" && (a.Status == statusWaiting || a.Status == statusBackground || a.Status == statusIdle || a.Status == statusBlocked) && !queueStuck(a, now) {
+		if a.CIQueue == "queued" && setAndForget(a.Status) && !queueStuck(a, now) {
 			q = append(q, a)
 		} else {
 			agents[n] = a
@@ -1325,6 +1333,12 @@ func splitQueued(agents []Agent, now time.Time) (roster, queued []Agent) {
 	})
 	copy(agents[n:], q)
 	return agents[:n], agents[n:]
+}
+
+// setAndForget reports whether a row with status can leave the roster for the
+// merge-queue table: nothing in it is waiting on you.
+func setAndForget(status string) bool {
+	return status == statusWaiting || status == statusBackground || status == statusIdle || status == statusBlocked
 }
 
 // queueNextETA is the earliest known ETA among queued as an etaPhrase, or "".
@@ -1369,29 +1383,38 @@ func setWorktrees(agents []Agent, roots *cwdCache[string], now time.Time) {
 	}
 }
 
-// lookupCwds resolves each distinct non-empty cwd through c concurrently, so a
-// roster of N worktrees costs one slow round-trip, not N sequential ones.
+// lookupCwds resolves each distinct non-empty cwd through c; see lookupKeys.
 func lookupCwds[T any](agents []Agent, c *cwdCache[T], now time.Time) map[string]T {
+	cwds := make([]string, 0, len(agents))
+	for _, a := range agents {
+		cwds = append(cwds, a.Cwd)
+	}
+	return lookupKeys(cwds, c, now)
+}
+
+// lookupKeys resolves each distinct non-empty key through c concurrently, so a
+// roster of N worktrees costs one slow round-trip, not N sequential ones.
+func lookupKeys[T any](keys []string, c *cwdCache[T], now time.Time) map[string]T {
 	results := make(map[string]T)
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 6)
 	seen := map[string]bool{}
-	for _, a := range agents {
-		if a.Cwd == "" || seen[a.Cwd] {
+	for _, k := range keys {
+		if k == "" || seen[k] {
 			continue
 		}
-		seen[a.Cwd] = true
+		seen[k] = true
 		wg.Add(1)
-		go func(cwd string) {
+		go func(key string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			s := c.get(cwd, now)
+			s := c.get(key, now)
 			mu.Lock()
-			results[cwd] = s
+			results[key] = s
 			mu.Unlock()
-		}(a.Cwd)
+		}(k)
 	}
 	wg.Wait()
 	return results

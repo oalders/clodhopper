@@ -304,9 +304,12 @@ Like **end**, these only write clodhopper's own database.
 
 A row that leaves the merge-queue section stays there with its PR's outcome:
 **merged** (with when) or **closed**, muted; **left queue**, as an alert, if
-the PR is still open; or **gone — state unknown**. Once its session is gone the
-state comes from `gh pr view N --repo OWNER/REPO`. Its **dismiss** button drops
-the row; it touches nothing else. These rows live in serve's memory only (24h,
+the PR is still open but out of the queue; or **gone — state unknown**. A row
+that needs you goes back to the roster instead. Once its session is gone the
+state comes from `gh pr view N --repo OWNER/REPO` plus the merge-queue lookup,
+so a PR still waiting its turn shows **still queued · session gone**. Its
+**dismiss** button drops the row from the merge-queue table (a live session
+returns to the roster); it touches nothing else. These rows live in serve's memory only (24h,
 at most 100), so a restart clears them.
 
 > **Exposure:** this is a **write** capability, not just a read one. It is
