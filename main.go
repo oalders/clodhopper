@@ -93,14 +93,46 @@ func usage() {
 	fmt.Fprint(os.Stderr, `clodhopper — Claude Code multi-agent observability
 
 USAGE
-  clodhopper ingest --source-app NAME   read one hook event (JSON on stdin), store it
-  clodhopper serve [--port N] [--host H | --tailscale] [--enable-merge]   serve the dashboard (default 127.0.0.1; --host 0.0.0.0 for container/LAN; --tailscale binds the Tailscale IPv4; --enable-merge turns on the roster's PR-action buttons, and is restricted to loopback + Tailscale peers whatever --host says)
-  clodhopper prune [--days N]           delete events older than N days
-  clodhopper init [--project|--local]   wire clodhopper hooks into .claude/settings(.local).json
-  clodhopper end --branch B | --cwd D | --session PREFIX   mark matching live sessions ended (--session takes the roster id fragment)
-  clodhopper block --branch B | --session PREFIX  --on-branch B | --on-session PREFIX   relax a row out of the alert band until the blocker session leaves the roster
-  clodhopper unblock --branch B | --session PREFIX   drop every block on the matching live sessions
-  clodhopper --version                  print version and build metadata
+  clodhopper COMMAND [FLAGS]      run 'clodhopper COMMAND -h' for that command's flags
+
+COMMANDS
+  ingest    read one hook event (JSON on stdin), scrub it, store it
+    --source-app NAME     logical source name for this project (default "unknown")
+
+  serve     serve the dashboard (read-only unless --enable-merge)
+    --port N              port to listen on (default 4555, or CLODHOPPER_PORT)
+    --host H              address to bind (default 127.0.0.1; 0.0.0.0 for container/LAN)
+    --tailscale           bind this machine's Tailscale IPv4; cannot be combined with --host
+    --allow-public        allow binding a public IP (UNSAFE: no auth or TLS); or CLODHOPPER_ALLOW_PUBLIC=1
+    --pane-peek           stream live tmux pane content to the dashboard (trusted networks only)
+    --pane-lines N        lines shown in a pane peek, 1..2000 (default 40)
+    --enable-merge        turn on the roster's PR- and session-action buttons; these write to
+                          your repos and are accepted only from loopback and Tailscale peers,
+                          whatever --host says. Never run behind a proxy or port forward
+
+  prune     delete events older than the retention window
+    --days N              retention window in days (default 14, or CLODHOPPER_RETAIN_DAYS)
+
+  init      wire clodhopper hooks into a project's .claude settings
+    --project             write .claude/settings.json (committed/shared)
+    --local               write .claude/settings.local.json (gitignored)
+    --source-app NAME     source label (default: git repo name)
+    --guard KIND          binary guard: "command" (portable, default) or "is"
+    --dry-run             print the result without writing
+
+  end       mark matching live sessions ended (give exactly one selector)
+    --branch B            sessions on this git branch
+    --cwd D               sessions whose latest event has this cwd
+    --session PREFIX      the session whose id starts with PREFIX (the roster fragment)
+
+  block     relax a row out of the alert band until its blocker leaves the roster
+    --branch B | --session PREFIX          the blocked session
+    --on-branch B | --on-session PREFIX    the session it waits on
+
+  unblock   drop every block on the matching live sessions
+    --branch B | --session PREFIX
+
+  --version print version and build metadata
 
 ENV
   CLODHOPPER_DB                    SQLite path (default ~/.claude/clodhopper/var/events.db)
@@ -110,6 +142,7 @@ ENV
   CLODHOPPER_STAMP_CONTEXT=1       also tell the model the local time each prompt was sent
   CLODHOPPER_PORT                  dashboard port (default 4555)
   CLODHOPPER_HOST                  dashboard bind address (default 127.0.0.1)
+  CLODHOPPER_ALLOW_PUBLIC=1        let serve bind a public IP (same as --allow-public)
   CLODHOPPER_REFRESH_SECS          dashboard live-update poll cadence, 0 = off (default 5)
   CLODHOPPER_WAITING_RETAIN_HOURS  hours a waiting agent stays on the roster (default 720 = 30 days; evict via 'clodhopper end')
   CLODHOPPER_ALLOWED_HOSTS         comma-separated extra Host header values accepted by --enable-merge's endpoint (e.g. a Tailscale magicDNS name)
