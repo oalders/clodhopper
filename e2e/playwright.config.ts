@@ -1,7 +1,7 @@
 import { defineConfig } from '@playwright/test';
 
-// @playwright/test is pinned to exactly 1.57.0 (package.json), which runs
-// chromium / chromium-headless-shell revision 1200. Local runs use the
+// @playwright/test is pinned to exactly 1.61.1 (package.json), which runs
+// chromium / chromium-headless-shell revision 1228. Local runs use the
 // read-only host browser bundle (~/.cache/ms-playwright), so before bumping the
 // pin, refresh that bundle on the host with installer/playwright-mcp.sh (it
 // lives in the user's installer setup, not in this repo).

@@ -540,18 +540,18 @@
        ci-mN class on the table and --ci-w below is cell padding + .ci-main, plus for markers the
        .ci-marks margin, ~1.3em for the emoji, ~3.2em for the draft chip (a merged/closed chip, ~3.7em,
        shares its slot but never pairs with 🔀, so only ci-m1 grows for it, widening boards with just
-       a draft chip or 🔀 too) and the gap between them. Keep those
+       a draft chip or 🔀 too) and the 4px gap between them. Keep those
        sums in sync. Anything longer is clipped to "…" by the th,td overflow rule, which is why the
        count is not "N failed". */
     td.ci, th.ci { padding-left: 4px; padding-right: 4px; white-space: nowrap; }
     th.ci { text-align: left; }
     .ci .ci-main { display: inline-block; width: 1.6em; text-align: center; vertical-align: middle; }
     .ci .ci-marks { display: inline-block; margin-left: .4em; vertical-align: middle; }
-    .ci .ci-marks > * + * { margin-left: .1em; }
+    .ci .ci-marks > * + * { margin-left: 4px; } /* px: an em would shrink with the small chip font (#207) */
     .ci .ci-marks:empty { display: none; }
     table.roster { --ci-w: calc(8px + 1.6em); }
     table.roster.ci-m1 { --ci-w: calc(8px + 5.7em); }
-    table.roster.ci-m2 { --ci-w: calc(8px + 6.6em); }
+    table.roster.ci-m2 { --ci-w: calc(12px + 6.5em); }
     .ci.none { color: var(--none); }
     .ci .cibadge {
       display: inline-flex; align-items: center; justify-content: center;

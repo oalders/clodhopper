@@ -45,7 +45,8 @@ export const test = base.extend({
 export async function fontsReady(page: Page) {
   const statuses = await page.evaluate(async () => {
     await document.fonts.ready;
-    return [...document.fonts].filter((f) => f.family === 'JetBrains Mono').map((f) => f.status);
+    // Newer Chromium reports the family quoted ("JetBrains Mono").
+    return [...document.fonts].filter((f) => f.family.replace(/"/g, '') === 'JetBrains Mono').map((f) => f.status);
   });
   expect(statuses).toEqual(faces.map(() => 'loaded'));
 }

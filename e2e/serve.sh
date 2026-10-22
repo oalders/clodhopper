@@ -42,17 +42,18 @@ printf '%%9003\tseeded-merge-queue-session-name\tclaude\t/nonexistent\n'
 STUB
 chmod +x "$tmp/bin/tmux"
 # A stub gh puts two seeded merge-queue rows (e2e_seed_test.go) in the queue,
-# ejects one, and reports the merged row's PR merged, keyed on the row's cwd;
-# every other cwd has no PR. The exec server also gets a "landing" row, queued
-# on its first lookup (serve's first render) and merged after, for ledger.spec.ts.
+# ejects one, reports the merged row's PR merged and the draft-conflict row's a
+# conflicted draft, keyed on the row's cwd; every other cwd has no PR. The exec
+# server also gets a "landing" row, queued on its first lookup (serve's first
+# render) and merged after, for ledger.spec.ts.
 # Single-shot: landing.seen never resets and ledger.spec.ts dismisses the row, so that spec cannot retry.
 export CLODHOPPER_E2E_REPOS="$tmp/repos"
-mkdir -p "$CLODHOPPER_E2E_REPOS/queued" "$CLODHOPPER_E2E_REPOS/ejected" "$CLODHOPPER_E2E_REPOS/merged" "$CLODHOPPER_E2E_REPOS/queued-approval"
+mkdir -p "$CLODHOPPER_E2E_REPOS/queued" "$CLODHOPPER_E2E_REPOS/ejected" "$CLODHOPPER_E2E_REPOS/merged" "$CLODHOPPER_E2E_REPOS/queued-approval" "$CLODHOPPER_E2E_REPOS/draft-conflict"
 [ -z "${2-}" ] || mkdir "$CLODHOPPER_E2E_REPOS/landing"
 cat >"$tmp/bin/gh" <<'STUB'
 #!/bin/sh
 dir=$(basename "$(pwd)")
-case "$dir" in queued | queued-approval | ejected | merged | landing) ;; *) exit 1 ;; esac
+case "$dir" in queued | queued-approval | ejected | merged | landing | draft-conflict) ;; *) exit 1 ;; esac
 case "${1-}" in
 pr)
 	if [ "$dir" = landing ]; then
@@ -67,6 +68,8 @@ pr)
 	# merged: the stale failing rollup and DIRTY must not render for a finished PR (#204).
 	if [ "$dir" = merged ]; then
 		echo '{"id":"PR_e2e","state":"MERGED","mergeStateStatus":"DIRTY","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]}'
+	elif [ "$dir" = draft-conflict ]; then
+		echo '{"id":"PR_e2e","state":"OPEN","isDraft":true,"mergeStateStatus":"DIRTY","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}'
 	else
 		echo '{"id":"PR_e2e","state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}'
 	fi
@@ -76,6 +79,8 @@ api)
 		echo '{"data":{"node":{"mergeQueueEntry":{"state":"QUEUED","position":1,"estimatedTimeToMerge":3600,"enqueuedAt":null},"timelineItems":{"nodes":[]}}}}'
 	elif [ "$dir" = queued-approval ]; then
 		echo '{"data":{"node":{"mergeQueueEntry":{"state":"QUEUED","position":2,"estimatedTimeToMerge":3600,"enqueuedAt":null},"timelineItems":{"nodes":[]}}}}'
+	elif [ "$dir" = draft-conflict ]; then
+		echo '{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[]}}}}'
 	else
 		echo '{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[{"__typename":"RemovedFromMergeQueueEvent","reason":"merge conflict"}]}}}}'
 	fi
