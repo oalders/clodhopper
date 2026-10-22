@@ -137,6 +137,9 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
 
 ### Other conventions
 
+- **No screen-reader work.** The dashboard has a single user, who doesn't use a
+  screen reader. Don't add ARIA live regions, screen-reader-only text or similar,
+  and don't raise their absence as a review finding.
 - **Time is injected, not read from the clock**, in any function whose output is
   tested (`agentRoster`, `idleSeconds`, `cwdCache.get`, …) — they take a `now
   time.Time`. Follow this for new time-dependent logic so tests stay deterministic.
