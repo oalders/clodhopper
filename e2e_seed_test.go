@@ -15,7 +15,8 @@ import (
 // e2eseed keeps it out of `go test ./...`) against a throwaway CLODHOPPER_DB.
 //
 // Ages are relative to now and sit far from every state boundary (working goes
-// idle and a subagent stops counting at staleWorkingSecs), so each row keeps its
+// idle at staleWorkingSecs, or staleInFlightSecs mid tool call, and a subagent
+// stops counting at staleWorkingSecs), so each row keeps its
 // status for the whole run.
 func TestE2ESeed(t *testing.T) {
 	path := os.Getenv("CLODHOPPER_DB")

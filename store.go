@@ -615,8 +615,10 @@ const staleWorkingSecs = 5 * 60
 // trailing PreToolUse with no PostToolUse yet. A foreground Bash call is capped
 // at 10 minutes, after which it moves to the background and fires PostToolUse,
 // so a call open past that (plus slack for hook latency) was killed, interrupted
-// (Esc fires no PostToolUse) or crashed — idle, not working. A foreground
-// subagent keeps lastTS fresh with its own events, so it never needs this.
+// (Esc fires no PostToolUse) or crashed — idle, not working. The cap applies
+// to every tool, so a tool that legitimately runs longer (a slow MCP call) still
+// flips to idle. A foreground subagent's own events keep lastTS fresh, so it only
+// hits the cap if the subagent itself goes silent that long.
 const staleInFlightSecs = 11 * 60
 
 // deriveStatus maps a session's most recent event_type (and how long it has been

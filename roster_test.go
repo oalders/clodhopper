@@ -168,9 +168,10 @@ func TestDeriveStatus(t *testing.T) {
 		{"silent past threshold goes idle", "PostToolUse", "", "", staleWorkingSecs, statusIdle, true},
 		// A trailing PreToolUse is a tool call still in flight (a long test run):
 		// it stays working past staleWorkingSecs, up to staleInFlightSecs.
-		{"in-flight tool call past threshold stays working", "PreToolUse", "", "Bash", staleWorkingSecs, statusWorking, true},
-		{"in-flight tool call just under cap", "PreToolUse", "", "Bash", staleInFlightSecs - 1, statusWorking, true},
-		{"in-flight tool call past cap goes idle", "PreToolUse", "", "Bash", staleInFlightSecs, statusIdle, true},
+		{"prompt silent past threshold goes idle", "UserPromptSubmit", "", "", staleWorkingSecs, statusIdle, true},
+		{"in-flight tool call past threshold stays working", "PreToolUse", "", "", staleWorkingSecs, statusWorking, true},
+		{"in-flight tool call just under cap", "PreToolUse", "", "", staleInFlightSecs - 1, statusWorking, true},
+		{"in-flight tool call past cap goes idle", "PreToolUse", "", "", staleInFlightSecs, statusIdle, true},
 		{"session end drops off", "SessionEnd", "", "", 0, statusEnded, false},
 	}
 	for _, c := range cases {
@@ -205,7 +206,7 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	// waiting: last event is Stop, idle a while.
 	ins(at(9), "s-wait", "fix-2499", "PreToolUse", "Skill", "Skill: address-gh-review")
 	ins(at(4), "s-wait", "fix-2499", "Stop", "", "Stop")
-	// idle: mid-flight but silent past the staleness threshold (no Stop arrived).
+	// idle: between tool calls but silent past the staleness threshold (no Stop arrived).
 	ins(at(8), "s-idle", "fix-3000", "PostToolUse", "Bash", "Bash: go build")
 	// ended: should be excluded.
 	ins(at(3), "s-done", "fix-1111", "SessionEnd", "", "SessionEnd")
