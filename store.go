@@ -605,23 +605,26 @@ const rankBackground = 4
 // fired its Stop hook — it is idle, not working. (Sessions that ended cleanly
 // carry a Stop/SessionEnd event and never reach this branch.)
 //
-// This is a hook-driven heuristic: a session running a single long tool call
-// (e.g. a 6-minute build) also goes silent and will flip to idle, since without
-// a PostToolUse/heartbeat there is no way to tell "in a long call" from
-// "crashed". That trade-off is intentional — "idle" is the honest label for "no
-// signal", and beats the old contradictory "working" + climbing-idle. Don't
-// lower this to chase long-call false positives; if PostToolUse is ever
-// captured, that would be the real disambiguator. An idle session is kept on the
+// A session whose latest event is a PreToolUse is mid tool call (e.g. a long
+// test run) and gets staleInFlightSecs instead. An idle session is kept on the
 // board (it does not drop) until it leaves the waitingCap query window or its
 // session ends — see agentRoster.
 const staleWorkingSecs = 5 * 60
+
+// staleInFlightSecs is the silence allowed while a tool call is in flight: a
+// trailing PreToolUse with no PostToolUse yet. A foreground Bash call is capped
+// at 10 minutes, after which it moves to the background and fires PostToolUse,
+// so a call open past that (plus slack for hook latency) was killed, interrupted
+// (Esc fires no PostToolUse) or crashed — idle, not working. A foreground
+// subagent keeps lastTS fresh with its own events, so it never needs this.
+const staleInFlightSecs = 11 * 60
 
 // deriveStatus maps a session's most recent event_type (and how long it has been
 // silent) to a status label, a sort rank (lower = more urgent), and whether the
 // agent is still active (an ended session drops off the board). idleSecs only
 // matters for the working case: a mid-flight session quiet past
-// staleWorkingSecs is reported as idle rather than working, since a genuinely
-// busy agent keeps emitting hooks.
+// staleWorkingSecs (staleInFlightSecs while a tool call is open) is reported as
+// idle rather than working, since a genuinely busy agent keeps emitting hooks.
 //
 // notifType and lastTool disambiguate Notification, which Claude Code overloads:
 // "permission_prompt" is a genuine "Claude needs your input" prompt, but
@@ -668,7 +671,11 @@ func deriveStatus(lastEvent, notifType, lastTool string, idleSecs int) (label st
 	case "SessionEnd":
 		return statusEnded, 9, false
 	default:
-		if idleSecs >= staleWorkingSecs {
+		stale := staleWorkingSecs
+		if lastEvent == "PreToolUse" {
+			stale = staleInFlightSecs
+		}
+		if idleSecs >= stale {
 			return statusIdle, 6, true
 		}
 		return statusWorking, 5, true

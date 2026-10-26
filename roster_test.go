@@ -165,7 +165,12 @@ func TestDeriveStatus(t *testing.T) {
 		{"permission request needs approval", "PermissionRequest", "", "", 0, statusApproval, true},
 		{"working", "PreToolUse", "", "", 0, statusWorking, true},
 		{"working just under threshold", "PreToolUse", "", "", staleWorkingSecs - 1, statusWorking, true},
-		{"silent past threshold goes idle", "PreToolUse", "", "", staleWorkingSecs, statusIdle, true},
+		{"silent past threshold goes idle", "PostToolUse", "", "", staleWorkingSecs, statusIdle, true},
+		// A trailing PreToolUse is a tool call still in flight (a long test run):
+		// it stays working past staleWorkingSecs, up to staleInFlightSecs.
+		{"in-flight tool call past threshold stays working", "PreToolUse", "", "Bash", staleWorkingSecs, statusWorking, true},
+		{"in-flight tool call just under cap", "PreToolUse", "", "Bash", staleInFlightSecs - 1, statusWorking, true},
+		{"in-flight tool call past cap goes idle", "PreToolUse", "", "Bash", staleInFlightSecs, statusIdle, true},
 		{"session end drops off", "SessionEnd", "", "", 0, statusEnded, false},
 	}
 	for _, c := range cases {
@@ -201,7 +206,7 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	ins(at(9), "s-wait", "fix-2499", "PreToolUse", "Skill", "Skill: address-gh-review")
 	ins(at(4), "s-wait", "fix-2499", "Stop", "", "Stop")
 	// idle: mid-flight but silent past the staleness threshold (no Stop arrived).
-	ins(at(8), "s-idle", "fix-3000", "PreToolUse", "Bash", "Bash: go build")
+	ins(at(8), "s-idle", "fix-3000", "PostToolUse", "Bash", "Bash: go build")
 	// ended: should be excluded.
 	ins(at(3), "s-done", "fix-1111", "SessionEnd", "", "SessionEnd")
 
@@ -830,10 +835,14 @@ func TestAgentRoster_StaleWorkingBecomesIdle(t *testing.T) {
 		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-1", SessionID: sess, EventType: etype, ToolName: tool, PayloadJSON: "{}"})
 	}
 
-	// Mid-flight (no Stop) but silent for 6 min: working has gone stale → idle.
-	ins(at(6), "s-stale", "PreToolUse", "Bash")
+	// Mid-flight (no Stop), between tool calls, silent for 6 min: stale → idle.
+	ins(at(6), "s-stale", "PostToolUse", "Bash")
 	// Mid-flight and recent: genuinely working.
 	ins(at(1), "s-busy", "PreToolUse", "Bash")
+	// A tool call still open after 6 min (a long test run): still working.
+	ins(at(6), "s-inflight", "PreToolUse", "Bash")
+	// A tool call open past any foreground timeout: killed or interrupted → idle.
+	ins(at(12), "s-hung", "PreToolUse", "Bash")
 
 	agents, err := agentRoster(db, 30*time.Minute, now)
 	if err != nil {
@@ -848,6 +857,12 @@ func TestAgentRoster_StaleWorkingBecomesIdle(t *testing.T) {
 	}
 	if got := byID["s-busy"].Status; got != statusWorking {
 		t.Errorf("recently-active session should read %q, got %q", statusWorking, got)
+	}
+	if got := byID["s-inflight"].Status; got != statusWorking {
+		t.Errorf("session mid tool call should read %q, got %q", statusWorking, got)
+	}
+	if got := byID["s-hung"].Status; got != statusIdle {
+		t.Errorf("tool call open past staleInFlightSecs should read %q, got %q", statusIdle, got)
 	}
 }
 
