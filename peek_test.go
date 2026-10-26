@@ -151,6 +151,7 @@ func TestPaneLabel(t *testing.T) {
 	}{
 		{"handle is the branch", livePane{session: "fix-1288", title: "commerce don't forward provider 4xx status"}, "fix-1288", "commerce don't forward provider 4xx status"},
 		{"decorated handle is the branch", livePane{session: "👟 fix-12", title: "Blog post"}, "fix-12", "Blog post"},
+		{"app-prefixed handle is the branch", livePane{session: "muevelo/fix-1530", title: "Dependency audit Hex advisories in mixlock"}, "fix-1530", "Dependency audit Hex advisories in mixlock"},
 		{"project handle, branch in title", livePane{session: "muevelo", title: "main"}, "main", "muevelo"},
 		{"handle is the branch but no title", livePane{session: "fix-12"}, "fix-12", "fix-12"},
 		{"unknown branch keeps the handle", livePane{session: "fix-12", title: "Fix it"}, "", "fix-12"},
