@@ -899,6 +899,11 @@ func TestAgentRoster_StuckShell(t *testing.T) {
 	stop(at(2*60), "s-at-threshold")
 	started(at(5*60), "s-under-threshold", "b1")
 	stop(at(2*60-1), "s-under-threshold")
+	// A sub-second threshold: the main agent stopped just now, and a second ago.
+	started(at(5*60), "s-now", "b1")
+	stop(at(0), "s-now")
+	started(at(5*60), "s-1s", "b1")
+	stop(now.Add(-time.Second).Format(time.RFC3339), "s-1s")
 
 	for _, c := range []struct {
 		name       string
@@ -919,6 +924,8 @@ func TestAgentRoster_StuckShell(t *testing.T) {
 		{"same-second tie", 2 * time.Hour, "s-tie", statusShellStuck, "2 shells", "Bash: b1"},
 		{"at threshold", 2 * time.Hour, "s-at-threshold", statusShellStuck, "1 shell", "Bash: gh pr checks 1 --watch"},
 		{"under threshold", 2 * time.Hour, "s-under-threshold", statusSubagents, "1 shell", ""},
+		{"sub-second, main just spoke", 500 * time.Millisecond, "s-now", statusSubagents, "1 shell", ""},
+		{"sub-second, main quiet 1s", 500 * time.Millisecond, "s-1s", statusShellStuck, "1 shell", "Bash: gh pr checks 1 --watch"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			// Map iteration order is randomised; re-fold so a lucky order cannot mask an unstable oldest-shell pick.
