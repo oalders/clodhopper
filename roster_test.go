@@ -854,9 +854,10 @@ func TestAgentRoster_StuckShell(t *testing.T) {
 	ins := func(ts, sess, etype, tool, summary, payload string) {
 		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-214", SessionID: sess, EventType: etype, ToolName: tool, Summary: summary, PayloadJSON: payload})
 	}
-	started := func(ts, sess, id string) {
-		ins(ts, sess, "PostToolUse", "Bash", "Bash: gh pr checks 1 --watch", `{"background_task_id":"`+id+`"}`)
+	startedCmd := func(ts, sess, id, cmd string) {
+		ins(ts, sess, "PostToolUse", "Bash", cmd, `{"background_task_id":"`+id+`"}`)
 	}
+	started := func(ts, sess, id string) { startedCmd(ts, sess, id, "Bash: gh pr checks 1 --watch") }
 	stop := func(ts, sess string) { ins(ts, sess, "Stop", "", "", "{}") }
 	sub := func(ts, sess, etype string) { ins(ts, sess, etype, "", "", `{"agent_id":"a1"}`) }
 
@@ -885,6 +886,19 @@ func TestAgentRoster_StuckShell(t *testing.T) {
 	started(at(30), "s-old-sub", "b1")
 	stop(at(29), "s-old-sub")
 	sub(at(1), "s-old-sub", "PreToolUse")
+	// Two shells: the older one's command names the row.
+	startedCmd(at(5*60), "s-two", "b2", "Bash: older")
+	startedCmd(at(4*60), "s-two", "b1", "Bash: newer")
+	stop(at(4*60-1), "s-two")
+	// Two shells started the same second: the lower task id wins.
+	startedCmd(at(5*60), "s-tie", "b2", "Bash: b2")
+	startedCmd(at(5*60), "s-tie", "b1", "Bash: b1")
+	stop(at(4*60), "s-tie")
+	// The main agent's last event exactly at the threshold, and a minute short of it.
+	started(at(5*60), "s-at-threshold", "b1")
+	stop(at(2*60), "s-at-threshold")
+	started(at(5*60), "s-under-threshold", "b1")
+	stop(at(2*60-1), "s-under-threshold")
 
 	for _, c := range []struct {
 		name       string
@@ -901,23 +915,30 @@ func TestAgentRoster_StuckShell(t *testing.T) {
 		{"stopped", 2 * time.Hour, "s-stopped", statusWaiting, "", ""},
 		{"mixed", 2 * time.Hour, "s-mixed", statusShellStuck, "2 tasks", "Bash: gh pr checks 1 --watch"},
 		{"old subagent", 2 * time.Hour, "s-old-sub", statusSubagents, "2 tasks", ""},
+		{"oldest shell", 2 * time.Hour, "s-two", statusShellStuck, "2 shells", "Bash: older"},
+		{"same-second tie", 2 * time.Hour, "s-tie", statusShellStuck, "2 shells", "Bash: b1"},
+		{"at threshold", 2 * time.Hour, "s-at-threshold", statusShellStuck, "1 shell", "Bash: gh pr checks 1 --watch"},
+		{"under threshold", 2 * time.Hour, "s-under-threshold", statusSubagents, "1 shell", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			agents, err := agentRoster(db, 30*time.Hour, c.staleShell, now)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var a Agent
-			for _, r := range agents {
-				if r.SessionID == c.sess {
-					a = r
+			// Map iteration order is randomised; re-fold so a lucky order cannot mask an unstable oldest-shell pick.
+			for range 20 {
+				agents, err := agentRoster(db, 30*time.Hour, c.staleShell, now)
+				if err != nil {
+					t.Fatal(err)
 				}
-			}
-			if a.Status != c.status || a.WaitingOn != c.waitingOn || a.ShellCmd != c.cmd {
-				t.Errorf("want %q, %q, cmd %q; got %q, %q, cmd %q", c.status, c.waitingOn, c.cmd, a.Status, a.WaitingOn, a.ShellCmd)
-			}
-			if a.Status == statusShellStuck && a.StatusRank != 1 || a.Status == statusSubagents && a.StatusRank != rankBackground {
-				t.Errorf("status %q has rank %d; only a stuck shell should alert", a.Status, a.StatusRank)
+				var a Agent
+				for _, r := range agents {
+					if r.SessionID == c.sess {
+						a = r
+					}
+				}
+				if a.Status != c.status || a.WaitingOn != c.waitingOn || a.ShellCmd != c.cmd {
+					t.Fatalf("want %q, %q, cmd %q; got %q, %q, cmd %q", c.status, c.waitingOn, c.cmd, a.Status, a.WaitingOn, a.ShellCmd)
+				}
+				if a.Status == statusShellStuck && a.StatusRank != 1 || a.Status == statusSubagents && a.StatusRank != rankBackground {
+					t.Fatalf("status %q has rank %d; only a stuck shell should alert", a.Status, a.StatusRank)
+				}
 			}
 		})
 	}

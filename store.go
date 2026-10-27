@@ -554,7 +554,7 @@ type Agent struct {
 	WaitingOnDetail  string // when WaitingOn says "tasks", their breakdown ("1 agent, 2 shells") for the badge's title and screen readers
 	SubagentSince    int64  // unix seconds of the earliest start among those subagents and shells (statusSubagents/statusShellStuck), so the client can tick their running time in place
 	SubagentAge      string // humanised time since SubagentSince, the initial value the client then ticks
-	ShellCmd         string // the oldest shell's summary ("Bash: <cmd>", scrubbed at ingest) for the stuck badge's title; set only for statusShellStuck
+	ShellCmd         string // the oldest shell's summary ("Bash: <cmd>", scrubbed at ingest) for the stuck badge's title; set only when the row was statusShellStuck
 	CI               string // merge-readiness ("", "pending", "green", "failing", "soft-failing", "ejected"); filled by the server layer via gh
 	CIFails          int    // failed checks on the PR, shown inside the red/orange badge
 	CIPasses         int    // passed checks on the PR, shown inside the green badge
@@ -941,7 +941,7 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 				// Only shells decide: a hung shell holds the row forever, while a
 				// subagent that goes silent already stops counting above.
 				// A shell's start is a main-agent event, so main-quiet alone implies the shell's age.
-				if staleShell > 0 && a.Shells > 0 && idleSeconds(s.mainTS, now) >= int(staleShell.Seconds()) {
+				if staleShell > 0 && a.Shells > 0 && time.Duration(idleSeconds(s.mainTS, now))*time.Second >= staleShell {
 					a.Status, a.StatusRank = statusShellStuck, 1
 					a.ShellCmd = oldest.cmd
 				}

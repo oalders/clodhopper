@@ -60,7 +60,7 @@ func TestStaleShell_DefaultAndOverride(t *testing.T) {
 		env  string
 		want time.Duration
 	}{
-		{"", defaultStaleShell},
+		{"", 2 * time.Hour},
 		{"30m", 30 * time.Minute},
 		{"0", 0}, // disables
 		{"-1h", defaultStaleShell},

@@ -105,5 +105,5 @@ test('a long-hung background shell escalates its row, naming the command', async
   await expect(status).toHaveClass(/\bneeds\b/);
   const badge = status.locator('.ck-badge');
   await expect(badge).toHaveText(/^1 shell · running \d+h · stuck\?$/);
-  await expect(badge).toHaveAttribute('title', /gh pr checks 1 --watch/);
+  await expect(badge).toHaveAttribute('title', 'Bash: gh pr checks 1 --watch');
 });
