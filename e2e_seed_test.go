@@ -86,6 +86,10 @@ func TestE2ESeed(t *testing.T) {
 	// A second session in the same worktree and tmux pane, so swap.spec.ts can tell a
 	// session-keyed restore from a cwd- or pane-keyed one.
 	add(21*time.Hour, appA, "main", "worktree-waiting", "e2e-twin-0000-1111-2222-333333333333", "Stop", "", "")
+	// A background shell 19h old with the main agent quiet 18h: "shell stuck?".
+	add(19*time.Hour, appA, "fix-214", "worktree-shell-stuck", "e2e-shellstuck-0000-1111-2222-333333333333", "PostToolUse", "Bash", `{"background_task_id":"b-e2e"}`)
+	evs[len(evs)-1].Summary = "Bash: gh pr checks 1 --watch"
+	add(18*time.Hour, appA, "fix-214", "worktree-shell-stuck", "e2e-shellstuck-0000-1111-2222-333333333333", "Stop", "", "")
 	// Idle with a two-digit hour count; branchless, so the cwd basename stands in.
 	add(23*time.Hour, appB, "", "a-very-long-worktree-directory-name-standing-in-for-the-branch", "e2e-idle-0000-1111-2222-333333333333", "PreToolUse", "Read", "")
 

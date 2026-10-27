@@ -554,6 +554,7 @@ type Agent struct {
 	WaitingOnDetail  string // when WaitingOn says "tasks", their breakdown ("1 agent, 2 shells") for the badge's title and screen readers
 	SubagentSince    int64  // unix seconds of the earliest start among those subagents and shells, so the client can tick their running time in place
 	SubagentAge      string // humanised time since SubagentSince, the initial value the client then ticks
+	ShellCmd         string // the oldest shell's summary ("Bash: <cmd>", scrubbed at ingest) for the stuck badge's title; set only for statusShellStuck
 	CI               string // merge-readiness ("", "pending", "green", "failing", "soft-failing", "ejected"); filled by the server layer via gh
 	CIFails          int    // failed checks on the PR, shown inside the red/orange badge
 	CIPasses         int    // passed checks on the PR, shown inside the green badge
@@ -586,6 +587,7 @@ const (
 	statusInput      = "needs input"       // AskUserQuestion: a question to answer, not an action to approve
 	statusBackground = "waiting"           // parked on background work, not blocked on the user
 	statusSubagents  = "waiting on agents" // turn ended but background subagents or shells are still running
+	statusShellStuck = "shell stuck?"      // statusSubagents whose oldest shell and the main agent's silence both outran staleShell
 	statusWorking    = "working"
 	statusIdle       = "idle"
 	statusEnded      = "ended"
@@ -689,9 +691,11 @@ func deriveStatus(lastEvent, notifType, lastTool string, idleSecs int) (label st
 // working agent that goes quiet is relabeled idle (see deriveStatus) rather than
 // dropped, so it survives a lunch or overnight gap and only leaves the board on
 // a SessionEnd or once it falls out of the waitingCap query window (serve also
-// hides a row whose tmux pane has died; see dropDeadPanes). now is injected so
-// the result is deterministic under test.
-func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, error) {
+// hides a row whose tmux pane has died; see dropDeadPanes). A positive
+// staleShell escalates a row held only by a likely hung background shell (see
+// statusShellStuck); 0 disables that. now is injected so the result is
+// deterministic under test.
+func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time) ([]Agent, error) {
 	since := now.Add(-waitingCap).UTC().Format(time.RFC3339)
 	rows, err := db.Query(
 		`SELECT ts, source_app, COALESCE(branch,''), COALESCE(rebasing,0), COALESCE(cwd,''), COALESCE(tmux_session,''), COALESCE(tmux_pane,''), COALESCE(launcher,''), COALESCE(session_id,''),
@@ -714,15 +718,21 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		start, lastSeen time.Time
 		lastEvent       string
 	}
+	// shell is one running background shell: its start and the starting event's summary.
+	type shell struct {
+		start time.Time
+		cmd   string
+	}
 	type state struct {
 		a         Agent
 		lastTS    string
+		mainTS    string // like lastTS, but only the main agent's own events bump it
 		lastCmdTS string
 		lastTool  string
 		lastNotif string
 		subs      map[string]*subagent // running subagents by agent_id
 		subPerms  map[string]string    // subagents blocked on a permission request: agent_id -> tool
-		shells    map[string]time.Time // the main agent's running background shells: task id -> start
+		shells    map[string]shell     // the main agent's running background shells by task id
 	}
 	byID := map[string]*state{}
 	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
@@ -734,7 +744,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		}
 		s := byID[sess]
 		if s == nil {
-			s = &state{a: Agent{SessionID: sess, firstSeq: nextSeq}, subs: map[string]*subagent{}, subPerms: map[string]string{}, shells: map[string]time.Time{}}
+			s = &state{a: Agent{SessionID: sess, firstSeq: nextSeq}, subs: map[string]*subagent{}, subPerms: map[string]string{}, shells: map[string]shell{}}
 			byID[sess] = s
 			nextSeq++
 		}
@@ -838,9 +848,10 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		// Ending only on those signals, with no staleness cutoff, means a lost
 		// notification holds the row until waitingCap; a shell emits no events
 		// while it runs, so aging it out would drop every long CI watch instead.
+		// A hung one is escalated to statusShellStuck below rather than forgotten.
 		if shellStart != "" {
 			if t, err := time.Parse(time.RFC3339, ts); err == nil {
-				s.shells[shellStart] = t
+				s.shells[shellStart] = shell{start: t, cmd: summary}
 			}
 		}
 		if shellEnd != "" && (etype == "UserPromptSubmit" || tool == "TaskStop" || tool == "KillShell") {
@@ -850,7 +861,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 			clear(s.shells)
 		}
 		s.a.LastEvent = etype
-		s.lastTS = ts
+		s.lastTS, s.mainTS = ts, ts
 		// notifType mirrors LastEvent (last-write-wins); deriveStatus only reads it
 		// when the latest event is a Notification, where this holds that event's type.
 		s.lastNotif = notifType
@@ -907,9 +918,13 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 				}
 				a.Subagents++
 			}
-			for _, start := range s.shells {
-				if earliest.IsZero() || start.Before(earliest) {
-					earliest = start
+			var oldest shell
+			for _, sh := range s.shells {
+				if earliest.IsZero() || sh.start.Before(earliest) {
+					earliest = sh.start
+				}
+				if oldest.start.IsZero() || sh.start.Before(oldest.start) {
+					oldest = sh
 				}
 				a.Shells++
 			}
@@ -921,6 +936,13 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 				}
 				a.SubagentSince = earliest.Unix()
 				a.SubagentAge = humanizeSeconds(int(max(0, now.Unix()-a.SubagentSince)))
+				// Only shells decide: a hung shell holds the row forever, while a
+				// subagent that goes silent already stops counting above.
+				if staleShell > 0 && a.Shells > 0 && now.Sub(oldest.start) >= staleShell &&
+					idleSeconds(s.mainTS, now) >= int(staleShell.Seconds()) {
+					a.Status, a.StatusRank = statusShellStuck, 1
+					a.ShellCmd = oldest.cmd
+				}
 			}
 		}
 		// Pane presence is resolved here (independent of --pane-peek) so the

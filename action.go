@@ -681,7 +681,7 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		// on the roster is refused: the button is only offered on roster rows,
 		// so fail closed rather than send blind.
 		if action == "reload-plugins" || action == "rebase" {
-			agents, err := agentRoster(db, time.Duration(waitingRetainHours())*time.Hour, now)
+			agents, err := agentRoster(db, time.Duration(waitingRetainHours())*time.Hour, staleShell(), now)
 			if err != nil {
 				http.Error(w, "lookup failed", http.StatusInternalServerError)
 				return
@@ -733,7 +733,7 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 			return
 		}
 		defer cfg.inflight.release(broadcastLock)
-		agents, err := agentRoster(db, time.Duration(waitingRetainHours())*time.Hour, now)
+		agents, err := agentRoster(db, time.Duration(waitingRetainHours())*time.Hour, staleShell(), now)
 		if err != nil {
 			http.Error(w, "lookup failed", http.StatusInternalServerError)
 			return
@@ -1041,7 +1041,7 @@ func restartSkipReason(a Agent) string {
 		return "working — its turn would be cut off"
 	case statusBackground:
 		return "waiting on background work — it would be lost"
-	case statusSubagents:
+	case statusSubagents, statusShellStuck:
 		return "waiting on agents or shells — /exit would kill them"
 	default:
 		return "status " + strconv.Quote(a.Status) + " — not restarted"
@@ -1210,7 +1210,7 @@ func endSession(db *sql.DB, sessionID string, now time.Time) actionResult {
 // roster rows, so fail closed on anything else); a self-block or a cycle is
 // refused with its reason. A lookup error stays server-side, as in endSession.
 func blockAction(db *sql.DB, sessionID, blockerID string, now time.Time) actionResult {
-	agents, err := agentRoster(db, time.Duration(waitingRetainHours())*time.Hour, now)
+	agents, err := agentRoster(db, time.Duration(waitingRetainHours())*time.Hour, staleShell(), now)
 	if err != nil {
 		debugf("action: block %s: %v", sessionID, err)
 		return actionResult{ExitCode: -1, Output: "could not block session"}

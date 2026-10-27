@@ -165,7 +165,7 @@ func TestAgentRoster_CarriesTmuxSession(t *testing.T) {
 	insertEvent(db, Event{TS: at(5), SourceApp: "myapp", Branch: "fix-1710", TmuxSession: "old-name", SessionID: "s1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-1710", TmuxSession: "roster-colors", SessionID: "s1", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
 
-	agents, err := agentRoster(db, 30*time.Minute, now)
+	agents, err := agentRoster(db, 30*time.Minute, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +314,7 @@ func TestAgentRoster_CarriesTmuxPane(t *testing.T) {
 	insertEvent(db, Event{TS: at(5), SourceApp: "myapp", Branch: "b", TmuxPane: "%1", SessionID: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "b", TmuxPane: "%2", SessionID: "s1", EventType: "Stop", PayloadJSON: "{}"})
 
-	agents, err := agentRoster(db, 30*time.Minute, now)
+	agents, err := agentRoster(db, 30*time.Minute, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func TestAgentRoster_EmptyTmuxPaneDoesNotClobber(t *testing.T) {
 	insertEvent(db, Event{TS: at(5), SourceApp: "myapp", Branch: "b", TmuxPane: "%1", SessionID: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "b", TmuxPane: "", SessionID: "s1", EventType: "Stop", PayloadJSON: "{}"})
 
-	agents, err := agentRoster(db, 30*time.Minute, now)
+	agents, err := agentRoster(db, 30*time.Minute, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}

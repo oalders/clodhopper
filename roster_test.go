@@ -211,7 +211,7 @@ func TestAgentRoster_DerivesStateAndSorts(t *testing.T) {
 	// ended: should be excluded.
 	ins(at(3), "s-done", "fix-1111", "SessionEnd", "", "SessionEnd")
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestAgentRoster_GroupsSameBranch(t *testing.T) {
 	ins(at(2), "n1", "", "Stop", "")
 	ins(at(5), "n2", "", "Stop", "")
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +400,7 @@ func TestAgentRoster_GroupKeyTracksGrouping(t *testing.T) {
 	ins(at(3), "myapp", "n1", "")
 	ins(at(4), "myapp", "n2", "")
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ func TestAgentRoster_SameBranchDifferentAppNotGrouped(t *testing.T) {
 	ins(at(1), "app-a", "sa")
 	ins(at(2), "app-b", "sb")
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +489,7 @@ func TestAgentRoster_LastCommandLatestPerSession(t *testing.T) {
 	// s-none: never ran a slash command.
 	ins(at(5), "s-none", "PreToolUse", "")
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +532,7 @@ func TestAgentRoster_NotificationTypeDisambiguates(t *testing.T) {
 	// A Notification with no type (older Claude Code) → stays conservatively "needs you".
 	ins(at(1), "s-bare", "Notification", "", "{}")
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -666,7 +666,7 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", Branch: "fix-127", SessionID: "s-perm-mixed", EventType: "PermissionRequest",
 		ToolName: "Bash", PayloadJSON: `{"agent_id":"a2"}`})
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -720,7 +720,7 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 	// Map iteration order is randomised; re-fold so a lucky order cannot mask an
 	// order-dependent pick between the pending approval and question.
 	for range 20 {
-		agents, err := agentRoster(db, 16*time.Hour, now)
+		agents, err := agentRoster(db, 16*time.Hour, 0, now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -793,7 +793,7 @@ func TestAgentRoster_WaitingOnShells(t *testing.T) {
 	started(at(2), "s-working", "b1")
 	ins(at(1), "s-working", "PreToolUse", "Bash", "{}")
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -839,6 +839,90 @@ func TestAgentRoster_WaitingOnShells(t *testing.T) {
 	}
 }
 
+// A shell that has run past staleShell while the main agent stayed silent as
+// long has likely hung (a --watch on a check that never finishes): the row is
+// escalated to an alert, with its counts kept, rather than the shell forgotten.
+func TestAgentRoster_StuckShell(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ins := func(ts, sess, etype, tool, summary, payload string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-214", SessionID: sess, EventType: etype, ToolName: tool, Summary: summary, PayloadJSON: payload})
+	}
+	started := func(ts, sess, id string) {
+		ins(ts, sess, "PostToolUse", "Bash", "Bash: gh pr checks 1 --watch", `{"background_task_id":"`+id+`"}`)
+	}
+	stop := func(ts, sess string) { ins(ts, sess, "Stop", "", "", "{}") }
+	sub := func(ts, sess, etype string) { ins(ts, sess, etype, "", "", `{"agent_id":"a1"}`) }
+
+	// Old shell, main agent quiet since: stuck.
+	started(at(19*60), "s-stuck", "b1")
+	stop(at(18*60), "s-stuck")
+	// Young shell: still just waiting on it.
+	started(at(30), "s-young", "b1")
+	stop(at(29), "s-young")
+	// Old shell, but the main agent spoke recently: not stuck.
+	started(at(5*60), "s-main-active", "b1")
+	stop(at(5*60-1), "s-main-active")
+	ins(at(31), "s-main-active", "UserPromptSubmit", "", "", "{}")
+	stop(at(30), "s-main-active")
+	// TaskStop still ends an old shell, leaving nothing to be stuck on.
+	started(at(5*60), "s-stopped", "b1")
+	ins(at(3*60), "s-stopped", "PostToolUse", "TaskStop", "", `{"tool_input":{"task_id":"b1"}}`)
+	stop(at(3*60-1), "s-stopped")
+	// A busy subagent beside the old shell does not vouch for the main agent.
+	started(at(5*60), "s-mixed", "b1")
+	stop(at(5*60-1), "s-mixed")
+	sub(at(4*60), "s-mixed", "SubagentStart")
+	sub(at(1), "s-mixed", "PreToolUse")
+	// An old subagent beside a young shell: only shells decide.
+	sub(at(5*60), "s-old-sub", "SubagentStart")
+	started(at(30), "s-old-sub", "b1")
+	stop(at(29), "s-old-sub")
+	sub(at(1), "s-old-sub", "PreToolUse")
+
+	for _, c := range []struct {
+		name       string
+		staleShell time.Duration
+		sess       string
+		status     string
+		waitingOn  string
+		cmd        string
+	}{
+		{"stuck", 2 * time.Hour, "s-stuck", statusShellStuck, "1 shell", "Bash: gh pr checks 1 --watch"},
+		{"disabled", 0, "s-stuck", statusSubagents, "1 shell", ""},
+		{"young", 2 * time.Hour, "s-young", statusSubagents, "1 shell", ""},
+		{"main active", 2 * time.Hour, "s-main-active", statusSubagents, "1 shell", ""},
+		{"stopped", 2 * time.Hour, "s-stopped", statusWaiting, "", ""},
+		{"mixed", 2 * time.Hour, "s-mixed", statusShellStuck, "2 tasks", "Bash: gh pr checks 1 --watch"},
+		{"old subagent", 2 * time.Hour, "s-old-sub", statusSubagents, "2 tasks", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			agents, err := agentRoster(db, 30*time.Hour, c.staleShell, now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var a Agent
+			for _, r := range agents {
+				if r.SessionID == c.sess {
+					a = r
+				}
+			}
+			if a.Status != c.status || a.WaitingOn != c.waitingOn || a.ShellCmd != c.cmd {
+				t.Errorf("want %q, %q, cmd %q; got %q, %q, cmd %q", c.status, c.waitingOn, c.cmd, a.Status, a.WaitingOn, a.ShellCmd)
+			}
+			if a.Status == statusShellStuck && a.StatusRank != 1 || a.Status == statusSubagents && a.StatusRank != rankBackground {
+				t.Errorf("status %q has rank %d; only a stuck shell should alert", a.Status, a.StatusRank)
+			}
+		})
+	}
+}
+
 func TestAgentRoster_StaleWorkingBecomesIdle(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {
@@ -861,7 +945,7 @@ func TestAgentRoster_StaleWorkingBecomesIdle(t *testing.T) {
 	// A tool call open past any foreground timeout: killed or interrupted → idle.
 	ins(at(12), "s-hung", "PreToolUse", "Bash")
 
-	agents, err := agentRoster(db, 30*time.Minute, now)
+	agents, err := agentRoster(db, 30*time.Minute, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -901,7 +985,7 @@ func TestAgentRoster_ResumeAfterEndIsLive(t *testing.T) {
 		insertEvent(db, Event{TS: at(e.mins), SourceApp: "myapp", Branch: "fix-1", SessionID: "s-resumed", EventType: e.etype, PayloadJSON: "{}"})
 	}
 
-	agents, err := agentRoster(db, 30*time.Minute, now)
+	agents, err := agentRoster(db, 30*time.Minute, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -928,7 +1012,7 @@ func TestAgentRoster_LaunchCwdKeepsFirstCwd(t *testing.T) {
 		insertEvent(db, Event{TS: at(e.mins), SourceApp: "myapp", Branch: "fix-1", Cwd: e.cwd, SessionID: "s-cd", EventType: "PreToolUse", PayloadJSON: "{}"})
 	}
 
-	agents, err := agentRoster(db, 30*time.Minute, now)
+	agents, err := agentRoster(db, 30*time.Minute, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -961,7 +1045,7 @@ func TestAgentRoster_SurfacesRebasing(t *testing.T) {
 	// Never rebasing.
 	ins(at(1), "s-normal", "fix-9", false)
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1337,7 +1421,7 @@ func TestAgentRoster_RetainsUntilCapAndRelabelsStale(t *testing.T) {
 	// Waiting 200m ago: beyond the 2h cap -> not even fetched -> drops.
 	ins(at(200), "s-old", "b4", "Stop", "", "Stop")
 
-	agents, err := agentRoster(db, 2*time.Hour, now)
+	agents, err := agentRoster(db, 2*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1378,7 +1462,7 @@ func TestAgentRoster_DefaultCapKeepsLongIdleWaiter(t *testing.T) {
 	insertEvent(db, Event{TS: at(20), SourceApp: "myapp", Branch: "b1", SessionID: "s-longidle", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
 
 	capDur := time.Duration(waitingRetainHours()) * time.Hour
-	agents, err := agentRoster(db, capDur, now)
+	agents, err := agentRoster(db, capDur, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1458,7 +1542,7 @@ func TestRosterBranchSurvivesTransientEmptyCapture(t *testing.T) {
 	insertEvent(db, Event{TS: at(3), SourceApp: "mmir", Branch: "fix-3653", Cwd: "/w/fix-3653", SessionID: "s1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: at(1), SourceApp: "mmir", Branch: "", Cwd: "/w/fix-3653", SessionID: "s1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1489,7 +1573,7 @@ func TestRosterBranchGuessFromCwd(t *testing.T) {
 	// s2: branch known -> no guess, even though cwd is present.
 	insertEvent(db, Event{TS: ts, SourceApp: "mmir", Branch: "fix-3652", Cwd: "/home/olaf/.worktree/mmir/2026-08-11/fix-3652", SessionID: "s2", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1548,7 +1632,7 @@ func TestRosterTmuxSessionSurvivesTransientEmptyCapture(t *testing.T) {
 	insertEvent(db, Event{TS: at(3), SourceApp: "mmir", TmuxSession: "fix-113", Cwd: "/w/fix-113", SessionID: "s1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: at(1), SourceApp: "mmir", TmuxSession: "", Cwd: "/w/fix-113", SessionID: "s1", EventType: "PreToolUse", ToolName: "Bash", PayloadJSON: "{}"})
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1588,7 +1672,7 @@ func TestAgentRoster_LastCommandSince(t *testing.T) {
 	// rather than reading as "just now" to an age-bounded consumer.
 	insertEvent(db, Event{TS: "not-a-timestamp", SourceApp: "myapp", Branch: "fix-111", SessionID: "s-bad", EventType: "UserPromptSubmit", SlashCommand: "/poll-ci", PayloadJSON: "{}"})
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1632,7 +1716,7 @@ func TestAgentRoster_LauncherLatestNonEmptyWins(t *testing.T) {
 	ins(3, "nono")
 	ins(1, "")
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}

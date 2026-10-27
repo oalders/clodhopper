@@ -1492,6 +1492,7 @@ func TestDemotePendingCI(t *testing.T) {
 		{SessionID: "queue-approval", Status: statusApproval, StatusRank: 1, CIQueue: "queued"},                         // even a prompt, once queued
 		{SessionID: "queue-working", Status: statusWorking, StatusRank: 5, CIQueue: "queued"},                           // not an alert: untouched
 		{SessionID: "merged", Status: statusNeedsYou, StatusRank: 1, CIDone: "merged"},                                  // finished PR: nothing to act on
+		{SessionID: "shell-stuck", Status: statusShellStuck, StatusRank: 1, CI: "pending"},                              // a hung shell is not the CI's to wait out
 	}
 	demotePendingCI(agents)
 	got := map[string]Agent{}
@@ -1514,6 +1515,9 @@ func TestDemotePendingCI(t *testing.T) {
 	}
 	if a := got["working"]; a.Status != statusWorking {
 		t.Errorf("non-alert working row must be untouched, got %q", a.Status)
+	}
+	if a := got["shell-stuck"]; a.Status != statusShellStuck || a.StatusRank != 1 {
+		t.Errorf("a stuck shell must survive pending CI, got %q rank %d", a.Status, a.StatusRank)
 	}
 	if a := got["needs-nocheck"]; a.Status != statusNeedsYou {
 		t.Errorf("row with no CI info must be untouched, got %q", a.Status)
@@ -3924,7 +3928,7 @@ func TestSplitQueued_WaitingOnShell(t *testing.T) {
 	ins(at(3), "PostToolUse", "Bash", `{"background_task_id":"bjji7f6yz"}`)
 	ins(at(2), "Stop", "", "{}")
 	ins(at(1), "Notification", "", `{"notification_type":"idle_prompt"}`)
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -4255,7 +4259,7 @@ func TestBlockLapsesWhenBlockerLeaves(t *testing.T) {
 	}
 	status := func() Agent {
 		t.Helper()
-		agents, err := agentRoster(db, 16*time.Hour, now)
+		agents, err := agentRoster(db, 16*time.Hour, 0, now)
 		if err != nil {
 			t.Fatal(err)
 		}

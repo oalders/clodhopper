@@ -760,7 +760,7 @@ func TestHandleActionEndDismissesPanelessRow(t *testing.T) {
 	if pane, _ := latestPaneForSession(db, "live-1"); pane != "" {
 		t.Fatalf("fixture has a pane: %q", pane)
 	}
-	if roster, err := agentRoster(db, 16*time.Hour, now); err != nil || len(roster) != 1 {
+	if roster, err := agentRoster(db, 16*time.Hour, 0, now); err != nil || len(roster) != 1 {
 		t.Fatalf("roster before = %v (err %v), want 1 row", roster, err)
 	}
 
@@ -777,7 +777,7 @@ func TestHandleActionEndDismissesPanelessRow(t *testing.T) {
 	if et := queryLatestEventType(t, db, "live-1"); et != "SessionEnd" {
 		t.Fatalf("latest event = %q, want SessionEnd", et)
 	}
-	roster, err := agentRoster(db, 16*time.Hour, now)
+	roster, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatalf("agentRoster: %v", err)
 	}

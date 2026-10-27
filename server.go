@@ -996,7 +996,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 			windowDays = 0
 		}
 	}
-	agents, err := agentRoster(db, waitingCap, now)
+	agents, err := agentRoster(db, waitingCap, staleShell(), now)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("roster: %w", err)
 	}

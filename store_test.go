@@ -123,7 +123,7 @@ func TestEndSessions_ByBranchSkipsAlreadyEnded(t *testing.T) {
 		t.Fatalf("want 1 session ended (s1; s3 already ended), got %d", n)
 	}
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestEndSessions_BySessionPrefix(t *testing.T) {
 		t.Fatalf("want 1 session ended for prefix fc49, got %d", n)
 	}
 
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,7 +239,7 @@ func TestEndSessions_BySessionPrefixAmbiguous(t *testing.T) {
 	}
 
 	// Nothing was ended: both sessions stay on the roster.
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -528,7 +528,7 @@ func TestLegacyControlCharCwdRefusedOnRead(t *testing.T) {
 	if got, err := latestCwdForSession(db, "sess-1"); err != nil || got != "" {
 		t.Errorf("latestCwdForSession = %q, %v; want refused (empty)", got, err)
 	}
-	agents, err := agentRoster(db, 16*time.Hour, now)
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
 	if err != nil {
 		t.Fatalf("agentRoster: %v", err)
 	}
