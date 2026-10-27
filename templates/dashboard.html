@@ -2937,7 +2937,7 @@
     {{ if .Agents }}
     <div class="ck-tablewrap">
     <table class="roster ci-m{{ ciMarkSlots .Agents }}">
-      {{/* status is 32ch: the nowrap "waiting on N agents · age" badge; "N shells" is as wide and "N tasks" narrower (see waitingOn) is ~24ch of text plus ~46px of dot, gaps and padding; recheck when the badge gains a child. Keep the min-width calc() in sync. */}}
+      {{/* status is 32ch: the nowrap "waiting on N agents · age" badge; "N shells" is as wide and "N tasks" narrower (see waitingOn) is ~24ch of text plus ~46px of dot, gaps and padding; the prefixless "N shells · NNh · stuck?" (~25ch) fits too; recheck when the badge gains a child. Keep the min-width calc() in sync. */}}
       <colgroup>
         <col style="width: var(--ci-w)"><col style="width: 4ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 32ch">
         <col style="width: 36ch"><col style="width: 8ch">{{ if .Debug }}<col style="width: 10ch">{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<col style="width: 10ch">{{ end }}<col>

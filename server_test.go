@@ -1493,6 +1493,7 @@ func TestDemotePendingCI(t *testing.T) {
 		{SessionID: "queue-working", Status: statusWorking, StatusRank: 5, CIQueue: "queued"},                           // not an alert: untouched
 		{SessionID: "merged", Status: statusNeedsYou, StatusRank: 1, CIDone: "merged"},                                  // finished PR: nothing to act on
 		{SessionID: "shell-stuck", Status: statusShellStuck, StatusRank: 1, CI: "pending"},                              // a hung shell is not the CI's to wait out
+		{SessionID: "queue-shell-stuck", Status: statusShellStuck, StatusRank: 1, CIQueue: "queued"},                    // queued: relaxed, keeping its shell badge
 	}
 	demotePendingCI(agents)
 	got := map[string]Agent{}
@@ -1518,6 +1519,9 @@ func TestDemotePendingCI(t *testing.T) {
 	}
 	if a := got["shell-stuck"]; a.Status != statusShellStuck || a.StatusRank != 1 {
 		t.Errorf("a stuck shell must survive pending CI, got %q rank %d", a.Status, a.StatusRank)
+	}
+	if a := got["queue-shell-stuck"]; a.Status != statusSubagents || a.StatusRank != rankBackground {
+		t.Errorf("a queued stuck shell should relax to %q rank %d, got %q rank %d", statusSubagents, rankBackground, a.Status, a.StatusRank)
 	}
 	if a := got["needs-nocheck"]; a.Status != statusNeedsYou {
 		t.Errorf("row with no CI info must be untouched, got %q", a.Status)

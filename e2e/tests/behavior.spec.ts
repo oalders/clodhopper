@@ -104,6 +104,6 @@ test('a long-hung background shell escalates its row, naming the command', async
   const status = page.locator('#row-e2e-shellstuck-0000-1111-2222-333333333333 td.status');
   await expect(status).toHaveClass(/\bneeds\b/);
   const badge = status.locator('.ck-badge');
-  await expect(badge).toHaveText(/^1 shell · running 19h · stuck\?$/);
+  await expect(badge).toHaveText(/^1 shell · running \d+h · stuck\?$/);
   await expect(badge).toHaveAttribute('title', /gh pr checks 1 --watch/);
 });

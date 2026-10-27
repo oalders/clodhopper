@@ -548,11 +548,11 @@ type Agent struct {
 	Idle             string // humanised time since last event ("4m", "1h")
 	IdleSecs         int
 	IdleSince        int64  // unix seconds of the last event, so the client can tick idle in place
-	Subagents        int    // background subagents still running while the main agent waits; set only for statusSubagents
-	Shells           int    // background shells still running while the main agent waits; set only for statusSubagents
+	Subagents        int    // background subagents still running while the main agent waits; set only for statusSubagents/statusShellStuck
+	Shells           int    // background shells still running while the main agent waits; set only for statusSubagents/statusShellStuck
 	WaitingOn        string // the badge's count text for Subagents and Shells ("1 agent", "2 shells", "3 tasks"); see waitingOn
 	WaitingOnDetail  string // when WaitingOn says "tasks", their breakdown ("1 agent, 2 shells") for the badge's title and screen readers
-	SubagentSince    int64  // unix seconds of the earliest start among those subagents and shells, so the client can tick their running time in place
+	SubagentSince    int64  // unix seconds of the earliest start among those subagents and shells (statusSubagents/statusShellStuck), so the client can tick their running time in place
 	SubagentAge      string // humanised time since SubagentSince, the initial value the client then ticks
 	ShellCmd         string // the oldest shell's summary ("Bash: <cmd>", scrubbed at ingest) for the stuck badge's title; set only for statusShellStuck
 	CI               string // merge-readiness ("", "pending", "green", "failing", "soft-failing", "ejected"); filled by the server layer via gh
@@ -919,12 +919,14 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 				a.Subagents++
 			}
 			var oldest shell
-			for _, sh := range s.shells {
+			var oldestID string
+			for id, sh := range s.shells {
 				if earliest.IsZero() || sh.start.Before(earliest) {
 					earliest = sh.start
 				}
-				if oldest.start.IsZero() || sh.start.Before(oldest.start) {
-					oldest = sh
+				// Ties break on task id so the tooltip does not follow map order.
+				if oldestID == "" || sh.start.Before(oldest.start) || sh.start.Equal(oldest.start) && id < oldestID {
+					oldest, oldestID = sh, id
 				}
 				a.Shells++
 			}
@@ -938,8 +940,8 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 				a.SubagentAge = humanizeSeconds(int(max(0, now.Unix()-a.SubagentSince)))
 				// Only shells decide: a hung shell holds the row forever, while a
 				// subagent that goes silent already stops counting above.
-				if staleShell > 0 && a.Shells > 0 && now.Sub(oldest.start) >= staleShell &&
-					idleSeconds(s.mainTS, now) >= int(staleShell.Seconds()) {
+				// A shell's start is a main-agent event, so main-quiet alone implies the shell's age.
+				if staleShell > 0 && a.Shells > 0 && idleSeconds(s.mainTS, now) >= int(staleShell.Seconds()) {
 					a.Status, a.StatusRank = statusShellStuck, 1
 					a.ShellCmd = oldest.cmd
 				}
