@@ -4367,3 +4367,63 @@ func TestContentTemplate_QueuedBlockChip(t *testing.T) {
 		}
 	}
 }
+
+// filterRows narrows every row set to source_app and branch, each alone or together.
+func TestFilterRows(t *testing.T) {
+	row := func(app, br string) Agent { return Agent{SessionID: app + "/" + br, SourceApp: app, Branch: br} }
+	all := []Agent{row("a", "x"), row("a", "y"), row("b", "x")}
+	cases := []struct{ source, branch, want string }{
+		{"", "", "a/x a/y b/x"},
+		{"a", "", "a/x a/y"},
+		{"", "x", "a/x b/x"},
+		{"a", "x", "a/x"},
+		{"c", "", ""},
+	}
+	for _, c := range cases {
+		d := dashboardData{Agents: slices.Clone(all), QueuedAgents: slices.Clone(all)}
+		for _, a := range all {
+			d.LedgerRows = append(d.LedgerRows, ledgerRow{Agent: a})
+			d.Activity = append(d.Activity, SourceCount{SourceApp: a.SourceApp, Branch: a.Branch})
+		}
+		d.filterRows(c.source, c.branch)
+		var ids []string
+		for _, a := range d.Agents {
+			ids = append(ids, a.SessionID)
+		}
+		got := strings.Join(ids, " ")
+		if got != c.want || len(d.QueuedAgents) != len(ids) || len(d.LedgerRows) != len(ids) || len(d.Activity) != len(ids) {
+			t.Errorf("source=%q branch=%q: roster %q (want %q), queued %d, ledger %d, activity %d",
+				c.source, c.branch, got, c.want, len(d.QueuedAgents), len(d.LedgerRows), len(d.Activity))
+		}
+	}
+}
+
+// Through the real build, the filter narrows the roster without touching the
+// rows it shares a backing array with, and the branch dropdown lists the live
+// roster's branches plus a selected one that is not on it.
+func TestBuildDashboardDataFilters(t *testing.T) {
+	db := openTestDB(t)
+	ts := time.Now().UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "a", Branch: "x", SessionID: "s1", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "b", Branch: "y", SessionID: "s2", EventType: "Stop", PayloadJSON: "{}"})
+	build := func(target string) dashboardData {
+		data, err := buildDashboardData(httptest.NewRequest(http.MethodGet, target, nil), db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	data := build("/?source_app=b")
+	if len(data.Agents) != 1 || data.Agents[0].SessionID != "s2" || data.Agents[0].GroupStart {
+		t.Errorf("source_app=b roster = %+v, want only s2 with no divider", data.Agents)
+	}
+	if len(data.Activity) != 1 || data.Activity[0].SourceApp != "b" {
+		t.Errorf("source_app=b activity = %+v", data.Activity)
+	}
+	if !slices.Equal(data.Branches, []string{"x", "y"}) {
+		t.Errorf("branches = %v, want the whole roster's [x y]", data.Branches)
+	}
+	if data = build("/?branch=gone"); len(data.Agents) != 0 || !slices.Equal(data.Branches, []string{"gone", "x", "y"}) {
+		t.Errorf("branch=gone: roster %+v, branches %v", data.Agents, data.Branches)
+	}
+}

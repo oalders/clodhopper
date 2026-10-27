@@ -225,11 +225,6 @@ func TestBranchRoundTripAndFilter(t *testing.T) {
 		t.Fatalf("branch filter: want 1 fix-2499, got %+v", got)
 	}
 
-	branches, _ := distinctBranches(db)
-	if len(branches) != 2 {
-		t.Errorf("distinct branches: want 2, got %v", branches)
-	}
-
 	counts, _ := activeCounts(db, time.Hour, time.Now(), nil)
 	if len(counts) != 2 {
 		t.Fatalf("active counts: want 2 source/branch groups, got %+v", counts)

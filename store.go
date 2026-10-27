@@ -517,9 +517,6 @@ func distinctColumn(db *sql.DB, col string) ([]string, error) {
 // distinctSourceApps returns the set of source_app values, for the filter dropdown.
 func distinctSourceApps(db *sql.DB) ([]string, error) { return distinctColumn(db, "source_app") }
 
-// distinctBranches returns the set of branch values, for the filter dropdown.
-func distinctBranches(db *sql.DB) ([]string, error) { return distinctColumn(db, "branch") }
-
 // Agent is the current state of one live Claude Code session, derived from its
 // most recent events. It powers the roster at the top of the dashboard — the
 // "which of my agents is waiting on me" view.
