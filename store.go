@@ -605,10 +605,10 @@ const rankBackground = 4
 // fired its Stop hook — it is idle, not working. (Sessions that ended cleanly
 // carry a Stop/SessionEnd event and never reach this branch.)
 //
-// A session whose latest event is a PreToolUse is mid tool call (e.g. a long
-// test run) and gets staleInFlightSecs instead. An idle session is kept on the
-// board (it does not drop) until it leaves the waitingCap query window or its
-// session ends — see agentRoster.
+// A session (or background subagent) whose latest event is a PreToolUse is mid
+// tool call (e.g. a long test run) and gets staleInFlightSecs instead. An idle
+// session is kept on the board (it does not drop) until it leaves the
+// waitingCap query window or its session ends — see agentRoster.
 const staleWorkingSecs = 5 * 60
 
 // staleInFlightSecs is the silence allowed while a tool call is in flight: a
@@ -710,7 +710,10 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 	defer rows.Close()
 
 	// subagent tracks one background subagent by its start and latest event.
-	type subagent struct{ start, lastSeen time.Time }
+	type subagent struct {
+		start, lastSeen time.Time
+		lastEvent       string
+	}
 	type state struct {
 		a         Agent
 		lastTS    string
@@ -797,7 +800,7 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		}
 		if sub := s.subs[agentID]; sub != nil {
 			if t, err := time.Parse(time.RFC3339, ts); err == nil {
-				sub.lastSeen = t
+				sub.lastSeen, sub.lastEvent = t, etype
 			}
 		}
 		// A subagent's own events are activity, not the main agent's state:
@@ -887,12 +890,16 @@ func agentRoster(db *sql.DB, waitingCap time.Duration, now time.Time) ([]Agent, 
 		a := s.a
 		a.Status, a.StatusRank = label, rank
 		// A turn that ended with subagents or shells still running is not waiting
-		// on the user yet; only subagents heard from within staleWorkingSecs count.
+		// on the user yet; only subagents heard from within staleWorkingSecs
+		// (staleInFlightSecs while one is mid tool call, as for the main agent) count.
 		if label == statusWaiting {
 			var earliest time.Time
 			for _, sub := range s.subs {
-				// A subagent in one long tool call goes silent too; same tradeoff as staleWorkingSecs.
-				if now.Sub(sub.lastSeen) >= staleWorkingSecs*time.Second {
+				stale := staleWorkingSecs
+				if sub.lastEvent == "PreToolUse" {
+					stale = staleInFlightSecs
+				}
+				if now.Sub(sub.lastSeen) >= time.Duration(stale)*time.Second {
 					continue
 				}
 				if earliest.IsZero() || sub.start.Before(earliest) {
