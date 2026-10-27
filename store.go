@@ -606,9 +606,9 @@ const rankBackground = 4
 // carry a Stop/SessionEnd event and never reach this branch.)
 //
 // A session (or background subagent) whose latest event is a PreToolUse is mid
-// tool call (e.g. a long test run) and gets staleInFlightSecs instead. An idle session is kept on the
-// board (it does not drop) until it leaves the waitingCap query window or its
-// session ends — see agentRoster.
+// tool call (e.g. a long test run) and gets staleInFlightSecs instead. An idle
+// session is kept on the board (it does not drop) until it leaves the
+// waitingCap query window or its session ends — see agentRoster.
 const staleWorkingSecs = 5 * 60
 
 // staleInFlightSecs is the silence allowed while a tool call is in flight: a
