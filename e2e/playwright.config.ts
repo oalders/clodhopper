@@ -8,12 +8,12 @@ import { defineConfig } from '@playwright/test';
 
 // The nono sandbox opens only 9323–9342 for e2e work; 9323 is the HTML report.
 const port = 9324;
-// restart, swap, merge, session and block specs need the --enable-merge (and
+// restart, swap, merge, session, block and filter-panels specs need the --enable-merge (and
 // --pane-peek) markup, so they get their own server rather than turning the
 // write path on for every other spec.
 const execPort = 9325;
 // Anchored: testMatch/testIgnore regexes run against the absolute file path.
-const execSpec = /(^|\/)(restart|swap|merge|session|block|ledger)\.spec\.ts$/;
+const execSpec = /(^|\/)(restart|swap|merge|session|block|ledger|filter-panels)\.spec\.ts$/;
 
 const server = (p: number, flags = '') => ({
   command: `./serve.sh ${p}${flags}`,

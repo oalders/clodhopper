@@ -4375,3 +4375,103 @@ func TestContentTemplate_QueuedBlockChip(t *testing.T) {
 		}
 	}
 }
+
+// filterRows narrows every row set to source_app and branch, each alone or
+// together, recomputes the dividers ("|" marks GroupStart), and leaves the
+// array the roster and queue share, as splitQueued leaves them, untouched.
+func TestFilterRows(t *testing.T) {
+	row := func(id, app, br string) Agent { return Agent{SessionID: id, SourceApp: app, Branch: br} }
+	all := []Agent{row("1", "c", "z"), row("2", "a", "x"), row("3", "a", "x"), row("4", "a", "y"), row("5", "b", "x")}
+	ids := func(rows []Agent) string {
+		var out []string
+		for _, a := range rows {
+			id := a.SessionID
+			if a.GroupStart {
+				id = "|" + id
+			}
+			out = append(out, id)
+		}
+		return strings.Join(out, " ")
+	}
+	cases := []struct{ source, branch, want string }{
+		{"", "", "1 |2 3 |4 |5"},
+		{"a", "", "2 3 |4"},
+		{"", "x", "2 3 |5"},
+		{"a", "x", "2 3"},
+		{"d", "", ""},
+	}
+	for _, c := range cases {
+		shared := slices.Concat(all, all)
+		markGroups(shared[:len(all)])
+		markGroups(shared[len(all):])
+		before := ids(shared)
+		d := dashboardData{Agents: shared[:len(all)], QueuedAgents: shared[len(all):]}
+		for _, a := range all {
+			d.LedgerRows = append(d.LedgerRows, ledgerRow{Agent: a})
+			d.Activity = append(d.Activity, SourceCount{SourceApp: a.SourceApp, Branch: a.Branch})
+		}
+		d.filterRows(c.source, c.branch)
+		got, n := ids(d.Agents), len(d.Agents)
+		if got != c.want || len(d.QueuedAgents) != n || len(d.LedgerRows) != n || len(d.Activity) != n {
+			t.Errorf("source=%q branch=%q: roster %q (want %q), queued %d, ledger %d, activity %d",
+				c.source, c.branch, got, c.want, len(d.QueuedAgents), len(d.LedgerRows), len(d.Activity))
+		}
+		if after := ids(shared); after != before {
+			t.Errorf("source=%q branch=%q: shared array %q, was %q", c.source, c.branch, after, before)
+		}
+	}
+}
+
+// Through the real build, the filter narrows the roster but the ledger still
+// records a filtered-out queued row; the branch dropdown lists every live row's
+// branch, queued ones included, plus a selected one that is not on the roster;
+// event_type applies only with debug=1, where its box is.
+func TestBuildDashboardDataFilters(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+	ts := now.UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "a", Branch: "x", SessionID: "s1", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "b", Branch: "y", SessionID: "s2", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "a", Branch: "q", SessionID: "s3", Cwd: "/q", EventType: "Stop", PayloadJSON: "{}"})
+	// Older than s1's Stop, so s1's roster status is unchanged.
+	insertEvent(db, Event{TS: now.Add(-time.Minute).UTC().Format(time.RFC3339), SourceApp: "a", Branch: "x", SessionID: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
+	// Stamped an hour ahead so cwdTTL cannot lapse mid-test and gh is never run.
+	ci := newCICache()
+	ci.m["/q"] = cwdEntry[ciResult]{val: ciResult{Queue: "queued", QueuePos: 1, QueueETA: now.Add(10 * time.Minute)}, at: now.Add(time.Hour)}
+	l, _ := testLedger(nil)
+	build := func(target string) dashboardData {
+		data, err := buildDashboardData(httptest.NewRequest(http.MethodGet, target, nil), db, ci, &peekConfig{cache: newPaneCache()}, &actionConfig{ledger: l})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	data := build("/?source_app=b&event_type=Stop")
+	if len(data.Agents) != 1 || data.Agents[0].SessionID != "s2" || len(data.QueuedAgents) != 0 {
+		t.Errorf("source_app=b: roster %+v, queued %+v; want only s2", data.Agents, data.QueuedAgents)
+	}
+	if _, ok := l.m["s3"]; !ok {
+		t.Error("the ledger did not record the filtered-out queued row")
+	}
+	if len(data.Activity) != 1 || data.Activity[0].SourceApp != "b" {
+		t.Errorf("source_app=b activity = %+v", data.Activity)
+	}
+	if !slices.Equal(data.Branches, []string{"q", "x", "y"}) {
+		t.Errorf("branches = %v, want every live row's [q x y]", data.Branches)
+	}
+	if data.FilterType != "" {
+		t.Errorf("event_type without debug applied as %q", data.FilterType)
+	}
+	if data.QueueNextETA != "" {
+		t.Errorf("source_app=b QueueNextETA = %q, want none: its queued row is filtered out", data.QueueNextETA)
+	}
+	if data = build("/?event_type=PreToolUse"); len(data.Events) != 4 || data.QueueNextETA == "" {
+		t.Errorf("unfiltered: %d events, QueueNextETA %q; want all 4 and an ETA", len(data.Events), data.QueueNextETA)
+	}
+	if data = build("/?event_type=PreToolUse&debug=1"); len(data.Events) != 1 {
+		t.Errorf("debug event_type=PreToolUse: %d events, want 1", len(data.Events))
+	}
+	if data = build("/?branch=gone&event_type=Stop&debug=1"); len(data.Agents) != 0 || !slices.Equal(data.Branches, []string{"gone", "q", "x", "y"}) || data.FilterType != "Stop" {
+		t.Errorf("branch=gone: roster %+v, branches %v, event_type %q", data.Agents, data.Branches, data.FilterType)
+	}
+}

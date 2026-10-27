@@ -963,8 +963,11 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	q := r.URL.Query()
 	source := q.Get("source_app")
 	branch := q.Get("branch")
-	etype := q.Get("event_type")
 	debug := q.Get("debug") == "1"
+	etype := ""
+	if debug { // only debug renders the event_type box, so a stale link cannot filter invisibly
+		etype = q.Get("event_type")
+	}
 
 	refresh := defaultRefreshSecs()
 	if v := q.Get("refresh"); v != "" {
@@ -1060,18 +1063,16 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 		return dashboardData{}, fmt.Errorf("events: %w", err)
 	}
 	apps, _ := distinctSourceApps(db)
-	branches, _ := distinctBranches(db)
 
 	data := dashboardData{
 		Agents:         roster,
 		QueuedAgents:   queued,
 		LedgerRows:     ledger,
-		QueueNextETA:   queueNextETA(queued, now),
 		Activity:       activity,
 		Events:         events,
 		EventRows:      foldToolEvents(events),
 		SourceApps:     apps,
-		Branches:       branches,
+		Branches:       rosterBranches(agents, branch),
 		FilterSource:   source,
 		FilterBranch:   branch,
 		FilterType:     etype,
@@ -1090,8 +1091,41 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 		CSRFToken:      act.token,
 		Debug:          debug,
 	}
+	data.filterRows(source, branch)
+	data.QueueNextETA = queueNextETA(data.QueuedAgents, now)
 	data.Signature = viewSignature(data)
 	return data, nil
+}
+
+// filterRows narrows the roster, merge-queue and activity rows to a source_app
+// and branch ("" matches any). It is a view only, applied last so CI, blocks and
+// the ledger saw every row; it clones because roster and queued share a backing array.
+func (d *dashboardData) filterRows(source, branch string) {
+	if source == "" && branch == "" {
+		return
+	}
+	drop := func(app, br string) bool { return (source != "" && app != source) || (branch != "" && br != branch) }
+	d.Agents = slices.DeleteFunc(slices.Clone(d.Agents), func(a Agent) bool { return drop(a.SourceApp, a.Branch) })
+	markGroups(d.Agents) // a dropped first group would leave a leading divider
+	d.QueuedAgents = slices.DeleteFunc(slices.Clone(d.QueuedAgents), func(a Agent) bool { return drop(a.SourceApp, a.Branch) })
+	d.LedgerRows = slices.DeleteFunc(d.LedgerRows, func(r ledgerRow) bool { return drop(r.SourceApp, r.Branch) })
+	d.Activity = slices.DeleteFunc(d.Activity, func(c SourceCount) bool { return drop(c.SourceApp, c.Branch) })
+}
+
+// rosterBranches lists the branch dropdown's options: the live roster's branches
+// (queued rows included), plus selected so a branch off the roster stays selected.
+func rosterBranches(agents []Agent, selected string) []string {
+	var out []string
+	for _, a := range agents {
+		if a.Branch != "" {
+			out = append(out, a.Branch)
+		}
+	}
+	if selected != "" {
+		out = append(out, selected)
+	}
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // viewSignature fingerprints only the *report-worthy* parts of the view: the

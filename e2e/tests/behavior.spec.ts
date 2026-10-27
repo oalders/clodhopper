@@ -60,9 +60,12 @@ test.describe('filter strip', () => {
 
   test('controls are 44px tap targets on a phone', async ({ page }) => {
     test.skip(page.viewportSize()!.width > 640, 'the tap-target rule is phone-only');
-    await page.goto('/?refresh=0&source_app=clodhopper');
-    const controls = page.locator('#ck-filters select, #ck-filters input, #ck-filters button');
-    await expect(controls).toHaveCount(6);
+    // debug=1 renders the event_type box, which only filters debug's Recent events.
+    await page.goto('/?refresh=0&source_app=clodhopper&debug=1');
+    const controls = page.locator('#ck-filters select, #ck-filters input:not([type="hidden"]), #ck-filters button, #ck-q');
+    // The 44px rule must reach the event_type box and the type-to-filter box too.
+    await expect(page.locator('#event_type')).toHaveCount(1);
+    await expect(page.locator('#ck-q')).toHaveCount(1);
     const short = await controls.evaluateAll((els) =>
       els.filter((el) => el.getBoundingClientRect().height < 44).map((el) => el.id || el.textContent?.trim()),
     );

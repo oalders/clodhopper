@@ -333,6 +333,17 @@ unless you opt in: click **debug** in the header (or add `?debug=1` to the URL).
 The choice persists across reloads and rides along with the other query params
 (filters, refresh, roster window).
 
+### Filtering the board
+
+The **filters** strip's `source_app` and `branch` dropdowns narrow the roster,
+the merge queue and the activity tallies (the `branch` list holds the live
+roster's branches); its `event_type` box appears only in the debug view, since
+only Recent events reads it. For a quick look, the box above the roster hides
+every roster and merge-queue row whose text (badge labels and the worktree path
+included) lacks what you type, case-insensitively. `/` focuses it, `Esc` clears
+it, and the term rides in the URL as `#q=…`, so a reload or bookmark keeps it.
+While the merge queue is folded, its header shows how many of its rows match.
+
 `ingest` is what hooks call. It is designed to **never** break a tool call: any
 error (bad JSON, unwritable DB, …) results in exit 0, and diagnostics are
 written to stderr only when `CLODHOPPER_DEBUG` is set.
@@ -505,7 +516,8 @@ throwaway database with worst-case fixtures (`e2e_seed_test.go`, build tag
 servers put a stub `tmux` on `PATH` that only lists the seeded panes and fails
 everything else, so no real tmux is ever reached. The suite checks that status
 badges and time cells are never clipped and the page never scrolls sideways at
-1440, 641 and 390px wide, plus the theme toggle, filter strip and refresh CI button.
+1440, 641 and 390px wide, plus the theme toggle, filter strip, type-to-filter box
+and refresh CI button.
 `restart.spec.ts`, `swap.spec.ts` and `merge.spec.ts` run against a second
 server on `127.0.0.1:9325` started with `--enable-merge --pane-peek`, covering
 the restart (all) arm/confirm, Escape and report table, what a poll's repaint
