@@ -159,7 +159,9 @@
     .ck-filters select { padding: 4px 24px 4px 9px; cursor: pointer; }
     .ck-filters input[type="text"], #ck-q { padding: 4px 9px; cursor: text; }
     .ck-qbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 12px; }
-    #ck-qcount, #ck-qnone { font-size: var(--fs-sm); color: var(--text-2); }
+    #ck-q { flex: 1 1 14rem; min-width: 0; max-width: 24rem; }
+    #ck-q::placeholder { color: var(--text-2); opacity: 1; } /* --text-3 misses 4.5:1 on light --surface-2 */
+    #ck-qcount, #ck-qnone, .ck-qmq { font-size: var(--fs-sm); font-weight: 400; color: var(--text-2); }
     .ck-caret {
       position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
       font-size: .7em; color: var(--text-3); pointer-events: none;
@@ -886,7 +888,7 @@
 
   <!-- Outside #content so a poll swap keeps the term and the focus. -->
   <div class="ck-qbar">
-    <input type="text" id="ck-q" placeholder="filter rows ( / )" title="show only roster and merge-queue rows containing this text (Esc clears)" autocomplete="off" spellcheck="false">
+    <input type="search" id="ck-q" placeholder="filter rows ( / )" title="show only roster and merge-queue rows containing this text (Esc clears)" autocomplete="off" spellcheck="false">
     <span id="ck-qcount"></span>
     <span id="ck-qnone" hidden></span>
   </div>
@@ -1438,8 +1440,10 @@
         if (rows[i].hasAttribute('data-group')) rosterShown++; else mqShown++;
       }
       repairGroupStarts();
-      count.textContent = want ? shown + ' of ' + rows.length : '';
-      none.hidden = !want || shown > 0;
+      // An empty board has nothing to count or miss.
+      var active = want !== '' && rows.length > 0;
+      count.textContent = active ? shown + ' of ' + rows.length : '';
+      none.hidden = !active || shown > 0;
       none.textContent = none.hidden ? '' : "no rows match '" + term + "'";
       var wrap = document.querySelector('#content table.roster');
       if (wrap) wrap.parentNode.hidden = !!want && rosterShown === 0;
@@ -1452,16 +1456,23 @@
       }
     }
 
-    function set(term) {
-      box.value = term;
-      try { history.replaceState(null, '', term ? '#q=' + encodeURIComponent(term) : location.pathname + location.search); } catch (e) {}
+    // Saves the trimmed term in #q=. The filter form has no action, so it submits
+    // to this URL, hash included: a GET submit replaces only the query.
+    function save() {
+      var term = box.value.trim(), hash = term ? '#q=' + encodeURIComponent(term) : '';
+      try { history.replaceState(null, '', location.pathname + location.search + hash); } catch (e) {}
       apply();
     }
-    box.addEventListener('input', function () { set(box.value); });
+    // A search box's native clear fires input too.
+    box.addEventListener('input', save);
     box.addEventListener('keydown', function (ev) {
       if (ev.key !== 'Escape') return;
-      ev.stopPropagation(); // the document's Esc handler would close every open peek
-      set('');
+      // Empty: step out and let the document's Esc close any open peek.
+      if (!box.value) { box.blur(); return; }
+      ev.stopPropagation();
+      ev.preventDefault();
+      box.value = '';
+      save();
     });
     document.addEventListener('keydown', function (ev) {
       if (ev.key !== '/' || ev.ctrlKey || ev.metaKey || ev.altKey) return;
@@ -1475,7 +1486,7 @@
       if (ev.target && ev.target.id === 'ck-mq') apply();
     }, true);
     window.__ckQFilter = apply;
-    apply();
+    save();
   })();
 
   // Pin order: freeze the roster's GROUP order so a fresh event can't float a

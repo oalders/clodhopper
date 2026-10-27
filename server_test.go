@@ -4368,62 +4368,91 @@ func TestContentTemplate_QueuedBlockChip(t *testing.T) {
 	}
 }
 
-// filterRows narrows every row set to source_app and branch, each alone or together.
+// filterRows narrows every row set to source_app and branch, each alone or
+// together, recomputes the dividers ("|" marks GroupStart), and leaves the
+// array the roster and queue share, as splitQueued leaves them, untouched.
 func TestFilterRows(t *testing.T) {
-	row := func(app, br string) Agent { return Agent{SessionID: app + "/" + br, SourceApp: app, Branch: br} }
-	all := []Agent{row("a", "x"), row("a", "y"), row("b", "x")}
+	row := func(id, app, br string) Agent { return Agent{SessionID: id, SourceApp: app, Branch: br} }
+	all := []Agent{row("1", "c", "z"), row("2", "a", "x"), row("3", "a", "x"), row("4", "a", "y"), row("5", "b", "x")}
+	ids := func(rows []Agent) string {
+		var out []string
+		for _, a := range rows {
+			id := a.SessionID
+			if a.GroupStart {
+				id = "|" + id
+			}
+			out = append(out, id)
+		}
+		return strings.Join(out, " ")
+	}
 	cases := []struct{ source, branch, want string }{
-		{"", "", "a/x a/y b/x"},
-		{"a", "", "a/x a/y"},
-		{"", "x", "a/x b/x"},
-		{"a", "x", "a/x"},
-		{"c", "", ""},
+		{"", "", "1 |2 3 |4 |5"},
+		{"a", "", "2 3 |4"},
+		{"", "x", "2 3 |5"},
+		{"a", "x", "2 3"},
+		{"d", "", ""},
 	}
 	for _, c := range cases {
-		d := dashboardData{Agents: slices.Clone(all), QueuedAgents: slices.Clone(all)}
+		shared := slices.Concat(all, all)
+		markGroups(shared[:len(all)])
+		markGroups(shared[len(all):])
+		before := ids(shared)
+		d := dashboardData{Agents: shared[:len(all)], QueuedAgents: shared[len(all):]}
 		for _, a := range all {
 			d.LedgerRows = append(d.LedgerRows, ledgerRow{Agent: a})
 			d.Activity = append(d.Activity, SourceCount{SourceApp: a.SourceApp, Branch: a.Branch})
 		}
 		d.filterRows(c.source, c.branch)
-		var ids []string
-		for _, a := range d.Agents {
-			ids = append(ids, a.SessionID)
-		}
-		got := strings.Join(ids, " ")
-		if got != c.want || len(d.QueuedAgents) != len(ids) || len(d.LedgerRows) != len(ids) || len(d.Activity) != len(ids) {
+		got, n := ids(d.Agents), len(d.Agents)
+		if got != c.want || len(d.QueuedAgents) != n || len(d.LedgerRows) != n || len(d.Activity) != n {
 			t.Errorf("source=%q branch=%q: roster %q (want %q), queued %d, ledger %d, activity %d",
 				c.source, c.branch, got, c.want, len(d.QueuedAgents), len(d.LedgerRows), len(d.Activity))
+		}
+		if after := ids(shared); after != before {
+			t.Errorf("source=%q branch=%q: shared array %q, was %q", c.source, c.branch, after, before)
 		}
 	}
 }
 
-// Through the real build, the filter narrows the roster without touching the
-// rows it shares a backing array with, and the branch dropdown lists the live
-// roster's branches plus a selected one that is not on it.
+// Through the real build, the filter narrows the roster but the ledger still
+// records a filtered-out queued row; the branch dropdown lists every live row's
+// branch, queued ones included, plus a selected one that is not on the roster;
+// event_type applies only with debug=1, where its box is.
 func TestBuildDashboardDataFilters(t *testing.T) {
 	db := openTestDB(t)
-	ts := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now()
+	ts := now.UTC().Format(time.RFC3339)
 	insertEvent(db, Event{TS: ts, SourceApp: "a", Branch: "x", SessionID: "s1", EventType: "Stop", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: ts, SourceApp: "b", Branch: "y", SessionID: "s2", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "a", Branch: "q", SessionID: "s3", Cwd: "/q", EventType: "Stop", PayloadJSON: "{}"})
+	// Stamped an hour ahead so cwdTTL cannot lapse mid-test and gh is never run.
+	ci := newCICache()
+	ci.m["/q"] = cwdEntry[ciResult]{val: ciResult{Queue: "queued", QueuePos: 1}, at: now.Add(time.Hour)}
+	l, _ := testLedger(nil)
 	build := func(target string) dashboardData {
-		data, err := buildDashboardData(httptest.NewRequest(http.MethodGet, target, nil), db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
+		data, err := buildDashboardData(httptest.NewRequest(http.MethodGet, target, nil), db, ci, &peekConfig{cache: newPaneCache()}, &actionConfig{ledger: l})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return data
 	}
-	data := build("/?source_app=b")
-	if len(data.Agents) != 1 || data.Agents[0].SessionID != "s2" || data.Agents[0].GroupStart {
-		t.Errorf("source_app=b roster = %+v, want only s2 with no divider", data.Agents)
+	data := build("/?source_app=b&event_type=Stop")
+	if len(data.Agents) != 1 || data.Agents[0].SessionID != "s2" || len(data.QueuedAgents) != 0 {
+		t.Errorf("source_app=b: roster %+v, queued %+v; want only s2", data.Agents, data.QueuedAgents)
+	}
+	if _, ok := l.m["s3"]; !ok {
+		t.Error("the ledger did not record the filtered-out queued row")
 	}
 	if len(data.Activity) != 1 || data.Activity[0].SourceApp != "b" {
 		t.Errorf("source_app=b activity = %+v", data.Activity)
 	}
-	if !slices.Equal(data.Branches, []string{"x", "y"}) {
-		t.Errorf("branches = %v, want the whole roster's [x y]", data.Branches)
+	if !slices.Equal(data.Branches, []string{"q", "x", "y"}) {
+		t.Errorf("branches = %v, want every live row's [q x y]", data.Branches)
 	}
-	if data = build("/?branch=gone"); len(data.Agents) != 0 || !slices.Equal(data.Branches, []string{"gone", "x", "y"}) {
-		t.Errorf("branch=gone: roster %+v, branches %v", data.Agents, data.Branches)
+	if data.FilterType != "" {
+		t.Errorf("event_type without debug applied as %q", data.FilterType)
+	}
+	if data = build("/?branch=gone&event_type=Stop&debug=1"); len(data.Agents) != 0 || !slices.Equal(data.Branches, []string{"gone", "q", "x", "y"}) || data.FilterType != "Stop" {
+		t.Errorf("branch=gone: roster %+v, branches %v, event_type %q", data.Agents, data.Branches, data.FilterType)
 	}
 }

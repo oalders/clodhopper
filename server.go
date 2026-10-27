@@ -963,8 +963,11 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	q := r.URL.Query()
 	source := q.Get("source_app")
 	branch := q.Get("branch")
-	etype := q.Get("event_type")
 	debug := q.Get("debug") == "1"
+	etype := ""
+	if debug { // only debug renders the event_type box, so a stale link cannot filter invisibly
+		etype = q.Get("event_type")
+	}
 
 	refresh := defaultRefreshSecs()
 	if v := q.Get("refresh"); v != "" {
