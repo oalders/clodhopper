@@ -36,14 +36,14 @@ test('typing narrows the roster, fixes the dividers, and Esc clears it', async (
   await expect(shown.nth(1)).toHaveClass(/group-start/);
   // The fourth match is the queued row's "blocked on fix-1235" chip, folded in the merge queue.
   await expect(count).toHaveText(/^4 of \d+$/);
-  expect(new URL(page.url()).hash).toBe('#q=FIX-123');
+  await expect(page).toHaveURL(/#q=FIX-123$/);
 
   await page.keyboard.press('Escape');
   await expect(box).toHaveValue('');
   await expect(box).toBeFocused();
   await expect(shown).toHaveCount(total);
   await expect(count).toHaveText('');
-  expect(new URL(page.url()).hash).toBe('');
+  await expect(page).toHaveURL(/^[^#]*$/);
   // Esc on the empty box keeps focus there (filter-panels.spec.ts: it still closes a peek).
   await page.keyboard.press('Escape');
   await expect(box).toBeFocused();
@@ -67,7 +67,7 @@ test('the clear button shows only with a term, clears it and refocuses the box',
   await expect(box).toBeFocused();
   await expect(clear).toBeHidden();
   await expect(shown).toHaveCount(await rows.count());
-  expect(new URL(page.url()).hash).toBe('');
+  await expect(page).toHaveURL(/^[^#]*$/);
   // Esc clears a typed term and hides the button too.
   await page.keyboard.type('fix');
   await expect(clear).toBeVisible();
@@ -79,7 +79,7 @@ test('whitespace alone is no filter', async ({ page }) => {
   const { count, rows, shown } = await filterFor(page, '   ');
   await expect(shown).toHaveCount(await rows.count());
   await expect(count).toHaveText('');
-  expect(new URL(page.url()).hash).toBe('');
+  await expect(page).toHaveURL(/^[^#]*$/);
 });
 
 test('an empty roster shows neither a count nor the no-match line', async ({ page }) => {
