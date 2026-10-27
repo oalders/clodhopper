@@ -98,3 +98,12 @@ test('refresh CI polls once with force=1 and repaints, even with auto-refresh of
   // force rides only on the request, never the page URL a reload would replay.
   expect(new URL(page.url()).searchParams.has('force')).toBe(false);
 });
+
+test('a long-hung background shell escalates its row, naming the command', async ({ page }) => {
+  await page.goto('/?refresh=0');
+  const status = page.locator('#row-e2e-shellstuck-0000-1111-2222-333333333333 td.status');
+  await expect(status).toHaveClass(/\bneeds\b/);
+  const badge = status.locator('.ck-badge');
+  await expect(badge).toHaveText(/^1 shell · running \d+h · stuck\?$/);
+  await expect(badge).toHaveAttribute('title', 'Bash: gh pr checks 1 --watch');
+});

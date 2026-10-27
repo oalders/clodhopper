@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestVersionString_DefaultsAreEmbedded(t *testing.T) {
@@ -51,5 +52,23 @@ func TestWaitingRetainHours_DefaultAndOverride(t *testing.T) {
 	t.Setenv("CLODHOPPER_WAITING_RETAIN_HOURS", "0") // non-positive is ignored
 	if got := waitingRetainHours(); got != 720 {
 		t.Errorf("zero override should fall back to 720, got %d", got)
+	}
+}
+
+func TestStaleShell_DefaultAndOverride(t *testing.T) {
+	for _, c := range []struct {
+		env  string
+		want time.Duration
+	}{
+		{"", 2 * time.Hour},
+		{"30m", 30 * time.Minute},
+		{"0", 0}, // disables
+		{"-1h", defaultStaleShell},
+		{"soon", defaultStaleShell},
+	} {
+		t.Setenv("CLODHOPPER_STALE_SHELL", c.env)
+		if got := staleShell(); got != c.want {
+			t.Errorf("CLODHOPPER_STALE_SHELL=%q: got %v, want %v", c.env, got, c.want)
+		}
 	}
 }

@@ -996,7 +996,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 			windowDays = 0
 		}
 	}
-	agents, err := agentRoster(db, waitingCap, now)
+	agents, err := agentRoster(db, waitingCap, staleShell(), now)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("roster: %w", err)
 	}
@@ -1258,12 +1258,17 @@ func isCIWatchCommand(cmd string) bool {
 //
 // A row in the merge queue (any CIQueue, stuck or failing included) is the
 // exception: splitQueued has folded it into the merge-queue section, which never
-// alerts (#219), so every alert status there, approval and input too, is relaxed.
+// alerts (#219), so every alert status there, approval and input too, is relaxed
+// (a stuck shell back to statusSubagents, so its badge keeps its counts).
 func demotePendingCI(agents []Agent) {
 	for i := range agents {
 		if agents[i].CIQueue != "" {
 			if agents[i].StatusRank <= 1 {
-				agents[i].Status = statusBackground
+				if agents[i].Status == statusShellStuck {
+					agents[i].Status = statusSubagents
+				} else {
+					agents[i].Status = statusBackground
+				}
 				agents[i].StatusRank = rankBackground
 			}
 			continue

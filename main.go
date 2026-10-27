@@ -8,11 +8,13 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
 	defaultRetainDays         = 14
 	defaultWaitingRetainHours = 720 // 30 days; "don't auto-drop" (bounded in practice by retainDays) — evict via `clodhopper end`
+	defaultStaleShell         = 2 * time.Hour
 	fallbackPort              = 4555
 	fallbackRefresh           = 5
 )
@@ -145,6 +147,7 @@ ENV
   CLODHOPPER_ALLOW_PUBLIC=1        let serve bind a public IP (same as --allow-public)
   CLODHOPPER_REFRESH_SECS          dashboard live-update poll cadence, 0 = off (default 5)
   CLODHOPPER_WAITING_RETAIN_HOURS  hours a waiting agent stays on the roster (default 720 = 30 days; evict via 'clodhopper end')
+  CLODHOPPER_STALE_SHELL           how long a background shell runs, main agent quiet, before its row reads "shell stuck?" (default 2h; 0 = off)
   CLODHOPPER_ALLOWED_HOSTS         comma-separated extra Host header values accepted by --enable-merge's endpoint (e.g. a Tailscale magicDNS name)
   CLODHOPPER_DEBUG                 write ingest errors to stderr (otherwise silent)
 `)
@@ -178,6 +181,20 @@ func waitingRetainHours() int {
 		}
 	}
 	return defaultWaitingRetainHours
+}
+
+// staleShell reads CLODHOPPER_STALE_SHELL (a Go duration, e.g. "2h") or returns
+// the default; 0 disables. It is how long a row's oldest background shell may run,
+// with its main agent silent as long, before the roster calls it "shell stuck?"
+// rather than quietly waiting on it: a `gh pr checks --watch` on a check that
+// never finishes would otherwise hold the row at background rank forever.
+func staleShell() time.Duration {
+	if v := os.Getenv("CLODHOPPER_STALE_SHELL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			return d
+		}
+	}
+	return defaultStaleShell
 }
 
 // allowedHosts reads CLODHOPPER_ALLOWED_HOSTS (comma-separated) — extra Host
