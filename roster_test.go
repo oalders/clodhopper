@@ -592,6 +592,14 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 	// A subagent silent past staleWorkingSecs no longer holds the session.
 	ins(at(20), "s-stale", "SubagentStart", "a1", "")
 	ins(at(1), "s-stale", "Stop", "", "{}")
+	// A subagent mid tool call gets staleInFlightSecs, like the main agent: it
+	// still holds the session after 6 quiet minutes, but not after 12.
+	ins(at(20), "s-inflight", "SubagentStart", "a1", "")
+	ins(at(6), "s-inflight", "PreToolUse", "a1", "")
+	ins(at(5), "s-inflight", "Stop", "", "{}")
+	ins(at(20), "s-inflight-stale", "SubagentStart", "a1", "")
+	ins(at(12), "s-inflight-stale", "PreToolUse", "a1", "")
+	ins(at(5), "s-inflight-stale", "Stop", "", "{}")
 	// Only the fresh one of a fresh/stale pair counts, and sets SubagentSince.
 	ins(at(20), "s-mixed", "SubagentStart", "a1", "")
 	ins(at(3), "s-mixed", "SubagentStart", "a2", "")
@@ -674,6 +682,8 @@ func TestAgentRoster_WaitingOnSubagents(t *testing.T) {
 		{"s-done", statusWaiting, 0, 0, ""},
 		{"s-orphan", statusWaiting, 0, 0, ""},
 		{"s-stale", statusWaiting, 0, 0, ""},
+		{"s-inflight", statusSubagents, 1, 20, "20m"},
+		{"s-inflight-stale", statusWaiting, 0, 0, ""},
 		{"s-late", statusSubagents, 1, 4, "4m"},
 		{"s-fg", statusWorking, 0, 0, ""},
 		{"s-perm", statusApproval, 0, 0, ""},
