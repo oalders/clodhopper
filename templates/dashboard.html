@@ -809,6 +809,7 @@
   </header>
 
   <form method="get" id="ck-filters" class="ck-filters">
+    {{ if .Debug }}<input type="hidden" name="debug" value="1">{{ end }}{{/* or a submit under ?debug=1 drops it, and with it event_type */}}
     <span class="ck-field">
       <label for="source_app">source_app</label>
       <span class="ck-selectbox">

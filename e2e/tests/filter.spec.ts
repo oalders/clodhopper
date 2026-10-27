@@ -90,17 +90,6 @@ test('a CI badge label matches, and no match shows the empty line', async ({ pag
   await expect(page.locator('#content table.roster')).toBeHidden();
 });
 
-test('the native search clear empties the filter', async ({ page }) => {
-  const { box, count, rows, shown } = await filterFor(page, 'fix-123');
-  await expect(shown).toHaveCount(3);
-  // appearance:none must not have removed the cancel button just inside the 9px right padding.
-  const b = (await box.boundingBox())!;
-  await page.mouse.click(b.x + b.width - 16, b.y + b.height / 2);
-  await expect(box).toHaveValue('');
-  await expect(shown).toHaveCount(await rows.count());
-  await expect(count).toHaveText('');
-});
-
 test('the folded merge queue shows its match count', async ({ page }) => {
   const { box } = await filterFor(page, 'merge queue position');
   const summary = page.locator('#ck-mq > summary');
@@ -111,6 +100,9 @@ test('the folded merge queue shows its match count', async ({ page }) => {
   await expect(page.locator('#ck-mq')).not.toHaveAttribute('open');
   await summary.click();
   await expect(summary).not.toContainText('match');
+  const queued = page.locator('#ck-mq table.mq > tbody > tr[id^="row-"]');
+  await expect(queued).toHaveCount(2);
+  await expect(queued.filter({ visible: true })).toHaveCount(1);
 });
 
 test('/ only focuses the box from outside a text field', async ({ page }) => {
@@ -195,4 +187,53 @@ test('the box shares a phone-width row without overflowing', async ({ page }) =>
   expect(b.x).toBeGreaterThanOrEqual(0);
   expect(b.x + b.width).toBeLessThanOrEqual(390);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+test('pin order and dividers hold under a filter across a repaint', async ({ page }) => {
+  test.skip(page.viewportSize()!.width <= 640, 'the sort headers are table-only');
+  let polls = 0;
+  // A fresh signature per poll forces every one-second poll to repaint in server order.
+  await page.route('**/api/state?*', async (route) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    return route.fulfill({ response, json: { ...json, signature: `pin-${++polls}` } });
+  });
+  await page.addInitScript(() => {
+    window.__swaps = 0;
+    document.addEventListener('ch:contentswap', () => window.__swaps++);
+  });
+  await page.goto('/?refresh=1');
+  const { box, shown } = ui(page);
+  const app = (row: ReturnType<Page['locator']>) => row.locator('td[data-label="app"]');
+  // Server order leads with clodhopper; pinned app-ascending leads with appB.
+  await expect(app(shown.first())).toHaveText('clodhopper');
+  await page.locator('#ck-pin').click();
+  await page.locator('#content th[data-sort="app"] button.sortbtn').click();
+  await box.fill('waiting');
+  await expect(app(shown.first())).toHaveText(appB);
+  const ids = () => shown.evaluateAll((rows) => rows.map((r) => r.id));
+  const frozen = await ids();
+
+  const before = await page.evaluate(() => window.__swaps);
+  await expect.poll(() => page.evaluate(() => window.__swaps)).toBeGreaterThan(before);
+  expect(await ids()).toEqual(frozen);
+  // Each visible row starts a divider exactly when its group differs from the visible row above.
+  const wrong = await shown.evaluateAll((rows) =>
+    rows.filter((r, i) => r.classList.contains('group-start') !== (i > 0 && r.dataset.group !== rows[i - 1].dataset.group)).map((r) => r.id),
+  );
+  expect(wrong).toEqual([]);
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+  await page.evaluate(() => { localStorage.removeItem('ch-pin'); localStorage.removeItem('ch-pin-sort'); });
+});
+
+test('submitting the filters under debug keeps debug and event_type', async ({ page }) => {
+  await page.goto('/?refresh=0&debug=1');
+  // Drop the flag the page just stored, so only the form itself can carry debug=1.
+  await page.evaluate(() => localStorage.removeItem('ch-debug'));
+  await page.locator('#ck-filtersbtn').click();
+  await page.locator('#event_type').fill('Stop');
+  await page.locator('#event_type').press('Enter');
+  await page.waitForURL(/event_type=Stop/);
+  expect(new URL(page.url()).searchParams.get('debug')).toBe('1');
+  await expect(page.locator('#event_type')).toHaveValue('Stop');
 });

@@ -4425,9 +4425,11 @@ func TestBuildDashboardDataFilters(t *testing.T) {
 	insertEvent(db, Event{TS: ts, SourceApp: "a", Branch: "x", SessionID: "s1", EventType: "Stop", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: ts, SourceApp: "b", Branch: "y", SessionID: "s2", EventType: "Stop", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: ts, SourceApp: "a", Branch: "q", SessionID: "s3", Cwd: "/q", EventType: "Stop", PayloadJSON: "{}"})
+	// Older than s1's Stop, so s1's roster status is unchanged.
+	insertEvent(db, Event{TS: now.Add(-time.Minute).UTC().Format(time.RFC3339), SourceApp: "a", Branch: "x", SessionID: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
 	// Stamped an hour ahead so cwdTTL cannot lapse mid-test and gh is never run.
 	ci := newCICache()
-	ci.m["/q"] = cwdEntry[ciResult]{val: ciResult{Queue: "queued", QueuePos: 1}, at: now.Add(time.Hour)}
+	ci.m["/q"] = cwdEntry[ciResult]{val: ciResult{Queue: "queued", QueuePos: 1, QueueETA: now.Add(10 * time.Minute)}, at: now.Add(time.Hour)}
 	l, _ := testLedger(nil)
 	build := func(target string) dashboardData {
 		data, err := buildDashboardData(httptest.NewRequest(http.MethodGet, target, nil), db, ci, &peekConfig{cache: newPaneCache()}, &actionConfig{ledger: l})
@@ -4451,6 +4453,15 @@ func TestBuildDashboardDataFilters(t *testing.T) {
 	}
 	if data.FilterType != "" {
 		t.Errorf("event_type without debug applied as %q", data.FilterType)
+	}
+	if data.QueueNextETA != "" {
+		t.Errorf("source_app=b QueueNextETA = %q, want none: its queued row is filtered out", data.QueueNextETA)
+	}
+	if data = build("/?event_type=PreToolUse"); len(data.Events) != 4 || data.QueueNextETA == "" {
+		t.Errorf("unfiltered: %d events, QueueNextETA %q; want all 4 and an ETA", len(data.Events), data.QueueNextETA)
+	}
+	if data = build("/?event_type=PreToolUse&debug=1"); len(data.Events) != 1 {
+		t.Errorf("debug event_type=PreToolUse: %d events, want 1", len(data.Events))
 	}
 	if data = build("/?branch=gone&event_type=Stop&debug=1"); len(data.Agents) != 0 || !slices.Equal(data.Branches, []string{"gone", "q", "x", "y"}) || data.FilterType != "Stop" {
 		t.Errorf("branch=gone: roster %+v, branches %v, event_type %q", data.Agents, data.Branches, data.FilterType)
