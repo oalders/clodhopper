@@ -135,18 +135,14 @@ test('#q= survives a poll repaint', async ({ page }) => {
     const json = await response.json();
     return route.fulfill({ response, json: { ...json, signature: `filter-${++polls}` } });
   });
-  await page.addInitScript(() => {
-    window.__swaps = 0;
-    document.addEventListener('ch:contentswap', () => window.__swaps++);
-  });
   await page.goto('/?refresh=1#q=fix-123');
   const { box, count, rows, shown } = ui(page);
   await expect(box).toHaveValue('fix-123');
   await expect(shown).toHaveCount(3);
 
-  const old = await rows.first().elementHandle();
-  await expect.poll(() => page.evaluate(() => window.__swaps)).toBeGreaterThan(0);
-  expect(await old!.evaluate((n) => n.isConnected)).toBe(false);
+  // Stamp the live board; the stamp is gone once a later repaint replaces it.
+  await rows.first().evaluate((n) => n.setAttribute('data-old', '1'));
+  await expect(page.locator('#content [data-old]')).toHaveCount(0);
   await expect(shown).toHaveCount(3);
   await expect(shown.first()).not.toHaveClass(/group-start/);
   await expect(shown.nth(1)).toHaveClass(/group-start/);
@@ -181,12 +177,15 @@ test('the source_app and branch dropdowns narrow the roster and keep #q=', async
 });
 
 test('the box shares a phone-width row without overflowing', async ({ page }) => {
-  test.skip(page.viewportSize()!.width > 400, 'phone width only');
-  await page.goto('/?refresh=0');
-  const b = (await ui(page).box.boundingBox())!;
+  const width = page.viewportSize()!.width;
+  test.skip(width > 400, 'phone width only');
+  const { box } = await filterFor(page, 'x'.repeat(60));
+  const b = (await box.boundingBox())!;
   expect(b.x).toBeGreaterThanOrEqual(0);
-  expect(b.x + b.width).toBeLessThanOrEqual(390);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  expect(b.x + b.width).toBeLessThanOrEqual(width);
+  // The unbroken term is echoed in the no-match line, which must wrap.
+  await expect(page.locator('#ck-qnone')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
 });
 
 test('pin order and dividers hold under a filter across a repaint', async ({ page }) => {
@@ -223,7 +222,6 @@ test('pin order and dividers hold under a filter across a repaint', async ({ pag
   );
   expect(wrong).toEqual([]);
   await page.unrouteAll({ behavior: 'ignoreErrors' });
-  await page.evaluate(() => { localStorage.removeItem('ch-pin'); localStorage.removeItem('ch-pin-sort'); });
 });
 
 test('submitting the filters under debug keeps debug and event_type', async ({ page }) => {

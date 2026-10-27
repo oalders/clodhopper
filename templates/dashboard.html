@@ -162,6 +162,7 @@
     #ck-q { flex: 1 1 14rem; min-width: 0; max-width: 24rem; }
     #ck-q::placeholder { color: var(--text-2); opacity: 1; } /* --text-3 misses 4.5:1 on light --surface-2 */
     #ck-qcount, #ck-qnone, .ck-qmq { font-size: var(--fs-sm); font-weight: 400; color: var(--text-2); }
+    #ck-qnone { overflow-wrap: anywhere; } /* it echoes the term, which may be one long word */
     .ck-caret {
       position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
       font-size: .7em; color: var(--text-3); pointer-events: none;
