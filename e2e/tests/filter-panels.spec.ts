@@ -77,7 +77,9 @@ test('the clear button brings a hidden peek back and refocuses the box', async (
 test('the last data row draws no bottom border above a closed panel', async ({ page }) => {
   // Every exec row carries a closed actions panel, so the tbody's last child is a hidden row.
   const tbody = page.locator('#content table.roster > tbody');
-  await expect(tbody.locator('> tr:last-child')).toBeHidden();
+  const last = tbody.locator(':scope > tr').last();
+  await expect(last).toHaveClass(/\b(actrow|panerow)\b/);
+  await expect(last).toBeHidden();
   const rows = tbody.locator('> tr[data-group]');
   await expect(rows.last().locator('td').first()).toHaveCSS('border-bottom-width', '0px');
   await expect(rows.first().locator('td').first()).not.toHaveCSS('border-bottom-width', '0px');

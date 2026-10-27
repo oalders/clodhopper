@@ -137,7 +137,8 @@ test('the folded merge queue shows its match count', async ({ page }) => {
   await expect(summary).not.toContainText('matches');
   await expect(page.locator('#ck-mq')).not.toHaveAttribute('open');
   // The tag drops the h2's tight heading tracking.
-  await expect(summary.locator('.ck-qmq')).toHaveCSS('letter-spacing', 'normal');
+  const spacing = (sel: string) => summary.locator(sel).evaluate((el) => getComputedStyle(el).letterSpacing);
+  expect(await spacing('.ck-qmq')).not.toBe(await spacing('h2'));
   await summary.click();
   await expect(summary).not.toContainText('match');
   const queued = page.locator('#ck-mq table.mq > tbody > tr[id^="row-"]');
@@ -145,6 +146,23 @@ test('the folded merge queue shows its match count', async ({ page }) => {
   await expect(queued.filter({ visible: true })).toHaveCount(1);
   await summary.click();
   await expect(summary).toContainText('· 1 match');
+});
+
+test('an open fold with no match hides its table; clearing brings it back', async ({ page }) => {
+  await page.goto('/?refresh=0');
+  const mq = page.locator('#ck-mq');
+  await mq.locator('summary').click();
+  const wrap = mq.locator('.ck-tablewrap');
+  await expect(wrap).toBeVisible();
+  // Matches roster rows only, so the queue's table would be a bare header.
+  const { box } = ui(page);
+  await box.fill('fix-1234');
+  await expect(page.locator(`${rosterRows}:visible`)).not.toHaveCount(0);
+  await expect(wrap).toBeHidden();
+  await expect(mq.locator('summary')).toHaveCSS('border-bottom-width', '0px');
+  await box.fill('');
+  await expect(wrap).toBeVisible();
+  await expect(mq.locator('summary')).not.toHaveCSS('border-bottom-width', '0px');
 });
 
 test('the next-merge ETA stays ahead of the fold\'s match tag', async ({ page }) => {
@@ -183,17 +201,20 @@ test('/ only focuses the box from outside a text field', async ({ page }) => {
   await expect(et).toHaveValue('x/');
 });
 
-test('Ctrl+/ and a composing / leave the box alone', async ({ page }) => {
+// The composing keydown is synthetic: Playwright cannot drive an IME.
+test('Ctrl/Alt/Meta+/ and a (synthetic) composing / leave the box alone', async ({ page }) => {
   await page.goto('/?refresh=0');
   const { box } = ui(page);
-  const slash = (isComposing: boolean) =>
-    page.evaluate((isComposing) => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '/', isComposing, bubbles: true })), isComposing);
+  const slash = (composing: boolean) =>
+    page.evaluate((c) => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '/', isComposing: c, bubbles: true })), composing);
   // The same synthetic keydown, not composing, is the shortcut, so the negatives below mean something.
   await slash(false);
   await expect(box).toBeFocused();
   await box.blur();
-  await page.keyboard.press('Control+/');
-  await expect(box).not.toBeFocused();
+  for (const mod of ['Control', 'Alt', 'Meta']) {
+    await page.keyboard.press(`${mod}+/`);
+    await expect(box).not.toBeFocused();
+  }
   // An IME's composition keystrokes are not the shortcut.
   await slash(true);
   await expect(box).not.toBeFocused();
@@ -201,7 +222,8 @@ test('Ctrl+/ and a composing / leave the box alone', async ({ page }) => {
 
 test('#q= round-trips odd characters through a reload', async ({ page }) => {
   const { box } = await filterFor(page, 'a b&c/d');
-  expect(new URL(page.url()).hash).toBe('#q=a%20b%26c%2Fd');
+  // Polls: page.url() can lag a replaceState.
+  await expect(page).toHaveURL(/#q=a%20b%26c%2Fd$/);
   await page.reload();
   await expect(box).toHaveValue('a b&c/d');
   await expect(page.locator('#ck-qclear')).toBeVisible();
@@ -262,11 +284,13 @@ test('the box shares its row without overflowing', async ({ page }) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
 });
 
-test('on a phone the box is 16px and its clear button a 44px target', async ({ page }) => {
+test('on a phone the box and filter selects are 16px and the clear button a 44px target', async ({ page }) => {
   test.skip(!phone(page), 'phone layout only');
   // Under 16px, iOS zooms the page in on focus.
   const { box } = await filterFor(page, 'x');
   await expect(box).toHaveCSS('font-size', '16px');
+  if (!(await page.locator('#source_app').isVisible())) await page.locator('#ck-filtersbtn').click();
+  for (const id of ['#source_app', '#branch']) await expect(page.locator(id)).toHaveCSS('font-size', '16px');
   const b = (await page.locator('#ck-qclear').boundingBox())!;
   expect(Math.min(b.width, b.height)).toBeGreaterThanOrEqual(44);
 });

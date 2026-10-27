@@ -161,7 +161,7 @@
     .ck-qbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 12px; }
     .ck-q { flex: 1 1 14rem; min-width: 0; max-width: 24rem; }
     .ck-q::placeholder { color: var(--text-2); opacity: 1; } /* --text-3 misses 4.5:1 on light --surface-2 */
-    .ck-q::-webkit-search-cancel-button { display: none; } /* a speck, and Firefox has none: .ck-qclear replaces it */
+    .ck-q::-webkit-search-cancel-button { display: none; } /* the native × is tiny and WebKit/Blink-only (Firefox has none), hence .ck-qclear */
     .ck-qcount, .ck-qnone, .ck-qmq { font-size: var(--fs-sm); font-weight: 400; color: var(--text-2); }
     .ck-qmq { letter-spacing: normal; } /* not the h2's tight heading tracking */
     .ck-qnone { overflow-wrap: anywhere; } /* it echoes the term, which may be one long word */
@@ -214,7 +214,7 @@
     #ck-mq > summary::-webkit-details-marker { display: none; } /* older WebKit ignores display:flex here */
     #ck-mq[open] > summary::before { content: "▾"; }
     #ck-mq:not([open]) > summary { border-bottom: none; }
-    .ck-cardhead:has(+ .ck-tablewrap[hidden]) { border-bottom: none; } /* a filter hid every roster row */
+    .ck-cardhead:has(+ .ck-tablewrap[hidden]) { border-bottom: none; } /* a filter hid every roster or merge-queue row */
     .empty {
       color: var(--text-3); padding: 20px 16px; font-size: var(--fs-sm); line-height: 1.55;
     }
@@ -722,9 +722,9 @@
       .actpanel .actforce input { width: 18px; height: 18px; }
       .ck-bulk .ck-btn, .ck-bulk .pract, .ck-bulk .actforce { min-height: 44px; font-size: var(--fs-sm); }
       .ck-bulk .actforce input { width: 18px; height: 18px; }
-      .ck-filters select, .ck-filters input[type="text"], .ck-filters .ck-btn, .ck-q { min-height: 44px; }
+      .ck-filters select, .ck-filters input[type="text"], .ck-q { min-height: 44px; font-size: 16px; } /* under 16px, iOS zooms the page in on focus */
+      .ck-filters .ck-btn { min-height: 44px; }
       .ck-qclear { min-height: 44px; min-width: 44px; justify-content: center; }
-      .ck-filters select, .ck-filters input[type="text"], .ck-q { font-size: 16px; } /* under 16px, iOS zooms the page in on focus */
       .actpanel .actmsg { grid-column: 1 / -1; font-size: var(--fs-sm); } /* the destructive-action result line skipped the mobile size bump the other controls got */
       .ck-bulk .actmsg, table.mq .actmsg { font-size: var(--fs-sm); } /* .ck-bulk is flex, so grid-column would be a no-op here */
       /* The PR form's command preview, radio choices, and lone run button must
@@ -898,7 +898,7 @@
   <!-- Outside #content so a poll swap keeps the term and the focus. -->
   <div class="ck-qbar">
     <input type="search" id="ck-q" class="ck-q" placeholder="filter rows ( / )" title="show only roster and merge-queue rows containing this text (Esc clears)" autocomplete="off" spellcheck="false">
-    <button type="button" id="ck-qclear" class="ck-btn ck-qclear" title="clear the filter" hidden>×</button>
+    <button type="button" id="ck-qclear" class="ck-btn ck-qclear" title="clear the filter">×</button>
     <span id="ck-qcount" class="ck-qcount"></span>
     <span id="ck-qnone" class="ck-qnone" hidden></span>
   </div>
@@ -1460,6 +1460,8 @@
       var wrap = document.querySelector('#content table.roster');
       if (wrap) wrap.parentNode.hidden = !!want && rosterShown === 0;
       var mq = document.getElementById('ck-mq');
+      var mqWrap = mq && mq.querySelector('.ck-tablewrap');
+      if (mqWrap) mqWrap.hidden = !!want && mqShown === 0;
       var h2 = mq && mq.querySelector('summary h2');
       if (h2) {
         var tag = h2.querySelector('.ck-qmq');
@@ -1473,7 +1475,7 @@
     function save() {
       var term = box.value.trim(), hash = term ? '#q=' + encodeURIComponent(term) : '';
       try { history.replaceState(null, '', location.pathname + location.search + hash); } catch (e) {}
-      clear.hidden = !box.value;
+      clear.style.visibility = box.value ? '' : 'hidden'; // reserves its space, so the count does not jump
       apply();
     }
     box.addEventListener('input', save);
