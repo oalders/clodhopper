@@ -145,6 +145,7 @@ test('a picker whose chosen blocker left the board falls back to an offered row'
     const json = await response.json();
     return route.fulfill({ response, json: { ...json, html: json.html.replace(gone, ''), signature: `gone-${++polls}` } });
   });
+  // Stamped by hand, not repaint(): that needs repaintEveryPoll's swap counter, and this test supplies its own route.
   // A stamp on a node a repaint already detached would let the wait pass with no repaint.
   expect(await pick.evaluate((el) => { el.setAttribute('data-old', '1'); return el.isConnected; })).toBe(true);
   await expect(page.locator('.blockpick[data-old]')).toHaveCount(0);

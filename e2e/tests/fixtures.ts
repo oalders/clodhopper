@@ -78,7 +78,7 @@ declare global {
 // repaintEveryPoll gives every /api/state answer a fresh signature, so each
 // one-second poll repaints, and counts repaints off the ch:contentswap event
 // swapContent fires (it is synchronous, so a counted repaint is finished). Call
-// it before page.goto; it returns how many polls have been answered.
+// it before page.goto; it returns a getter for how many polls have been answered.
 export async function repaintEveryPoll(page: Page): Promise<() => number> {
   let polls = 0;
   await page.route('**/api/state?*', async (route) => {
@@ -101,4 +101,5 @@ export async function repaint(page: Page, el: string) {
   const before = await swaps(page);
   await expect.poll(() => swaps(page)).toBeGreaterThan(before);
   expect(await old!.evaluate((n) => n.isConnected)).toBe(false);
+  await old!.dispose();
 }

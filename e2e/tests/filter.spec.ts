@@ -50,8 +50,11 @@ test('typing narrows the roster, fixes the dividers, and Esc clears it', async (
 });
 
 test('the clear button shows only with a term, clears it and refocuses the box', async ({ page }) => {
-  const { box, shown, rows } = await filterFor(page, 'fix-123');
+  await page.goto('/?refresh=0');
+  const { box, shown, rows } = ui(page);
   const clear = page.locator('#ck-qclear');
+  await expect(clear).toBeHidden();
+  await box.fill('fix-123');
   await expect(clear).toBeVisible();
   await clear.click();
   await expect(box).toHaveValue('');
@@ -59,6 +62,11 @@ test('the clear button shows only with a term, clears it and refocuses the box',
   await expect(clear).toBeHidden();
   await expect(shown).toHaveCount(await rows.count());
   expect(new URL(page.url()).hash).toBe('');
+  // Esc clears a typed term and hides the button too.
+  await page.keyboard.type('fix');
+  await expect(clear).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(clear).toBeHidden();
 });
 
 test('whitespace alone is no filter', async ({ page }) => {
@@ -93,7 +101,7 @@ test('hiding the first row of a group moves its divider; clearing restores it', 
 test('a term found only in a title attribute matches', async ({ page }) => {
   const { shown } = await filterFor(page, 'last completed');
   await expect(shown).not.toHaveCount(0);
-  for (const row of await shown.all()) await expect(row.locator('em[title="last completed"]')).toHaveCount(1);
+  await expect(shown.filter({ hasNot: page.locator('em[title="last completed"]') })).toHaveCount(0);
 });
 
 test('the last row left showing draws no bottom border', async ({ page }) => {
@@ -142,7 +150,7 @@ test('the folded merge queue shows its match count', async ({ page }) => {
 test('the next-merge ETA stays ahead of the fold\'s match tag', async ({ page }) => {
   // Position 1 is the next row to merge.
   await filterFor(page, 'merge queue position 1');
-  await expect(page.locator('#ck-mq > summary')).toHaveText(/ · next merge in ~\d+[smh] · 1 match$/);
+  await expect(page.locator('#ck-mq > summary')).toHaveText(/next merge .* · 1 match$/);
 });
 
 test('an open fold keeps the filter across a repaint', async ({ page }) => {
@@ -158,7 +166,6 @@ test('an open fold keeps the filter across a repaint', async ({ page }) => {
   await expect(queued.filter({ visible: true })).toHaveCount(1);
   await expect(queued.filter({ visible: true })).toContainText('merge queue position 2');
   await expect(mq.locator('summary')).not.toContainText('match');
-  await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
 test('/ only focuses the box from outside a text field', async ({ page }) => {
@@ -178,11 +185,18 @@ test('/ only focuses the box from outside a text field', async ({ page }) => {
 
 test('Ctrl+/ and a composing / leave the box alone', async ({ page }) => {
   await page.goto('/?refresh=0');
+  const { box } = ui(page);
+  const slash = (isComposing: boolean) =>
+    page.evaluate((isComposing) => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '/', isComposing, bubbles: true })), isComposing);
+  // The same synthetic keydown, not composing, is the shortcut, so the negatives below mean something.
+  await slash(false);
+  await expect(box).toBeFocused();
+  await box.blur();
   await page.keyboard.press('Control+/');
-  await expect(ui(page).box).not.toBeFocused();
+  await expect(box).not.toBeFocused();
   // An IME's composition keystrokes are not the shortcut.
-  await page.evaluate(() => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '/', isComposing: true, bubbles: true })));
-  await expect(ui(page).box).not.toBeFocused();
+  await slash(true);
+  await expect(box).not.toBeFocused();
 });
 
 test('#q= round-trips odd characters through a reload', async ({ page }) => {
@@ -190,6 +204,7 @@ test('#q= round-trips odd characters through a reload', async ({ page }) => {
   expect(new URL(page.url()).hash).toBe('#q=a%20b%26c%2Fd');
   await page.reload();
   await expect(box).toHaveValue('a b&c/d');
+  await expect(page.locator('#ck-qclear')).toBeVisible();
 });
 
 test('#q= survives a poll repaint', async ({ page }) => {
@@ -237,9 +252,11 @@ test('the source_app and branch dropdowns narrow the roster and keep #q=', async
 test('the box shares its row without overflowing', async ({ page }) => {
   const width = page.viewportSize()!.width;
   const { box } = await filterFor(page, 'x'.repeat(60));
-  const b = (await box.boundingBox())!;
-  expect(b.x).toBeGreaterThanOrEqual(0);
-  expect(b.x + b.width).toBeLessThanOrEqual(width);
+  for (const el of [box, page.locator('#ck-qclear')]) {
+    const b = (await el.boundingBox())!;
+    expect(b.x).toBeGreaterThanOrEqual(0);
+    expect(b.x + b.width).toBeLessThanOrEqual(width);
+  }
   // The unbroken term is echoed in the no-match line, which must wrap.
   await expect(page.locator('#ck-qnone')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);

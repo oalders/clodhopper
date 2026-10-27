@@ -165,6 +165,7 @@
     .ck-qcount, .ck-qnone, .ck-qmq { font-size: var(--fs-sm); font-weight: 400; color: var(--text-2); }
     .ck-qmq { letter-spacing: normal; } /* not the h2's tight heading tracking */
     .ck-qnone { overflow-wrap: anywhere; } /* it echoes the term, which may be one long word */
+    .ck-qclear { padding: 4px 9px; line-height: 1.3; } /* the box's, so the two match in height */
     .ck-caret {
       position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
       font-size: .7em; color: var(--text-3); pointer-events: none;
@@ -723,7 +724,7 @@
       .ck-bulk .actforce input { width: 18px; height: 18px; }
       .ck-filters select, .ck-filters input[type="text"], .ck-filters .ck-btn, .ck-q { min-height: 44px; }
       .ck-qclear { min-height: 44px; min-width: 44px; justify-content: center; }
-      .ck-q { font-size: 16px; } /* under 16px, iOS zooms the page in on focus */
+      .ck-filters select, .ck-filters input[type="text"], .ck-q { font-size: 16px; } /* under 16px, iOS zooms the page in on focus */
       .actpanel .actmsg { grid-column: 1 / -1; font-size: var(--fs-sm); } /* the destructive-action result line skipped the mobile size bump the other controls got */
       .ck-bulk .actmsg, table.mq .actmsg { font-size: var(--fs-sm); } /* .ck-bulk is flex, so grid-column would be a no-op here */
       /* The PR form's command preview, radio choices, and lone run button must

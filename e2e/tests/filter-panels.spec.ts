@@ -62,3 +62,23 @@ test('a queued row\'s open peek hides with it and comes back open', async ({ pag
   await box.fill('');
   await expect(panel).toBeVisible();
 });
+
+test('the clear button brings a hidden peek back and refocuses the box', async ({ page }) => {
+  await page.locator(`#content button.peek[data-peek="${sess}"]`).click();
+  await expect(peekRow(page)).toBeVisible();
+  const box = page.locator('#ck-q');
+  await box.fill('fix-1234');
+  await expect(peekRow(page)).toBeHidden();
+  await page.locator('#ck-qclear').click();
+  await expect(peekRow(page)).toBeVisible();
+  await expect(box).toBeFocused();
+});
+
+test('the last data row draws no bottom border above a closed panel', async ({ page }) => {
+  // Every exec row carries a closed actions panel, so the tbody's last child is a hidden row.
+  const tbody = page.locator('#content table.roster > tbody');
+  await expect(tbody.locator('> tr:last-child')).toBeHidden();
+  const rows = tbody.locator('> tr[data-group]');
+  await expect(rows.last().locator('td').first()).toHaveCSS('border-bottom-width', '0px');
+  await expect(rows.first().locator('td').first()).not.toHaveCSS('border-bottom-width', '0px');
+});
