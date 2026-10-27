@@ -82,14 +82,9 @@ declare global {
 export async function repaintEveryPoll(page: Page): Promise<() => number> {
   let polls = 0;
   await page.route('**/api/state?*', async (route) => {
-    try {
-      const response = await route.fetch();
-      const json = await response.json();
-      await route.fulfill({ response, json: { ...json, signature: `repaint-${++polls}` } });
-    } catch {
-      // A poll still in flight when the test ends finds its response disposed.
-      // Mid-test, an unfulfilled poll just never repaints, so repaint() still fails.
-    }
+    const response = await route.fetch();
+    const json = await response.json();
+    return route.fulfill({ response, json: { ...json, signature: `repaint-${++polls}` } });
   });
   await page.addInitScript(() => {
     window.__swaps = 0;

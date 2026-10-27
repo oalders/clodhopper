@@ -16,6 +16,11 @@ const ui = (page: Page) => ({
   shown: page.locator(`${rosterRows}:visible`),
 });
 
+test.afterEach(async ({ page }) => {
+  // repaintEveryPoll keeps a /api/state fetch in flight; let the test end under it.
+  await page.unrouteAll({ behavior: 'ignoreErrors' });
+});
+
 async function filterFor(page: Page, term: string, url = '/?refresh=0') {
   await page.goto(url);
   const u = ui(page);
@@ -252,7 +257,6 @@ test('#q= survives a poll repaint', async ({ page }) => {
   await expect(shown.nth(1)).toHaveClass(/group-start/);
   await expect(shown.nth(2)).toHaveClass(/group-start/);
   await expect(count).toHaveText(/^4 of \d+$/);
-  await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
 test('the source_app and branch dropdowns narrow the roster and keep #q=', async ({ page }) => {
@@ -330,7 +334,6 @@ test('pin order and dividers hold under a filter across a repaint', async ({ pag
     rows.filter((r, i) => r.classList.contains('group-start') !== (i > 0 && r.dataset.group !== rows[i - 1].dataset.group)).map((r) => r.id),
   );
   expect(wrong).toEqual([]);
-  await page.unrouteAll({ behavior: 'ignoreErrors' });
 });
 
 test('submitting the filters under debug keeps debug and event_type', async ({ page }) => {
