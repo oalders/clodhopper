@@ -44,7 +44,21 @@ test('Esc in a filled box clears it and leaves the peek open', async ({ page }) 
   await box.press('Escape');
   await expect(box).toHaveValue('');
   await expect(peekRow(page)).toBeVisible();
-  // Esc on the empty box falls through to the page, which closes the peek.
+  // Esc on the empty box falls through to the page, which closes the peek, and keeps focus.
   await box.press('Escape');
   await expect(peekRow(page)).toBeHidden();
+  await expect(box).toBeFocused();
+});
+
+test('a queued row\'s open peek hides with it and comes back open', async ({ page }) => {
+  const queued = 'e2e-queued-0000-1111-2222-333333333333';
+  await page.locator('#ck-mq > summary').click();
+  await page.locator(`#ck-mq button.peek[data-peek="${queued}"]`).click();
+  const panel = page.locator(`#ck-mq tr.panerow[data-peek-row="${queued}"]`);
+  await expect(panel).toBeVisible();
+  const box = page.locator('#ck-q');
+  await box.fill('fix-1234');
+  await expect(panel).toBeHidden();
+  await box.fill('');
+  await expect(panel).toBeVisible();
 });

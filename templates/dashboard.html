@@ -150,19 +150,21 @@
     .ck-field { display: inline-flex; align-items: center; gap: 6px; }
     .ck-field > label { font-size: var(--fs-sm); color: var(--text-2); white-space: nowrap; }
     .ck-selectbox { position: relative; display: inline-flex; }
-    .ck-filters select, .ck-filters input[type="text"], #ck-q {
+    .ck-filters select, .ck-filters input[type="text"], .ck-q {
       appearance: none; -webkit-appearance: none;
       font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-1);
       background: var(--surface-2); border: 1px solid var(--border-strong);
       border-radius: var(--radius-sm); line-height: 1.3; outline: none;
     }
     .ck-filters select { padding: 4px 24px 4px 9px; cursor: pointer; }
-    .ck-filters input[type="text"], #ck-q { padding: 4px 9px; cursor: text; }
+    .ck-filters input[type="text"], .ck-q { padding: 4px 9px; cursor: text; }
     .ck-qbar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0 0 12px; }
-    #ck-q { flex: 1 1 14rem; min-width: 0; max-width: 24rem; }
-    #ck-q::placeholder { color: var(--text-2); opacity: 1; } /* --text-3 misses 4.5:1 on light --surface-2 */
-    #ck-qcount, #ck-qnone, .ck-qmq { font-size: var(--fs-sm); font-weight: 400; color: var(--text-2); }
-    #ck-qnone { overflow-wrap: anywhere; } /* it echoes the term, which may be one long word */
+    .ck-q { flex: 1 1 14rem; min-width: 0; max-width: 24rem; }
+    .ck-q::placeholder { color: var(--text-2); opacity: 1; } /* --text-3 misses 4.5:1 on light --surface-2 */
+    .ck-q::-webkit-search-cancel-button { display: none; } /* a speck, and Firefox has none: .ck-qclear replaces it */
+    .ck-qcount, .ck-qnone, .ck-qmq { font-size: var(--fs-sm); font-weight: 400; color: var(--text-2); }
+    .ck-qmq { letter-spacing: normal; } /* not the h2's tight heading tracking */
+    .ck-qnone { overflow-wrap: anywhere; } /* it echoes the term, which may be one long word */
     .ck-caret {
       position: absolute; right: 8px; top: 50%; transform: translateY(-50%);
       font-size: .7em; color: var(--text-3); pointer-events: none;
@@ -211,6 +213,7 @@
     #ck-mq > summary::-webkit-details-marker { display: none; } /* older WebKit ignores display:flex here */
     #ck-mq[open] > summary::before { content: "▾"; }
     #ck-mq:not([open]) > summary { border-bottom: none; }
+    .ck-cardhead:has(+ .ck-tablewrap[hidden]) { border-bottom: none; } /* a filter hid every roster row */
     .empty {
       color: var(--text-3); padding: 20px 16px; font-size: var(--fs-sm); line-height: 1.55;
     }
@@ -234,7 +237,8 @@
       border-bottom: 1px solid var(--border); vertical-align: top;
       overflow: hidden; text-overflow: ellipsis;
     }
-    tbody tr:last-child td { border-bottom: none; }
+    /* The last row showing, not the last child: a filter or a closed panel may hide those after it. */
+    tbody tr:not(.ck-qhide):not([hidden]):not(:has(~ tr:not(.ck-qhide):not([hidden]))) td { border-bottom: none; }
     th {
       position: sticky; top: 0; background: var(--surface-2); color: var(--text-2);
       font-weight: 600; font-size: var(--fs-xs); letter-spacing: .04em; text-transform: lowercase;
@@ -717,7 +721,9 @@
       .actpanel .actforce input { width: 18px; height: 18px; }
       .ck-bulk .ck-btn, .ck-bulk .pract, .ck-bulk .actforce { min-height: 44px; font-size: var(--fs-sm); }
       .ck-bulk .actforce input { width: 18px; height: 18px; }
-      .ck-filters select, .ck-filters input[type="text"], .ck-filters .ck-btn, #ck-q { min-height: 44px; }
+      .ck-filters select, .ck-filters input[type="text"], .ck-filters .ck-btn, .ck-q { min-height: 44px; }
+      .ck-qclear { min-height: 44px; min-width: 44px; justify-content: center; }
+      .ck-q { font-size: 16px; } /* under 16px, iOS zooms the page in on focus */
       .actpanel .actmsg { grid-column: 1 / -1; font-size: var(--fs-sm); } /* the destructive-action result line skipped the mobile size bump the other controls got */
       .ck-bulk .actmsg, table.mq .actmsg { font-size: var(--fs-sm); } /* .ck-bulk is flex, so grid-column would be a no-op here */
       /* The PR form's command preview, radio choices, and lone run button must
@@ -890,9 +896,10 @@
 
   <!-- Outside #content so a poll swap keeps the term and the focus. -->
   <div class="ck-qbar">
-    <input type="search" id="ck-q" placeholder="filter rows ( / )" title="show only roster and merge-queue rows containing this text (Esc clears)" autocomplete="off" spellcheck="false">
-    <span id="ck-qcount"></span>
-    <span id="ck-qnone" hidden></span>
+    <input type="search" id="ck-q" class="ck-q" placeholder="filter rows ( / )" title="show only roster and merge-queue rows containing this text (Esc clears)" autocomplete="off" spellcheck="false">
+    <button type="button" id="ck-qclear" class="ck-btn ck-qclear" title="clear the filter" hidden>×</button>
+    <span id="ck-qcount" class="ck-qcount"></span>
+    <span id="ck-qnone" class="ck-qnone" hidden></span>
   </div>
 
   <main id="content">{{ template "content" . }}</main>
@@ -1406,6 +1413,7 @@
     if (!box) return;
     var count = document.getElementById('ck-qcount');
     var none = document.getElementById('ck-qnone');
+    var clear = document.getElementById('ck-qclear');
     try {
       var m = /^#q=(.*)$/.exec(location.hash);
       if (m) box.value = decodeURIComponent(m[1]);
@@ -1444,7 +1452,8 @@
       repairGroupStarts();
       // An empty board has nothing to count or miss.
       var active = want !== '' && rows.length > 0;
-      count.textContent = active ? shown + ' of ' + rows.length : '';
+      // No count once nothing shows: the no-match line says so.
+      count.textContent = active && shown > 0 ? shown + ' of ' + rows.length : '';
       none.hidden = !active || shown > 0;
       none.textContent = none.hidden ? '' : "no rows match '" + term + "'";
       var wrap = document.querySelector('#content table.roster');
@@ -1463,21 +1472,26 @@
     function save() {
       var term = box.value.trim(), hash = term ? '#q=' + encodeURIComponent(term) : '';
       try { history.replaceState(null, '', location.pathname + location.search + hash); } catch (e) {}
+      clear.hidden = !box.value;
       apply();
     }
-    // A search box's native clear fires input too.
     box.addEventListener('input', save);
+    clear.addEventListener('click', function () {
+      box.value = '';
+      save();
+      box.focus();
+    });
     box.addEventListener('keydown', function (ev) {
       if (ev.key !== 'Escape') return;
-      // Empty: step out and let the document's Esc close any open peek.
-      if (!box.value) { box.blur(); return; }
+      // Empty: keep focus and let the document's Esc close any open peek.
+      if (!box.value) return;
       ev.stopPropagation();
       ev.preventDefault();
       box.value = '';
       save();
     });
     document.addEventListener('keydown', function (ev) {
-      if (ev.key !== '/' || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      if (ev.key !== '/' || ev.ctrlKey || ev.metaKey || ev.altKey || ev.isComposing) return;
       var t = ev.target;
       if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
       ev.preventDefault();
