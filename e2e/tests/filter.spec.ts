@@ -54,8 +54,14 @@ test('the clear button shows only with a term, clears it and refocuses the box',
   const { box, shown, rows } = ui(page);
   const clear = page.locator('#ck-qclear');
   await expect(clear).toBeHidden();
-  await box.fill('fix-123');
+  // Hidden, it still holds its place, so the count after it does not shift. A
+  // blank term shows it without a count, which would reflow the row on a phone.
+  const before = (await clear.boundingBox())!;
+  await box.fill(' ');
   await expect(clear).toBeVisible();
+  const after = (await clear.boundingBox())!;
+  expect([after.x, after.width]).toEqual([before.x, before.width]);
+  await box.fill('fix-123');
   await clear.click();
   await expect(box).toHaveValue('');
   await expect(box).toBeFocused();
@@ -102,6 +108,7 @@ test('a term found only in a title attribute matches', async ({ page }) => {
   const { shown } = await filterFor(page, 'last completed');
   await expect(shown).not.toHaveCount(0);
   await expect(shown.filter({ hasNot: page.locator('em[title="last completed"]') })).toHaveCount(0);
+  await expect(shown.filter({ hasText: /last completed/i })).toHaveCount(0);
 });
 
 test('the last row left showing draws no bottom border', async ({ page }) => {
@@ -146,6 +153,9 @@ test('the folded merge queue shows its match count', async ({ page }) => {
   await expect(queued.filter({ visible: true })).toHaveCount(1);
   await summary.click();
   await expect(summary).toContainText('· 1 match');
+  // A term matching only roster rows still tags the closed fold.
+  await box.fill('fix-1234');
+  await expect(summary).toContainText('· 0 matches');
 });
 
 test('an open fold with no match hides its table; clearing brings it back', async ({ page }) => {

@@ -95,7 +95,8 @@ export async function repaintEveryPoll(page: Page): Promise<() => number> {
 
 export const swaps = (page: Page) => page.evaluate(() => window.__swaps);
 
-// repaint waits for the next repaint and checks it really replaced el.
+// repaint waits for the next repaint and checks it really replaced el, which
+// must select a single element.
 export async function repaint(page: Page, el: string) {
   const old = await page.locator(el).elementHandle();
   const before = await swaps(page);

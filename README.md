@@ -520,9 +520,10 @@ everything else, so no real tmux is ever reached. The suite checks that status
 badges and time cells are never clipped and the page never scrolls sideways at
 1440, 641 and 390px wide, plus the theme toggle, filter strip, type-to-filter box
 and refresh CI button.
-`restart.spec.ts`, `swap.spec.ts`, `merge.spec.ts` and `filter-panels.spec.ts`
-run against a second server on `127.0.0.1:9325` started with `--enable-merge
---pane-peek`, covering the restart (all) arm/confirm, Escape and report table,
+`restart.spec.ts`, `swap.spec.ts`, `merge.spec.ts`, `session.spec.ts`,
+`block.spec.ts`, `ledger.spec.ts` and `filter-panels.spec.ts` run against a
+second server on `127.0.0.1:9325` started with `--enable-merge --pane-peek`,
+covering the restart (all) arm/confirm, Escape and report table,
 what a poll's repaint carries over (open peeks and their scroll, open actions
 panels, focus, and the hold-off while an action is busy), a squash's result
 line, and how the type-to-filter box treats open panels. That server is
