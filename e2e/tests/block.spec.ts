@@ -1,5 +1,5 @@
 import type { Page, Request } from '@playwright/test';
-import { test, expect, abortUnstubbedExec } from './fixtures';
+import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint } from './fixtures';
 
 // The blocked-on chip and the row panel's block picker (#210), against
 // serve.sh's exec server; e2e_seed_test.go blocks fix-1234 on fix-1235,
@@ -110,12 +110,7 @@ test('the ✕ on a blocked row folded into the merge queue sends unblock', async
 });
 
 test('a poll repaint keeps the picker choice and its focus', async ({ page }) => {
-  let polls = 0;
-  await page.route('**/api/state?*', async (route) => {
-    const response = await route.fetch();
-    const json = await response.json();
-    return route.fulfill({ response, json: { ...json, signature: `block-${++polls}` } });
-  });
+  await repaintEveryPoll(page);
   await page.goto('/?refresh=1');
   await page.locator(`#content button.actbtn[data-actions="${blocker}"]`).click();
   const pick = page.locator(`${panel(blocker)} .blockpick`);
@@ -125,9 +120,7 @@ test('a poll repaint keeps the picker choice and its focus', async ({ page }) =>
   expect(first).not.toBe(queued);
   await pick.selectOption(queued);
   await pick.focus();
-  // Tag the live node so the assertions below can only pass on its repainted replacement.
-  await pick.evaluate((el) => el.setAttribute('data-old', '1'));
-  await expect(page.locator('.blockpick[data-old]')).toHaveCount(0);
+  await repaint(page, `${panel(blocker)} .blockpick`);
   await expect(pick).toHaveValue(queued);
   await expect(pick).toBeFocused();
 });
@@ -152,7 +145,8 @@ test('a picker whose chosen blocker left the board falls back to an offered row'
     const json = await response.json();
     return route.fulfill({ response, json: { ...json, html: json.html.replace(gone, ''), signature: `gone-${++polls}` } });
   });
-  await pick.evaluate((el) => el.setAttribute('data-old', '1'));
+  // A stamp on a node a repaint already detached would let the wait pass with no repaint.
+  expect(await pick.evaluate((el) => { el.setAttribute('data-old', '1'); return el.isConnected; })).toBe(true);
   await expect(page.locator('.blockpick[data-old]')).toHaveCount(0);
   await expect(pick.locator(`option[value="${queued}"]`)).toHaveCount(0);
   const value = await pick.inputValue();

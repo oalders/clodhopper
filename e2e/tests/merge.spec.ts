@@ -1,15 +1,13 @@
 import type { Page, Request } from '@playwright/test';
-import { test, expect, abortUnstubbedExec } from './fixtures';
+import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint } from './fixtures';
 
 // The PR form's result line for a merge (#188). Runs against serve.sh's exec
 // server (the "exec desktop 1440" project); every /api/action is answered
 // here, and one a test forgot to stub is aborted and fails that test. Every
-// /api/state answer gets a fresh signature, so each one-second poll repaints;
-// repaints are counted off the ch:contentswap event swapContent fires.
+// poll repaints (repaintEveryPoll).
 
 declare global {
   interface Window {
-    __swaps: number;
     __ckActionBusy: number;
   }
 }
@@ -26,16 +24,7 @@ let unstubbed: string[] = [];
 
 test.beforeEach(async ({ page }) => {
   unstubbed = await abortUnstubbedExec(page);
-  let polls = 0;
-  await page.route('**/api/state?*', async (route) => {
-    const response = await route.fetch();
-    const json = await response.json();
-    return route.fulfill({ response, json: { ...json, signature: `merge-${++polls}` } });
-  });
-  await page.addInitScript(() => {
-    window.__swaps = 0;
-    document.addEventListener('ch:contentswap', () => window.__swaps++);
-  });
+  await repaintEveryPoll(page);
   await page.goto('/?refresh=1');
 });
 
@@ -118,11 +107,8 @@ test('a started merge keeps its server text across a repaint', async ({ page }) 
   expect(posts).toHaveLength(1);
 
   // Release the hold-off and wait for a repaint that really replaced the line.
-  const old = await msg.elementHandle();
-  const before = await page.evaluate(() => window.__swaps);
   await page.evaluate(() => { window.__ckActionBusy = 0; });
-  await expect.poll(() => page.evaluate(() => window.__swaps)).toBeGreaterThan(before);
-  expect(await old!.evaluate((n) => n.isConnected)).toBe(false);
+  await repaint(page, `${prform} .actmsg`);
 
   await expect(msg).toHaveText(started);
   await expectUnlocked(page);
