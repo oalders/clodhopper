@@ -72,13 +72,14 @@ func paneTitle(raw string) string {
 // leading handle when that handle only repeats something the branch column already
 // shows (shown: the row's branch and worktree dir, either of which a worktree
 // session may be named after), else the handle. A decorated handle ("👟 fix-12")
-// still counts as repeating it.
+// or an app-prefixed one ("muevelo/fix-12") still counts as repeating it.
 func paneLabel(p livePane, shown ...string) string {
 	if p.title == "" {
 		return p.session
 	}
 	for _, s := range shown {
-		if s != "" && (p.session == s || strings.HasSuffix(p.session, " "+s)) {
+		if s != "" && (p.session == s || strings.HasSuffix(p.session, " "+s) ||
+			strings.HasSuffix(p.session, "/"+s)) {
 			return p.title
 		}
 	}
