@@ -44,7 +44,43 @@ test('Esc in a filled box clears it and leaves the peek open', async ({ page }) 
   await box.press('Escape');
   await expect(box).toHaveValue('');
   await expect(peekRow(page)).toBeVisible();
-  // Esc on the empty box falls through to the page, which closes the peek.
+  // Esc on the empty box falls through to the page, which closes the peek, and keeps focus.
   await box.press('Escape');
   await expect(peekRow(page)).toBeHidden();
+  await expect(box).toBeFocused();
+});
+
+test('a queued row\'s open peek hides with it and comes back open', async ({ page }) => {
+  const queued = 'e2e-queued-0000-1111-2222-333333333333';
+  await page.locator('#ck-mq > summary').click();
+  await page.locator(`#ck-mq button.peek[data-peek="${queued}"]`).click();
+  const panel = page.locator(`#ck-mq tr.panerow[data-peek-row="${queued}"]`);
+  await expect(panel).toBeVisible();
+  const box = page.locator('#ck-q');
+  await box.fill('fix-1234');
+  await expect(panel).toBeHidden();
+  await box.fill('');
+  await expect(panel).toBeVisible();
+});
+
+test('the clear button brings a hidden peek back and refocuses the box', async ({ page }) => {
+  await page.locator(`#content button.peek[data-peek="${sess}"]`).click();
+  await expect(peekRow(page)).toBeVisible();
+  const box = page.locator('#ck-q');
+  await box.fill('fix-1234');
+  await expect(peekRow(page)).toBeHidden();
+  await page.locator('#ck-qclear').click();
+  await expect(peekRow(page)).toBeVisible();
+  await expect(box).toBeFocused();
+});
+
+test('the last data row draws no bottom border above a closed panel', async ({ page }) => {
+  // Every exec row carries a closed actions panel, so the tbody's last child is a hidden row.
+  const tbody = page.locator('#content table.roster > tbody');
+  const last = tbody.locator(':scope > tr').last();
+  await expect(last).toHaveClass(/\b(actrow|panerow)\b/);
+  await expect(last).toBeHidden();
+  const rows = tbody.locator('> tr[data-group]');
+  await expect(rows.last().locator('td').first()).toHaveCSS('border-bottom-width', '0px');
+  await expect(rows.first().locator('td').first()).not.toHaveCSS('border-bottom-width', '0px');
 });

@@ -340,9 +340,11 @@ the merge queue and the activity tallies (the `branch` list holds the live
 roster's branches); its `event_type` box appears only in the debug view, since
 only Recent events reads it. For a quick look, the box above the roster hides
 every roster and merge-queue row whose text (badge labels and the worktree path
-included) lacks what you type, case-insensitively. `/` focuses it, `Esc` clears
-it, and the term rides in the URL as `#q=…`, so a reload or bookmark keeps it.
-While the merge queue is folded, its header shows how many of its rows match.
+included) lacks what you type, case-insensitively. `/` focuses it; `Esc` or the
+`×` button clears the term (`Esc` on an empty box keeps focus there and still
+closes an open peek). The term rides in the URL as `#q=…`, so a reload or
+bookmark keeps it. While the merge queue is folded, its header shows how many
+of its rows match.
 
 `ingest` is what hooks call. It is designed to **never** break a tool call: any
 error (bad JSON, unwritable DB, …) results in exit 0, and diagnostics are
@@ -518,15 +520,17 @@ everything else, so no real tmux is ever reached. The suite checks that status
 badges and time cells are never clipped and the page never scrolls sideways at
 1440, 641 and 390px wide, plus the theme toggle, filter strip, type-to-filter box
 and refresh CI button.
-`restart.spec.ts`, `swap.spec.ts` and `merge.spec.ts` run against a second
-server on `127.0.0.1:9325` started with `--enable-merge --pane-peek`, covering
-the restart (all) arm/confirm, Escape and report table, what a poll's repaint
-carries over (open peeks and their scroll, open actions panels, focus, and the
-hold-off while an action is busy), and a squash's result line. That server is
+`restart.spec.ts`, `swap.spec.ts`, `merge.spec.ts`, `session.spec.ts`,
+`block.spec.ts`, `ledger.spec.ts` and `filter-panels.spec.ts` run against a
+second server on `127.0.0.1:9325` started with `--enable-merge --pane-peek`,
+covering the restart (all) arm/confirm, Escape and report table,
+what a poll's repaint carries over (open peeks and their scroll, open actions
+panels, focus, and the hold-off while an action is busy), a squash's result
+line, and how the type-to-filter box treats open panels. That server is
 just as isolated: `restart.spec.ts` and `merge.spec.ts` answer `/api/action`
-with canned results, `swap.spec.ts` stubs `/api/pane`, and any exec request a
-test didn't stub is aborted and fails the test, so nothing reaches the real
-write path. JetBrains
+with canned results, `swap.spec.ts` and `filter-panels.spec.ts` stub
+`/api/pane`, and any exec request a test didn't stub is aborted and fails the
+test, so nothing reaches the real write path. JetBrains
 Mono comes from `@fontsource/jetbrains-mono`, so the measurements match on
 every machine. CI runs it as the blocking `e2e` job and uploads the HTML
 report on failure.

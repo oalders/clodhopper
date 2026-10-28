@@ -1,16 +1,13 @@
 import type { Page } from '@playwright/test';
-import { test, expect, abortUnstubbedExec } from './fixtures';
+import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, swaps } from './fixtures';
 
 // What swapContent carries across a poll's #content repaint. Runs against
 // serve.sh's exec server (the "exec desktop 1440" project), whose stub tmux
-// gives the waiting row and its twin (same worktree, same pane %9001) a peek. Every /api/state answer gets a fresh signature,
-// so each one-second poll repaints; the page counts repaints off the
-// ch:contentswap event swapContent fires, and since swapContent is synchronous
-// a repaint is finished by the time the count moves.
+// gives the waiting row and its twin (same worktree, same pane %9001) a peek.
+// Every poll repaints (repaintEveryPoll).
 
 declare global {
   interface Window {
-    __swaps: number;
     __ckActionBusy: number;
   }
 }
@@ -23,21 +20,12 @@ const capture = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n');
 const scrolled = 500;
 
 let unstubbed: string[] = [];
-let polls = 0;
+let polls: () => number;
 
 test.beforeEach(async ({ page }) => {
   unstubbed = await abortUnstubbedExec(page);
-  polls = 0;
   await page.route('**/api/pane?*', (route) => route.fulfill({ contentType: 'text/plain', body: capture }));
-  await page.route('**/api/state?*', async (route) => {
-    const response = await route.fetch();
-    const json = await response.json();
-    return route.fulfill({ response, json: { ...json, signature: `swap-${++polls}` } });
-  });
-  await page.addInitScript(() => {
-    window.__swaps = 0;
-    document.addEventListener('ch:contentswap', () => window.__swaps++);
-  });
+  polls = await repaintEveryPoll(page);
   await page.goto('/?refresh=1');
 });
 
@@ -47,21 +35,11 @@ test.afterEach(async ({ page }) => {
   expect(unstubbed, 'exec endpoint requests with no stub').toEqual([]);
 });
 
-const swaps = (page: Page) => page.evaluate(() => window.__swaps);
-
 // later returns attr of the second of the two elements matching sel: the one a
 // restore keyed on what they share (cwd or pane) would miss, landing on the first.
 async function later(page: Page, sel: string, attr: string) {
   await expect(page.locator(sel)).toHaveCount(2);
   return (await page.locator(sel).nth(1).getAttribute(attr))!;
-}
-
-// repaint waits for the next swap and checks it really replaced el.
-async function repaint(page: Page, el: string) {
-  const old = await page.locator(el).elementHandle();
-  const before = await swaps(page);
-  await expect.poll(() => swaps(page)).toBeGreaterThan(before);
-  expect(await old!.evaluate((n) => n.isConnected)).toBe(false);
 }
 
 // openPeek opens the peek, scrolls its capture mid-way and focuses it. The busy
@@ -122,10 +100,10 @@ test('a focused copy button is focused again after a repaint', async ({ page }) 
 test('a busy action holds repaints off until it settles', async ({ page }) => {
   await page.evaluate(() => { window.__ckActionBusy = 1; });
   const before = await swaps(page);
-  const seen = polls;
+  const seen = polls();
   const roster = await page.locator('#content table.roster').elementHandle();
   // Each of these answers carries a changed signature. Paced by the page's 1s poll interval, not the test.
-  await expect.poll(() => polls, { timeout: 10_000 }).toBeGreaterThan(seen + 2);
+  await expect.poll(() => polls(), { timeout: 10_000 }).toBeGreaterThan(seen + 2);
   expect(await swaps(page)).toBe(before);
   expect(await roster!.evaluate((n) => n.isConnected)).toBe(true);
 

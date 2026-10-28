@@ -68,3 +68,39 @@ export async function abortUnstubbedExec(page: Page): Promise<string[]> {
   );
   return aborted;
 }
+
+declare global {
+  interface Window {
+    __swaps: number;
+  }
+}
+
+// repaintEveryPoll gives every /api/state answer a fresh signature, so each
+// one-second poll repaints, and counts repaints off the ch:contentswap event
+// swapContent fires (it is synchronous, so a counted repaint is finished). Call
+// it before page.goto; it returns a getter for how many polls have been answered.
+export async function repaintEveryPoll(page: Page): Promise<() => number> {
+  let polls = 0;
+  await page.route('**/api/state?*', async (route) => {
+    const response = await route.fetch();
+    const json = await response.json();
+    return route.fulfill({ response, json: { ...json, signature: `repaint-${++polls}` } });
+  });
+  await page.addInitScript(() => {
+    window.__swaps = 0;
+    document.addEventListener('ch:contentswap', () => window.__swaps++);
+  });
+  return () => polls;
+}
+
+export const swaps = (page: Page) => page.evaluate(() => window.__swaps);
+
+// repaint waits for the next repaint and checks it really replaced el, which
+// must select a single element.
+export async function repaint(page: Page, el: string) {
+  const old = await page.locator(el).elementHandle();
+  const before = await swaps(page);
+  await expect.poll(() => swaps(page)).toBeGreaterThan(before);
+  expect(await old!.evaluate((n) => n.isConnected)).toBe(false);
+  await old!.dispose();
+}
