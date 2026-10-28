@@ -775,6 +775,23 @@ func TestCwdCacheGet(t *testing.T) {
 
 // expire makes a fresh entry stale so the next get re-runs lookup, but a second
 // expire inside ciForceMinInterval is a no-op, bounding how often clients can force gh.
+// A cache with its own ttl keeps an entry that long instead of cwdTTL.
+func TestCwdCacheOwnTTL(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	calls := 0
+	c := &cwdCache[string]{m: map[string]cwdEntry[string]{}, ttl: 5 * time.Minute, lookup: func(string) string {
+		calls++
+		return "v"
+	}}
+	c.get("o/r", now)
+	if c.get("o/r", now.Add(4*time.Minute)); calls != 1 {
+		t.Errorf("at 4m: %d lookups, want 1 (still fresh)", calls)
+	}
+	if c.get("o/r", now.Add(5*time.Minute)); calls != 2 {
+		t.Errorf("at 5m: %d lookups, want 2 (stale)", calls)
+	}
+}
+
 func TestCwdCacheExpire(t *testing.T) {
 	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
 	calls := 0
@@ -4473,5 +4490,93 @@ func TestBuildDashboardDataFilters(t *testing.T) {
 	}
 	if data = build("/?branch=gone&event_type=Stop&debug=1"); len(data.Agents) != 0 || !slices.Equal(data.Branches, []string{"gone", "q", "x", "y"}) || data.FilterType != "Stop" {
 		t.Errorf("branch=gone: roster %+v, branches %v, event_type %q", data.Agents, data.Branches, data.FilterType)
+	}
+}
+
+// applyPRBlocks relaxes a waiting row while its PR is open or its lookup
+// failed, lapses once the PR is merged or closed, leaves a session block's
+// chip in place, and takes the tooltip from the open-PR list.
+func TestApplyPRBlocks(t *testing.T) {
+	now := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	finals := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{}, lookup: func(key string) ciResult {
+		return map[string]ciResult{
+			"o/r#1": {PRNumber: 1},
+			"o/r#2": {PRNumber: 2, Done: "merged"},
+			"o/r#3": {PRNumber: 3, Done: "closed"},
+		}[key] // o/r#4: a failed lookup
+	}}
+	open := &cwdCache[[]openPR]{m: map[string]cwdEntry[[]openPR]{}, lookup: func(string) []openPR {
+		return []openPR{{Number: 1, Title: "Land it", Author: "alice"}}
+	}}
+	agents := []Agent{
+		{SessionID: "open", Status: statusWaiting},
+		{SessionID: "merged", Status: statusWaiting},
+		{SessionID: "closed", Status: statusNeedsYou, StatusRank: 1},
+		{SessionID: "failed", Status: statusWaiting},
+		{SessionID: "both", Status: statusBlocked, StatusRank: rankBackground, BlockedOn: "fix-1", BlockedOnSession: "x"},
+	}
+	applyPRBlocks(agents, []PRBlock{{"open", "o/r", 1}, {"merged", "o/r", 2}, {"closed", "o/r", 3}, {"failed", "o/r", 4}, {"both", "o/r", 1}}, finals, open, now)
+	got := map[string]Agent{}
+	for _, a := range agents {
+		got[a.SessionID] = a
+	}
+	if a := got["open"]; a.Status != statusBlocked || a.StatusRank != rankBackground || a.BlockedOn != "PR #1" || a.BlockedOnRepo != "o/r" || a.BlockedOnPR != (openPR{1, "Land it", "alice"}) || a.BlockedOnSession != "" {
+		t.Errorf("open = %+v, want blocked on o/r PR #1 with its title", a)
+	}
+	for _, id := range []string{"merged", "closed"} {
+		if a := got[id]; a.Status == statusBlocked || a.BlockedOn != "" {
+			t.Errorf("%s = %q on %q, want the block lapsed", id, a.Status, a.BlockedOn)
+		}
+	}
+	if a := got["failed"]; a.Status != statusBlocked || a.BlockedOnPR != (openPR{Number: 4}) {
+		t.Errorf("failed = %+v, want still blocked, untitled", a)
+	}
+	if a := got["both"]; a.BlockedOn != "fix-1" || a.BlockedOnPR.Number != 0 {
+		t.Errorf("both = %+v, want the session block's chip", a)
+	}
+}
+
+// A lone row with open PRs in its repo gets the picker, offering them as
+// pr:N, and a PR block's chip links to the PR rather than jumping to a row.
+func TestContentTemplate_PRBlock(t *testing.T) {
+	agents := []Agent{{SessionID: "a", Branch: "fix-1", Status: statusBlocked, BlockedOn: "PR #7", BlockedOnRepo: "o/r",
+		BlockedOnPR: openPR{7, "Land it", "alice"}, BlockPRs: []openPR{{Number: 8, Title: "Other"}}, BlockPRRepo: "o/r"}}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", dashboardData{ExecEnabled: true, Agents: agents}); err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	for _, want := range []string{
+		`<optgroup label="open PRs · o/r"><option value="pr:8">#8 Other</option></optgroup>`,
+		`<a class="blockpr" href="https://github.com/o/r/pull/7" target="_blank" rel="noopener noreferrer" title="Land it by alice">PR #7</a>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("missing %s", want)
+		}
+	}
+	if strings.Contains(html, "data-jump") {
+		t.Error("a PR block's chip must not jump to a row")
+	}
+}
+
+// The picker offers each row its repo's open PRs minus its own PR.
+func TestSetBlockPRs(t *testing.T) {
+	now := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	repos := &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: func(cwd string) string {
+		return map[string]string{"/w/a": "o/r", "/w/b": "o/r"}[cwd]
+	}}
+	open := &cwdCache[[]openPR]{m: map[string]cwdEntry[[]openPR]{}, lookup: func(string) []openPR {
+		return []openPR{{Number: 7}, {Number: 8}}
+	}}
+	agents := []Agent{{Cwd: "/w/a", PRRepo: "o/r", PRNumber: 7}, {Cwd: "/w/b"}, {Cwd: "/w/none"}}
+	setBlockPRs(agents, repos, open, now)
+	if a := agents[0]; a.BlockPRRepo != "o/r" || !slices.Equal(a.BlockPRs, []openPR{{Number: 8}}) {
+		t.Errorf("own-PR row = %q %v, want o/r [#8]", a.BlockPRRepo, a.BlockPRs)
+	}
+	if a := agents[1]; len(a.BlockPRs) != 2 {
+		t.Errorf("PR-less row = %v, want both PRs", a.BlockPRs)
+	}
+	if a := agents[2]; a.BlockPRRepo != "" || a.BlockPRs != nil {
+		t.Errorf("non-GitHub row = %q %v, want none", a.BlockPRRepo, a.BlockPRs)
 	}
 }

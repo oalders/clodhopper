@@ -596,6 +596,11 @@ type actionConfig struct {
 	// queueLedger); it lives here so "dismiss" can reach it, but serve records
 	// into it whether or not the write path is enabled.
 	ledger *queueLedger
+	// repos (cwd → GitHub "owner/repo", shared with the peek) and openPRs
+	// ("owner/repo" → its open PRs) let block-pr resolve and check a PR
+	// server-side; nil resolves nothing, so block-pr refuses.
+	repos   *cwdCache[string]
+	openPRs *cwdCache[[]openPR]
 }
 
 // randomToken returns a 256-bit hex CSRF secret, regenerated each serve start.
@@ -794,6 +799,15 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		} else {
 			writeActionResult(w, blockAction(db, sessionID, r.FormValue("blocker_session_id"), now))
 		}
+		return
+	}
+
+	// "block-pr" marks this row blocked on an open PR (see applyPRBlocks). Unlike
+	// "block" it is not exec-free: a cold open-PR cache runs gh, so actionExecs
+	// leaves it under the full peer gate above. It never reaches actionArgv; the
+	// repo is resolved server-side and the PR must be in that repo's open list.
+	if action == "block-pr" {
+		writeActionResult(w, blockPRAction(db, cfg, sessionID, r.FormValue("blocker_pr"), now))
 		return
 	}
 
@@ -1210,14 +1224,10 @@ func endSession(db *sql.DB, sessionID string, now time.Time) actionResult {
 // roster rows, so fail closed on anything else); a self-block or a cycle is
 // refused with its reason. A lookup error stays server-side, as in endSession.
 func blockAction(db *sql.DB, sessionID, blockerID string, now time.Time) actionResult {
-	agents, err := agentRoster(db, time.Duration(waitingRetainHours())*time.Hour, staleShell(), now)
+	live, err := rosterIDs(db, now)
 	if err != nil {
 		debugf("action: block %s: %v", sessionID, err)
 		return actionResult{ExitCode: -1, Output: "could not block session"}
-	}
-	live := map[string]bool{}
-	for _, a := range agents {
-		live[a.SessionID] = true
 	}
 	if !live[sessionID] || !live[blockerID] {
 		return actionResult{ExitCode: -1, Output: "both rows must be live on the roster"}
@@ -1227,6 +1237,56 @@ func blockAction(db *sql.DB, sessionID, blockerID string, now time.Time) actionR
 			return actionResult{ExitCode: -1, Output: err.Error()}
 		}
 		debugf("action: block %s: %v", sessionID, err)
+		return actionResult{ExitCode: -1, Output: "could not block session"}
+	}
+	return actionResult{ExitCode: 0}
+}
+
+// rosterIDs returns the session ids on a fresh roster, the block actions'
+// liveness check.
+func rosterIDs(db *sql.DB, now time.Time) (map[string]bool, error) {
+	agents, err := agentRoster(db, time.Duration(waitingRetainHours())*time.Hour, staleShell(), now)
+	if err != nil {
+		return nil, err
+	}
+	live := map[string]bool{}
+	for _, a := range agents {
+		live[a.SessionID] = true
+	}
+	return live, nil
+}
+
+// blockPRAction records that sessionID is blocked on PR blockerPR of its own
+// cwd's GitHub repo. The row must be live on a fresh roster, and the PR must be
+// in the repo's cached open-PR list (the picker offers only those); the client
+// supplies only the number, never the repo.
+func blockPRAction(db *sql.DB, cfg *actionConfig, sessionID, blockerPR string, now time.Time) actionResult {
+	n, err := strconv.Atoi(blockerPR)
+	if err != nil || n <= 0 {
+		return actionResult{ExitCode: -1, Output: "not a PR number"}
+	}
+	live, err := rosterIDs(db, now)
+	if err != nil {
+		debugf("action: block-pr %s: %v", sessionID, err)
+		return actionResult{ExitCode: -1, Output: "could not block session"}
+	}
+	if !live[sessionID] {
+		return actionResult{ExitCode: -1, Output: "the row must be live on the roster"}
+	}
+	cwd, err := latestCwdForSession(db, sessionID)
+	if err != nil {
+		debugf("action: block-pr %s: %v", sessionID, err)
+		return actionResult{ExitCode: -1, Output: "could not block session"}
+	}
+	repo := cfg.repos.get(cwd, now)
+	if repo == "" {
+		return actionResult{ExitCode: -1, Output: "this row is not in a GitHub repo"}
+	}
+	if !slices.ContainsFunc(cfg.openPRs.get(repo, now), func(p openPR) bool { return p.Number == n }) {
+		return actionResult{ExitCode: -1, Output: fmt.Sprintf("PR #%d is not an open PR in %s", n, repo)}
+	}
+	if err := addPRBlock(db, sessionID, repo, n, now); err != nil {
+		debugf("action: block-pr %s: %v", sessionID, err)
 		return actionResult{ExitCode: -1, Output: "could not block session"}
 	}
 	return actionResult{ExitCode: 0}

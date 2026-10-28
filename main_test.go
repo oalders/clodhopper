@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -69,6 +70,21 @@ func TestStaleShell_DefaultAndOverride(t *testing.T) {
 		t.Setenv("CLODHOPPER_STALE_SHELL", c.env)
 		if got := staleShell(); got != c.want {
 			t.Errorf("CLODHOPPER_STALE_SHELL=%q: got %v, want %v", c.env, got, c.want)
+		}
+	}
+}
+
+// block takes exactly one kind of blocker: a row or a positive PR number.
+func TestRunBlockBlockerFlags(t *testing.T) {
+	t.Setenv("CLODHOPPER_DB", filepath.Join(t.TempDir(), "events.db"))
+	for _, args := range [][]string{
+		{"--branch", "b"},
+		{"--branch", "b", "--on-branch", "c", "--on-pr", "7"},
+		{"--branch", "b", "--on-session", "c", "--on-pr", "7"},
+		{"--branch", "b", "--on-pr", "-7"},
+	} {
+		if code := runBlock(args); code != 2 {
+			t.Errorf("runBlock(%q) = %d, want 2", args, code)
 		}
 	}
 }

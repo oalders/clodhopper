@@ -2305,3 +2305,56 @@ func TestHandleActionBlockRejectsBadToken(t *testing.T) {
 		t.Errorf("blocks = %v, want none written", blocks)
 	}
 }
+
+// blockPRReq is a block-pr POST from peer with blocker_pr set.
+func blockPRReq(peer, sessionID, pr string) *http.Request {
+	form := url.Values{"session_id": {sessionID}, "action": {"block-pr"}, "blocker_pr": {pr}}
+	r := httptest.NewRequest(http.MethodPost, "/api/action", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("X-Clodhopper-Token", "secret")
+	r.Host = "127.0.0.1"
+	r.RemoteAddr = peer
+	return r
+}
+
+// block-pr runs the full peer gate (a cache miss runs gh), refuses a bad
+// number and a PR outside the row's repo's open list, and otherwise records
+// the block against the server-resolved repo.
+func TestHandleActionBlockPR(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	insertEvent(db, Event{TS: "2026-10-20T09:00:00Z", SourceApp: "x", SessionID: "a", Cwd: "/w/a", EventType: "Stop", PayloadJSON: "{}"})
+	cfg := newActionCfg("/nonexistent/merge-pr", "/nonexistent/gh")
+	cfg.repos = &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: func(cwd string) string {
+		return map[string]string{"/w/a": "o/r"}[cwd]
+	}}
+	cfg.openPRs = &cwdCache[[]openPR]{m: map[string]cwdEntry[[]openPR]{}, lookup: func(repo string) []openPR {
+		return map[string][]openPR{"o/r": {{Number: 7}}}[repo]
+	}}
+	post := func(r *http.Request) (int, actionJSON) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handleAction(w, r, db, cfg, now)
+		if w.Code != http.StatusOK {
+			return w.Code, actionJSON{}
+		}
+		return w.Code, decodeActionJSON(t, w)
+	}
+	if code, _ := post(blockPRReq("192.168.1.20:5555", "a", "7")); code != http.StatusForbidden {
+		t.Errorf("LAN peer: %d, want 403", code)
+	}
+	for name, pr := range map[string]string{"zero": "0", "negative": "-7", "garbage": "7x", "not open": "8"} {
+		if _, got := post(blockPRReq("127.0.0.1:5555", "a", pr)); got.OK || got.Output == "" {
+			t.Errorf("%s: resp = %+v, want a non-ok result with a message", name, got)
+		}
+	}
+	if blocks, _ := listPRBlocks(db); len(blocks) != 0 {
+		t.Fatalf("pr blocks = %v after refusals, want none", blocks)
+	}
+	if _, got := post(blockPRReq("127.0.0.1:5555", "a", "7")); !got.OK {
+		t.Fatalf("block on #7: resp = %+v, want ok", got)
+	}
+	if blocks, _ := listPRBlocks(db); !slices.Equal(blocks, []PRBlock{{"a", "o/r", 7}}) {
+		t.Errorf("pr blocks = %v, want a on o/r#7", blocks)
+	}
+}

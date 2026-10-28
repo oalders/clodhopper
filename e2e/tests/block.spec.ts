@@ -154,3 +154,19 @@ test('a picker whose chosen blocker left the board falls back to an offered row'
   expect(value).not.toBe('');
   expect(value).not.toBe(queued);
 });
+
+test('the row panel blocks on a picked open PR', async ({ page }) => {
+  const posts = await stubAction(page);
+  await page.evaluate(() => { (window as unknown as { __ckActionBusy: number }).__ckActionBusy = 1; });
+  // serve.sh gives this row a GitHub origin whose repo has PRs #101 and #102 open.
+  const draft = 'e2e-draft-conflict-0000-1111-2222-333333333333';
+  await page.locator(`#content button.actbtn[data-actions="${draft}"]`).click();
+  const form = page.locator(panel(draft));
+  await expect(form.locator('optgroup').last()).toHaveAttribute('label', 'open PRs · e2e/draft-conflict');
+  await expect(form.locator('option[value="pr:101"]')).toHaveText('#101 Land the parser');
+  await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption('pr:101');
+  await form.getByRole('button', { name: 'mark main as blocked on the selected row' }).click();
+  await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');
+  expect(posts).toHaveLength(1);
+  expect(posts[0].postData()).toBe(`session_id=${draft}&action=block-pr&blocker_pr=101`);
+});

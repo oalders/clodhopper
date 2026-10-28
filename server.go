@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"html/template"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -405,6 +406,8 @@ func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool
 		inflight:          newInflightSet(),
 		panes:             peek.cache,
 		ledger:            newQueueLedger(),
+		repos:             peek.repos,
+		openPRs:           newOpenPRCache(),
 	}
 	return peek, act
 }
@@ -536,6 +539,7 @@ type cwdCache[T any] struct {
 	mu       sync.Mutex
 	m        map[string]cwdEntry[T]
 	lookup   func(cwd string) T
+	ttl      time.Duration         // how long an entry stays fresh; 0 means cwdTTL
 	forcedAt time.Time             // entries stamped before this are stale
 	inflight map[string]*flight[T] // one lookup per cwd; concurrent gets wait on it
 }
@@ -595,8 +599,12 @@ func (c *cwdCache[T]) get(cwd string, now time.Time) T {
 		return zero
 	}
 	c.mu.Lock()
+	ttl := c.ttl
+	if ttl == 0 {
+		ttl = cwdTTL
+	}
 	e, ok := c.m[cwd]
-	if ok && now.Sub(e.at) < cwdTTL && !e.at.Before(c.forcedAt) {
+	if ok && now.Sub(e.at) < ttl && !e.at.Before(c.forcedAt) {
 		c.mu.Unlock()
 		return e.val
 	}
@@ -1013,6 +1021,16 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 		return dashboardData{}, fmt.Errorf("blocks: %w", err)
 	}
 	applyBlocks(agents, blocks)
+	prBlocks, err := listPRBlocks(db)
+	if err != nil {
+		return dashboardData{}, fmt.Errorf("pr blocks: %w", err)
+	}
+	var finals *cwdCache[ciResult]
+	if act.ledger != nil {
+		finals = act.ledger.finals
+	}
+	// Before enrichCI and the split, like applyBlocks: setAndForget reads statusBlocked.
+	applyPRBlocks(agents, prBlocks, finals, act.openPRs, now)
 	enrichCI(agents, ci, now)
 	suppressWatchedCI(agents, now)
 	// Before the split, so queued, ledgered and roster rows all keep their peek.
@@ -1030,6 +1048,10 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	// Before demotePendingCI, which relaxes every merged "needs you" row.
 	roster, ledger := act.ledger.carryOver(roster, queued, now)
 	demotePendingCI(agents)
+	exec := act.enabled && peerOK(r, act.bindHost, act.allowedHosts)
+	if exec {
+		setBlockPRs(roster, peek.repos, act.openPRs, now)
+	}
 
 	// Live labels from dropDeadPanes, so activity rows match the roster's (#180).
 	labels := map[string]string{}
@@ -1087,7 +1109,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 		Now:            now,
 		SessColors:     assignSessColors(agents, events),
 		PeekEnabled:    peek.enabled && peerOK(r, peek.bindHost, peek.allowedHosts),
-		ExecEnabled:    act.enabled && peerOK(r, act.bindHost, act.allowedHosts),
+		ExecEnabled:    exec,
 		CSRFToken:      act.token,
 		Debug:          debug,
 	}
@@ -1174,6 +1196,11 @@ func viewSignature(d dashboardData) string {
 			// Likewise the queue pill's anchors are hashed, its ticking CIQueueLabel is not;
 			// CIQueueStuck flips with time while those anchors hold, so it is hashed too.
 			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%t:%q:%q:%d:%d:%d:%t:%q:%q:%d:%d:%d:%q:%q:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIDraft, a.CIDone, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueStuck, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree, a.BlockedOn, a.BlockedOnSession)
+			// The PR chip's link and tooltip, and the picker's PR options (a new PR or a retitle repaints).
+			fmt.Fprintf(h, ":%q:%q:%q:%q", a.BlockedOnRepo, a.BlockedOnPR.Title, a.BlockedOnPR.Author, a.BlockPRRepo)
+			for _, p := range a.BlockPRs {
+				fmt.Fprintf(h, ":%d:%q", p.Number, p.Title)
+			}
 		}
 	}
 
@@ -1338,9 +1365,69 @@ func applyBlocks(agents []Agent, blocks []Block) {
 		}
 		agents[i].BlockedOn = agents[j].BlockLabel()
 		agents[i].BlockedOnSession = b.Blocker
-		if agents[i].Status == statusNeedsYou || agents[i].Status == statusWaiting {
-			agents[i].Status = statusBlocked
-			agents[i].StatusRank = rankBackground
+		relaxBlocked(&agents[i])
+	}
+}
+
+// relaxBlocked moves a "waiting for you"/"needs you" row to statusBlocked at
+// rankBackground; see applyBlocks for why other statuses keep theirs.
+func relaxBlocked(a *Agent) {
+	if a.Status == statusNeedsYou || a.Status == statusWaiting {
+		a.Status = statusBlocked
+		a.StatusRank = rankBackground
+	}
+}
+
+// applyPRBlocks marks each row of agents that a stored PR block holds (see
+// `clodhopper block --on-pr`), relaxing it as applyBlocks does. A block lapses
+// only once finals (keyed "owner/repo#N", see lookupPRFinal) reports the PR
+// merged or closed: a failed lookup keeps it, so a gh hiccup cannot re-alert
+// the row. A session block already on the row keeps the chip. The chip's
+// tooltip takes the PR's title and author from open when it lists the PR.
+func applyPRBlocks(agents []Agent, blocks []PRBlock, finals *cwdCache[ciResult], open *cwdCache[[]openPR], now time.Time) {
+	idx := make(map[string]int, len(agents))
+	for i, a := range agents {
+		idx[a.SessionID] = i
+	}
+	var keys, repos []string
+	for _, b := range blocks {
+		if _, ok := idx[b.Blocked]; ok {
+			keys, repos = append(keys, b.key()), append(repos, b.Repo)
+		}
+	}
+	states, lists := lookupKeys(keys, finals, now), lookupKeys(repos, open, now)
+	for _, b := range blocks {
+		i, ok := idx[b.Blocked]
+		// validRepo again: the chip's href is built from b.Repo.
+		if !ok || !validRepo(b.Repo) || states[b.key()].Done != "" {
+			continue
+		}
+		relaxBlocked(&agents[i])
+		if agents[i].BlockedOn != "" {
+			continue
+		}
+		pr := openPR{Number: b.PR}
+		if j := slices.IndexFunc(lists[b.Repo], func(p openPR) bool { return p.Number == b.PR }); j >= 0 {
+			pr = lists[b.Repo][j]
+		}
+		agents[i].BlockedOn, agents[i].BlockedOnPR, agents[i].BlockedOnRepo = "PR #"+strconv.Itoa(b.PR), pr, b.Repo
+	}
+}
+
+// setBlockPRs fills each row's block-picker PR options: the open PRs of its
+// cwd's GitHub repo (resolved through repos), minus the row's own PR.
+func setBlockPRs(agents []Agent, repos *cwdCache[string], open *cwdCache[[]openPR], now time.Time) {
+	byCwd := lookupCwds(agents, repos, now)
+	lists := lookupKeys(slices.Collect(maps.Values(byCwd)), open, now)
+	for i := range agents {
+		repo := byCwd[agents[i].Cwd]
+		for _, p := range lists[repo] {
+			if repo != agents[i].PRRepo || p.Number != agents[i].PRNumber {
+				agents[i].BlockPRs = append(agents[i].BlockPRs, p)
+			}
+		}
+		if len(agents[i].BlockPRs) > 0 {
+			agents[i].BlockPRRepo = repo
 		}
 	}
 }

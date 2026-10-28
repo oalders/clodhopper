@@ -80,9 +80,12 @@ Subcommands, dispatched in `main.go`:
 - **`end`** (`end.go`) — writes a synthetic `SessionEnd` for live sessions matching a branch, cwd or session-id prefix, so hard-killed agents leave the roster.
 - **`init`** (`init.go`) — wires the `clodhopper ingest` hooks into a project's `.claude/settings.json` (or `settings.local.json`), skipping ones already present.
 - **`block` / `unblock`** (`block.go`) — record or drop "this session waits on
-  that one" in the `blocks` table. `applyBlocks` (server layer, after
+  that one" in the `blocks` table, or (`--on-pr N`) "waits on that open PR of its
+  own GitHub repo" in `pr_blocks`. `applyBlocks` (server layer, after
   `dropDeadPanes`) relaxes a waiting/needs-you row to `statusBlocked` while its
-  blocker session is still on the roster; `agentRoster` itself never sees blocks.
+  blocker session is still on the roster; `applyPRBlocks` does the same until the
+  ledger's `finals` lookup reports the PR merged or closed (a failed lookup keeps
+  the block). `agentRoster` itself never sees blocks.
   They never touch `ingest` or the capture path.
 
 `store.go` owns the schema, the `Event`/`Agent`/`SourceCount` types, and all
@@ -124,7 +127,12 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   The `end` action never reaches `actionArgv`: it execs nothing, and its
   `session_id` travels only as a bound SQL parameter. `block`/`unblock` are
   exec-free like `end` (`actionExecs`; they never reach `actionArgv`); `block` checks both ids against a
-  fresh `agentRoster()` before writing the `blocks` row. `dismiss` is exec-free too and only
+  fresh `agentRoster()` before writing the `blocks` row. `block-pr` is NOT
+  exec-free (a cold open-PR cache runs `gh pr list`), so it gets the full peer
+  gate; it never reaches `actionArgv` either: the client sends only a positive
+  integer PR number, the repo is resolved server-side from the row's cwd, and
+  the PR must be in that repo's open-PR list (`prListArgs` builds gh's argv from
+  a `validRepo`-checked repo; the list is cached 5 minutes, outside `expire`). `dismiss` is exec-free too and only
   drops an in-memory `queueLedger` entry (404 for an unknown id). `rebase`, like
   `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
   never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full

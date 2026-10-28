@@ -52,6 +52,12 @@ mkdir -p "$CLODHOPPER_E2E_REPOS/queued" "$CLODHOPPER_E2E_REPOS/ejected" "$CLODHO
 [ -z "${2-}" ] || mkdir "$CLODHOPPER_E2E_REPOS/landing"
 cat >"$tmp/bin/gh" <<'STUB'
 #!/bin/sh
+# serve lists open PRs by --repo=, not from a worktree: draft-conflict's repo has two (block.spec.ts).
+if [ "${1-} ${2-}" = "pr list" ]; then
+	[ "${3-}" = --repo=e2e/draft-conflict ] || exit 1
+	echo '[{"number":101,"title":"Land the parser","author":{"login":"alice"}},{"number":102,"title":"Bump deps","author":{"login":"bob"}}]'
+	exit 0
+fi
 dir=$(basename "$(pwd)")
 case "$dir" in queued | queued-approval | ejected | merged | landing | draft-conflict) ;; *) exit 1 ;; esac
 case "${1-}" in
@@ -89,6 +95,18 @@ api)
 esac
 STUB
 chmod +x "$tmp/bin/gh"
+# A stub git gives draft-conflict a GitHub origin, so its row's block picker
+# offers that repo's open PRs; every other call goes to the real git.
+realgit=$(command -v git)
+cat >"$tmp/bin/git" <<STUB
+#!/bin/sh
+if [ "\${1-}" = -C ] && [ "\$(basename "\${2-}")" = draft-conflict ] && [ "\${3-} \${4-} \${5-}" = "remote get-url origin" ]; then
+	echo https://github.com/e2e/draft-conflict.git
+	exit 0
+fi
+exec "$realgit" "\$@"
+STUB
+chmod +x "$tmp/bin/git"
 export PATH="$tmp/bin:$PATH"
 
 cd "$repo"

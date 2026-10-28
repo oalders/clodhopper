@@ -531,6 +531,7 @@
     .blockchip { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: 6px; padding: 1px 6px; border: 1px solid var(--text-2); border-radius: var(--radius-xs); color: var(--text-2); font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: normal; white-space: normal; }
     .blockchip button.blockjump { all: unset; cursor: pointer; text-decoration: underline dotted; overflow-wrap: anywhere; }
     .blockchip button.blockjump:focus-visible { box-shadow: var(--shadow-focus); }
+    .blockchip a.blockpr { color: inherit; text-decoration: underline dotted; overflow-wrap: anywhere; }
     .blockchip button.pract { padding: 0 4px; min-height: 0; font-size: var(--fs-sm); }
     .blockchip .actmsg:empty { display: none; }
     .blockpick { max-width: 100%; min-width: 0; font-family: var(--font-mono); font-size: var(--fs-xs); padding: 3px 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--surface-2); color: var(--text-1); }
@@ -2480,6 +2481,9 @@
       if (admin) admin.disabled = true;
       var pick = group.querySelector('.blockpick');
       if (pick) pick.disabled = true;
+      // An open-PR option ("pr:N") is a block-pr, not a block on a row.
+      var prPick = !!pick && pick.value.indexOf('pr:') === 0;
+      if (prPick) action = 'block-pr';
       window.__ckActionBusy++;
       // Mark this group as in-flight so __ckDisarm won't tear it down: unlocking
       // a fired group would drop the "working…" state and re-enable its buttons
@@ -2495,7 +2499,7 @@
         body: 'session_id=' + encodeURIComponent(sess)
             + '&action=' + encodeURIComponent(action)
             + ((action !== 'ready' && forceOn(group)) ? '&force=true' : '')
-            + (pick ? '&blocker_session_id=' + encodeURIComponent(pick.value) : '')
+            + (pick ? (prPick ? '&blocker_pr=' + encodeURIComponent(pick.value.slice(3)) : '&blocker_session_id=' + encodeURIComponent(pick.value)) : '')
       })
         .then(function (resp) { return resp.json().catch(function () { return { ok: false, output: 'HTTP ' + resp.status }; }); })
         .then(function (d) {
@@ -2523,7 +2527,7 @@
                  : action === 'new-monitor' ? 'watcher started'
                  : action === 'reload-plugins' ? 'sent /reload-plugins'
                  : action === 'rebase' ? 'sent /kitchen-sink:git-rebase'
-                 : action === 'block' ? 'marked blocked — row will update'
+                 : (action === 'block' || action === 'block-pr') ? 'marked blocked — row will update'
                  : action === 'unblock' ? 'unblocked — row will update'
                  : 'done')
               : ('failed: ' + (d.output || ('exit ' + d.exitCode)));
@@ -3053,7 +3057,7 @@
 {{/* launcher marks how the session was started (#152) in its own unheaded
      column between CI and branch: 🔒 for the nono sandbox, 🤖 for plain claude. */}}
 {{/* blockchip takes a blockChipView: the ✕ needs ExecEnabled, which a define cannot read off $. */}}
-{{ define "blockchip" }}{{ if .BlockedOn }}<span class="blockchip"><button type="button" class="blockjump" data-jump="{{ .BlockedOnSession }}" aria-label="blocked on {{ .BlockedOn }}" title="blocked on {{ .BlockedOn }}: show that row">{{ .BlockedOn }}</button>{{ if and .Exec .SessionID }}<span class="actgroup unblockform" data-session="{{ .SessionID }}"><button type="button" class="pract" data-action="unblock" data-noconfirm="true" aria-label="unblock{{ if .Branch }} {{ .Branch }}{{ end }} from {{ .BlockedOn }}" title="clear this block">✕</button><span class="actmsg"></span></span>{{ end }}</span>{{ end }}{{ end }}
+{{ define "blockchip" }}{{ if .BlockedOn }}<span class="blockchip">{{ if .BlockedOnPR.Number }}<a class="blockpr" href="https://github.com/{{ .BlockedOnRepo }}/pull/{{ .BlockedOnPR.Number }}" target="_blank" rel="noopener noreferrer" title="{{ with .BlockedOnPR.Title }}{{ . }}{{ with $.BlockedOnPR.Author }} by {{ . }}{{ end }}{{ else }}blocked on {{ .BlockedOnRepo }}#{{ .BlockedOnPR.Number }}{{ end }}">{{ .BlockedOn }}</a>{{ else }}<button type="button" class="blockjump" data-jump="{{ .BlockedOnSession }}" aria-label="blocked on {{ .BlockedOn }}" title="blocked on {{ .BlockedOn }}: show that row">{{ .BlockedOn }}</button>{{ end }}{{ if and .Exec .SessionID }}<span class="actgroup unblockform" data-session="{{ .SessionID }}"><button type="button" class="pract" data-action="unblock" data-noconfirm="true" aria-label="unblock{{ if .Branch }} {{ .Branch }}{{ end }} from {{ .BlockedOn }}" title="clear this block">✕</button><span class="actmsg"></span></span>{{ end }}</span>{{ end }}{{ end }}
 
 {{ define "launcher" }}<td class="launcher" data-label="launcher">{{ if eq .Launcher "nono" }}<span role="img" aria-label="nono sandbox" title="launched in the nono sandbox">🔒</span>{{ else if eq .Launcher "claude" }}<span role="img" aria-label="plain claude" title="launched as plain claude">🤖</span>{{ end }}</td>{{ end }}
 
@@ -3122,11 +3126,11 @@
               </span>
             </div>
             {{/* This row is one of .Agents, so another row exists only if .Agents has two or a row is queued. */}}
-            {{ if or (gt (len $.Agents) 1) $.QueuedAgents }}<div class="actcol blockcol" role="group" aria-label="mark this row blocked">
+            {{ if or (gt (len $.Agents) 1) $.QueuedAgents .BlockPRs }}<div class="actcol blockcol" role="group" aria-label="mark this row blocked">
               <span class="acteyebrow">blocked on</span>
               <span class="actgroup blockform" data-session="{{ .SessionID }}">
-                <select class="blockpick" aria-label="this row is blocked on">{{ range blockGroups $.Agents $.QueuedAgents . }}<optgroup label="{{ if .App }}{{ .App }}{{ else }}no app{{ end }}">{{ range .Rows }}<option value="{{ .SessionID }}">{{ if .SourceApp }}{{ .SourceApp }} · {{ end }}{{ .BlockLabel }}</option>{{ end }}</optgroup>{{ end }}</select>
-                <button type="button" class="pract" data-action="block" data-noconfirm="true" aria-label="mark{{ if .Branch }} {{ .Branch }}{{ else }} this row{{ end }} as blocked on the selected row" title="this row waits on the chosen row: it leaves the alert band until that row leaves the board">mark blocked</button>
+                <select class="blockpick" aria-label="this row is blocked on">{{ range blockGroups $.Agents $.QueuedAgents . }}<optgroup label="{{ if .App }}{{ .App }}{{ else }}no app{{ end }}">{{ range .Rows }}<option value="{{ .SessionID }}">{{ if .SourceApp }}{{ .SourceApp }} · {{ end }}{{ .BlockLabel }}</option>{{ end }}</optgroup>{{ end }}{{ if .BlockPRs }}<optgroup label="open PRs · {{ .BlockPRRepo }}">{{ range .BlockPRs }}<option value="pr:{{ .Number }}">#{{ .Number }} {{ .Title }}</option>{{ end }}</optgroup>{{ end }}</select>
+                <button type="button" class="pract" data-action="block" data-noconfirm="true" aria-label="mark{{ if .Branch }} {{ .Branch }}{{ else }} this row{{ end }} as blocked on the selected row" title="this row waits on the chosen row or PR: it leaves the alert band until that row leaves the board or that PR merges/closes">mark blocked</button>
                 <span class="actmsg"></span>
               </span>
             </div>{{ end }}

@@ -358,3 +358,26 @@ func TestLedgerTally(t *testing.T) {
 		t.Errorf("tally = %+v, want 2 finished, 1 left", got)
 	}
 }
+
+// Only a valid repo reaches gh pr list, always as --repo=.
+func TestPRListArgs(t *testing.T) {
+	if args, ok := prListArgs("o-1/r.x_y"); !ok || strings.Join(args, " ") != "pr list --repo=o-1/r.x_y --state open --json number,title,author --limit 100" {
+		t.Errorf("valid repo: %v %v", args, ok)
+	}
+	for _, repo := range []string{"", "o", "o/r/x", "o/..", "o r/x", "o/r.git"} {
+		if args, ok := prListArgs(repo); ok {
+			t.Errorf("%q accepted as %v", repo, args)
+		}
+	}
+}
+
+// The open-PR list keeps number, title and author login, minus control runes.
+func TestParseOpenPRs(t *testing.T) {
+	got := parseOpenPRs([]byte(`[{"number":7,"title":"Fix\nthe\u001b[31m thing","author":{"login":"al\tice"}}]`))
+	if want := []openPR{{7, "Fixthe[31m thing", "alice"}}; !slices.Equal(got, want) {
+		t.Errorf("parseOpenPRs = %+v, want %+v", got, want)
+	}
+	if got := parseOpenPRs([]byte("not json")); got != nil {
+		t.Errorf("bad json = %+v, want nil", got)
+	}
+}
