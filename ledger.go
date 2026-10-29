@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"maps"
 	"os/exec"
 	"sort"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // A ledger entry lapses ledgerTTL after its row was last seen queued; past
@@ -210,10 +212,16 @@ func finalState(r ciResult) string {
 func prFinalArgs(key string) ([]string, bool) {
 	repo, n, _ := strings.Cut(key, "#")
 	num, err := strconv.Atoi(n)
-	if err != nil || num <= 0 || repo == "" || parseGitHubRepo("https://github.com/"+repo) != repo {
+	if err != nil || num <= 0 || !validRepo(repo) {
 		return nil, false
 	}
 	return []string{"pr", "view", strconv.Itoa(num), "--repo=" + repo, "--json", "id,number,state,mergedAt"}, true
+}
+
+// validRepo reports whether repo is a GitHub "owner/repo" that round-trips
+// through parseGitHubRepo, so it is safe on a gh command line.
+func validRepo(repo string) bool {
+	return repo != "" && parseGitHubRepo("https://github.com/"+repo) == repo
 }
 
 // lookupPRFinal resolves a gone session's PR through gh, an open one's merge
@@ -233,4 +241,75 @@ func lookupPRFinal(key string) ciResult {
 	}
 	r, id := parsePRView(out)
 	return withMergeQueue(ctx, "", r, id)
+}
+
+// openPR is one open pull request the block picker offers. Title and Author
+// are GitHub free text, control-stripped and only ever rendered by html/template.
+type openPR struct {
+	Number int
+	Title  string
+	Author string
+}
+
+// openPRTTL is longer than cwdTTL: the list only feeds the block picker and
+// the PR chip's tooltip, and a new PR can wait a few minutes to be offered.
+const openPRTTL = 5 * time.Minute
+
+func newOpenPRCache() *cwdCache[[]openPR] {
+	return &cwdCache[[]openPR]{m: map[string]cwdEntry[[]openPR]{}, lookup: lookupOpenPRs, ttl: openPRTTL}
+}
+
+// prListArgs is the gh argv that lists repo's open PRs, or false when repo
+// fails validation, as in prFinalArgs.
+func prListArgs(repo string) ([]string, bool) {
+	if !validRepo(repo) {
+		return nil, false
+	}
+	// The picker and block-pr share this cap, so a PR beyond it cannot be picked; the CLI's --on-pr is unaffected.
+	return []string{"pr", "list", "--repo=" + repo, "--state", "open", "--json", "number,title,author", "--limit", "100"}, true
+}
+
+// lookupOpenPRs lists repo's open PRs through gh. Best-effort, like
+// lookupPRFinal: invalid input, a missing gh, an error or a timeout yield nil.
+func lookupOpenPRs(repo string) []openPR {
+	args, ok := prListArgs(repo)
+	if !ok {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "gh", args...).Output()
+	if err != nil {
+		return nil
+	}
+	return parseOpenPRs(out)
+}
+
+// parseOpenPRs turns `gh pr list --json number,title,author` output into openPRs:
+// nil when out does not parse, non-nil (maybe empty) otherwise, so callers can
+// tell "no open PRs" from "could not list them".
+func parseOpenPRs(out []byte) []openPR {
+	var prs []struct {
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+		Author struct {
+			Login string `json:"login"`
+		} `json:"author"`
+	}
+	if err := json.Unmarshal(out, &prs); err != nil {
+		return nil
+	}
+	res := make([]openPR, 0, len(prs))
+	for _, p := range prs {
+		// Format runs (bidi overrides, zero-width) could make a title read as another PR's.
+		title := strings.Map(func(r rune) rune {
+			if unicode.Is(unicode.Cf, r) {
+				return -1
+			}
+			return r
+		}, stripControl(p.Title))
+		// Scrub before truncating, so a cut cannot leave a secret's prefix unmatched.
+		res = append(res, openPR{Number: p.Number, Title: truncate(scrubString(title), promptPreviewLen), Author: stripControl(p.Author.Login)})
+	}
+	return res
 }

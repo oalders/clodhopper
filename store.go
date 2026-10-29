@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -78,6 +79,13 @@ var migrations = []string{
 	   blocker_session TEXT NOT NULL,
 	   ts              TEXT NOT NULL,
 	   PRIMARY KEY (blocked_session, blocker_session))`,
+	// A block on a PR (see applyPRBlocks) has no blocker session, so it gets its own table.
+	`CREATE TABLE IF NOT EXISTS pr_blocks (
+	   blocked_session TEXT NOT NULL,
+	   repo            TEXT NOT NULL,
+	   pr              INTEGER NOT NULL,
+	   ts              TEXT NOT NULL,
+	   PRIMARY KEY (blocked_session, repo, pr))`,
 }
 
 // defaultDBPath returns CLODHOPPER_DB if set, else ~/.claude/clodhopper/var/events.db.
@@ -362,14 +370,59 @@ func addBlock(db *sql.DB, blocked, blocker string, live map[string]bool, now tim
 	return err
 }
 
-// unblockSession drops every block whose blocked side is sessionID and returns
-// how many it removed.
-func unblockSession(db *sql.DB, sessionID string) (int64, error) {
-	res, err := db.Exec(`DELETE FROM blocks WHERE blocked_session = ?`, sessionID)
+// PRBlock records that the Blocked session cannot move until PR number PR in
+// GitHub repo Repo ("owner/repo") merges or closes.
+type PRBlock struct {
+	Blocked string
+	Repo    string
+	PR      int
+}
+
+func (b PRBlock) key() string { return b.Repo + "#" + strconv.Itoa(b.PR) }
+
+// addPRBlock records that blocked waits on repo's PR pr; the caller has
+// checked that the PR is open. All values travel only as bound parameters.
+func addPRBlock(db *sql.DB, blocked, repo string, pr int, now time.Time) error {
+	_, err := db.Exec(`INSERT OR REPLACE INTO pr_blocks (blocked_session, repo, pr, ts) VALUES (?, ?, ?, ?)`,
+		blocked, repo, pr, now.UTC().Format(time.RFC3339))
+	return err
+}
+
+// listPRBlocks returns every stored PR block in a stable order; applyPRBlocks
+// decides which still apply.
+func listPRBlocks(db *sql.DB) ([]PRBlock, error) {
+	rows, err := db.Query(`SELECT blocked_session, repo, pr FROM pr_blocks ORDER BY blocked_session, repo, pr`)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return res.RowsAffected()
+	defer rows.Close()
+	var out []PRBlock
+	for rows.Next() {
+		var b PRBlock
+		if err := rows.Scan(&b.Blocked, &b.Repo, &b.PR); err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// unblockSession drops every block, on a session or a PR, whose blocked side
+// is sessionID and returns how many it removed.
+func unblockSession(db *sql.DB, sessionID string) (int64, error) {
+	var n int64
+	for _, q := range []string{`DELETE FROM blocks WHERE blocked_session = ?`, `DELETE FROM pr_blocks WHERE blocked_session = ?`} {
+		res, err := db.Exec(q, sessionID)
+		if err != nil {
+			return n, err
+		}
+		m, err := res.RowsAffected()
+		if err != nil {
+			return n, err
+		}
+		n += m
+	}
+	return n, nil
 }
 
 // latestCwdForSession returns the worktree cwd of sessionID's most recent event
@@ -433,6 +486,10 @@ func pruneOld(db *sql.DB, days int) (int64, error) {
 	if _, err := db.Exec(`DELETE FROM blocks
 		WHERE NOT EXISTS (SELECT 1 FROM events WHERE session_id = blocked_session)
 		   OR NOT EXISTS (SELECT 1 FROM events WHERE session_id = blocker_session)`); err != nil {
+		return 0, err
+	}
+	if _, err := db.Exec(`DELETE FROM pr_blocks
+		WHERE NOT EXISTS (SELECT 1 FROM events WHERE session_id = blocked_session)`); err != nil {
 		return 0, err
 	}
 	return res.RowsAffected()
@@ -544,36 +601,40 @@ type Agent struct {
 	LastEvent        string
 	Idle             string // humanised time since last event ("4m", "1h")
 	IdleSecs         int
-	IdleSince        int64  // unix seconds of the last event, so the client can tick idle in place
-	Subagents        int    // background subagents still running while the main agent waits; set only for statusSubagents/statusShellStuck
-	Shells           int    // background shells still running while the main agent waits; set only for statusSubagents/statusShellStuck
-	WaitingOn        string // the badge's count text for Subagents and Shells ("1 agent", "2 shells", "3 tasks"); see waitingOn
-	WaitingOnDetail  string // when WaitingOn says "tasks", their breakdown ("1 agent, 2 shells") for the badge's title and screen readers
-	SubagentSince    int64  // unix seconds of the earliest start among those subagents and shells (statusSubagents/statusShellStuck), so the client can tick their running time in place
-	SubagentAge      string // humanised time since SubagentSince, the initial value the client then ticks
-	ShellCmd         string // the oldest shell's summary ("Bash: <cmd>", scrubbed at ingest) for the stuck badge's title; set only when the row was statusShellStuck
-	CI               string // merge-readiness ("", "pending", "green", "failing", "soft-failing", "ejected"); filled by the server layer via gh
-	CIFails          int    // failed checks on the PR, shown inside the red/orange badge
-	CIPasses         int    // passed checks on the PR, shown inside the green badge
-	CIConflict       bool   // the PR has a merge conflict with its base branch
-	CIDraft          bool   // the PR is a draft, shown as a muted chip after the badge
-	CIDone           string // "merged" or "closed" once the PR is no longer open, shown as a muted chip like CIDraft
-	CIQueue          string // merge-queue state ("", "queued", "queue-failing"), the merge-queue section's pill state
-	CIQueuePos       int    // 1-based merge-queue position shown in that pill
-	CIQueueETA       int64  // unix seconds the PR is expected to merge; 0 when unknown
-	CIQueueSince     int64  // unix seconds the PR entered the queue; 0 when unknown
-	CIQueueLabel     string // the pill's title/aria-label, built from the three above at render time
-	CIQueueReason    string // why GitHub removed an "ejected" PR from the merge queue, shown in the badge's label
-	CIQueueStuck     bool   // the queue entry has likely stalled (queueStuck), marked on the pill; set by splitQueued
-	PRNumber         int    // the PR's number, 0 if none; with PRRepo, links a merge-queue ledger row to its PR
-	PRRepo           string // the PR's GitHub "owner/repo", "" if unknown
-	PRMergedAt       int64  // unix seconds the PR merged; 0 when not merged or unknown
-	BlockedOn        string // the blocker row's BlockLabel while a block applies (see applyBlocks), shown as the "blocked on" chip; "" otherwise
-	BlockedOnSession string // the blocker's session id, so the chip can jump to its row
-	GroupStart       bool   // true on the first roster row of each (SourceApp, Branch) group except the very first row overall; drives the divider between branch groups in the dashboard
-	Grouped          bool   // true when this row's (SourceApp, Branch) group has 2+ live members; drives the left accent bar that binds a multi-session branch cluster (a worktree with several agents). Singleton branches stay false (no bar)
-	GroupKey         string // hex of the internal group key (per (SourceApp, Branch); per-session for branchless rows). Stable across polls and HTML-attribute-safe, so the dashboard's "pin order" toggle can hold each group's rows together while freezing group order. Not displayed
-	firstSeq         int    // arrival order (0-based) within the roster window; drives stable color assignment, not displayed
+	IdleSince        int64    // unix seconds of the last event, so the client can tick idle in place
+	Subagents        int      // background subagents still running while the main agent waits; set only for statusSubagents/statusShellStuck
+	Shells           int      // background shells still running while the main agent waits; set only for statusSubagents/statusShellStuck
+	WaitingOn        string   // the badge's count text for Subagents and Shells ("1 agent", "2 shells", "3 tasks"); see waitingOn
+	WaitingOnDetail  string   // when WaitingOn says "tasks", their breakdown ("1 agent, 2 shells") for the badge's title and screen readers
+	SubagentSince    int64    // unix seconds of the earliest start among those subagents and shells (statusSubagents/statusShellStuck), so the client can tick their running time in place
+	SubagentAge      string   // humanised time since SubagentSince, the initial value the client then ticks
+	ShellCmd         string   // the oldest shell's summary ("Bash: <cmd>", scrubbed at ingest) for the stuck badge's title; set only when the row was statusShellStuck
+	CI               string   // merge-readiness ("", "pending", "green", "failing", "soft-failing", "ejected"); filled by the server layer via gh
+	CIFails          int      // failed checks on the PR, shown inside the red/orange badge
+	CIPasses         int      // passed checks on the PR, shown inside the green badge
+	CIConflict       bool     // the PR has a merge conflict with its base branch
+	CIDraft          bool     // the PR is a draft, shown as a muted chip after the badge
+	CIDone           string   // "merged" or "closed" once the PR is no longer open, shown as a muted chip like CIDraft
+	CIQueue          string   // merge-queue state ("", "queued", "queue-failing"), the merge-queue section's pill state
+	CIQueuePos       int      // 1-based merge-queue position shown in that pill
+	CIQueueETA       int64    // unix seconds the PR is expected to merge; 0 when unknown
+	CIQueueSince     int64    // unix seconds the PR entered the queue; 0 when unknown
+	CIQueueLabel     string   // the pill's title/aria-label, built from the three above at render time
+	CIQueueReason    string   // why GitHub removed an "ejected" PR from the merge queue, shown in the badge's label
+	CIQueueStuck     bool     // the queue entry has likely stalled (queueStuck), marked on the pill; set by splitQueued
+	PRNumber         int      // the PR's number, 0 if none; with PRRepo, links a merge-queue ledger row to its PR
+	PRRepo           string   // the PR's GitHub "owner/repo", "" if unknown
+	PRMergedAt       int64    // unix seconds the PR merged; 0 when not merged or unknown
+	BlockedOn        string   // the blocker row's BlockLabel while a block applies (see applyBlocks), shown as the "blocked on" chip; "" otherwise
+	BlockedOnSession string   // the blocker's session id, so the chip can jump to its row
+	BlockedOnPR      openPR   // the PR a PR block holds this row on (see applyPRBlocks), BlockedOn then "PR #N"; zero otherwise
+	BlockedOnRepo    string   // that PR's GitHub "owner/repo"
+	BlockPRs         []openPR // the block picker's PR options: BlockPRRepo's open PRs minus this row's own (see setBlockPRs)
+	BlockPRRepo      string   // this row's GitHub "owner/repo" when BlockPRs is non-empty
+	GroupStart       bool     // true on the first roster row of each (SourceApp, Branch) group except the very first row overall; drives the divider between branch groups in the dashboard
+	Grouped          bool     // true when this row's (SourceApp, Branch) group has 2+ live members; drives the left accent bar that binds a multi-session branch cluster (a worktree with several agents). Singleton branches stay false (no bar)
+	GroupKey         string   // hex of the internal group key (per (SourceApp, Branch); per-session for branchless rows). Stable across polls and HTML-attribute-safe, so the dashboard's "pin order" toggle can hold each group's rows together while freezing group order. Not displayed
+	firstSeq         int      // arrival order (0-based) within the roster window; drives stable color assignment, not displayed
 }
 
 // Status labels. Kept as constants so tests and the sort agree on the wording.

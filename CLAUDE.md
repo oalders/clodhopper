@@ -53,7 +53,8 @@ Subcommands, dispatched in `main.go`:
   (`monitor-ci`, `new-monitor`, `reload-plugins`, `rebase`; see
   `runSessionAction`/`handleAction` in `action.go`), plus an `end` action that
   runs no subprocess at all and just calls `endSessions` to drop the row, and a
-  `dismiss` action that execs nothing and drops a merge-queue ledger row. Before any
+  `dismiss` action that execs nothing and drops a merge-queue ledger row, plus
+  `block`/`unblock`/`block-pr`, which write or drop a block row. Before any
   of that, middleware around the whole mux (`newServeMux`) applies the security
   headers and the Host allowlist (`hostAllowed`, 421 on a miss) to every route,
   so a DNS-rebinding page cannot even read the read-only board (this is in
@@ -72,17 +73,21 @@ Subcommands, dispatched in `main.go`:
   streams live transcript text, and being a GET it carries no CSRF token, so the
   Host allowlist is what stops a DNS-rebinding page from walking pane ids.
   The CSRF token is emitted into the page only for a peer that passes the gate,
-  so a peer that fails it gets a genuinely read-only board (no `end`/`block`/`unblock`/`dismiss` either).
+  so a peer that fails it gets a genuinely read-only board (no write action of any kind, exec-free ones included).
   `ingest` never gains write-to-repo
   capability — the capture path stays read-only.
 - **`prune`** (`main.go`) — deletes events older than the retention window,
-  plus blocks whose sessions have no events left.
+  plus `blocks` rows whose sessions have no events left and `pr_blocks` rows whose
+  blocked session has none.
 - **`end`** (`end.go`) — writes a synthetic `SessionEnd` for live sessions matching a branch, cwd or session-id prefix, so hard-killed agents leave the roster.
 - **`init`** (`init.go`) — wires the `clodhopper ingest` hooks into a project's `.claude/settings.json` (or `settings.local.json`), skipping ones already present.
 - **`block` / `unblock`** (`block.go`) — record or drop "this session waits on
-  that one" in the `blocks` table. `applyBlocks` (server layer, after
+  that one" in the `blocks` table, or (`--on-pr N`) "waits on that open PR of its
+  own GitHub repo" in `pr_blocks`; `unblock` clears both. `applyBlocks` (server layer, after
   `dropDeadPanes`) relaxes a waiting/needs-you row to `statusBlocked` while its
-  blocker session is still on the roster; `agentRoster` itself never sees blocks.
+  blocker session is still on the roster; `applyPRBlocks` does the same for PR
+  blocks (see its doc comment for when one lapses).
+  `agentRoster` itself never sees blocks.
   They never touch `ingest` or the capture path.
 
 `store.go` owns the schema, the `Event`/`Agent`/`SourceCount` types, and all
@@ -119,12 +124,15 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
    closed argv allowlist — no user-supplied string ever reaches a command line.
   serve's read-only ledger lookup (`lookupPRFinal` in `ledger.go`: `gh pr view
   N --repo=OWNER/REPO` via `prFinalArgs`, then the same `mergeQueueQuery` call
-  with the node id gh returned) is likewise built only from validated
-  gh-derived values, never client input.
+  with the node id gh returned) and the open-PR list's `prListArgs` are both
+  built only from validated values, never client input.
   The `end` action never reaches `actionArgv`: it execs nothing, and its
   `session_id` travels only as a bound SQL parameter. `block`/`unblock` are
   exec-free like `end` (`actionExecs`; they never reach `actionArgv`); `block` checks both ids against a
-  fresh `agentRoster()` before writing the `blocks` row. `dismiss` is exec-free too and only
+  fresh `agentRoster()` before writing the `blocks` row. `block-pr` is not
+  exec-free (it may run `git`/`gh` to resolve the repo and check the PR), so it
+  gets the full peer gate; the client sends only a session id and PR number, and
+  the repo is resolved server-side (see `blockPRAction`). `dismiss` is exec-free too and only
   drops an in-memory `queueLedger` entry (404 for an unknown id). `rebase`, like
   `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
   never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full

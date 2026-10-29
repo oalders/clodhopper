@@ -100,6 +100,7 @@ clodhopper serve [--port 4555] [--host H | --tailscale] [--pane-peek [--pane-lin
 clodhopper prune [--days 14]              # delete events older than N days
 clodhopper end --branch B                  # mark matching live sessions ended (teardown)
 clodhopper block --branch B --on-branch C  # relax B's row until C's session leaves the board
+clodhopper block --branch B --on-pr 123    # relax B's row until PR #123 in its repo merges or closes
 clodhopper unblock --branch B              # drop B's blocks
 ```
 
@@ -120,6 +121,16 @@ names the blocker *session*, so it lapses on its own once that session leaves
 the roster (merged, ended, or its pane gone), and a later session on the same
 branch does not revive it. `clodhopper prune` sweeps blocks whose sessions have
 no events left.
+
+A row can also wait on a pull request with no session on the board:
+`clodhopper block --branch fix-1234 --on-pr 123` blocks it on PR #123 of the
+row's own GitHub repo (its worktree's `origin`), and is refused unless `gh`
+confirms that PR is open. The chip reads "PR #123" and links to the PR. The
+block lapses once `gh` reports the PR merged or closed; a failed lookup keeps
+it, so without a working `gh` a PR block never lapses on its own — clear it with
+`clodhopper unblock` or the chip's ✕. With `--enable-merge`, the row panel's
+"blocked on" picker also offers the repo's open PRs (listed through `gh`,
+refreshed every 5 minutes), minus the row's own.
 
 By default the dashboard binds `127.0.0.1` (loopback only). If your browser runs
 on a different machine or namespace than the server (e.g. inside a container or

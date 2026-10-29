@@ -1,15 +1,18 @@
 import type { Page, Request } from '@playwright/test';
-import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint } from './fixtures';
+import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, swaps } from './fixtures';
 
 // The blocked-on chip and the row panel's block picker (#210), against
 // serve.sh's exec server; e2e_seed_test.go blocks fix-1234 on fix-1235,
-// fix-1236 on the queued row, and the queued row on fix-1235.
+// fix-1236 on the queued row, the queued row on fix-1235, and draft-conflict
+// on its repo's open PR #101.
 
 const blocked = 'e2e-blocked-0000-1111-2222-333333333333';
 const blocker = 'e2e-blocker-0000-1111-2222-333333333333';
 const queueBlocked = 'e2e-queueblocked-0000-1111-2222-333333333333';
 const queued = 'e2e-queued-0000-1111-2222-333333333333';
+const draft = 'e2e-draft-conflict-0000-1111-2222-333333333333';
 const chip = `#row-${blocked} .blockchip`;
+const prChip = `#row-${draft} .blockchip`;
 const panel = (sess: string) => `#content tr.actrow[data-actions-row="${sess}"] .blockform`;
 
 let unstubbed: string[] = [];
@@ -109,8 +112,8 @@ test('the ✕ on a blocked row folded into the merge queue sends unblock', async
   expect(posts[0].postData()).toBe(`session_id=${queued}&action=unblock`);
 });
 
-test('a poll repaint keeps the picker choice and its focus', async ({ page }) => {
-  await repaintEveryPoll(page);
+test('a focused picker holds repaints off, and the choice survives the one after', async ({ page }) => {
+  const polls = await repaintEveryPoll(page);
   await page.goto('/?refresh=1');
   await page.locator(`#content button.actbtn[data-actions="${blocker}"]`).click();
   const pick = page.locator(`${panel(blocker)} .blockpick`);
@@ -120,9 +123,17 @@ test('a poll repaint keeps the picker choice and its focus', async ({ page }) =>
   expect(first).not.toBe(queued);
   await pick.selectOption(queued);
   await pick.focus();
+  // A repaint would replace the <select> and shut its open dropdown, so none lands while it has focus.
+  const held = await pick.elementHandle();
+  const before = await swaps(page);
+  const answered = polls();
+  await expect.poll(polls).toBeGreaterThan(answered + 1);
+  expect(await swaps(page)).toBe(before);
+  expect(await held!.evaluate((n) => n.isConnected)).toBe(true);
+  await held!.dispose();
+  await pick.blur();
   await repaint(page, `${panel(blocker)} .blockpick`);
   await expect(pick).toHaveValue(queued);
-  await expect(pick).toBeFocused();
 });
 
 test('the chip label in the merge-queue fold jumps back to the roster blocker', async ({ page }) => {
@@ -153,4 +164,39 @@ test('a picker whose chosen blocker left the board falls back to an offered row'
   const value = await pick.inputValue();
   expect(value).not.toBe('');
   expect(value).not.toBe(queued);
+});
+
+test('the row panel blocks on a picked open PR', async ({ page }) => {
+  const posts = await stubAction(page);
+  await page.evaluate(() => { (window as unknown as { __ckActionBusy: number }).__ckActionBusy = 1; });
+  // serve.sh gives this row a GitHub origin whose repo has PRs #101 and #102 open.
+  await page.locator(`#content button.actbtn[data-actions="${draft}"]`).click();
+  const form = page.locator(panel(draft));
+  await expect(form.locator('optgroup[label^="open PRs"]')).toHaveAttribute('label', 'open PRs · e2e/draft-conflict');
+  await expect(form.locator('option[value="pr:101"]')).toHaveText('#101 Land the parser');
+  await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption('pr:101');
+  await form.getByRole('button', { name: 'mark main as blocked on the selected row' }).click();
+  await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');
+  expect(posts).toHaveLength(1);
+  expect(posts[0].postData()).toBe(`session_id=${draft}&action=block-pr&blocker_pr=101`);
+});
+
+test('a PR block relaxes the row and its chip links to the PR', async ({ page }) => {
+  await expect(page.locator(`#row-${draft} .ck-badge`)).toHaveText('blocked');
+  const link = page.locator(prChip).getByRole('link', { name: 'PR #101' });
+  await expect(link).toHaveText('PR #101');
+  await expect(link).toHaveAttribute('href', 'https://github.com/e2e/draft-conflict/pull/101');
+  await expect(link).toHaveAttribute('target', '_blank');
+  await expect(link).toHaveAttribute('rel', /noopener/);
+  await expect(link).toHaveAttribute('title', 'Land the parser by alice');
+  await expect(page.locator(prChip).locator('.blockjump')).toHaveCount(0);
+});
+
+test('the PR chip ✕ sends unblock for the blocked row', async ({ page }) => {
+  const posts = await stubAction(page);
+  await page.evaluate(() => { (window as unknown as { __ckActionBusy: number }).__ckActionBusy = 1; });
+  await page.locator(prChip).getByRole('button', { name: 'unblock main from PR #101' }).click();
+  await expect(page.locator(prChip).locator('.actmsg')).toHaveText('unblocked — row will update');
+  expect(posts).toHaveLength(1);
+  expect(posts[0].postData()).toBe(`session_id=${draft}&action=unblock`);
 });

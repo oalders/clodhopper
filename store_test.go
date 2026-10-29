@@ -618,3 +618,51 @@ func TestPruneOldSweepsOrphanedBlocks(t *testing.T) {
 		t.Errorf("blocks after prune = %v, want %v", got, want)
 	}
 }
+
+// unblock drops a row's session and PR blocks alike, and counts both.
+func TestUnblockSessionClearsPRBlocks(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	if err := addBlock(db, "a", "b", map[string]bool{"a": true, "b": true}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := addPRBlock(db, "a", "o/r", 7, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := addPRBlock(db, "b", "o/r", 8, now); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := unblockSession(db, "a"); err != nil || n != 2 {
+		t.Fatalf("unblock = %d, %v; want 2", n, err)
+	}
+	got, err := listPRBlocks(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []PRBlock{{"b", "o/r", 8}}; !slices.Equal(got, want) {
+		t.Errorf("pr blocks = %v, want %v", got, want)
+	}
+}
+
+// prune sweeps a PR block once its blocked session has no events left.
+func TestPruneOldSweepsOrphanedPRBlocks(t *testing.T) {
+	db := openTestDB(t)
+	old := time.Now().UTC().AddDate(0, 0, -30).Format(time.RFC3339)
+	insertEvent(db, Event{TS: old, SourceApp: "myapp", SessionID: "old", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: time.Now().UTC().Format(time.RFC3339), SourceApp: "myapp", SessionID: "new", EventType: "Stop", PayloadJSON: "{}"})
+	for _, s := range []string{"old", "new"} {
+		if err := addPRBlock(db, s, "o/r", 7, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := pruneOld(db, 14); err != nil {
+		t.Fatalf("pruneOld: %v", err)
+	}
+	got, err := listPRBlocks(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []PRBlock{{"new", "o/r", 7}}; !slices.Equal(got, want) {
+		t.Errorf("pr blocks after prune = %v, want %v", got, want)
+	}
+}

@@ -144,6 +144,12 @@ func TestE2ESeed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// block.spec.ts: draft-conflict waits on PR #101 of its (stub) GitHub repo, which serve.sh's gh reports open.
+	if repos := os.Getenv("CLODHOPPER_E2E_REPOS"); repos != "" {
+		if err := addPRBlock(db, "e2e-draft-conflict-0000-1111-2222-333333333333", "e2e/draft-conflict", 101, now); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := db.QueryRow(`SELECT COUNT(*) FROM events`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
