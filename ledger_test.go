@@ -348,6 +348,24 @@ func TestDashboardRendersLedgerRows(t *testing.T) {
 	}
 }
 
+// Only a merged or closed ledger row with a live pane offers tear down (#234).
+func TestDashboardLedgerTeardownButton(t *testing.T) {
+	row := func(id, final string, live bool) ledgerRow {
+		return ledgerRow{Agent: Agent{SessionID: id, Branch: "b" + id, LiveTmux: live}, Final: final}
+	}
+	queued := queuedRow("q")
+	html := renderDashboard(t, dashboardData{
+		QueuedAgents: []Agent{queued},
+		LedgerRows:   []ledgerRow{row("m", "merged", true), row("c", "closed", true), row("o", "open", true), row("g", "merged", false)},
+		ExecEnabled:  true, CSRFToken: "tok",
+	})
+	for id, want := range map[string]bool{"m": true, "c": true, "o": false, "g": false, "q": false} {
+		if got := strings.Contains(ledgerRowHTML(t, html, id), `data-action="teardown"`); got != want {
+			t.Errorf("row %s: tear down button = %v, want %v", id, got, want)
+		}
+	}
+}
+
 // Only merged or closed rows are finished; a still-queued or unknown one is neither that nor an alert.
 func TestLedgerTally(t *testing.T) {
 	var d dashboardData

@@ -35,7 +35,8 @@ func TestActionArgv(t *testing.T) {
 		{"close", false, "merge-pr", []string{"--close"}, true, true},
 		{"close", true, "merge-pr", []string{"--close", "--force"}, true, true},
 		{"ready", false, "gh", []string{"pr", "ready"}, false, true},
-		{"ready", true, "gh", []string{"pr", "ready"}, false, true}, // force ignored
+		{"ready", true, "gh", []string{"pr", "ready"}, false, true},    // force ignored
+		{"teardown", true, "merge-pr", []string{"--punt"}, true, true}, // force ignored
 		{"", false, "", nil, false, false},
 		{"squash; rm -rf /", false, "", nil, false, false},
 		{"rebase; rm -rf /", false, "", nil, false, false},
@@ -352,6 +353,66 @@ func TestHandleActionMergeStartsTmuxWindow(t *testing.T) {
 			}
 			if et := queryLatestEventType(t, db, "live-1"); et == "SessionEnd" {
 				t.Fatal("starting a merge must not end the session")
+			}
+		})
+	}
+}
+
+// teardown (#234) starts merge-pr --punt only for a ledger row whose live pane
+// is still in tmux and whose CI says the snapshot's own PR merged or closed.
+func TestHandleActionTeardown(t *testing.T) {
+	now := time.Date(2026, 8, 12, 10, 5, 0, 0, time.UTC)
+	merged := ciResult{Done: "merged", PRRepo: "o/r", PRNumber: 7}
+	cases := []struct {
+		name   string
+		ledger bool
+		pane   string
+		ci     ciResult
+		code   int
+		starts bool
+	}{
+		{"merged", true, "%12", merged, http.StatusOK, true},
+		{"no ledger entry", false, "%12", merged, http.StatusNotFound, false},
+		{"pane not live", true, "%99", merged, http.StatusOK, false},
+		{"PR still open", true, "%12", ciResult{State: "passing", PRRepo: "o/r", PRNumber: 7}, http.StatusConflict, false},
+		{"another PR merged", true, "%12", ciResult{Done: "merged", PRRepo: "o/r", PRNumber: 8}, http.StatusConflict, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			db := openTestDB(t)
+			dir := t.TempDir()
+			insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-1", Cwd: dir, TmuxPane: "%12", EventType: "Stop", PayloadJSON: "{}"})
+			mergePR := writeStub(t, "merge-pr", "exit 0")
+			stub, logPath := mergeTmuxStub(t, "$4")
+			cfg := newActionCfg(mergePR, "/bin/true")
+			cfg.tmux = stub
+			cfg.ledger = newQueueLedger()
+			if c.ledger {
+				cfg.ledger.record([]Agent{queuedRow("live-1")}, now)
+			}
+			cfg.panes = &paneCache{set: map[string]livePane{c.pane: {}}, at: now}
+			cfg.ci = &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{dir: {val: c.ci, at: now}}}
+
+			w := httptest.NewRecorder()
+			handleAction(w, actionReq("live-1", "teardown", true, "secret", "127.0.0.1"), db, cfg, now)
+			if w.Code != c.code {
+				t.Fatalf("code = %d %q, want %d", w.Code, w.Body.String(), c.code)
+			}
+			got, _ := os.ReadFile(logPath)
+			if !c.starts {
+				if c.code == http.StatusOK && !strings.Contains(decodeActionJSON(t, w).Output, "not in tmux") {
+					t.Fatalf("body = %q, want the not-in-tmux refusal", w.Body.String())
+				}
+				if len(got) != 0 {
+					t.Fatalf("tmux ran: %q", got)
+				}
+				return
+			}
+			want := "display-message -p -t %12 #{session_id}\n" +
+				"new-window -a -d -t $4:{end} -c " + dir + " -n merge-pr " + mergePR + " --punt" +
+				" ; set-option -p -t $4:{end} remain-on-exit failed\n"
+			if string(got) != want {
+				t.Fatalf("argv = %q, want %q", got, want)
 			}
 		})
 	}

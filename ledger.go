@@ -87,6 +87,18 @@ func (l *queueLedger) dismiss(sessionID string) bool {
 	return ok
 }
 
+// snapshot returns sessionID's entry's row as last seen queued, and whether
+// there was one.
+func (l *queueLedger) snapshot(sessionID string) (Agent, bool) {
+	if l == nil {
+		return Agent{}, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	e, ok := l.m[sessionID]
+	return e.snap, ok
+}
+
 // carryOver returns the ledger rows for every entry not in queued, most
 // recently queued first, plus roster minus the rows they replace. A session
 // still on the roster shows its own CI: merged or closed moves it to the ledger

@@ -53,7 +53,8 @@ Subcommands, dispatched in `main.go`:
   (`monitor-ci`, `new-monitor`, `reload-plugins`, `rebase`; see
   `runSessionAction`/`handleAction` in `action.go`), plus an `end` action that
   runs no subprocess at all and just calls `endSessions` to drop the row, and a
-  `dismiss` action that execs nothing and drops a merge-queue ledger row, plus
+  `dismiss` action that execs nothing and drops a merge-queue ledger row, a
+  `teardown` action (`merge-pr --punt`) on a merged/closed ledger row, plus
   `block`/`unblock`/`block-pr`, which write or drop a block row. Before any
   of that, middleware around the whole mux (`newServeMux`) applies the security
   headers and the Host allowlist (`hostAllowed`, 421 on a miss) to every route,
@@ -136,13 +137,17 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   drops an in-memory `queueLedger` entry (404 for an unknown id). `rebase`, like
   `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
   never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full
-  peer gate. The merge-pr actions (`squash`, `squash-admin`, `close`)
-  never run as serve's subprocess: `startMergeWindow` opens a new tmux
+  peer gate. The merge-pr actions (`squash`, `squash-admin`, `close`,
+  `teardown`) never run as serve's subprocess: `startMergeWindow` opens a new tmux
   window in the row's own session running merge-pr (it may wait minutes on a
   merge queue) and returns at once; its varying argv elements are the
   `display-message` session id (validated), the stored absolute cwd (refused if
   it holds a tmux format `#`) and the `LookPath`'d merge-pr. The row drops
   only once `dropDeadPanes` sees the pane gone (a lone row may need `end`).
+  `teardown` takes the fixed argv `--punt` (force ignored) and is exec-backed,
+  so it gets the full peer gate; before starting it the server requires a
+  ledger entry for the session, a live pane (`panes.live`) and the shared CI
+  cache reporting the ledger snapshot's own PR merged or closed.
   `broadcast-restart` is a separate path that never reaches `actionArgv`: it
   sends `/exit`, then — only if nono's denied-paths review is the last thing on
   screen (`nonoReviewOnScreen`) — a fixed Escape key to cancel it, then types

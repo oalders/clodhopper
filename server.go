@@ -495,6 +495,7 @@ func runServe(args []string) int {
 
 	ci := newCICache()
 	peek, act := newServeConfigs(*host, *panePeek, *paneLines, *enableMerge)
+	act.ci = ci
 	if act.enabled {
 		tok, err := randomToken()
 		if err != nil {

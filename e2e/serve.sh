@@ -36,7 +36,7 @@ cat >"$tmp/bin/tmux" <<'STUB'
 #!/bin/sh
 # Every seeded pane id (e2e_seed_test.go) must be listed, or dropDeadPanes hides its row.
 [ "${1-}" = list-panes ] || exit 1
-printf '%s\tseeded\tclaude\t/nonexistent\n' %9001 %9002
+printf '%s\tseeded\tclaude\t/nonexistent\n' %9001 %9002 %9004
 # Longer than the merge-queue session column's old 18ch, so merge.spec.ts can catch it clipping.
 printf '%%9003\tseeded-merge-queue-session-name\tclaude\t/nonexistent\n'
 STUB

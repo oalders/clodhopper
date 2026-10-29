@@ -69,6 +69,24 @@ test('a left-queue dismiss arms with its caveat before it posts', async ({ page 
   expect(posts[0]).toBe(`session_id=${landing}&action=dismiss`);
 });
 
+// A merged row with a live pane offers tear down, armed with its caveat. Stubbed, so the row survives.
+test('a merged row\'s tear down arms with its caveat before it posts', async ({ page }) => {
+  const posts: string[] = [];
+  await page.route('**/api/action', (route) => {
+    posts.push(route.request().postData() ?? '');
+    return route.fulfill({ json: { ok: true, exitCode: 0, timedOut: false, output: 'started in tmux window' } });
+  });
+  const teardown = page.locator(row).getByRole('button', { name: /^tear down / });
+  await teardown.click();
+  await expect(teardown).toHaveText('✓ confirm');
+  await expect(page.locator(`${row} .actmsg`)).toHaveText(/: removes worktree, local branch & tmux session \(the PR and its remote branch are left as they are\)/);
+  expect(posts).toEqual([]);
+  await teardown.click();
+  await expect.poll(() => posts.length).toBe(1);
+  expect(posts[0]).toBe(`session_id=${landing}&action=teardown`);
+  await expect(page.locator(`${row} .actmsg`)).toHaveText('started in tmux window');
+});
+
 // Must run before the dismiss test below, which consumes the single-shot row.
 test('a dismiss the server refuses reports the failure', async ({ page }) => {
   await letThrough(page, 'session_id=e2e-ghost&action=dismiss');

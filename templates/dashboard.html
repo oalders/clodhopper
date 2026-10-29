@@ -2249,6 +2249,7 @@
       ready: 'mark PR ready?',
       'monitor-ci': '/clear then /monitor-ci — drops the agent\'s current context',
       end: 'dismiss this row from the dashboard — the agent is NOT stopped, and the row returns if it emits another event',
+      teardown: 'removes worktree, local branch & tmux session (the PR and its remote branch are left as they are)',
       dismiss: 'drop this row from the merge queue — its PR left the queue unmerged and this row is the only alert; the agent is not touched',
       rebase: 'asks the agent to run /kitchen-sink:git-rebase — it rebases onto the default branch, resolves any conflicts, and force-pushes, replacing the PR\'s commits',
       'broadcast-restart': 'restart every idle / waiting-for-you session: /exit kills each claude, then it is resumed with its session id once its pane is back at a shell in the directory it was launched from'
@@ -2508,16 +2509,16 @@
         .then(function (d) {
           // Only 'end' and 'dismiss' clear the row: end writes a synthetic
           // SessionEnd and dismiss drops the ledger entry, so the next
-          // /api/state poll no longer lists it there. A merge/close only
+          // /api/state poll no longer lists it there. A merge/close/teardown only
           // STARTS merge-pr in a tmux window (its row drops later, once merge-pr
           // kills the session), so it leaves the row in place like ready and the
           // session actions.
           var clears = (action === 'end' || action === 'dismiss');
-          var merges = (action === 'squash' || action === 'squash-admin' || action === 'close');
+          var merges = (action === 'squash' || action === 'squash-admin' || action === 'close' || action === 'teardown');
           // IMPORTANT: assign result via textContent, never innerHTML — output is
           // raw git/gh text; scrubString removed secrets but not HTML.
           // Only the results the reader must not miss — failure, timeout, and a
-          // merge/close's "started in tmux window" notice (the work continues out
+          // merge-pr action's "started in tmux window" notice (the work continues out
           // of sight, so the pointer to it must outlive the next poll) — are
           // handed to noteMsg for re-application across repaints (issue #98);
           // any other success either clears its row or needs no second look.
@@ -3148,7 +3149,7 @@
   </section>
 
   {{ if or .QueuedAgents .LedgerRows }}
-  {{/* Every merge-queue row, never alerting (splitQueued), then the ledger's rows that have left the queue (queueLedger). The end and dismiss buttons reuse the roster's end markup in their own rowform group, so the delegated arm/confirm JS applies unchanged. */}}
+  {{/* Every merge-queue row, never alerting (splitQueued), then the ledger's rows that have left the queue (queueLedger). The end, dismiss and tear down buttons reuse the roster's end markup in their own rowform group, so the delegated arm/confirm JS applies unchanged. */}}
   <details id="ck-mq" class="ck-card">
     <summary class="ck-cardhead"><h2>Merge queue ({{ len .QueuedAgents }}){{ with .LedgerTally }}{{ with .Finished }} · {{ . }} finished{{ end }}{{ with .Left }} · <span class="mqleft">{{ . }} left queue</span>{{ end }}{{ end }}{{ with .QueueNextETA }} · next merge {{ . }}{{ end }}</h2></summary>
     <div class="ck-tablewrap">
@@ -3178,7 +3179,7 @@
           <td class="ci" data-label="state">{{ if or (eq .Final "merged") (eq .Final "closed") }}<span class="cibadge done" role="img" aria-label="pull request {{ .Final }}" title="pull request {{ .Final }}">{{ .Final }}</span>{{ else }}<span aria-hidden="true">—</span>{{ end }}</td>
           <td data-label="detail">{{ if eq .Final "open" }}left queue{{ else if eq .Final "queued" }}still queued{{ with .CIQueuePos }} · position {{ . }}{{ end }} · session gone{{ else if not .Final }}gone — state unknown{{ else }}{{ .MergedAgo }}{{ end }}{{ if and .PRRepo .PRNumber }} <a href="https://github.com/{{ .PRRepo }}/pull/{{ .PRNumber }}" target="_blank" rel="noopener noreferrer" aria-label="PR #{{ .PRNumber }} (opens in a new tab)">#{{ .PRNumber }}</a>{{ end }}</td>
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
-          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" .Agent }}{{ end }}{{ if $act }}<span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}"><button type="button" class="pract" data-action="dismiss"{{ if ne .Final "open" }} data-noconfirm="true"{{ end }} aria-label="dismiss{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} from the merge queue" title="drop this row from the merge queue (does not touch the agent)">dismiss</button><span class="actmsg"></span></span>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
+          {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" .Agent }}{{ end }}{{ if $act }}<span class="actgroup rowform" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}"><button type="button" class="pract" data-action="dismiss"{{ if ne .Final "open" }} data-noconfirm="true"{{ end }} aria-label="dismiss{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} from the merge queue" title="drop this row from the merge queue (does not touch the agent)">dismiss</button>{{ if and .LiveTmux (or (eq .Final "merged") (eq .Final "closed")) }}<button type="button" class="pract" data-action="teardown" aria-label="tear down{{ if .Branch }} {{ .Branch }}{{ else if .BranchGuess }} {{ .BranchGuess }}{{ end }} — merge-pr --punt" title="merge-pr --punt: remove the worktree, local branch &amp; tmux session (leaves the PR alone)">tear down</button>{{ end }}<span class="actmsg"></span></span>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
         </tr>
         {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="6"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
         {{ end }}
