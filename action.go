@@ -899,8 +899,14 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 				http.Error(w, "unknown session", http.StatusNotFound)
 				return
 			}
-			if p, ok := cfg.panes.panes(now)[pane]; !ok || p.session != snap.TmuxSession {
+			p, ok := cfg.panes.panes(now)[pane]
+			if !ok {
 				writeActionResult(w, actionResult{ExitCode: -1, Output: "session is not in tmux; run merge-pr from a terminal in its worktree"})
+				return
+			}
+			// A renamed session lands here too: its name no longer matches the snapshot's.
+			if p.session != snap.TmuxSession {
+				writeActionResult(w, actionResult{ExitCode: -1, Output: "pane now belongs to another tmux session; run merge-pr from a terminal in its worktree"})
 				return
 			}
 			pr := cfg.ci.get(cwd, now)

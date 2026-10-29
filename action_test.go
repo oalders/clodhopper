@@ -371,14 +371,16 @@ func TestHandleActionTeardown(t *testing.T) {
 		ci      ciResult
 		code    int
 		starts  bool
+		refusal string // the 200 refusal's text when nothing starts
 	}{
-		{"merged", true, "%12", "s", merged, http.StatusOK, true},
-		{"closed", true, "%12", "s", ciResult{Done: "closed", PRRepo: "o/r", PRNumber: 7}, http.StatusOK, true},
-		{"no ledger entry", false, "%12", "s", merged, http.StatusNotFound, false},
-		{"pane not live", true, "%99", "s", merged, http.StatusOK, false},
-		{"pane reused by another session", true, "%12", "other", merged, http.StatusOK, false},
-		{"PR still open", true, "%12", "s", ciResult{State: "passing", PRRepo: "o/r", PRNumber: 7}, http.StatusConflict, false},
-		{"another PR merged", true, "%12", "s", ciResult{Done: "merged", PRRepo: "o/r", PRNumber: 8}, http.StatusConflict, false},
+		{"merged", true, "%12", "s", merged, http.StatusOK, true, ""},
+		{"closed", true, "%12", "s", ciResult{Done: "closed", PRRepo: "o/r", PRNumber: 7}, http.StatusOK, true, ""},
+		{"no ledger entry", false, "%12", "s", merged, http.StatusNotFound, false, ""},
+		{"pane not live", true, "%99", "s", merged, http.StatusOK, false, "not in tmux"},
+		{"pane reused by another session", true, "%12", "other", merged, http.StatusOK, false, "belongs to another tmux session"},
+		{"PR still open", true, "%12", "s", ciResult{State: "passing", PRRepo: "o/r", PRNumber: 7}, http.StatusConflict, false, ""},
+		{"another PR merged", true, "%12", "s", ciResult{Done: "merged", PRRepo: "o/r", PRNumber: 8}, http.StatusConflict, false, ""},
+		{"same number merged in another repo", true, "%12", "s", ciResult{Done: "merged", PRRepo: "o/other", PRNumber: 7}, http.StatusConflict, false, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -405,8 +407,8 @@ func TestHandleActionTeardown(t *testing.T) {
 			}
 			got, _ := os.ReadFile(logPath)
 			if !c.starts {
-				if c.code == http.StatusOK && !strings.Contains(decodeActionJSON(t, w).Output, "not in tmux") {
-					t.Fatalf("body = %q, want the not-in-tmux refusal", w.Body.String())
+				if c.code == http.StatusOK && !strings.Contains(decodeActionJSON(t, w).Output, c.refusal) {
+					t.Fatalf("body = %q, want %q", w.Body.String(), c.refusal)
 				}
 				if len(got) != 0 {
 					t.Fatalf("tmux ran: %q", got)

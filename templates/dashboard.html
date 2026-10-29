@@ -2249,7 +2249,7 @@
       ready: 'mark PR ready?',
       'monitor-ci': '/clear then /monitor-ci — drops the agent\'s current context',
       end: 'dismiss this row from the dashboard — the agent is NOT stopped, and the row returns if it emits another event',
-      teardown: 'removes worktree, local branch & tmux session (the PR and its remote branch are left as they are)',
+      teardown: 'removes worktree, local branch & tmux session (ends this agent; the PR and its remote branch are left as they are)',
       dismiss: 'drop this row from the merge queue — its PR left the queue unmerged and this row is the only alert; the agent is not touched',
       rebase: 'asks the agent to run /kitchen-sink:git-rebase — it rebases onto the default branch, resolves any conflicts, and force-pushes, replacing the PR\'s commits',
       'broadcast-restart': 'restart every idle / waiting-for-you session: /exit kills each claude, then it is resumed with its session id once its pane is back at a shell in the directory it was launched from'

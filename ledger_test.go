@@ -356,10 +356,10 @@ func TestDashboardLedgerTeardownButton(t *testing.T) {
 	queued := queuedRow("q")
 	html := renderDashboard(t, dashboardData{
 		QueuedAgents: []Agent{queued},
-		LedgerRows:   []ledgerRow{row("m", "merged", true), row("c", "closed", true), row("o", "open", true), row("g", "merged", false)},
+		LedgerRows:   []ledgerRow{row("m", "merged", true), row("c", "closed", true), row("o", "open", true), row("g", "merged", false), row("u", "", true), row("k", "queued", true)},
 		ExecEnabled:  true, CSRFToken: "tok",
 	})
-	for id, want := range map[string]bool{"m": true, "c": true, "o": false, "g": false, "q": false} {
+	for id, want := range map[string]bool{"m": true, "c": true, "o": false, "g": false, "u": false, "k": false, "q": false} {
 		if got := strings.Contains(ledgerRowHTML(t, html, id), `data-action="teardown"`); got != want {
 			t.Errorf("row %s: tear down button = %v, want %v", id, got, want)
 		}
