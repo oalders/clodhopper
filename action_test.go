@@ -35,7 +35,8 @@ func TestActionArgv(t *testing.T) {
 		{"close", false, "merge-pr", []string{"--close"}, true, true},
 		{"close", true, "merge-pr", []string{"--close", "--force"}, true, true},
 		{"ready", false, "gh", []string{"pr", "ready"}, false, true},
-		{"ready", true, "gh", []string{"pr", "ready"}, false, true}, // force ignored
+		{"ready", true, "gh", []string{"pr", "ready"}, false, true},    // force ignored
+		{"teardown", true, "merge-pr", []string{"--punt"}, true, true}, // force ignored
 		{"", false, "", nil, false, false},
 		{"squash; rm -rf /", false, "", nil, false, false},
 		{"rebase; rm -rf /", false, "", nil, false, false},
@@ -352,6 +353,81 @@ func TestHandleActionMergeStartsTmuxWindow(t *testing.T) {
 			}
 			if et := queryLatestEventType(t, db, "live-1"); et == "SessionEnd" {
 				t.Fatal("starting a merge must not end the session")
+			}
+		})
+	}
+}
+
+// teardown (#234) starts merge-pr --punt only for a ledger row whose live pane
+// is still in tmux and whose CI says the snapshot's own PR merged or closed.
+func TestHandleActionTeardown(t *testing.T) {
+	now := time.Date(2026, 8, 12, 10, 5, 0, 0, time.UTC)
+	merged := ciResult{Done: "merged", PRRepo: "o/r", PRNumber: 7}
+	cases := []struct {
+		name    string
+		ledger  bool
+		pane    string
+		session string // the live pane's tmux session
+		title   string // the live pane's title
+		snap    string // the ledger row's TmuxSession, as dropDeadPanes labelled it
+		ci      ciResult
+		code    int
+		starts  bool
+		refusal string // the 200 refusal's text when nothing starts
+	}{
+		{"merged", true, "%12", "s", "", "s", merged, http.StatusOK, true, ""},
+		{"session labelled by its title", true, "%12", "fix/b-live-1", "Fix it", "Fix it", merged, http.StatusOK, true, ""},
+		{"pane has no session", true, "%12", "", "", "", merged, http.StatusOK, false, "belongs to another tmux session"},
+		{"closed", true, "%12", "s", "", "s", ciResult{Done: "closed", PRRepo: "o/r", PRNumber: 7}, http.StatusOK, true, ""},
+		{"no ledger entry", false, "%12", "s", "", "s", merged, http.StatusNotFound, false, ""},
+		{"pane not live", true, "%99", "s", "", "s", merged, http.StatusOK, false, "not in tmux"},
+		{"pane reused by another session", true, "%12", "other", "", "s", merged, http.StatusOK, false, "belongs to another tmux session"},
+		{"PR still open", true, "%12", "s", "", "s", ciResult{State: "passing", PRRepo: "o/r", PRNumber: 7}, http.StatusConflict, false, ""},
+		{"another PR merged", true, "%12", "s", "", "s", ciResult{Done: "merged", PRRepo: "o/r", PRNumber: 8}, http.StatusConflict, false, ""},
+		{"same number merged in another repo", true, "%12", "s", "", "s", ciResult{Done: "merged", PRRepo: "o/other", PRNumber: 7}, http.StatusConflict, false, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			db := openTestDB(t)
+			dir := t.TempDir()
+			insertEvent(db, Event{TS: "2026-08-12T10:00:00Z", SourceApp: "x", SessionID: "live-1", Cwd: dir, TmuxPane: "%12", EventType: "Stop", PayloadJSON: "{}"})
+			mergePR := writeStub(t, "merge-pr", "exit 0")
+			stub, logPath := mergeTmuxStub(t, "$4")
+			cfg := newActionCfg(mergePR, "/bin/true")
+			cfg.tmux = stub
+			cfg.ledger = newQueueLedger()
+			if c.ledger {
+				q := queuedRow("live-1")
+				q.TmuxSession = c.snap
+				cfg.ledger.record([]Agent{q}, now)
+			}
+			cfg.panes = &paneCache{set: map[string]livePane{c.pane: {session: c.session, title: c.title}}, at: now}
+			cfg.ci = &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{dir: {val: c.ci, at: now}}}
+
+			w := httptest.NewRecorder()
+			handleAction(w, actionReq("live-1", "teardown", true, "secret", "127.0.0.1"), db, cfg, now)
+			if w.Code != c.code {
+				t.Fatalf("code = %d %q, want %d", w.Code, w.Body.String(), c.code)
+			}
+			got, _ := os.ReadFile(logPath)
+			if !c.starts {
+				if c.code == http.StatusOK && !strings.Contains(decodeActionJSON(t, w).Output, c.refusal) {
+					t.Fatalf("body = %q, want %q", w.Body.String(), c.refusal)
+				}
+				if len(got) != 0 {
+					t.Fatalf("tmux ran: %q", got)
+				}
+				return
+			}
+			want := "display-message -p -t %12 #{session_id}\n" +
+				"new-window -a -d -t $4:{end} -c " + dir + " -n merge-pr " + mergePR + " --punt" +
+				" ; set-option -p -t $4:{end} remain-on-exit failed\n"
+			if string(got) != want {
+				t.Fatalf("argv = %q, want %q", got, want)
+			}
+			// merge-pr kills the session; teardown itself leaves the ledger row.
+			if _, ok := cfg.ledger.snapshot("live-1"); !ok {
+				t.Fatal("teardown dropped the ledger entry")
 			}
 		})
 	}

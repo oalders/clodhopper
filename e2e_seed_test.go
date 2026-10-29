@@ -127,6 +127,7 @@ func TestE2ESeed(t *testing.T) {
 		"e2e-twin-0000-1111-2222-333333333333":    "%9001",
 		"e2e-needs-0000-1111-2222-333333333333":   "%9002",
 		"e2e-queued-0000-1111-2222-333333333333":  "%9003",
+		"e2e-landing-0000-1111-2222-333333333333": "%9004", // its tear down button needs a live pane (ledger.spec.ts)
 	}
 	for _, ev := range evs {
 		ev.TmuxPane = panes[ev.SessionID]

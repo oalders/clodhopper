@@ -46,6 +46,10 @@ func actionArgv(action string, force bool) (binary string, args []string, inTmux
 		// gh pr ready is a quick subprocess, and --force is meaningless here
 		// (ignored).
 		return "gh", []string{"pr", "ready"}, false, true
+	case "teardown":
+		// --punt leaves the PR alone; force is ignored, so merge-pr keeps its
+		// unpushed-commits pre-flight.
+		return "merge-pr", []string{"--punt"}, true, true
 	default:
 		return "", nil, false, false
 	}
@@ -601,6 +605,8 @@ type actionConfig struct {
 	// server-side; nil resolves nothing, so block-pr refuses.
 	repos   *cwdCache[string]
 	openPRs *cwdCache[[]openPR]
+	// ci is the shared CI cache teardown re-checks by the session's latest cwd; nil refuses.
+	ci *cwdCache[ciResult]
 }
 
 // randomToken returns a 256-bit hex CSRF secret, regenerated each serve start.
@@ -883,6 +889,31 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		if !paneIDRe.MatchString(pane) {
 			writeActionResult(w, actionResult{ExitCode: -1, Output: "session is not in tmux; run merge-pr from a terminal in its worktree"})
 			return
+		}
+		// teardown is offered only on a merged or closed ledger row with a live
+		// pane; re-check all three, as merge-pr re-resolves the PR by branch and
+		// a pane id can be reused by another session after a tmux restart.
+		if action == "teardown" {
+			snap, ok := cfg.ledger.snapshot(sessionID)
+			if !ok {
+				http.Error(w, "unknown session", http.StatusNotFound)
+				return
+			}
+			p, ok := cfg.panes.panes(now)[pane]
+			if !ok {
+				writeActionResult(w, actionResult{ExitCode: -1, Output: "session is not in tmux; run merge-pr from a terminal in its worktree"})
+				return
+			}
+			// The snapshot holds dropDeadPanes' label, not the raw name; a renamed session still fails.
+			if p.session == "" || paneLabel(p, cmp.Or(snap.Branch, snap.BranchGuess), snap.Worktree) != snap.TmuxSession {
+				writeActionResult(w, actionResult{ExitCode: -1, Output: "pane now belongs to another tmux session; run merge-pr from a terminal in its worktree"})
+				return
+			}
+			pr := cfg.ci.get(cwd, now)
+			if (pr.Done != "merged" && pr.Done != "closed") || finalKey(Agent{PRRepo: pr.PRRepo, PRNumber: pr.PRNumber}) != finalKey(snap) {
+				http.Error(w, "PR is not merged or closed", http.StatusConflict)
+				return
+			}
 		}
 		writeActionResult(w, startMergeWindow(cfg.tmux, cfg.mergePR, pane, cwd, args))
 		return

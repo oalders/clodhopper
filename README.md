@@ -320,7 +320,11 @@ that needs you goes back to the roster instead. Once its session is gone the
 state comes from `gh pr view N --repo OWNER/REPO` plus the merge-queue lookup,
 so a PR still waiting its turn shows **still queued · session gone**. Its
 **dismiss** button drops the row from the merge-queue table (a live session
-returns to the roster); it touches nothing else. These rows live in serve's memory only (24h,
+returns to the roster). Dismiss touches nothing else. A merged or closed row whose
+pane is still live (so it needs `--pane-peek`) also offers **tear down**, which
+runs `merge-pr --punt` in a new window of the row's tmux session: it removes the
+worktree, local branch and tmux session and leaves the PR alone. The server
+re-checks that the row's own PR is merged or closed first. These rows live in serve's memory only (24h,
 at most 100), so a restart clears them.
 
 > **Exposure:** this is a **write** capability, not just a read one. It is
