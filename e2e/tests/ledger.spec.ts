@@ -120,13 +120,15 @@ test('a merged PR stays in the merge-queue table until dismissed', async ({ page
   };
   await inCell(dismiss(page), teardownBtn);
   expect(await fits(page)).toBe(true);
-  // Armed, the cell also holds the ✕ cancel; the busy flag keeps a repaint from disarming it.
+  // Armed, the cell also holds the ✕ cancel, and ✕ disarms without a message.
   const cancel = page.locator(`${row} button.actcancel`);
   await teardownBtn.click();
   await expect(teardownBtn).toHaveText('✓ confirm');
   await inCell(dismiss(page), teardownBtn, cancel);
   await cancel.click();
   await expect(teardownBtn).toHaveText('tear down');
+  await expect(cancel).toHaveCount(0);
+  await expect(page.locator(`${row} .actmsg`)).toHaveText('');
 
   const posts = await letThrough(page);
   const response = page.waitForResponse('**/api/action');

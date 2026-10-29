@@ -904,8 +904,8 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 				writeActionResult(w, actionResult{ExitCode: -1, Output: "session is not in tmux; run merge-pr from a terminal in its worktree"})
 				return
 			}
-			// A renamed session lands here too: its name no longer matches the snapshot's.
-			if p.session != snap.TmuxSession {
+			// The snapshot holds dropDeadPanes' label, not the raw name; a renamed session still fails.
+			if p.session == "" || paneLabel(p, cmp.Or(snap.Branch, snap.BranchGuess), snap.Worktree) != snap.TmuxSession {
 				writeActionResult(w, actionResult{ExitCode: -1, Output: "pane now belongs to another tmux session; run merge-pr from a terminal in its worktree"})
 				return
 			}

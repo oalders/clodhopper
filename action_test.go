@@ -367,20 +367,24 @@ func TestHandleActionTeardown(t *testing.T) {
 		name    string
 		ledger  bool
 		pane    string
-		session string // the live pane's tmux session; the ledger row's is "s"
+		session string // the live pane's tmux session
+		title   string // the live pane's title
+		snap    string // the ledger row's TmuxSession, as dropDeadPanes labelled it
 		ci      ciResult
 		code    int
 		starts  bool
 		refusal string // the 200 refusal's text when nothing starts
 	}{
-		{"merged", true, "%12", "s", merged, http.StatusOK, true, ""},
-		{"closed", true, "%12", "s", ciResult{Done: "closed", PRRepo: "o/r", PRNumber: 7}, http.StatusOK, true, ""},
-		{"no ledger entry", false, "%12", "s", merged, http.StatusNotFound, false, ""},
-		{"pane not live", true, "%99", "s", merged, http.StatusOK, false, "not in tmux"},
-		{"pane reused by another session", true, "%12", "other", merged, http.StatusOK, false, "belongs to another tmux session"},
-		{"PR still open", true, "%12", "s", ciResult{State: "passing", PRRepo: "o/r", PRNumber: 7}, http.StatusConflict, false, ""},
-		{"another PR merged", true, "%12", "s", ciResult{Done: "merged", PRRepo: "o/r", PRNumber: 8}, http.StatusConflict, false, ""},
-		{"same number merged in another repo", true, "%12", "s", ciResult{Done: "merged", PRRepo: "o/other", PRNumber: 7}, http.StatusConflict, false, ""},
+		{"merged", true, "%12", "s", "", "s", merged, http.StatusOK, true, ""},
+		{"session labelled by its title", true, "%12", "fix/b-live-1", "Fix it", "Fix it", merged, http.StatusOK, true, ""},
+		{"pane has no session", true, "%12", "", "", "", merged, http.StatusOK, false, "belongs to another tmux session"},
+		{"closed", true, "%12", "s", "", "s", ciResult{Done: "closed", PRRepo: "o/r", PRNumber: 7}, http.StatusOK, true, ""},
+		{"no ledger entry", false, "%12", "s", "", "s", merged, http.StatusNotFound, false, ""},
+		{"pane not live", true, "%99", "s", "", "s", merged, http.StatusOK, false, "not in tmux"},
+		{"pane reused by another session", true, "%12", "other", "", "s", merged, http.StatusOK, false, "belongs to another tmux session"},
+		{"PR still open", true, "%12", "s", "", "s", ciResult{State: "passing", PRRepo: "o/r", PRNumber: 7}, http.StatusConflict, false, ""},
+		{"another PR merged", true, "%12", "s", "", "s", ciResult{Done: "merged", PRRepo: "o/r", PRNumber: 8}, http.StatusConflict, false, ""},
+		{"same number merged in another repo", true, "%12", "s", "", "s", ciResult{Done: "merged", PRRepo: "o/other", PRNumber: 7}, http.StatusConflict, false, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -394,10 +398,10 @@ func TestHandleActionTeardown(t *testing.T) {
 			cfg.ledger = newQueueLedger()
 			if c.ledger {
 				q := queuedRow("live-1")
-				q.TmuxSession = "s"
+				q.TmuxSession = c.snap
 				cfg.ledger.record([]Agent{q}, now)
 			}
-			cfg.panes = &paneCache{set: map[string]livePane{c.pane: {session: c.session}}, at: now}
+			cfg.panes = &paneCache{set: map[string]livePane{c.pane: {session: c.session, title: c.title}}, at: now}
 			cfg.ci = &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{dir: {val: c.ci, at: now}}}
 
 			w := httptest.NewRecorder()

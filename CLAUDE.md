@@ -145,7 +145,7 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   it holds a tmux format `#`) and the `LookPath`'d merge-pr. The row drops
   only once `dropDeadPanes` sees the pane gone (a lone row may need `end`).
   `teardown` (fixed argv `--punt`, force ignored) execs tmux, so it gets the
-  full peer gate; `handleAction` re-checks the ledger entry, live pane and
+  full peer gate; `handleAction` re-checks the ledger entry, live pane (and its tmux session) and
   merged/closed PR server-side, never trusting the rendered button.
   `broadcast-restart` is a separate path that never reaches `actionArgv`: it
   sends `/exit`, then — only if nono's denied-paths review is the last thing on
