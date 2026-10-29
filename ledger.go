@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // A ledger entry lapses ledgerTTL after its row was last seen queued; past
@@ -300,8 +301,15 @@ func parseOpenPRs(out []byte) []openPR {
 	}
 	res := make([]openPR, 0, len(prs))
 	for _, p := range prs {
+		// Format runs (bidi overrides, zero-width) could make a title read as another PR's.
+		title := strings.Map(func(r rune) rune {
+			if unicode.Is(unicode.Cf, r) {
+				return -1
+			}
+			return r
+		}, stripControl(p.Title))
 		// Scrub before truncating, so a cut cannot leave a secret's prefix unmatched.
-		res = append(res, openPR{Number: p.Number, Title: truncate(scrubString(stripControl(p.Title)), promptPreviewLen), Author: stripControl(p.Author.Login)})
+		res = append(res, openPR{Number: p.Number, Title: truncate(scrubString(title), promptPreviewLen), Author: stripControl(p.Author.Login)})
 	}
 	return res
 }

@@ -53,7 +53,8 @@ Subcommands, dispatched in `main.go`:
   (`monitor-ci`, `new-monitor`, `reload-plugins`, `rebase`; see
   `runSessionAction`/`handleAction` in `action.go`), plus an `end` action that
   runs no subprocess at all and just calls `endSessions` to drop the row, and a
-  `dismiss` action that execs nothing and drops a merge-queue ledger row. Before any
+  `dismiss` action that execs nothing and drops a merge-queue ledger row, plus
+  `block`/`unblock`/`block-pr`, which write or drop a block row. Before any
   of that, middleware around the whole mux (`newServeMux`) applies the security
   headers and the Host allowlist (`hostAllowed`, 421 on a miss) to every route,
   so a DNS-rebinding page cannot even read the read-only board (this is in
@@ -84,9 +85,8 @@ Subcommands, dispatched in `main.go`:
   that one" in the `blocks` table, or (`--on-pr N`) "waits on that open PR of its
   own GitHub repo" in `pr_blocks`. `applyBlocks` (server layer, after
   `dropDeadPanes`) relaxes a waiting/needs-you row to `statusBlocked` while its
-  blocker session is still on the roster; `applyPRBlocks` does the same until the
-  ledger's `finals` lookup reports the PR merged or closed (a failed lookup keeps
-  the block); the chip's title/author tooltip is fetched only for exec peers.
+  blocker session is still on the roster; `applyPRBlocks` does the same for PR
+  blocks (see its doc comment for when one lapses).
   `agentRoster` itself never sees blocks.
   They never touch `ingest` or the capture path.
 
@@ -124,15 +124,14 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
    closed argv allowlist — no user-supplied string ever reaches a command line.
   serve's read-only ledger lookup (`lookupPRFinal` in `ledger.go`: `gh pr view
   N --repo=OWNER/REPO` via `prFinalArgs`, then the same `mergeQueueQuery` call
-  with the node id gh returned), like the open-PR list's `prListArgs`, is
-  likewise built only from validated values, never client input.
+  with the node id gh returned) and the open-PR list's `prListArgs` are both
+  built only from validated values, never client input.
   The `end` action never reaches `actionArgv`: it execs nothing, and its
   `session_id` travels only as a bound SQL parameter. `block`/`unblock` are
   exec-free like `end` (`actionExecs`; they never reach `actionArgv`); `block` checks both ids against a
   fresh `agentRoster()` before writing the `blocks` row. `block-pr` is not
-  exec-free (a cold cache runs `gh pr list`), so it gets the full peer gate; it
-  never reaches `actionArgv`, the client sends only a PR number and the repo is
-  resolved server-side (see `blockPRAction`). `dismiss` is exec-free too and only
+  exec-free (it may run `gh pr list`), so it gets the full peer gate; the client
+  sends only a PR number (see `blockPRAction`). `dismiss` is exec-free too and only
   drops an in-memory `queueLedger` entry (404 for an unknown id). `rebase`, like
   `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
   never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full

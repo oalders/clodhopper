@@ -1289,6 +1289,10 @@ func blockPRAction(db *sql.DB, cfg *actionConfig, sessionID, blockerPR string, n
 	if !slices.ContainsFunc(open, func(p openPR) bool { return p.Number == n }) {
 		return actionResult{ExitCode: -1, Output: fmt.Sprintf("PR #%d is not an open PR in %s", n, repo)}
 	}
+	// The list may be up to a cache TTL stale; a failed lookup ("") trusts it.
+	if done := cfg.ledger.finals.get(repo+"#"+strconv.Itoa(n), now).Done; done != "" {
+		return actionResult{ExitCode: -1, Output: fmt.Sprintf("PR #%d in %s is already %s", n, repo, done)}
+	}
 	if err := addPRBlock(db, sessionID, repo, n, now); err != nil {
 		debugf("action: block-pr %s: %v", sessionID, err)
 		return actionResult{ExitCode: -1, Output: "could not block session"}

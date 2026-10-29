@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 var ledgerNow = time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
@@ -386,5 +387,15 @@ func TestParseOpenPRs(t *testing.T) {
 	got = parseOpenPRs([]byte(`[{"number":8,"title":"Rotate token ghp_0123456789abcdefABCDEF0123456789zz","author":{"login":"bob"}}]`))
 	if len(got) != 1 || strings.Contains(got[0].Title, "ghp_") {
 		t.Errorf("secret-shaped title = %+v, want it redacted", got)
+	}
+	got = parseOpenPRs([]byte(`[{"number":9,"title":"Fix \u202Etxt.exe\u200B now","author":{"login":"eve"}}]`))
+	if len(got) != 1 || got[0].Title != "Fix txt.exe now" {
+		t.Errorf("format-char title = %+v, want bidi and zero-width runes dropped", got)
+	}
+	// A token straddling the cut must still be scrubbed: scrubbing runs first.
+	long := strings.Repeat("x", 70) + " ghp_" + strings.Repeat("a1B2", 9)
+	got = parseOpenPRs([]byte(`[{"number":10,"title":"` + long + `","author":{"login":"eve"}}]`))
+	if len(got) != 1 || strings.Contains(got[0].Title, "ghp_") || utf8.RuneCountInString(got[0].Title) > promptPreviewLen+1 {
+		t.Errorf("long secret title = %+v, want it redacted and at most %d runes plus the ellipsis", got, promptPreviewLen)
 	}
 }

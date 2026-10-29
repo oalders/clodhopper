@@ -2332,8 +2332,13 @@ func TestHandleActionBlockPR(t *testing.T) {
 		return map[string]string{"/w/a": "o/r", "/w/c": "o/down"}[cwd]
 	}}
 	cfg.openPRs = &cwdCache[[]openPR]{m: map[string]cwdEntry[[]openPR]{}, lookup: func(repo string) []openPR {
-		return map[string][]openPR{"o/r": {{Number: 7}}}[repo]
+		return map[string][]openPR{"o/r": {{Number: 7}, {Number: 9}}}[repo]
 	}}
+	// #9 merged since the open list was cached.
+	cfg.ledger = newQueueLedger()
+	cfg.ledger.finals.lookup = func(key string) ciResult {
+		return map[string]ciResult{"o/r#9": {PRNumber: 9, Done: "merged"}}[key]
+	}
 	post := func(r *http.Request) (int, actionJSON) {
 		t.Helper()
 		w := httptest.NewRecorder()
@@ -2354,6 +2359,7 @@ func TestHandleActionBlockPR(t *testing.T) {
 		"not live":    {"z", "7", "the row must be live on the roster"},
 		"no repo":     {"b", "7", "this row is not in a GitHub repo"},
 		"list failed": {"c", "7", "could not confirm PR #7 is open in o/down"},
+		"merged":      {"a", "9", "PR #9 in o/r is already merged"},
 	} {
 		if _, got := post(blockPRReq("127.0.0.1:5555", c.sess, c.pr)); got.OK || got.Output != c.want {
 			t.Errorf("%s: resp = %+v, want refusal %q", name, got, c.want)

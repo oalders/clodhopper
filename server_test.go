@@ -4588,7 +4588,17 @@ func TestViewSignature_TracksBlockPRs(t *testing.T) {
 	opened := base
 	opened.Agents = slices.Clone(base.Agents)
 	opened.Agents[0].BlockPRs = []openPR{{Number: 8, Title: "Other"}, {Number: 9, Title: "New"}}
-	for name, d := range map[string]dashboardData{"retitled chip PR": retitled, "newly opened PR": opened} {
+	reauthored := base
+	reauthored.Agents = slices.Clone(base.Agents)
+	reauthored.Agents[0].BlockedOnPR.Author = "bob"
+	rerepoed := base
+	rerepoed.Agents = slices.Clone(base.Agents)
+	rerepoed.Agents[0].BlockedOnRepo = "o/other"
+	pickerRepo := base
+	pickerRepo.Agents = slices.Clone(base.Agents)
+	pickerRepo.Agents[0].BlockPRRepo = "o/other"
+	for name, d := range map[string]dashboardData{"retitled chip PR": retitled, "newly opened PR": opened,
+		"chip PR author": reauthored, "chip PR repo": rerepoed, "picker repo": pickerRepo} {
 		if viewSignature(base) == viewSignature(d) {
 			t.Errorf("%s: signature unchanged", name)
 		}
