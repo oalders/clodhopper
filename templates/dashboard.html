@@ -532,6 +532,8 @@
     .blockchip button.blockjump { all: unset; cursor: pointer; text-decoration: underline dotted; overflow-wrap: anywhere; }
     .blockchip button.blockjump:focus-visible { box-shadow: var(--shadow-focus); }
     .blockchip a.blockpr { color: inherit; text-decoration: underline dotted; overflow-wrap: anywhere; }
+    .blockchip a.blockpr:focus-visible { box-shadow: var(--shadow-focus); }
+    .blockchip a.blockpr::after { content: " ↗"; }
     .blockchip button.pract { padding: 0 4px; min-height: 0; font-size: var(--fs-sm); }
     .blockchip .actmsg:empty { display: none; }
     .blockpick { max-width: 100%; min-width: 0; font-family: var(--font-mono); font-size: var(--fs-xs); padding: 3px 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-xs); background: var(--surface-2); color: var(--text-1); }
@@ -3129,7 +3131,7 @@
             {{ if or (gt (len $.Agents) 1) $.QueuedAgents .BlockPRs }}<div class="actcol blockcol" role="group" aria-label="mark this row blocked">
               <span class="acteyebrow">blocked on</span>
               <span class="actgroup blockform" data-session="{{ .SessionID }}">
-                <select class="blockpick" aria-label="this row is blocked on">{{ range blockGroups $.Agents $.QueuedAgents . }}<optgroup label="{{ if .App }}{{ .App }}{{ else }}no app{{ end }}">{{ range .Rows }}<option value="{{ .SessionID }}">{{ if .SourceApp }}{{ .SourceApp }} · {{ end }}{{ .BlockLabel }}</option>{{ end }}</optgroup>{{ end }}{{ if .BlockPRs }}<optgroup label="open PRs · {{ .BlockPRRepo }}">{{ range .BlockPRs }}<option value="pr:{{ .Number }}">#{{ .Number }} {{ .Title }}</option>{{ end }}</optgroup>{{ end }}</select>
+                <select class="blockpick" aria-label="this row is blocked on">{{ range blockGroups $.Agents $.QueuedAgents . }}<optgroup label="{{ if .App }}{{ .App }}{{ else }}no app{{ end }}">{{ range .Rows }}<option value="{{ .SessionID }}">{{ if .SourceApp }}{{ .SourceApp }} · {{ end }}{{ .BlockLabel }}</option>{{ end }}</optgroup>{{ end }}{{ if .BlockPRs }}<optgroup label="open PRs · {{ .BlockPRRepo }}">{{ range .BlockPRs }}<option value="pr:{{ .Number }}" title="{{ .Title }}{{ with .Author }} by {{ . }}{{ end }}">#{{ .Number }} {{ .Title }}</option>{{ end }}</optgroup>{{ end }}</select>
                 <button type="button" class="pract" data-action="block" data-noconfirm="true" aria-label="mark{{ if .Branch }} {{ .Branch }}{{ else }} this row{{ end }} as blocked on the selected row" title="this row waits on the chosen row or PR: it leaves the alert band until that row leaves the board or that PR merges/closes">mark blocked</button>
                 <span class="actmsg"></span>
               </span>

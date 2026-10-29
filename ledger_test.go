@@ -380,4 +380,11 @@ func TestParseOpenPRs(t *testing.T) {
 	if got := parseOpenPRs([]byte("not json")); got != nil {
 		t.Errorf("bad json = %+v, want nil", got)
 	}
+	if got := parseOpenPRs([]byte("[]")); got == nil || len(got) != 0 {
+		t.Errorf("no open PRs = %#v, want a non-nil empty list", got)
+	}
+	got = parseOpenPRs([]byte(`[{"number":8,"title":"Rotate token ghp_0123456789abcdefABCDEF0123456789zz","author":{"login":"bob"}}]`))
+	if len(got) != 1 || strings.Contains(got[0].Title, "ghp_") {
+		t.Errorf("secret-shaped title = %+v, want it redacted", got)
+	}
 }

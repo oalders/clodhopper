@@ -773,8 +773,6 @@ func TestCwdCacheGet(t *testing.T) {
 	}
 }
 
-// expire makes a fresh entry stale so the next get re-runs lookup, but a second
-// expire inside ciForceMinInterval is a no-op, bounding how often clients can force gh.
 // A cache with its own ttl keeps an entry that long instead of cwdTTL.
 func TestCwdCacheOwnTTL(t *testing.T) {
 	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
@@ -792,6 +790,8 @@ func TestCwdCacheOwnTTL(t *testing.T) {
 	}
 }
 
+// expire makes a fresh entry stale so the next get re-runs lookup, but a second
+// expire inside ciForceMinInterval is a no-op, bounding how often clients can force gh.
 func TestCwdCacheExpire(t *testing.T) {
 	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
 	calls := 0
@@ -4514,8 +4514,9 @@ func TestApplyPRBlocks(t *testing.T) {
 		{SessionID: "closed", Status: statusNeedsYou, StatusRank: 1},
 		{SessionID: "failed", Status: statusWaiting},
 		{SessionID: "both", Status: statusBlocked, StatusRank: rankBackground, BlockedOn: "fix-1", BlockedOnSession: "x"},
+		{SessionID: "evil", Status: statusWaiting},
 	}
-	applyPRBlocks(agents, []PRBlock{{"open", "o/r", 1}, {"merged", "o/r", 2}, {"closed", "o/r", 3}, {"failed", "o/r", 4}, {"both", "o/r", 1}}, finals, open, now)
+	applyPRBlocks(agents, []PRBlock{{"open", "o/r", 1}, {"merged", "o/r", 2}, {"closed", "o/r", 3}, {"failed", "o/r", 4}, {"both", "o/r", 1}, {"evil", "o/r/../evil", 1}}, finals, open, now)
 	got := map[string]Agent{}
 	for _, a := range agents {
 		got[a.SessionID] = a
@@ -4534,28 +4535,63 @@ func TestApplyPRBlocks(t *testing.T) {
 	if a := got["both"]; a.BlockedOn != "fix-1" || a.BlockedOnPR.Number != 0 {
 		t.Errorf("both = %+v, want the session block's chip", a)
 	}
+	if a := got["evil"]; a.Status != statusWaiting || a.BlockedOn != "" {
+		t.Errorf("evil = %+v, want an invalid stored repo ignored", a)
+	}
 }
 
-// A lone row with open PRs in its repo gets the picker, offering them as
-// pr:N, and a PR block's chip links to the PR rather than jumping to a row.
-func TestContentTemplate_PRBlock(t *testing.T) {
-	agents := []Agent{{SessionID: "a", Branch: "fix-1", Status: statusBlocked, BlockedOn: "PR #7", BlockedOnRepo: "o/r",
-		BlockedOnPR: openPR{7, "Land it", "alice"}, BlockPRs: []openPR{{Number: 8, Title: "Other"}}, BlockPRRepo: "o/r"}}
-	var buf bytes.Buffer
-	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", dashboardData{ExecEnabled: true, Agents: agents}); err != nil {
+// A non-exec peer's render runs no gh pr list: its PR chip is bare and its
+// rows get no picker PRs, while an exec peer's chip carries the PR's title.
+func TestBuildDashboardDataOpenPRsOnlyForExecPeer(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now().UTC()
+	insertEvent(db, Event{TS: now.Format(time.RFC3339), SourceApp: "x", SessionID: "a", Cwd: "/w/a", EventType: "Stop", PayloadJSON: "{}"})
+	if err := addPRBlock(db, "a", "o/r", 7, now); err != nil {
 		t.Fatal(err)
 	}
-	html := buf.String()
-	for _, want := range []string{
-		`<optgroup label="open PRs · o/r"><option value="pr:8">#8 Other</option></optgroup>`,
-		`<a class="blockpr" href="https://github.com/o/r/pull/7" target="_blank" rel="noopener noreferrer" title="Land it by alice">PR #7</a>`,
+	calls := 0
+	cfg := &actionConfig{enabled: true, token: "tok", openPRs: &cwdCache[[]openPR]{m: map[string]cwdEntry[[]openPR]{}, lookup: func(string) []openPR {
+		calls++
+		return []openPR{{Number: 7, Title: "Land it"}}
+	}}}
+	for _, c := range []struct {
+		addr      string
+		wantCalls int
+		wantTitle string
+	}{
+		{"192.168.1.5:5555", 0, ""},
+		{"127.0.0.1:5555", 1, "Land it"},
 	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("missing %s", want)
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr, r.Host = c.addr, "127.0.0.1:4555"
+		d, err := buildDashboardData(r, db, newCICache(), &peekConfig{cache: newPaneCache()}, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(d.Agents) != 1 || d.Agents[0].BlockedOn != "PR #7" || d.Agents[0].BlockedOnPR.Title != c.wantTitle || calls != c.wantCalls {
+			t.Errorf("%s: agents = %+v after %d open-PR lookups, want PR #7 titled %q after %d", c.addr, d.Agents, calls, c.wantTitle, c.wantCalls)
+		}
+		if c.wantCalls == 0 && d.Agents[0].BlockPRs != nil {
+			t.Errorf("%s: BlockPRs = %v, want none", c.addr, d.Agents[0].BlockPRs)
 		}
 	}
-	if strings.Contains(html, "data-jump") {
-		t.Error("a PR block's chip must not jump to a row")
+}
+
+// The PR chip's tooltip and the picker's PR options are hashed, so a retitled
+// or newly opened PR repaints the board.
+func TestViewSignature_TracksBlockPRs(t *testing.T) {
+	base := dashboardData{Agents: []Agent{{SessionID: "s1", Status: statusBlocked, BlockedOn: "PR #7", BlockedOnRepo: "o/r",
+		BlockedOnPR: openPR{7, "Land it", "alice"}, BlockPRs: []openPR{{Number: 8, Title: "Other"}}, BlockPRRepo: "o/r"}}}
+	retitled := base
+	retitled.Agents = slices.Clone(base.Agents)
+	retitled.Agents[0].BlockedOnPR.Title = "Land it now"
+	opened := base
+	opened.Agents = slices.Clone(base.Agents)
+	opened.Agents[0].BlockPRs = []openPR{{Number: 8, Title: "Other"}, {Number: 9, Title: "New"}}
+	for name, d := range map[string]dashboardData{"retitled chip PR": retitled, "newly opened PR": opened} {
+		if viewSignature(base) == viewSignature(d) {
+			t.Errorf("%s: signature unchanged", name)
+		}
 	}
 }
 

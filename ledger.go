@@ -264,6 +264,7 @@ func prListArgs(repo string) ([]string, bool) {
 	if !validRepo(repo) {
 		return nil, false
 	}
+	// The picker and block-pr share this cap, so a PR beyond it cannot be picked; the CLI's --on-pr is unaffected.
 	return []string{"pr", "list", "--repo=" + repo, "--state", "open", "--json", "number,title,author", "--limit", "100"}, true
 }
 
@@ -283,7 +284,9 @@ func lookupOpenPRs(repo string) []openPR {
 	return parseOpenPRs(out)
 }
 
-// parseOpenPRs turns `gh pr list --json number,title,author` output into openPRs.
+// parseOpenPRs turns `gh pr list --json number,title,author` output into openPRs:
+// nil when out does not parse, non-nil (maybe empty) otherwise, so callers can
+// tell "no open PRs" from "could not list them".
 func parseOpenPRs(out []byte) []openPR {
 	var prs []struct {
 		Number int    `json:"number"`
@@ -297,7 +300,8 @@ func parseOpenPRs(out []byte) []openPR {
 	}
 	res := make([]openPR, 0, len(prs))
 	for _, p := range prs {
-		res = append(res, openPR{Number: p.Number, Title: truncate(stripControl(p.Title), promptPreviewLen), Author: stripControl(p.Author.Login)})
+		// Scrub before truncating, so a cut cannot leave a secret's prefix unmatched.
+		res = append(res, openPR{Number: p.Number, Title: truncate(scrubString(stripControl(p.Title)), promptPreviewLen), Author: stripControl(p.Author.Login)})
 	}
 	return res
 }

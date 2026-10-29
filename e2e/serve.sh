@@ -58,6 +58,11 @@ if [ "${1-} ${2-}" = "pr list" ]; then
 	echo '[{"number":101,"title":"Land the parser","author":{"login":"alice"}},{"number":102,"title":"Bump deps","author":{"login":"bob"}}]'
 	exit 0
 fi
+# The PR block's finals lookup (e2e_seed_test.go blocks draft-conflict on #101): still open.
+if [ "${1-} ${2-} ${3-} ${4-}" = "pr view 101 --repo=e2e/draft-conflict" ]; then
+	echo '{"number":101,"state":"OPEN"}'
+	exit 0
+fi
 dir=$(basename "$(pwd)")
 case "$dir" in queued | queued-approval | ejected | merged | landing | draft-conflict) ;; *) exit 1 ;; esac
 case "${1-}" in

@@ -1029,8 +1029,14 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	if act.ledger != nil {
 		finals = act.ledger.finals
 	}
+	// Only an exec peer's render may run gh pr list (the chip's tooltip, the picker's options).
+	execOK := act.enabled && peerOK(r, act.bindHost, act.allowedHosts)
+	var openPRs *cwdCache[[]openPR]
+	if execOK {
+		openPRs = act.openPRs
+	}
 	// Before enrichCI and the split, like applyBlocks: setAndForget reads statusBlocked.
-	applyPRBlocks(agents, prBlocks, finals, act.openPRs, now)
+	applyPRBlocks(agents, prBlocks, finals, openPRs, now)
 	enrichCI(agents, ci, now)
 	suppressWatchedCI(agents, now)
 	// Before the split, so queued, ledgered and roster rows all keep their peek.
@@ -1048,9 +1054,8 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	// Before demotePendingCI, which relaxes every merged "needs you" row.
 	roster, ledger := act.ledger.carryOver(roster, queued, now)
 	demotePendingCI(agents)
-	exec := act.enabled && peerOK(r, act.bindHost, act.allowedHosts)
-	if exec {
-		setBlockPRs(roster, peek.repos, act.openPRs, now)
+	if execOK {
+		setBlockPRs(roster, peek.repos, openPRs, now)
 	}
 
 	// Live labels from dropDeadPanes, so activity rows match the roster's (#180).
@@ -1109,7 +1114,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 		Now:            now,
 		SessColors:     assignSessColors(agents, events),
 		PeekEnabled:    peek.enabled && peerOK(r, peek.bindHost, peek.allowedHosts),
-		ExecEnabled:    exec,
+		ExecEnabled:    execOK,
 		CSRFToken:      act.token,
 		Debug:          debug,
 	}
@@ -1383,7 +1388,8 @@ func relaxBlocked(a *Agent) {
 // only once finals (keyed "owner/repo#N", see lookupPRFinal) reports the PR
 // merged or closed: a failed lookup keeps it, so a gh hiccup cannot re-alert
 // the row. A session block already on the row keeps the chip. The chip's
-// tooltip takes the PR's title and author from open when it lists the PR.
+// tooltip takes the PR's title and author from open when it lists the PR; a
+// nil open (a non-exec peer's render) leaves a bare "PR #N" chip.
 func applyPRBlocks(agents []Agent, blocks []PRBlock, finals *cwdCache[ciResult], open *cwdCache[[]openPR], now time.Time) {
 	idx := make(map[string]int, len(agents))
 	for i, a := range agents {

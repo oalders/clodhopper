@@ -2323,10 +2323,13 @@ func blockPRReq(peer, sessionID, pr string) *http.Request {
 func TestHandleActionBlockPR(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
-	insertEvent(db, Event{TS: "2026-10-20T09:00:00Z", SourceApp: "x", SessionID: "a", Cwd: "/w/a", EventType: "Stop", PayloadJSON: "{}"})
+	for _, sess := range []string{"a", "b", "c"} {
+		insertEvent(db, Event{TS: "2026-10-20T09:00:00Z", SourceApp: "x", SessionID: sess, Cwd: "/w/" + sess, EventType: "Stop", PayloadJSON: "{}"})
+	}
 	cfg := newActionCfg("/nonexistent/merge-pr", "/nonexistent/gh")
+	// b's cwd has no GitHub repo; c's repo cannot be listed (gh failed).
 	cfg.repos = &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: func(cwd string) string {
-		return map[string]string{"/w/a": "o/r"}[cwd]
+		return map[string]string{"/w/a": "o/r", "/w/c": "o/down"}[cwd]
 	}}
 	cfg.openPRs = &cwdCache[[]openPR]{m: map[string]cwdEntry[[]openPR]{}, lookup: func(repo string) []openPR {
 		return map[string][]openPR{"o/r": {{Number: 7}}}[repo]
@@ -2343,9 +2346,17 @@ func TestHandleActionBlockPR(t *testing.T) {
 	if code, _ := post(blockPRReq("192.168.1.20:5555", "a", "7")); code != http.StatusForbidden {
 		t.Errorf("LAN peer: %d, want 403", code)
 	}
-	for name, pr := range map[string]string{"zero": "0", "negative": "-7", "garbage": "7x", "not open": "8"} {
-		if _, got := post(blockPRReq("127.0.0.1:5555", "a", pr)); got.OK || got.Output == "" {
-			t.Errorf("%s: resp = %+v, want a non-ok result with a message", name, got)
+	for name, c := range map[string]struct{ sess, pr, want string }{
+		"zero":        {"a", "0", "not a PR number"},
+		"negative":    {"a", "-7", "not a PR number"},
+		"garbage":     {"a", "7x", "not a PR number"},
+		"not open":    {"a", "8", "PR #8 is not an open PR in o/r"},
+		"not live":    {"z", "7", "the row must be live on the roster"},
+		"no repo":     {"b", "7", "this row is not in a GitHub repo"},
+		"list failed": {"c", "7", "could not confirm PR #7 is open in o/down"},
+	} {
+		if _, got := post(blockPRReq("127.0.0.1:5555", c.sess, c.pr)); got.OK || got.Output != c.want {
+			t.Errorf("%s: resp = %+v, want refusal %q", name, got, c.want)
 		}
 	}
 	if blocks, _ := listPRBlocks(db); len(blocks) != 0 {

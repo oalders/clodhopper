@@ -1282,7 +1282,11 @@ func blockPRAction(db *sql.DB, cfg *actionConfig, sessionID, blockerPR string, n
 	if repo == "" {
 		return actionResult{ExitCode: -1, Output: "this row is not in a GitHub repo"}
 	}
-	if !slices.ContainsFunc(cfg.openPRs.get(repo, now), func(p openPR) bool { return p.Number == n }) {
+	open := cfg.openPRs.get(repo, now)
+	if open == nil { // gh failed, unlike a fetched empty list
+		return actionResult{ExitCode: -1, Output: fmt.Sprintf("could not confirm PR #%d is open in %s", n, repo)}
+	}
+	if !slices.ContainsFunc(open, func(p openPR) bool { return p.Number == n }) {
 		return actionResult{ExitCode: -1, Output: fmt.Sprintf("PR #%d is not an open PR in %s", n, repo)}
 	}
 	if err := addPRBlock(db, sessionID, repo, n, now); err != nil {

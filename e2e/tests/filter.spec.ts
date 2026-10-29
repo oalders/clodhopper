@@ -99,14 +99,16 @@ test('hiding the first row of a group moves its divider; clearing restores it', 
   const { box } = await filterFor(page, 'waiting');
   const lead = page.locator('#row-e2e-approval-0000-1111-2222-333333333333');
   const group = (await lead.getAttribute('data-group'))!;
-  const next = page.locator(`#row-e2e-approval-0000-1111-2222-333333333333 ~ tr[data-group="${group}"]`).first();
+  // The group's first row the filter keeps (a blocked row in between misses "waiting" too).
+  const next = page.locator(`#row-e2e-approval-0000-1111-2222-333333333333 ~ tr[data-group="${group}"]:not(.ck-qhide)`).first();
   await expect(lead).toBeHidden();
   await expect(next).toBeVisible();
   await expect(next).toHaveClass(/group-start/);
+  const pinned = page.locator(`#${await next.getAttribute('id')}`);
 
   await box.fill('');
   await expect(lead).toHaveClass(/group-start/);
-  await expect(next).not.toHaveClass(/group-start/);
+  await expect(pinned).not.toHaveClass(/group-start/);
 });
 
 test('a term found only in a title attribute matches', async ({ page }) => {
