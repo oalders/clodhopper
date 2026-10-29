@@ -3127,7 +3127,7 @@
                 <span class="actmsg"></span>
               </span>
             </div>
-            {{/* This row is one of .Agents, so another row exists only if .Agents has two or a row is queued. */}}
+            {{/* This row is one of .Agents, so another row exists only if .Agents has two or a row is queued; else it needs its repo's open PRs. */}}
             {{ if or (gt (len $.Agents) 1) $.QueuedAgents .BlockPRs }}<div class="actcol blockcol" role="group" aria-label="mark this row blocked">
               <span class="acteyebrow">blocked on</span>
               <span class="actgroup blockform" data-session="{{ .SessionID }}">

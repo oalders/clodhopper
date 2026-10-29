@@ -4524,9 +4524,9 @@ func TestApplyPRBlocks(t *testing.T) {
 	if a := got["open"]; a.Status != statusBlocked || a.StatusRank != rankBackground || a.BlockedOn != "PR #1" || a.BlockedOnRepo != "o/r" || a.BlockedOnPR != (openPR{1, "Land it", "alice"}) || a.BlockedOnSession != "" {
 		t.Errorf("open = %+v, want blocked on o/r PR #1 with its title", a)
 	}
-	for _, id := range []string{"merged", "closed"} {
-		if a := got[id]; a.Status == statusBlocked || a.BlockedOn != "" {
-			t.Errorf("%s = %q on %q, want the block lapsed", id, a.Status, a.BlockedOn)
+	for id, want := range map[string]string{"merged": statusWaiting, "closed": statusNeedsYou} {
+		if a := got[id]; a.Status != want || a.BlockedOn != "" {
+			t.Errorf("%s = %q on %q, want the block lapsed and %q kept", id, a.Status, a.BlockedOn, want)
 		}
 	}
 	if a := got["failed"]; a.Status != statusBlocked || a.BlockedOnPR != (openPR{Number: 4}) {
@@ -4597,8 +4597,12 @@ func TestViewSignature_TracksBlockPRs(t *testing.T) {
 	pickerRepo := base
 	pickerRepo.Agents = slices.Clone(base.Agents)
 	pickerRepo.Agents[0].BlockPRRepo = "o/other"
+	pickerRetitled := base
+	pickerRetitled.Agents = slices.Clone(base.Agents)
+	pickerRetitled.Agents[0].BlockPRs = slices.Clone(base.Agents[0].BlockPRs)
+	pickerRetitled.Agents[0].BlockPRs[0].Title = "Other, renamed"
 	for name, d := range map[string]dashboardData{"retitled chip PR": retitled, "newly opened PR": opened,
-		"chip PR author": reauthored, "chip PR repo": rerepoed, "picker repo": pickerRepo} {
+		"chip PR author": reauthored, "chip PR repo": rerepoed, "picker repo": pickerRepo, "picker PR retitled": pickerRetitled} {
 		if viewSignature(base) == viewSignature(d) {
 			t.Errorf("%s: signature unchanged", name)
 		}
@@ -4614,7 +4618,7 @@ func TestSetBlockPRs(t *testing.T) {
 	open := &cwdCache[[]openPR]{m: map[string]cwdEntry[[]openPR]{}, lookup: func(string) []openPR {
 		return []openPR{{Number: 7}, {Number: 8}}
 	}}
-	agents := []Agent{{Cwd: "/w/a", PRRepo: "o/r", PRNumber: 7}, {Cwd: "/w/b"}, {Cwd: "/w/none"}}
+	agents := []Agent{{Cwd: "/w/a", PRRepo: "o/r", PRNumber: 7}, {Cwd: "/w/b"}, {Cwd: "/w/none"}, {Cwd: "/w/a", PRRepo: "o/other", PRNumber: 7}}
 	setBlockPRs(agents, repos, open, now)
 	if a := agents[0]; a.BlockPRRepo != "o/r" || !slices.Equal(a.BlockPRs, []openPR{{Number: 8}}) {
 		t.Errorf("own-PR row = %q %v, want o/r [#8]", a.BlockPRRepo, a.BlockPRs)
@@ -4624,5 +4628,8 @@ func TestSetBlockPRs(t *testing.T) {
 	}
 	if a := agents[2]; a.BlockPRRepo != "" || a.BlockPRs != nil {
 		t.Errorf("non-GitHub row = %q %v, want none", a.BlockPRRepo, a.BlockPRs)
+	}
+	if a := agents[3]; !slices.Contains(a.BlockPRs, openPR{Number: 7}) {
+		t.Errorf("other-repo PR row = %v, want #7 kept: its own PR is in another repo", a.BlockPRs)
 	}
 }

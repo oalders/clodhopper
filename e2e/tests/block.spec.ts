@@ -12,6 +12,7 @@ const queueBlocked = 'e2e-queueblocked-0000-1111-2222-333333333333';
 const queued = 'e2e-queued-0000-1111-2222-333333333333';
 const draft = 'e2e-draft-conflict-0000-1111-2222-333333333333';
 const chip = `#row-${blocked} .blockchip`;
+const prChip = `#row-${draft} .blockchip`;
 const panel = (sess: string) => `#content tr.actrow[data-actions-row="${sess}"] .blockform`;
 
 let unstubbed: string[] = [];
@@ -173,23 +174,21 @@ test('the row panel blocks on a picked open PR', async ({ page }) => {
 });
 
 test('a PR block relaxes the row and its chip links to the PR', async ({ page }) => {
-  const prChip = page.locator(`#row-${draft} .blockchip`);
   await expect(page.locator(`#row-${draft} .ck-badge`)).toHaveText('blocked');
-  const link = prChip.locator('a.blockpr');
+  const link = page.locator(prChip).getByRole('link', { name: 'PR #101' });
   await expect(link).toHaveText('PR #101');
   await expect(link).toHaveAttribute('href', 'https://github.com/e2e/draft-conflict/pull/101');
   await expect(link).toHaveAttribute('target', '_blank');
   await expect(link).toHaveAttribute('rel', /noopener/);
   await expect(link).toHaveAttribute('title', 'Land the parser by alice');
-  await expect(prChip.locator('.blockjump')).toHaveCount(0);
+  await expect(page.locator(prChip).locator('.blockjump')).toHaveCount(0);
 });
 
 test('the PR chip ✕ sends unblock for the blocked row', async ({ page }) => {
   const posts = await stubAction(page);
   await page.evaluate(() => { (window as unknown as { __ckActionBusy: number }).__ckActionBusy = 1; });
-  const prChip = page.locator(`#row-${draft} .blockchip`);
-  await prChip.getByRole('button', { name: 'unblock main from PR #101' }).click();
-  await expect(prChip.locator('.actmsg')).toHaveText('unblocked — row will update');
+  await page.locator(prChip).getByRole('button', { name: 'unblock main from PR #101' }).click();
+  await expect(page.locator(prChip).locator('.actmsg')).toHaveText('unblocked — row will update');
   expect(posts).toHaveLength(1);
   expect(posts[0].postData()).toBe(`session_id=${draft}&action=unblock`);
 });

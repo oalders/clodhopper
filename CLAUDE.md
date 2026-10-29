@@ -83,7 +83,7 @@ Subcommands, dispatched in `main.go`:
 - **`init`** (`init.go`) — wires the `clodhopper ingest` hooks into a project's `.claude/settings.json` (or `settings.local.json`), skipping ones already present.
 - **`block` / `unblock`** (`block.go`) — record or drop "this session waits on
   that one" in the `blocks` table, or (`--on-pr N`) "waits on that open PR of its
-  own GitHub repo" in `pr_blocks`. `applyBlocks` (server layer, after
+  own GitHub repo" in `pr_blocks`; `unblock` clears both. `applyBlocks` (server layer, after
   `dropDeadPanes`) relaxes a waiting/needs-you row to `statusBlocked` while its
   blocker session is still on the roster; `applyPRBlocks` does the same for PR
   blocks (see its doc comment for when one lapses).
@@ -130,8 +130,9 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   `session_id` travels only as a bound SQL parameter. `block`/`unblock` are
   exec-free like `end` (`actionExecs`; they never reach `actionArgv`); `block` checks both ids against a
   fresh `agentRoster()` before writing the `blocks` row. `block-pr` is not
-  exec-free (it may run `gh pr list`), so it gets the full peer gate; the client
-  sends only a PR number (see `blockPRAction`). `dismiss` is exec-free too and only
+  exec-free (it may run `git`/`gh` to resolve the repo and check the PR), so it
+  gets the full peer gate; the client sends only a session id and PR number, and
+  the repo is resolved server-side (see `blockPRAction`). `dismiss` is exec-free too and only
   drops an in-memory `queueLedger` entry (404 for an unknown id). `rebase`, like
   `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
   never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full

@@ -803,8 +803,8 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 	}
 
 	// "block-pr" marks this row blocked on an open PR (see applyPRBlocks). Unlike
-	// "block" it is not exec-free: a cold open-PR cache runs gh, so actionExecs
-	// leaves it under the full peer gate above. It never reaches actionArgv; the
+	// "block" it is not exec-free: cold caches run git and gh (repo, open PRs,
+	// PR final state), so actionExecs leaves it under the full peer gate above. It never reaches actionArgv; the
 	// repo is resolved server-side and the PR must be in that repo's open list.
 	if action == "block-pr" {
 		writeActionResult(w, blockPRAction(db, cfg, sessionID, r.FormValue("blocker_pr"), now))
