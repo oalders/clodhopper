@@ -34,7 +34,7 @@ export TMUX_TMPDIR="$tmp"
 mkdir "$tmp/bin"
 cat >"$tmp/bin/tmux" <<'STUB'
 #!/bin/sh
-# Every seeded pane id (e2e_seed_test.go) must be listed, or dropDeadPanes hides its row.
+# Every seeded pane id (e2e_seed_test.go) must be listed, or dropDeadPanes hides its row; %9004 is the landing fixture's.
 [ "${1-}" = list-panes ] || exit 1
 printf '%s\tseeded\tclaude\t/nonexistent\n' %9001 %9002 %9004
 # Longer than the merge-queue session column's old 18ch, so merge.spec.ts can catch it clipping.

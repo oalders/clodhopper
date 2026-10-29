@@ -364,18 +364,21 @@ func TestHandleActionTeardown(t *testing.T) {
 	now := time.Date(2026, 8, 12, 10, 5, 0, 0, time.UTC)
 	merged := ciResult{Done: "merged", PRRepo: "o/r", PRNumber: 7}
 	cases := []struct {
-		name   string
-		ledger bool
-		pane   string
-		ci     ciResult
-		code   int
-		starts bool
+		name    string
+		ledger  bool
+		pane    string
+		session string // the live pane's tmux session; the ledger row's is "s"
+		ci      ciResult
+		code    int
+		starts  bool
 	}{
-		{"merged", true, "%12", merged, http.StatusOK, true},
-		{"no ledger entry", false, "%12", merged, http.StatusNotFound, false},
-		{"pane not live", true, "%99", merged, http.StatusOK, false},
-		{"PR still open", true, "%12", ciResult{State: "passing", PRRepo: "o/r", PRNumber: 7}, http.StatusConflict, false},
-		{"another PR merged", true, "%12", ciResult{Done: "merged", PRRepo: "o/r", PRNumber: 8}, http.StatusConflict, false},
+		{"merged", true, "%12", "s", merged, http.StatusOK, true},
+		{"closed", true, "%12", "s", ciResult{Done: "closed", PRRepo: "o/r", PRNumber: 7}, http.StatusOK, true},
+		{"no ledger entry", false, "%12", "s", merged, http.StatusNotFound, false},
+		{"pane not live", true, "%99", "s", merged, http.StatusOK, false},
+		{"pane reused by another session", true, "%12", "other", merged, http.StatusOK, false},
+		{"PR still open", true, "%12", "s", ciResult{State: "passing", PRRepo: "o/r", PRNumber: 7}, http.StatusConflict, false},
+		{"another PR merged", true, "%12", "s", ciResult{Done: "merged", PRRepo: "o/r", PRNumber: 8}, http.StatusConflict, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -388,9 +391,11 @@ func TestHandleActionTeardown(t *testing.T) {
 			cfg.tmux = stub
 			cfg.ledger = newQueueLedger()
 			if c.ledger {
-				cfg.ledger.record([]Agent{queuedRow("live-1")}, now)
+				q := queuedRow("live-1")
+				q.TmuxSession = "s"
+				cfg.ledger.record([]Agent{q}, now)
 			}
-			cfg.panes = &paneCache{set: map[string]livePane{c.pane: {}}, at: now}
+			cfg.panes = &paneCache{set: map[string]livePane{c.pane: {session: c.session}}, at: now}
 			cfg.ci = &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{dir: {val: c.ci, at: now}}}
 
 			w := httptest.NewRecorder()
@@ -413,6 +418,10 @@ func TestHandleActionTeardown(t *testing.T) {
 				" ; set-option -p -t $4:{end} remain-on-exit failed\n"
 			if string(got) != want {
 				t.Fatalf("argv = %q, want %q", got, want)
+			}
+			// merge-pr kills the session; teardown itself leaves the ledger row.
+			if _, ok := cfg.ledger.snapshot("live-1"); !ok {
+				t.Fatal("teardown dropped the ledger entry")
 			}
 		})
 	}

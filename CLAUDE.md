@@ -54,7 +54,7 @@ Subcommands, dispatched in `main.go`:
   `runSessionAction`/`handleAction` in `action.go`), plus an `end` action that
   runs no subprocess at all and just calls `endSessions` to drop the row, and a
   `dismiss` action that execs nothing and drops a merge-queue ledger row, a
-  `teardown` action (`merge-pr --punt`) on a merged/closed ledger row, plus
+  `teardown` action on a merged/closed ledger row, plus
   `block`/`unblock`/`block-pr`, which write or drop a block row. Before any
   of that, middleware around the whole mux (`newServeMux`) applies the security
   headers and the Host allowlist (`hostAllowed`, 421 on a miss) to every route,
@@ -144,10 +144,9 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   `display-message` session id (validated), the stored absolute cwd (refused if
   it holds a tmux format `#`) and the `LookPath`'d merge-pr. The row drops
   only once `dropDeadPanes` sees the pane gone (a lone row may need `end`).
-  `teardown` takes the fixed argv `--punt` (force ignored) and is exec-backed,
-  so it gets the full peer gate; before starting it the server requires a
-  ledger entry for the session, a live pane (`panes.live`) and the shared CI
-  cache reporting the ledger snapshot's own PR merged or closed.
+  `teardown` (fixed argv `--punt`, force ignored) is exec-backed, so it gets the
+  full peer gate; `handleAction` re-checks the ledger entry, live pane and
+  merged/closed PR server-side, never trusting the rendered button.
   `broadcast-restart` is a separate path that never reaches `actionArgv`: it
   sends `/exit`, then — only if nono's denied-paths review is the last thing on
   screen (`nonoReviewOnScreen`) — a fixed Escape key to cancel it, then types

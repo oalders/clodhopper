@@ -605,8 +605,7 @@ type actionConfig struct {
 	// server-side; nil resolves nothing, so block-pr refuses.
 	repos   *cwdCache[string]
 	openPRs *cwdCache[[]openPR]
-	// ci is the page's CI cache, so "teardown" re-checks the very state the
-	// button was rendered from; nil reports nothing, so teardown refuses.
+	// ci is the shared CI cache teardown re-checks by the session's latest cwd; nil refuses.
 	ci *cwdCache[ciResult]
 }
 
@@ -893,19 +892,19 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		}
 		// teardown is offered only on a merged or closed ledger row with a live
 		// pane; re-check all three, as merge-pr re-resolves the PR by branch and
-		// a pane id can be reused after a tmux restart.
+		// a pane id can be reused by another session after a tmux restart.
 		if action == "teardown" {
 			snap, ok := cfg.ledger.snapshot(sessionID)
 			if !ok {
 				http.Error(w, "unknown session", http.StatusNotFound)
 				return
 			}
-			if !cfg.panes.live(pane, now) {
+			if p, ok := cfg.panes.panes(now)[pane]; !ok || p.session != snap.TmuxSession {
 				writeActionResult(w, actionResult{ExitCode: -1, Output: "session is not in tmux; run merge-pr from a terminal in its worktree"})
 				return
 			}
-			r := cfg.ci.get(cwd, now)
-			if (r.Done != "merged" && r.Done != "closed") || finalKey(Agent{PRRepo: r.PRRepo, PRNumber: r.PRNumber}) != finalKey(snap) {
+			pr := cfg.ci.get(cwd, now)
+			if (pr.Done != "merged" && pr.Done != "closed") || finalKey(Agent{PRRepo: pr.PRRepo, PRNumber: pr.PRNumber}) != finalKey(snap) {
 				http.Error(w, "PR is not merged or closed", http.StatusConflict)
 				return
 			}

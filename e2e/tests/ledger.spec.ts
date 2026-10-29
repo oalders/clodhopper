@@ -79,7 +79,7 @@ test('a merged row\'s tear down arms with its caveat before it posts', async ({ 
   const teardown = page.locator(row).getByRole('button', { name: /^tear down / });
   await teardown.click();
   await expect(teardown).toHaveText('✓ confirm');
-  await expect(page.locator(`${row} .actmsg`)).toHaveText(/: removes worktree, local branch & tmux session \(the PR and its remote branch are left as they are\)/);
+  await expect(page.locator(`${row} .actmsg`)).toHaveText(/: removes worktree/);
   expect(posts).toEqual([]);
   await teardown.click();
   await expect.poll(() => posts.length).toBe(1);
@@ -103,9 +103,14 @@ test('a merged PR stays in the merge-queue table until dismissed', async ({ page
   await expect(page.locator(`table.roster #row-${landing}`)).toHaveCount(0);
   await expect(page.locator('#ck-mq > summary')).toContainText('1 finished');
 
-  // On a phone the dismiss button is a 44px touch target and the page never scrolls sideways.
+  // On a phone the dismiss and tear down buttons are 44px touch targets inside their cell, and the page never scrolls sideways.
   await page.setViewportSize({ width: 390, height: 844 });
   expect((await dismiss(page).boundingBox())!.height).toBeGreaterThanOrEqual(44);
+  const cell = (await page.locator(`${row} td.actions`).boundingBox())!;
+  const teardown = (await page.locator(row).getByRole('button', { name: /^tear down / }).boundingBox())!;
+  expect(teardown.height).toBeGreaterThanOrEqual(44);
+  expect(teardown.x).toBeGreaterThanOrEqual(cell.x);
+  expect(teardown.x + teardown.width).toBeLessThanOrEqual(cell.x + cell.width);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   expect(await fits(page)).toBe(true);
 
