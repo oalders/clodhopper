@@ -1,5 +1,5 @@
 import type { Page, Request } from '@playwright/test';
-import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint } from './fixtures';
+import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, swaps } from './fixtures';
 
 // The blocked-on chip and the row panel's block picker (#210), against
 // serve.sh's exec server; e2e_seed_test.go blocks fix-1234 on fix-1235,
@@ -112,8 +112,8 @@ test('the ✕ on a blocked row folded into the merge queue sends unblock', async
   expect(posts[0].postData()).toBe(`session_id=${queued}&action=unblock`);
 });
 
-test('a poll repaint keeps the picker choice and its focus', async ({ page }) => {
-  await repaintEveryPoll(page);
+test('a focused picker holds repaints off, and the choice survives the one after', async ({ page }) => {
+  const polls = await repaintEveryPoll(page);
   await page.goto('/?refresh=1');
   await page.locator(`#content button.actbtn[data-actions="${blocker}"]`).click();
   const pick = page.locator(`${panel(blocker)} .blockpick`);
@@ -123,9 +123,17 @@ test('a poll repaint keeps the picker choice and its focus', async ({ page }) =>
   expect(first).not.toBe(queued);
   await pick.selectOption(queued);
   await pick.focus();
+  // A repaint would replace the <select> and shut its open dropdown, so none lands while it has focus.
+  const held = await pick.elementHandle();
+  const before = await swaps(page);
+  const answered = polls();
+  await expect.poll(polls).toBeGreaterThan(answered + 1);
+  expect(await swaps(page)).toBe(before);
+  expect(await held!.evaluate((n) => n.isConnected)).toBe(true);
+  await held!.dispose();
+  await pick.blur();
   await repaint(page, `${panel(blocker)} .blockpick`);
   await expect(pick).toHaveValue(queued);
-  await expect(pick).toBeFocused();
 });
 
 test('the chip label in the merge-queue fold jumps back to the roster blocker', async ({ page }) => {

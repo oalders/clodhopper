@@ -968,6 +968,12 @@
       // Skip this poll's repaint entirely and let the next one (after the
       // action settles and clears the busy flag) pick up the fresh signature.
       if (window.__ckActionBusy) return false;
+      // A native <select>'s open dropdown cannot survive its element being
+      // replaced, and on a busy board nearly every poll repaints, so the block
+      // picker's list shut mid-choice. Hold off while a picker has focus; poll
+      // does not advance sig, so the first poll after it blurs paints.
+      var focused = document.activeElement;
+      if (focused && focused.classList && focused.classList.contains('blockpick') && focused.closest('#content')) return false;
       // An ARMED confirm is just as fragile, and __ckActionBusy does not cover
       // it: the counter only rises inside fire(), so between the first (arm)
       // click and the second (confirm) click a poll would innerHTML-replace
@@ -1038,8 +1044,6 @@
       for (var bp = 0; bp < pickEls.length; bp++) {
         picks[pickEls[bp].closest('.blockform').getAttribute('data-session')] = pickEls[bp].value;
       }
-      var bkeep = active && active.classList && active.classList.contains('blockpick') ? active.closest('.blockform') : null;
-      var bkey = bkeep ? bkeep.getAttribute('data-session') : null;
       try { document.dispatchEvent(new CustomEvent('ch:contentswap')); } catch (e) {}
       // Build the new subtree in a disconnected <template>, then swap it into the
       // live #content in one shot. The old form assigned html straight to the
@@ -1153,7 +1157,6 @@
       var armRefocused = false;
       try { if (armedState && window.__ckArmRestore) armRefocused = !!window.__ckArmRestore(armedState); } catch (e) {}
       var newPicks = document.querySelectorAll('#content .blockform .blockpick');
-      var pickFocus = null;
       for (var np = 0; np < newPicks.length; np++) {
         var psess = newPicks[np].closest('.blockform').getAttribute('data-session');
         var pwant = picks[psess];
@@ -1161,9 +1164,7 @@
         for (var po = 0; pwant && po < newPicks[np].options.length; po++) {
           if (newPicks[np].options[po].value === pwant) { newPicks[np].value = pwant; break; }
         }
-        if (psess === bkey) pickFocus = newPicks[np];
       }
-      if (pickFocus) { pickFocus.focus({ preventScroll: true }); return true; }
       if (key) {
         var btns = document.querySelectorAll('#content .copycwd');
         for (var i = 0; i < btns.length; i++) {
