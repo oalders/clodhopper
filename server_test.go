@@ -4265,6 +4265,50 @@ func TestApplyBlocks(t *testing.T) {
 	}
 }
 
+// A blocker whose PR merged or closed releases the block; a queued PR or an
+// empty (failed) lookup keeps it.
+func TestApplyBlocksLapsesOnFinalPR(t *testing.T) {
+	agents := []Agent{
+		{SessionID: "m", Status: statusWaiting}, {SessionID: "merged", CIDone: "merged"},
+		{SessionID: "c", Status: statusNeedsYou}, {SessionID: "closed", CIDone: "closed"},
+		{SessionID: "q", Status: statusWaiting}, {SessionID: "queued", CIQueue: "2"},
+		{SessionID: "e", Status: statusWaiting}, {SessionID: "empty"},
+	}
+	applyBlocks(agents, []Block{{"m", "merged"}, {"c", "closed"}, {"q", "queued"}, {"e", "empty"}})
+	for i, want := range map[int]string{0: statusWaiting, 2: statusNeedsYou, 4: statusBlocked, 6: statusBlocked} {
+		a := agents[i]
+		if lapsed := want != statusBlocked; a.Status != want || (a.BlockedOnSession == "") != lapsed {
+			t.Errorf("%s = %q on %q, want %q (lapsed %v)", a.SessionID, a.Status, a.BlockedOnSession, want, lapsed)
+		}
+	}
+}
+
+// Through the real build, a blocker whose cached CI says merged releases the
+// block: applyBlocks must run after enrichCI.
+func TestBuildDashboardDataBlockLapsesOnMergedBlocker(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+	ts := now.UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "blocked", Cwd: "/a", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "blocker", Cwd: "/b", EventType: "Stop", PayloadJSON: "{}"})
+	if err := addBlock(db, "blocked", "blocker", map[string]bool{"blocked": true, "blocker": true}, now); err != nil {
+		t.Fatal(err)
+	}
+	// Stamped an hour ahead so cwdTTL cannot lapse mid-test and gh is never run.
+	ci := newCICache()
+	ci.m["/a"] = cwdEntry[ciResult]{at: now.Add(time.Hour)}
+	ci.m["/b"] = cwdEntry[ciResult]{val: ciResult{Done: "merged"}, at: now.Add(time.Hour)}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	data, err := buildDashboardData(r, db, ci, &peekConfig{cache: newPaneCache()}, &actionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(data.Agents, func(a Agent) bool { return a.SessionID == "blocked" })
+	if i < 0 || data.Agents[i].Status != statusWaiting || data.Agents[i].BlockedOn != "" {
+		t.Errorf("roster %+v, want blocked row waiting with no chip", data.Agents)
+	}
+}
+
 // A block holds the blocker SESSION: once it ends, the block lapses, and a new
 // session on the same branch does not bring it back.
 func TestBlockLapsesWhenBlockerLeaves(t *testing.T) {

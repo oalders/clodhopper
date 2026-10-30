@@ -85,9 +85,9 @@ Subcommands, dispatched in `main.go`:
 - **`block` / `unblock`** (`block.go`) — record or drop "this session waits on
   that one" in the `blocks` table, or (`--on-pr N`) "waits on that open PR of its
   own GitHub repo" in `pr_blocks`; `unblock` clears both. `applyBlocks` (server layer, after
-  `dropDeadPanes`) relaxes a waiting/needs-you row to `statusBlocked` while its
-  blocker session is still on the roster; `applyPRBlocks` does the same for PR
-  blocks (see its doc comment for when one lapses).
+  `enrichCI`) relaxes a waiting/needs-you row to `statusBlocked` while its
+  blocker session is still on the roster and its PR is not merged or closed;
+  `applyPRBlocks` does the same for PR blocks (see its doc comment for when one lapses).
   `agentRoster` itself never sees blocks.
   They never touch `ingest` or the capture path.
 
