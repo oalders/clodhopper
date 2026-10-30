@@ -84,9 +84,10 @@ Subcommands, dispatched in `main.go`:
 - **`init`** (`init.go`) — wires the `clodhopper ingest` hooks into a project's `.claude/settings.json` (or `settings.local.json`), skipping ones already present.
 - **`block` / `unblock`** (`block.go`) — record or drop "this session waits on
   that one" in the `blocks` table, or (`--on-pr N`) "waits on that open PR of its
-  own GitHub repo" in `pr_blocks`; `unblock` clears both. `applyBlocks` (server layer, after
-  `enrichCI`) relaxes a waiting/needs-you row to `statusBlocked` while its
-  blocker session is still on the roster and its PR is not merged or closed;
+  own GitHub repo" in `pr_blocks`; `unblock` clears both. `applyBlocks` (server
+  layer, after `dropDeadPanes` and `enrichCI`) relaxes a waiting/needs-you row to
+  `statusBlocked` while its blocker session is still on the roster and the
+  blocker's own PR is not merged or closed;
   `applyPRBlocks` does the same for PR blocks (see its doc comment for when one lapses).
   `agentRoster` itself never sees blocks.
   They never touch `ingest` or the capture path.

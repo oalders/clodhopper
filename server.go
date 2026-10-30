@@ -1355,9 +1355,9 @@ func demotePendingCI(agents []Agent) {
 // (see `clodhopper block`). A block applies only while BOTH sessions are in
 // agents, so it lapses once the blocker ends, ages out or loses its pane, and a
 // later session on the blocker's branch has a new id and cannot revive it. It
-// also lapses once the blocker's PR is merged or closed (CIDone; a queued PR or
-// failed lookup keeps it), as resolved by gh pr view for the blocker's cwd, so a
-// reused branch with an older merged/closed PR and no open one lapses early. A
+// also lapses once the blocker's PR is merged or closed (CIDone); a queued PR or
+// failed lookup keeps it. CIDone comes from gh pr view in the blocker's cwd, so
+// a reused branch with an older merged/closed PR and no open one lapses early. A
 // "waiting for you"/"needs you" row is relaxed to statusBlocked at rankBackground:
 // nothing done in its pane helps until the blocker lands. A permission prompt or
 // question is left alone, as in demotePendingCI, since it blocks on the user

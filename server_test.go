@@ -4268,17 +4268,25 @@ func TestApplyBlocks(t *testing.T) {
 // A blocker whose PR merged or closed releases the block; a queued PR or an
 // empty (failed) lookup keeps it.
 func TestApplyBlocksLapsesOnFinalPR(t *testing.T) {
-	agents := []Agent{
-		{SessionID: "m", Status: statusWaiting}, {SessionID: "merged", CIDone: "merged"},
-		{SessionID: "c", Status: statusNeedsYou}, {SessionID: "closed", CIDone: "closed"},
-		{SessionID: "q", Status: statusWaiting}, {SessionID: "queued", CIQueue: "2"},
-		{SessionID: "e", Status: statusWaiting}, {SessionID: "empty"},
+	cases := []struct {
+		blocked, status string
+		blocker         Agent
+		lapses          bool
+	}{
+		{"m", statusWaiting, Agent{SessionID: "merged", CIDone: "merged"}, true},
+		{"c", statusNeedsYou, Agent{SessionID: "closed", CIDone: "closed"}, true},
+		{"q", statusWaiting, Agent{SessionID: "queued", CIQueue: "2"}, false},
+		{"e", statusWaiting, Agent{SessionID: "empty"}, false},
 	}
-	applyBlocks(agents, []Block{{"m", "merged"}, {"c", "closed"}, {"q", "queued"}, {"e", "empty"}})
-	for i, want := range map[int]string{0: statusWaiting, 2: statusNeedsYou, 4: statusBlocked, 6: statusBlocked} {
-		a := agents[i]
-		if lapsed := want != statusBlocked; a.Status != want || (a.BlockedOnSession == "") != lapsed {
-			t.Errorf("%s = %q on %q, want %q (lapsed %v)", a.SessionID, a.Status, a.BlockedOnSession, want, lapsed)
+	for _, c := range cases {
+		agents := []Agent{{SessionID: c.blocked, Status: c.status}, c.blocker}
+		applyBlocks(agents, []Block{{c.blocked, c.blocker.SessionID}})
+		a := agents[0]
+		if c.lapses && (a.Status != c.status || a.BlockedOn != "" || a.BlockedOnSession != "") {
+			t.Errorf("%s = %q on %q/%q, want %q with no block", a.SessionID, a.Status, a.BlockedOn, a.BlockedOnSession, c.status)
+		}
+		if !c.lapses && (a.Status != statusBlocked || a.StatusRank != rankBackground || a.BlockedOnSession != c.blocker.SessionID) {
+			t.Errorf("%s = %q rank %d on %q, want blocked/background on %q", a.SessionID, a.Status, a.StatusRank, a.BlockedOnSession, c.blocker.SessionID)
 		}
 	}
 }
