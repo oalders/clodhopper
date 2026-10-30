@@ -1016,7 +1016,6 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	setWorktrees(agents, peek.roots, now)
 	// Before enrichCI, so no CI is fetched for a row that will not render.
 	agents = dropDeadPanes(agents, peek.cache.panes(now))
-	// After dropDeadPanes, so a blocker whose pane died already counts as gone.
 	blocks, err := listBlocks(db)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("blocks: %w", err)
@@ -1037,8 +1036,9 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	}
 	enrichCI(agents, ci, now)
 	suppressWatchedCI(agents, now)
-	// After enrichCI, so a merged/closed blocker's CIDone is known; before the
-	// split, since setAndForget reads statusBlocked. PR blocks last: a session chip wins.
+	// After dropDeadPanes (a blocker whose pane died counts as gone) and enrichCI
+	// (a merged/closed blocker's CIDone is known); before the split, since
+	// setAndForget reads statusBlocked. PR blocks last: a session chip wins.
 	applyBlocks(agents, blocks)
 	applyPRBlocks(agents, prBlocks, finals, openPRs, now)
 	// Before the split, so queued, ledgered and roster rows all keep their peek.

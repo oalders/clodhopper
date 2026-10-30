@@ -83,14 +83,14 @@ Subcommands, dispatched in `main.go`:
 - **`end`** (`end.go`) — writes a synthetic `SessionEnd` for live sessions matching a branch, cwd or session-id prefix, so hard-killed agents leave the roster.
 - **`init`** (`init.go`) — wires the `clodhopper ingest` hooks into a project's `.claude/settings.json` (or `settings.local.json`), skipping ones already present.
 - **`block` / `unblock`** (`block.go`) — record or drop "this session waits on
-  that one" in the `blocks` table, or (`--on-pr N`) "waits on that open PR of its
-  own GitHub repo" in `pr_blocks`; `unblock` clears both. `applyBlocks` (server
-  layer, after `dropDeadPanes` and `enrichCI`) relaxes a waiting/needs-you row to
-  `statusBlocked` while its blocker session is still on the roster and the
-  blocker's own PR is not merged or closed;
-  `applyPRBlocks` does the same for PR blocks (see its doc comment for when one lapses).
-  `agentRoster` itself never sees blocks.
-  They never touch `ingest` or the capture path.
+  that one" in the `blocks` table, or (`--on-pr N`) "waits on that open PR of
+  its own GitHub repo" in `pr_blocks`; `unblock` clears both. `applyBlocks`
+  (server layer, after `dropDeadPanes` and `enrichCI`) relaxes a
+  waiting/needs-you row to `statusBlocked` while its blocker session is still on
+  the roster and the blocker's own PR is not merged or closed; `applyPRBlocks`
+  does the same for PR blocks (see its doc comment for when one lapses).
+  `agentRoster` itself never sees blocks. They never touch `ingest` or the
+  capture path.
 
 `store.go` owns the schema, the `Event`/`Agent`/`SourceCount` types, and all
 queries. The dashboard's two main views are both derived here: `agentRoster`

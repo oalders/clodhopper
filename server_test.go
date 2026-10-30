@@ -4292,28 +4292,38 @@ func TestApplyBlocksLapsesOnFinalPR(t *testing.T) {
 }
 
 // Through the real build, a blocker whose cached CI says merged releases the
-// block: applyBlocks must run after enrichCI.
+// block: applyBlocks must run after enrichCI. The open case proves the setup
+// does produce a block, so the merged case cannot pass vacuously.
 func TestBuildDashboardDataBlockLapsesOnMergedBlocker(t *testing.T) {
-	db := openTestDB(t)
-	now := time.Now()
-	ts := now.UTC().Format(time.RFC3339)
-	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "blocked", Cwd: "/a", EventType: "Stop", PayloadJSON: "{}"})
-	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "blocker", Cwd: "/b", EventType: "Stop", PayloadJSON: "{}"})
-	if err := addBlock(db, "blocked", "blocker", map[string]bool{"blocked": true, "blocker": true}, now); err != nil {
-		t.Fatal(err)
-	}
-	// Stamped an hour ahead so cwdTTL cannot lapse mid-test and gh is never run.
-	ci := newCICache()
-	ci.m["/a"] = cwdEntry[ciResult]{at: now.Add(time.Hour)}
-	ci.m["/b"] = cwdEntry[ciResult]{val: ciResult{Done: "merged"}, at: now.Add(time.Hour)}
-	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	data, err := buildDashboardData(r, db, ci, &peekConfig{cache: newPaneCache()}, &actionConfig{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	i := slices.IndexFunc(data.Agents, func(a Agent) bool { return a.SessionID == "blocked" })
-	if i < 0 || data.Agents[i].Status != statusWaiting || data.Agents[i].BlockedOn != "" {
-		t.Errorf("roster %+v, want blocked row waiting with no chip", data.Agents)
+	for _, done := range []string{"", "merged"} {
+		db := openTestDB(t)
+		now := time.Now()
+		ts := now.UTC().Format(time.RFC3339)
+		insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "blocked", Cwd: "/a", EventType: "Stop", PayloadJSON: "{}"})
+		insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "blocker", Cwd: "/b", EventType: "Stop", PayloadJSON: "{}"})
+		if err := addBlock(db, "blocked", "blocker", map[string]bool{"blocked": true, "blocker": true}, now); err != nil {
+			t.Fatal(err)
+		}
+		// Stamped an hour ahead so cwdTTL cannot lapse mid-test and gh is never run.
+		ci := newCICache()
+		ci.m["/a"] = cwdEntry[ciResult]{at: now.Add(time.Hour)}
+		ci.m["/b"] = cwdEntry[ciResult]{val: ciResult{Done: done}, at: now.Add(time.Hour)}
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		data, err := buildDashboardData(r, db, ci, &peekConfig{cache: newPaneCache()}, &actionConfig{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := slices.IndexFunc(data.Agents, func(a Agent) bool { return a.SessionID == "blocked" })
+		if i < 0 {
+			t.Fatalf("done=%q: blocked row missing from %+v", done, data.Agents)
+		}
+		a := data.Agents[i]
+		if done == "" && (a.Status != statusBlocked || a.BlockedOn == "") {
+			t.Errorf("done=%q: %q on %q, want blocked with a chip", done, a.Status, a.BlockedOn)
+		}
+		if done == "merged" && (a.Status != statusWaiting || a.BlockedOn != "") {
+			t.Errorf("done=%q: %q on %q, want waiting with no chip", done, a.Status, a.BlockedOn)
+		}
 	}
 }
 
