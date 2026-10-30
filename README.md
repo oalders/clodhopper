@@ -99,7 +99,7 @@ clodhopper ingest --source-app myapp       # reads one hook event as JSON on std
 clodhopper serve [--port 4555] [--host H | --tailscale] [--pane-peek [--pane-lines N]] [--enable-merge] # dashboard (read-only unless --enable-merge; default 127.0.0.1)
 clodhopper prune [--days 14]              # delete events older than N days
 clodhopper end --branch B                  # mark matching live sessions ended (teardown)
-clodhopper block --branch B --on-branch C  # relax B's row until C's session leaves the board or its PR merges/closes
+clodhopper block --branch B --on-branch C  # relax B's row until C's session leaves the board or C's PR merges/closes
 clodhopper block --branch B --on-pr 123    # relax B's row until PR #123 in its repo merges or closes
 clodhopper unblock --branch B              # drop B's blocks
 ```
