@@ -14,7 +14,8 @@ import (
 // merges or closes (--on-pr), so the dashboard relaxes the blocked row out of
 // the alert band (see applyBlocks, applyPRBlocks). Each side resolves to
 // exactly one live session id now, so a session block lapses when that blocker
-// session leaves the roster and a later session on its branch does not revive it.
+// session leaves the roster or its PR merges or closes, and a later session on
+// its branch does not revive it.
 func runBlock(args []string) int {
 	fs := flag.NewFlagSet("block", flag.ContinueOnError)
 	branch := fs.String("branch", "", "the blocked row: the live session on this git branch")

@@ -3134,7 +3134,7 @@
               <span class="acteyebrow">blocked on</span>
               <span class="actgroup blockform" data-session="{{ .SessionID }}">
                 <select class="blockpick" aria-label="this row is blocked on">{{ range blockGroups $.Agents $.QueuedAgents . }}<optgroup label="{{ if .App }}{{ .App }}{{ else }}no app{{ end }}">{{ range .Rows }}<option value="{{ .SessionID }}">{{ if .SourceApp }}{{ .SourceApp }} · {{ end }}{{ .BlockLabel }}</option>{{ end }}</optgroup>{{ end }}{{ if .BlockPRs }}<optgroup label="open PRs · {{ .BlockPRRepo }}">{{ range .BlockPRs }}<option value="pr:{{ .Number }}" title="{{ .Title }}{{ with .Author }} by {{ . }}{{ end }}">#{{ .Number }} {{ .Title }}</option>{{ end }}</optgroup>{{ end }}</select>
-                <button type="button" class="pract" data-action="block" data-noconfirm="true" aria-label="mark{{ if .Branch }} {{ .Branch }}{{ else }} this row{{ end }} as blocked on the selected row" title="this row waits on the chosen row or PR: it leaves the alert band until that row leaves the board or that PR merges/closes">mark blocked</button>
+                <button type="button" class="pract" data-action="block" data-noconfirm="true" aria-label="mark{{ if .Branch }} {{ .Branch }}{{ else }} this row{{ end }} as blocked on the selected row" title="this row waits on the chosen row or PR: it leaves the alert band until the chosen row leaves the board or its PR merges/closes, or until the chosen PR merges/closes">mark blocked</button>
                 <span class="actmsg"></span>
               </span>
             </div>{{ end }}

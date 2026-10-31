@@ -99,7 +99,7 @@ clodhopper ingest --source-app myapp       # reads one hook event as JSON on std
 clodhopper serve [--port 4555] [--host H | --tailscale] [--pane-peek [--pane-lines N]] [--enable-merge] # dashboard (read-only unless --enable-merge; default 127.0.0.1)
 clodhopper prune [--days 14]              # delete events older than N days
 clodhopper end --branch B                  # mark matching live sessions ended (teardown)
-clodhopper block --branch B --on-branch C  # relax B's row until C's session leaves the board
+clodhopper block --branch B --on-branch C  # relax B's row until C's session leaves the board or C's PR merges/closes
 clodhopper block --branch B --on-pr 123    # relax B's row until PR #123 in its repo merges or closes
 clodhopper unblock --branch B              # drop B's blocks
 ```
@@ -111,16 +111,16 @@ When one agent cannot move until another lands (say `fix-1234` waits for
 records that. Each side may be named with `--branch` / `--on-branch` or a
 session-id prefix (`--session` / `--on-session`) and must resolve to exactly
 one live session; an ambiguous match is refused with the candidates listed, as
-are a self-block and a cycle. While the blocker is on the board, a blocked row
-that is **waiting** or **needs you** drops to the background band as
-**blocked**; one that needs approval or input keeps its status, since those
-are still yours to answer. Either way the row shows a muted
-chip naming the blocker's branch (e.g. "fix-1235"); its label jumps to the
-blocker's row. The block
-names the blocker *session*, so it lapses on its own once that session leaves
-the roster (merged, ended, or its pane gone), and a later session on the same
-branch does not revive it. `clodhopper prune` sweeps blocks whose sessions have
-no events left.
+are a self-block and a cycle. While the blocker is on the board and its PR is
+not merged or closed, a blocked row that is **waiting** or **needs you** drops
+to the background band as **blocked**; one that needs approval or input keeps
+its status, since those are still yours to answer. Either way the row shows a
+muted chip naming the blocker's branch (e.g. "fix-1235"); its label jumps to
+the blocker's row. The block names the blocker *session*, so it lapses on its
+own once that session leaves the roster (ended, or its pane gone) or its PR
+merges or closes (a PR still in the merge queue keeps it), and a later session
+on the same branch does not revive it. `clodhopper prune` sweeps blocks whose
+sessions have no events left.
 
 A row can also wait on a pull request with no session on the board:
 `clodhopper block --branch fix-1234 --on-pr 123` blocks it on PR #123 of the

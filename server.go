@@ -1016,12 +1016,10 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	setWorktrees(agents, peek.roots, now)
 	// Before enrichCI, so no CI is fetched for a row that will not render.
 	agents = dropDeadPanes(agents, peek.cache.panes(now))
-	// After dropDeadPanes, so a blocker whose pane died already counts as gone.
 	blocks, err := listBlocks(db)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("blocks: %w", err)
 	}
-	applyBlocks(agents, blocks)
 	prBlocks, err := listPRBlocks(db)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("pr blocks: %w", err)
@@ -1036,10 +1034,13 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	if execOK {
 		openPRs = act.openPRs
 	}
-	// Before enrichCI and the split, like applyBlocks: setAndForget reads statusBlocked.
-	applyPRBlocks(agents, prBlocks, finals, openPRs, now)
 	enrichCI(agents, ci, now)
 	suppressWatchedCI(agents, now)
+	// After dropDeadPanes (a blocker whose pane died counts as gone) and enrichCI
+	// (a merged/closed blocker's CIDone is known); before the split, since
+	// setAndForget reads statusBlocked. PR blocks last: a session chip wins.
+	applyBlocks(agents, blocks)
+	applyPRBlocks(agents, prBlocks, finals, openPRs, now)
 	// Before the split, so queued, ledgered and roster rows all keep their peek.
 	if peek.enabled {
 		for i := range agents {
@@ -1353,7 +1354,10 @@ func demotePendingCI(agents []Agent) {
 // applyBlocks marks each row of agents that a stored block holds on another row
 // (see `clodhopper block`). A block applies only while BOTH sessions are in
 // agents, so it lapses once the blocker ends, ages out or loses its pane, and a
-// later session on the blocker's branch has a new id and cannot revive it. A
+// later session on the blocker's branch has a new id and cannot revive it. It
+// also lapses once the blocker's PR is merged or closed (CIDone); a queued PR or
+// failed lookup keeps it. CIDone comes from gh pr view in the blocker's cwd, so
+// a reused branch with an older merged/closed PR and no open one lapses early. A
 // "waiting for you"/"needs you" row is relaxed to statusBlocked at rankBackground:
 // nothing done in its pane helps until the blocker lands. A permission prompt or
 // question is left alone, as in demotePendingCI, since it blocks on the user
@@ -1366,7 +1370,7 @@ func applyBlocks(agents []Agent, blocks []Block) {
 	for _, b := range blocks {
 		i, ok := idx[b.Blocked]
 		j, ok2 := idx[b.Blocker]
-		if !ok || !ok2 {
+		if !ok || !ok2 || agents[j].CIDone != "" {
 			continue
 		}
 		agents[i].BlockedOn = agents[j].BlockLabel()
