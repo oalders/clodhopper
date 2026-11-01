@@ -1007,7 +1007,7 @@ func TestAgentRoster_SubagentShells(t *testing.T) {
 		sub(at(9*time.Minute-5*time.Second), sess, "SubagentStop")
 		stop(at(8*time.Minute), sess)
 	}
-	// Its later stop, 7 minutes after that launch and so far past the grace, drops the shell.
+	// Its later stop has no launch since the park to be near, so it drops the shell.
 	sub(at(3*time.Minute), "s-woken", "SubagentStart")
 	sub(at(3*time.Minute-10*time.Second), "s-woken", "PreToolUse")
 	sub(at(2*time.Minute), "s-woken", "SubagentStop")
