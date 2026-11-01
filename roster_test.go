@@ -919,6 +919,12 @@ func TestAgentRoster_StuckShell(t *testing.T) {
 			sub(at(c.last), c.sess, "PreToolUse")
 		}
 	}
+	// An old main-agent shell is stuck even beside a live subagent's shell.
+	startedCmd(at(5*60), "s-main-beside-sub", "b2", "Bash: main watch")
+	stop(at(4*60), "s-main-beside-sub")
+	sub(at(3*60+1), "s-main-beside-sub", "SubagentStart")
+	subShell(at(3*60), "s-main-beside-sub")
+	sub(at(1), "s-main-beside-sub", "PreToolUse")
 
 	for _, c := range []struct {
 		name       string
@@ -945,6 +951,7 @@ func TestAgentRoster_StuckShell(t *testing.T) {
 		{"young subagent shell", 2 * time.Hour, "s-sub-young", statusSubagents, "1 shell", ""},
 		{"live subagent's shell", 2 * time.Hour, "s-sub-live", statusSubagents, "2 tasks", ""},
 		{"silent subagent's shell", 2 * time.Hour, "s-sub-silent", statusShellStuck, "1 shell", "Bash: sub watch"},
+		{"main shell beside live subagent's", 2 * time.Hour, "s-main-beside-sub", statusShellStuck, "3 tasks", "Bash: main watch"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			// Map iteration order is randomised; re-fold so a lucky order cannot mask an unstable oldest-shell pick.
@@ -998,7 +1005,7 @@ func TestAgentRoster_SubagentShells(t *testing.T) {
 		sub(at(9*time.Minute-5*time.Second), sess, "SubagentStop")
 		stop(at(8*time.Minute), sess)
 	}
-	// Woken by the shell's (id-less) finish, it stops long after that launch.
+	// Its later stop, long after that launch, drops the shell.
 	sub(at(3*time.Minute), "s-woken", "SubagentStart")
 	sub(at(3*time.Minute-10*time.Second), "s-woken", "PreToolUse")
 	sub(at(2*time.Minute), "s-woken", "SubagentStop")
@@ -1027,6 +1034,12 @@ func TestAgentRoster_SubagentShells(t *testing.T) {
 	ins(at(9*time.Minute), "s-idless", "PostToolUse", "Bash", `{"background_task_id":"b1"}`)
 	ins(at(8*time.Minute), "s-idless", "SubagentStop", "", "{}")
 	stop(at(7*time.Minute), "s-idless")
+	// A subagent's stop past the grace drops only its own shell, not the main agent's.
+	ins(at(10*time.Minute), "s-owner", "PostToolUse", "Bash", `{"background_task_id":"b2"}`)
+	sub(at(10*time.Minute), "s-owner", "SubagentStart")
+	launch(at(9*time.Minute), "s-owner", "Bash", "b1")
+	sub(at(8*time.Minute), "s-owner", "SubagentStop")
+	stop(at(7*time.Minute), "s-owner")
 	// TaskStop ends a subagent's shell like any other.
 	sub(at(10*time.Minute), "s-taskstop", "SubagentStart")
 	launch(at(9*time.Minute), "s-taskstop", "Bash", "b1")
@@ -1052,6 +1065,7 @@ func TestAgentRoster_SubagentShells(t *testing.T) {
 		"s-monitor":    {statusSubagents, 1},
 		"s-idless":     {statusSubagents, 1},
 		"s-taskstop":   {statusWaiting, 0},
+		"s-owner":      {statusSubagents, 1},
 		"s-at-grace":   {statusSubagents, 1},
 		"s-past-grace": {statusWaiting, 0},
 		"s-bad-ts":     {statusWaiting, 0},

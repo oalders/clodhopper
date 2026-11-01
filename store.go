@@ -645,7 +645,7 @@ const (
 	statusInput      = "needs input"       // AskUserQuestion: a question to answer, not an action to approve
 	statusBackground = "waiting"           // parked on background work, not blocked on the user
 	statusSubagents  = "waiting on agents" // turn ended but background subagents or shells are still running
-	statusShellStuck = "shell stuck?"      // statusSubagents whose oldest shell and the main agent's silence both outran staleShell
+	statusShellStuck = "shell stuck?"      // statusSubagents whose oldest unattended shell and the main agent's silence both outran staleShell
 	statusWorking    = "working"
 	statusIdle       = "idle"
 	statusEnded      = "ended"
