@@ -907,15 +907,16 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 		// run_in_background, or a call that timed out into the background), or a
 		// Monitor's taskId, starts one, whether the main agent or a subagent ran
 		// it; the task-notification prompt it sends on finishing, or a TaskStop
-		// naming it, ends it (a subagent's own also ends at its SubagentStop,
-		// above). A Monitor notifies on every event, so its first one ends it: an
-		// under-count, never a false alert. A restart kills them all, so a
-		// SessionStart other than a compaction (nn --resume keeps the session id)
-		// clears the set. Ending only on those signals, with no staleness cutoff,
-		// means a lost notification holds the row until waitingCap; a shell emits
-		// no events while it runs, so aging it out would drop every long CI watch
-		// instead. A hung one is escalated to statusShellStuck below rather than
-		// forgotten.
+		// naming it, ends it (a subagent's own also ends at that subagent's
+		// SubagentStop, above, unless it parked: stopped within
+		// subagentLaunchGrace of a launch). A Monitor notifies on every event,
+		// so its first one ends it: an under-count, never a false alert. A
+		// restart kills them all, so a SessionStart other than a compaction (nn
+		// --resume keeps the session id) clears the set. Ending only on those
+		// signals, with no staleness cutoff, means a lost notification holds the
+		// row until waitingCap; a shell emits no events while it runs, so aging
+		// it out would drop every long CI watch instead. A hung one is escalated
+		// to statusShellStuck below rather than forgotten.
 		if shellStart != "" {
 			if t, err := time.Parse(time.RFC3339, ts); err == nil {
 				s.shells[shellStart] = shell{start: t, cmd: summary, owner: agentID}

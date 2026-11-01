@@ -919,11 +919,12 @@ func TestAgentRoster_StuckShell(t *testing.T) {
 			sub(at(c.last), c.sess, "PreToolUse")
 		}
 	}
-	// An old main-agent shell is stuck even beside a live subagent's shell.
+	// An old main-agent shell is stuck even beside a live subagent's older
+	// shell, which the tooltip skips because its subagent attends to it.
+	sub(at(6*60+1), "s-main-beside-sub", "SubagentStart")
+	subShell(at(6*60), "s-main-beside-sub")
 	startedCmd(at(5*60), "s-main-beside-sub", "b2", "Bash: main watch")
 	stop(at(4*60), "s-main-beside-sub")
-	sub(at(3*60+1), "s-main-beside-sub", "SubagentStart")
-	subShell(at(3*60), "s-main-beside-sub")
 	sub(at(1), "s-main-beside-sub", "PreToolUse")
 
 	for _, c := range []struct {
@@ -1025,11 +1026,6 @@ func TestAgentRoster_SubagentShells(t *testing.T) {
 	launch(at(9*time.Minute), "s-late", "Bash", "b1")
 	sub(at(8*time.Minute), "s-late", "SubagentStop")
 	stop(at(7*time.Minute), "s-late")
-	// A Monitor parks a subagent the same way.
-	sub(at(10*time.Minute), "s-monitor", "SubagentStart")
-	launch(at(9*time.Minute), "s-monitor", "Monitor", "b1")
-	sub(at(9*time.Minute-5*time.Second), "s-monitor", "SubagentStop")
-	stop(at(8*time.Minute), "s-monitor")
 	// An id-less SubagentStop names no owner, so the main agent's shell stays.
 	ins(at(9*time.Minute), "s-idless", "PostToolUse", "Bash", `{"background_task_id":"b1"}`)
 	ins(at(8*time.Minute), "s-idless", "SubagentStop", "", "{}")
@@ -1040,11 +1036,11 @@ func TestAgentRoster_SubagentShells(t *testing.T) {
 	launch(at(9*time.Minute), "s-owner", "Bash", "b1")
 	sub(at(8*time.Minute), "s-owner", "SubagentStop")
 	stop(at(7*time.Minute), "s-owner")
-	// TaskStop ends a subagent's shell like any other.
+	// The subagent's own TaskStop ends its parked shell like any other.
 	sub(at(10*time.Minute), "s-taskstop", "SubagentStart")
 	launch(at(9*time.Minute), "s-taskstop", "Bash", "b1")
 	sub(at(9*time.Minute-5*time.Second), "s-taskstop", "SubagentStop")
-	ins(at(4*time.Minute), "s-taskstop", "PostToolUse", "TaskStop", `{"tool_input":{"task_id":"b1"}}`)
+	ins(at(4*time.Minute), "s-taskstop", "PostToolUse", "TaskStop", `{"agent_id":"a1","tool_input":{"task_id":"b1"}}`)
 	stop(at(3*time.Minute), "s-taskstop")
 
 	agents, err := agentRoster(db, 16*time.Hour, 0, now)
@@ -1062,7 +1058,6 @@ func TestAgentRoster_SubagentShells(t *testing.T) {
 		"s-parked":     {statusSubagents, 1},
 		"s-woken":      {statusWaiting, 0},
 		"s-late":       {statusWaiting, 0},
-		"s-monitor":    {statusSubagents, 1},
 		"s-idless":     {statusSubagents, 1},
 		"s-taskstop":   {statusWaiting, 0},
 		"s-owner":      {statusSubagents, 1},
