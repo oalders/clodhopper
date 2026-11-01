@@ -181,9 +181,9 @@ func buildEvent(raw []byte, sourceApp string) Event {
 func buildSummary(eventType, tool string, p map[string]any) string {
 	input, _ := p["tool_input"].(map[string]any)
 	switch tool {
-	case "Bash":
+	case "Bash", "Monitor":
 		if cmd := str(input, "command"); cmd != "" {
-			return truncate(scrubString("Bash: "+cmd), 160)
+			return truncate(scrubString(tool+": "+cmd), 160)
 		}
 	case "Read", "Edit", "Write", "NotebookEdit":
 		if fp := str(input, "file_path"); fp != "" {

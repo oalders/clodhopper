@@ -149,6 +149,14 @@ func TestBuildSummary_UserPromptPreviewScrubbedAndBounded(t *testing.T) {
 	}
 }
 
+// A Monitor names its command like Bash, so the stuck tooltip can too.
+func TestBuildSummary_Monitor(t *testing.T) {
+	p := map[string]any{"tool_input": map[string]any{"command": "tail -f build.log"}}
+	if s := buildSummary("PostToolUse", "Monitor", p); s != "Monitor: tail -f build.log" {
+		t.Errorf("summary: %q", s)
+	}
+}
+
 func TestSlashCommand(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -174,11 +174,16 @@ func scrubPayload(raw []byte) string {
 			out[k] = sv
 		}
 	}
-	// Two opaque ids pair a background shell's start with its end for the
-	// roster. Each lives inside a field that is otherwise dropped whole (the
-	// tool's output; the prompt), so it alone is hoisted to its own key.
+	// Two opaque ids pair a background shell's (or Monitor's) start with its end
+	// for the roster. Each lives inside a field that is otherwise dropped whole
+	// (the tool's output; the prompt), so it alone is hoisted to its own key.
+	// Monitor names its id taskId; only Monitor's is taken, so no other tool's
+	// taskId field is mistaken for a background start.
 	if tr, ok := p["tool_response"].(map[string]any); ok {
 		if id, ok := tr["backgroundTaskId"].(string); ok && taskIDRe.MatchString(id) {
+			out["background_task_id"] = id
+		}
+		if id, ok := tr["taskId"].(string); ok && p["tool_name"] == "Monitor" && taskIDRe.MatchString(id) {
 			out["background_task_id"] = id
 		}
 	}

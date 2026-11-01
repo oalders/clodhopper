@@ -681,6 +681,11 @@ const staleWorkingSecs = 5 * 60
 // hits the cap if the subagent itself goes silent that long.
 const staleInFlightSecs = 11 * 60
 
+// subagentLaunchGrace is how soon after its latest background launch a
+// subagent's SubagentStop still counts as parking on that task (observed
+// ≤12s), so its shells are kept rather than dropped.
+const subagentLaunchGrace = 15 * time.Second
+
 // deriveStatus maps a session's most recent event_type (and how long it has been
 // silent) to a status label, a sort rank (lower = more urgent), and whether the
 // agent is still active (an ended session drops off the board). idleSecs only
@@ -780,6 +785,7 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 	type shell struct {
 		start time.Time
 		cmd   string
+		owner string // agent_id of the subagent that launched it; "" = the main agent
 	}
 	type state struct {
 		a         Agent
@@ -790,7 +796,9 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 		lastNotif string
 		subs      map[string]*subagent // running subagents by agent_id
 		subPerms  map[string]string    // subagents blocked on a permission request: agent_id -> tool
-		shells    map[string]shell     // the main agent's running background shells by task id
+		shells    map[string]shell     // running background shells (main agent's and subagents') by task id
+		// lastLaunch: agent_id -> ts of that subagent's latest background start
+		lastLaunch map[string]time.Time
 	}
 	byID := map[string]*state{}
 	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
@@ -802,7 +810,7 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 		}
 		s := byID[sess]
 		if s == nil {
-			s = &state{a: Agent{SessionID: sess, firstSeq: nextSeq}, subs: map[string]*subagent{}, subPerms: map[string]string{}, shells: map[string]shell{}}
+			s = &state{a: Agent{SessionID: sess, firstSeq: nextSeq}, subs: map[string]*subagent{}, subPerms: map[string]string{}, shells: map[string]shell{}, lastLaunch: map[string]time.Time{}}
 			byID[sess] = s
 			nextSeq++
 		}
@@ -862,6 +870,21 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 			}
 			continue
 		case "SubagentStop":
+			// No hook carries the id of a subagent-owned task when it ends, so its
+			// shells go with it, unless it stopped right after a launch: a
+			// subagent parked on its task stops at once. An id-less stop names no
+			// owner; an unparseable ts drops them (fail toward "waiting for you").
+			if agentID != "" {
+				t, err := time.Parse(time.RFC3339, ts)
+				if launch, ok := s.lastLaunch[agentID]; !ok || err != nil || t.Sub(launch) > subagentLaunchGrace {
+					for id, sh := range s.shells {
+						if sh.owner == agentID {
+							delete(s.shells, id)
+						}
+					}
+				}
+				delete(s.lastLaunch, agentID)
+			}
 			delete(s.subs, agentID)
 			delete(s.subPerms, agentID)
 			continue
@@ -870,6 +893,33 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 			if t, err := time.Parse(time.RFC3339, ts); err == nil {
 				sub.lastSeen, sub.lastEvent = t, etype
 			}
+		}
+		// Background shells: a Bash result naming a backgroundTaskId (explicit
+		// run_in_background, or a call that timed out into the background), or a
+		// Monitor's taskId, starts one, whether the main agent or a subagent ran
+		// it; the task-notification prompt it sends on finishing, or a TaskStop
+		// naming it, ends it (a subagent's own also ends at its SubagentStop,
+		// above). A Monitor notifies on every event, so its first one ends it: an
+		// under-count, never a false alert. A restart kills them all, so a
+		// SessionStart other than a compaction (nn --resume keeps the session id)
+		// clears the set. Ending only on those signals, with no staleness cutoff,
+		// means a lost notification holds the row until waitingCap; a shell emits
+		// no events while it runs, so aging it out would drop every long CI watch
+		// instead. A hung one is escalated to statusShellStuck below rather than
+		// forgotten.
+		if shellStart != "" {
+			if t, err := time.Parse(time.RFC3339, ts); err == nil {
+				s.shells[shellStart] = shell{start: t, cmd: summary, owner: agentID}
+				if agentID != "" {
+					s.lastLaunch[agentID] = t
+				}
+			}
+		}
+		if shellEnd != "" && (etype == "UserPromptSubmit" || tool == "TaskStop" || tool == "KillShell") {
+			delete(s.shells, shellEnd)
+		}
+		if etype == "SessionStart" && source != "compact" {
+			clear(s.shells)
 		}
 		// A subagent's own events are activity, not the main agent's state:
 		// letting them set LastEvent flips a parked session between "working" and
@@ -897,26 +947,6 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 				delete(s.subPerms, agentID)
 			}
 			continue
-		}
-		// Background shells: a Bash result naming a backgroundTaskId (explicit
-		// run_in_background, or a call that timed out into the background) starts
-		// one; the task-notification prompt it sends on finishing, or a TaskStop
-		// naming it, ends it. A restart kills them all, so a SessionStart other
-		// than a compaction (nn --resume keeps the session id) clears the set.
-		// Ending only on those signals, with no staleness cutoff, means a lost
-		// notification holds the row until waitingCap; a shell emits no events
-		// while it runs, so aging it out would drop every long CI watch instead.
-		// A hung one is escalated to statusShellStuck below rather than forgotten.
-		if shellStart != "" {
-			if t, err := time.Parse(time.RFC3339, ts); err == nil {
-				s.shells[shellStart] = shell{start: t, cmd: summary}
-			}
-		}
-		if shellEnd != "" && (etype == "UserPromptSubmit" || tool == "TaskStop" || tool == "KillShell") {
-			delete(s.shells, shellEnd)
-		}
-		if etype == "SessionStart" && source != "compact" {
-			clear(s.shells)
 		}
 		s.a.LastEvent = etype
 		s.lastTS, s.mainTS = ts, ts
@@ -982,11 +1012,15 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 				if earliest.IsZero() || sh.start.Before(earliest) {
 					earliest = sh.start
 				}
+				a.Shells++
+				// A live subagent attends to its own shell, so only the rest can be stuck.
+				if _, live := s.subs[sh.owner]; sh.owner != "" && live {
+					continue
+				}
 				// Ties break on task id so the tooltip does not follow map order.
 				if oldestID == "" || sh.start.Before(oldest.start) || sh.start.Equal(oldest.start) && id < oldestID {
 					oldest, oldestID = sh, id
 				}
-				a.Shells++
 			}
 			if a.Subagents+a.Shells > 0 {
 				a.Status, a.StatusRank = statusSubagents, rankBackground
@@ -998,8 +1032,8 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 				a.SubagentAge = humanizeSeconds(int(max(0, now.Unix()-a.SubagentSince)))
 				// Only shells decide: a hung shell holds the row forever, while a
 				// subagent that goes silent already stops counting above.
-				// A shell's start is a main-agent event, so main-quiet alone implies the shell's age.
-				if staleShell > 0 && a.Shells > 0 && time.Duration(idleSeconds(s.mainTS, now))*time.Second >= staleShell {
+				// A subagent's shell can start after the main agent went quiet, so its age is checked too.
+				if staleShell > 0 && oldestID != "" && time.Duration(idleSeconds(s.mainTS, now))*time.Second >= staleShell && now.Sub(oldest.start) >= staleShell {
 					a.Status, a.StatusRank = statusShellStuck, 1
 					a.ShellCmd = oldest.cmd
 				}

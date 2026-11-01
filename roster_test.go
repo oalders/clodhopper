@@ -786,9 +786,6 @@ func TestAgentRoster_WaitingOnShells(t *testing.T) {
 	insertEvent(db, Event{TS: at(5), SourceApp: "myapp", SessionID: "s-both", EventType: "SubagentStart", PayloadJSON: `{"agent_id":"a1"}`})
 	insertEvent(db, Event{TS: at(1), SourceApp: "myapp", SessionID: "s-both", EventType: "PreToolUse", PayloadJSON: `{"agent_id":"a1"}`})
 	ins(at(2), "s-both", "Stop", "", "{}")
-	// A subagent's own background shell is the subagent's to wait on.
-	ins(at(9), "s-sub-shell", "PostToolUse", "Bash", `{"agent_id":"a1","background_task_id":"b1"}`)
-	ins(at(2), "s-sub-shell", "Stop", "", "{}")
 	// A working agent stays working: the shell only matters once the turn ends.
 	started(at(2), "s-working", "b1")
 	ins(at(1), "s-working", "PreToolUse", "Bash", "{}")
@@ -816,7 +813,6 @@ func TestAgentRoster_WaitingOnShells(t *testing.T) {
 		{"s-resumed", statusWaiting, 0, 0, 0, ""},
 		{"s-compact", statusSubagents, 1, 0, 9, "1 shell"},
 		{"s-both", statusSubagents, 1, 1, 6, "2 tasks"},
-		{"s-sub-shell", statusWaiting, 0, 0, 0, ""},
 		{"s-working", statusWorking, 0, 0, 0, ""},
 	} {
 		a := got[c.sess]
@@ -904,6 +900,22 @@ func TestAgentRoster_StuckShell(t *testing.T) {
 	stop(at(0), "s-now")
 	started(at(5*60), "s-1s", "b1")
 	stop(now.Add(-time.Second).Format(time.RFC3339), "s-1s")
+	// A subagent's kept shell: stuck once it and the main agent's silence are old.
+	subShell := func(ts, sess string) {
+		ins(ts, sess, "PostToolUse", "Bash", "Bash: sub watch", `{"agent_id":"a1","background_task_id":"b1"}`)
+	}
+	for _, c := range []struct {
+		sess        string
+		launch      int
+		stopsParked bool
+	}{{"s-sub-kept", 3 * 60, true}, {"s-sub-young", 30, true}, {"s-sub-live", 3 * 60, false}} {
+		stop(at(4*60), c.sess)
+		sub(at(c.launch+1), c.sess, "SubagentStart")
+		subShell(at(c.launch), c.sess)
+		if c.stopsParked {
+			sub(at(c.launch), c.sess, "SubagentStop")
+		}
+	}
 
 	for _, c := range []struct {
 		name       string
@@ -926,6 +938,9 @@ func TestAgentRoster_StuckShell(t *testing.T) {
 		{"under threshold", 2 * time.Hour, "s-under-threshold", statusSubagents, "1 shell", ""},
 		{"sub-second, main just spoke", 500 * time.Millisecond, "s-now", statusSubagents, "1 shell", ""},
 		{"sub-second, main quiet 1s", 500 * time.Millisecond, "s-1s", statusShellStuck, "1 shell", "Bash: gh pr checks 1 --watch"},
+		{"kept subagent shell", 2 * time.Hour, "s-sub-kept", statusShellStuck, "1 shell", "Bash: sub watch"},
+		{"young subagent shell", 2 * time.Hour, "s-sub-young", statusSubagents, "1 shell", ""},
+		{"live subagent's shell", 2 * time.Hour, "s-sub-live", statusSubagents, "1 shell", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			// Map iteration order is randomised; re-fold so a lucky order cannot mask an unstable oldest-shell pick.
@@ -948,6 +963,84 @@ func TestAgentRoster_StuckShell(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// No hook carries a subagent-owned task's id when it ends, so its shells live
+// only as long as the subagent, unless it stopped right after launching one
+// (parked on it, to be woken by its notification).
+func TestAgentRoster_SubagentShells(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339) }
+	ins := func(ts, sess, etype, tool, payload string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-238", SessionID: sess, EventType: etype, ToolName: tool, PayloadJSON: payload})
+	}
+	sub := func(ts, sess, etype string) { ins(ts, sess, etype, "", `{"agent_id":"a1"}`) }
+	launch := func(ts, sess, tool, id string) {
+		ins(ts, sess, "PostToolUse", tool, `{"agent_id":"a1","background_task_id":"`+id+`"}`)
+	}
+	stop := func(ts, sess string) { ins(ts, sess, "Stop", "", "{}") }
+
+	// Stopped 5s after launching: parked on the shell, which still counts.
+	for _, sess := range []string{"s-parked", "s-woken"} {
+		sub(at(10*time.Minute), sess, "SubagentStart")
+		launch(at(9*time.Minute), sess, "Bash", "b1")
+		sub(at(9*time.Minute-5*time.Second), sess, "SubagentStop")
+		stop(at(8*time.Minute), sess)
+	}
+	// Woken by the shell's (id-less) finish, it stops long after that launch.
+	sub(at(3*time.Minute), "s-woken", "SubagentStart")
+	sub(at(3*time.Minute-10*time.Second), "s-woken", "PreToolUse")
+	sub(at(2*time.Minute), "s-woken", "SubagentStop")
+	// Stopped a minute after launching: the shell was already done.
+	sub(at(10*time.Minute), "s-late", "SubagentStart")
+	launch(at(9*time.Minute), "s-late", "Bash", "b1")
+	sub(at(8*time.Minute), "s-late", "SubagentStop")
+	stop(at(7*time.Minute), "s-late")
+	// A Monitor parks a subagent the same way.
+	sub(at(10*time.Minute), "s-monitor", "SubagentStart")
+	launch(at(9*time.Minute), "s-monitor", "Monitor", "b1")
+	sub(at(9*time.Minute-5*time.Second), "s-monitor", "SubagentStop")
+	stop(at(8*time.Minute), "s-monitor")
+	// An id-less SubagentStop names no owner, so the main agent's shell stays.
+	ins(at(9*time.Minute), "s-idless", "PostToolUse", "Bash", `{"background_task_id":"b1"}`)
+	ins(at(8*time.Minute), "s-idless", "SubagentStop", "", "{}")
+	stop(at(7*time.Minute), "s-idless")
+	// TaskStop ends a subagent's shell like any other.
+	sub(at(10*time.Minute), "s-taskstop", "SubagentStart")
+	launch(at(9*time.Minute), "s-taskstop", "Bash", "b1")
+	sub(at(9*time.Minute-5*time.Second), "s-taskstop", "SubagentStop")
+	ins(at(4*time.Minute), "s-taskstop", "PostToolUse", "TaskStop", `{"tool_input":{"task_id":"b1"}}`)
+	stop(at(3*time.Minute), "s-taskstop")
+
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Agent{}
+	for _, a := range agents {
+		got[a.SessionID] = a
+	}
+	for sess, want := range map[string]struct {
+		status string
+		shells int
+	}{
+		"s-parked":   {statusSubagents, 1},
+		"s-woken":    {statusWaiting, 0},
+		"s-late":     {statusWaiting, 0},
+		"s-monitor":  {statusSubagents, 1},
+		"s-idless":   {statusSubagents, 1},
+		"s-taskstop": {statusWaiting, 0},
+	} {
+		if a := got[sess]; a.Status != want.status || a.Shells != want.shells {
+			t.Errorf("%s: want %q with %d shells, got %q with %d", sess, want.status, want.shells, a.Status, a.Shells)
+		}
 	}
 }
 
