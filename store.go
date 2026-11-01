@@ -608,7 +608,7 @@ type Agent struct {
 	WaitingOnDetail  string   // when WaitingOn says "tasks", their breakdown ("1 agent, 2 shells") for the badge's title and screen readers
 	SubagentSince    int64    // unix seconds of the earliest start among those subagents and shells (statusSubagents/statusShellStuck), so the client can tick their running time in place
 	SubagentAge      string   // humanised time since SubagentSince, the initial value the client then ticks
-	ShellCmd         string   // the oldest shell's summary ("Bash: <cmd>", scrubbed at ingest) for the stuck badge's title; set only when the row was statusShellStuck
+	ShellCmd         string   // the oldest shell's summary ("Bash: <cmd>" or "Monitor: <cmd>", scrubbed at ingest) for the stuck badge's title; set only when the row was statusShellStuck
 	CI               string   // merge-readiness ("", "pending", "green", "failing", "soft-failing", "ejected"); filled by the server layer via gh
 	CIFails          int      // failed checks on the PR, shown inside the red/orange badge
 	CIPasses         int      // passed checks on the PR, shown inside the green badge
@@ -781,6 +781,14 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 		start, lastSeen time.Time
 		lastEvent       string
 	}
+	// live: heard from within staleWorkingSecs (staleInFlightSecs mid tool call), as for the main agent.
+	live := func(sub *subagent) bool {
+		stale := staleWorkingSecs
+		if sub.lastEvent == "PreToolUse" {
+			stale = staleInFlightSecs
+		}
+		return now.Sub(sub.lastSeen) < time.Duration(stale)*time.Second
+	}
 	// shell is one running background shell: its start and the starting event's summary.
 	type shell struct {
 		start time.Time
@@ -876,6 +884,7 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 			// owner; an unparseable ts drops them (fail toward "waiting for you").
 			if agentID != "" {
 				t, err := time.Parse(time.RFC3339, ts)
+				// A parked stop keeps all its shells, not just the latest launch's; TaskStop, restart or staleShell bound them.
 				if launch, ok := s.lastLaunch[agentID]; !ok || err != nil || t.Sub(launch) > subagentLaunchGrace {
 					for id, sh := range s.shells {
 						if sh.owner == agentID {
@@ -994,11 +1003,7 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 		if label == statusWaiting {
 			var earliest time.Time
 			for _, sub := range s.subs {
-				stale := staleWorkingSecs
-				if sub.lastEvent == "PreToolUse" {
-					stale = staleInFlightSecs
-				}
-				if now.Sub(sub.lastSeen) >= time.Duration(stale)*time.Second {
+				if !live(sub) {
 					continue
 				}
 				if earliest.IsZero() || sub.start.Before(earliest) {
@@ -1014,7 +1019,7 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 				}
 				a.Shells++
 				// A live subagent attends to its own shell, so only the rest can be stuck.
-				if _, live := s.subs[sh.owner]; sh.owner != "" && live {
+				if sub := s.subs[sh.owner]; sub != nil && live(sub) {
 					continue
 				}
 				// Ties break on task id so the tooltip does not follow map order.
