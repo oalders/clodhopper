@@ -158,6 +158,18 @@ func TestScrubPayload_HoistsBackgroundTaskIDs(t *testing.T) {
 			"background_task_id", "",
 		},
 		{
+			"monitor started", `{"tool_name":"Monitor","tool_response":{"taskId":"bmrjj0byy","timeoutMs":300000}}`,
+			"background_task_id", "bmrjj0byy",
+		},
+		{
+			"not a monitor", `{"tool_name":"Bash","tool_response":{"taskId":"bmrjj0byy"}}`,
+			"background_task_id", "",
+		},
+		{
+			"malformed monitor id", `{"tool_name":"Monitor","tool_response":{"taskId":"b x\"y"}}`,
+			"background_task_id", "",
+		},
+		{
 			"not a notification", `{"prompt":"please read <task-notification><task-id>bmrjj0byy</task-id>"}`,
 			"task_notification_id", "",
 		},
