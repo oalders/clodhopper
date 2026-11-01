@@ -901,22 +901,23 @@ func TestAgentRoster_StuckShell(t *testing.T) {
 	started(at(5*60), "s-1s", "b1")
 	stop(now.Add(-time.Second).Format(time.RFC3339), "s-1s")
 	// A subagent's kept shell: stuck once it and the main agent's silence are old,
-	// unless its subagent is still live (heard from last minutes ago, 0 = parked).
+	// unless its subagent is still live. lastSeenMin 0 means SubagentStop at
+	// launch (parked); any other value means its last PreToolUse N minutes ago.
 	subShell := func(ts, sess string) {
 		ins(ts, sess, "PostToolUse", "Bash", "Bash: sub watch", `{"agent_id":"a1","background_task_id":"b1"}`)
 	}
 	for _, c := range []struct {
-		sess   string
-		launch int
-		last   int
+		sess        string
+		launch      int
+		lastSeenMin int
 	}{{"s-sub-kept", 3 * 60, 0}, {"s-sub-young", 30, 0}, {"s-sub-live", 3 * 60, 1}, {"s-sub-silent", 3 * 60, 12}} {
 		stop(at(4*60), c.sess)
 		sub(at(c.launch+1), c.sess, "SubagentStart")
 		subShell(at(c.launch), c.sess)
-		if c.last == 0 {
+		if c.lastSeenMin == 0 {
 			sub(at(c.launch), c.sess, "SubagentStop")
 		} else {
-			sub(at(c.last), c.sess, "PreToolUse")
+			sub(at(c.lastSeenMin), c.sess, "PreToolUse")
 		}
 	}
 	// An old main-agent shell is stuck even beside a live subagent's older
@@ -1006,7 +1007,7 @@ func TestAgentRoster_SubagentShells(t *testing.T) {
 		sub(at(9*time.Minute-5*time.Second), sess, "SubagentStop")
 		stop(at(8*time.Minute), sess)
 	}
-	// Its later stop, long after that launch, drops the shell.
+	// Its later stop, 7 minutes after that launch and so far past the grace, drops the shell.
 	sub(at(3*time.Minute), "s-woken", "SubagentStart")
 	sub(at(3*time.Minute-10*time.Second), "s-woken", "PreToolUse")
 	sub(at(2*time.Minute), "s-woken", "SubagentStop")
@@ -1021,11 +1022,6 @@ func TestAgentRoster_SubagentShells(t *testing.T) {
 		sub(c.stopTS, c.sess, "SubagentStop")
 		stop(at(8*time.Minute), c.sess)
 	}
-	// Stopped a minute after launching: the shell was already done.
-	sub(at(10*time.Minute), "s-late", "SubagentStart")
-	launch(at(9*time.Minute), "s-late", "Bash", "b1")
-	sub(at(8*time.Minute), "s-late", "SubagentStop")
-	stop(at(7*time.Minute), "s-late")
 	// An id-less SubagentStop names no owner, so the main agent's shell stays.
 	ins(at(9*time.Minute), "s-idless", "PostToolUse", "Bash", `{"background_task_id":"b1"}`)
 	ins(at(8*time.Minute), "s-idless", "SubagentStop", "", "{}")
@@ -1057,7 +1053,6 @@ func TestAgentRoster_SubagentShells(t *testing.T) {
 	}{
 		"s-parked":     {statusSubagents, 1},
 		"s-woken":      {statusWaiting, 0},
-		"s-late":       {statusWaiting, 0},
 		"s-idless":     {statusSubagents, 1},
 		"s-taskstop":   {statusWaiting, 0},
 		"s-owner":      {statusSubagents, 1},

@@ -682,8 +682,8 @@ const staleWorkingSecs = 5 * 60
 const staleInFlightSecs = 11 * 60
 
 // subagentLaunchGrace is how soon after its latest background launch a
-// subagent's SubagentStop still counts as parking on that task (observed
-// ≤12s), so its shells are kept rather than dropped.
+// subagent's SubagentStop still counts as parking on that task (≤12s in
+// captured hook traces), so its shells are kept rather than dropped.
 const subagentLaunchGrace = 15 * time.Second
 
 // deriveStatus maps a session's most recent event_type (and how long it has been
