@@ -552,8 +552,8 @@ report on failure.
 
 Locally the suite uses the browsers already in `PLAYWRIGHT_BROWSERS_PATH` (the
 shared host bundle in `~/.cache/ms-playwright`); don't run `playwright install`
-there. `@playwright/test` is pinned to exactly 1.61.1, which needs chromium
-revision 1228 in that bundle. Before bumping the pin, refresh the host bundle
+there. `@playwright/test` is pinned to exactly 1.64.1, which needs chromium
+revision 1248 in that bundle. Before bumping the pin, refresh the host bundle
 with `installer/playwright-mcp.sh` (it lives in the user's installer setup,
 outside this repo), run outside the sandbox.
 
