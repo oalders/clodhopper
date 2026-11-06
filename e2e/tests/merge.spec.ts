@@ -1,5 +1,5 @@
 import type { Page, Request } from '@playwright/test';
-import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint } from './fixtures';
+import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, fontsReady } from './fixtures';
 
 // The PR form's result line for a merge (#188). Runs against serve.sh's exec
 // server (the "exec desktop 1440" project); every /api/action is answered
@@ -183,8 +183,12 @@ test('a long merge-queue session name is whole once scrolled into view', async (
   await page.locator('#ck-mq summary').click();
   const cell = page.locator('#row-e2e-queued-approval-0000-1111-2222-333333333333 td.tmux');
   await expect(cell).toHaveText('overlong-tmux-session-name-that-scrolls-into-view');
-  await page.locator('#ck-mq .ck-tablewrap').evaluate((el) => { el.scrollLeft = el.scrollWidth; });
+  await fontsReady(page);
+  const wrap = page.locator('#ck-mq .ck-tablewrap');
+  await wrap.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
   expect(await cell.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+  const [c, w] = [(await cell.boundingBox())!, (await wrap.boundingBox())!];
+  expect(c.x + c.width).toBeLessThanOrEqual(w.x + w.width + 1);
 });
 
 // On a phone the queue card's peek is a 44px touch target and the card never scrolls sideways.
