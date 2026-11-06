@@ -4195,6 +4195,19 @@ func TestSessionCh(t *testing.T) {
 	}
 }
 
+// A long name on a ledger-only row still widens the merge-queue table: the
+// template must pass .LedgerRows, not just .QueuedAgents, to sessionCh.
+func TestContentTemplate_LedgerSessionWidth(t *testing.T) {
+	ledger := []ledgerRow{{Agent: Agent{SessionID: "l", Branch: "fix-1", TmuxSession: strings.Repeat("s", 30)}, Final: "merged"}}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", dashboardData{LedgerRows: ledger}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `<table class="mq" style="--sess-w: 31ch">`) {
+		t.Error("merge-queue table is not sized to its ledger row's session name")
+	}
+}
+
 // The flip into suppression and the expiry back out of it must both repaint.
 func TestViewSignature_TracksCISuppression(t *testing.T) {
 	failing := dashboardData{Agents: []Agent{{SessionID: "s1", Status: statusWaiting, CI: "failing"}}}

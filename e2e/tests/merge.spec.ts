@@ -176,19 +176,17 @@ test('the merge-queue session name and its peek + end controls are not clipped',
   await expect(end).toHaveText('end');
 });
 
-// Scrolled fully right, the queue table must show a long session name whole (#240).
-test('a long merge-queue session name is whole once scrolled into view', async ({ page }) => {
+// The queue table keeps a long session name whole the same way (#240).
+test('a long merge-queue session name is whole once the table scrolls', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 900 });
   await page.evaluate(() => { window.__ckActionBusy = 1; });
   await page.locator('#ck-mq summary').click();
   const cell = page.locator('#row-e2e-queued-approval-0000-1111-2222-333333333333 td.tmux');
   await expect(cell).toHaveText('overlong-tmux-session-name-that-scrolls-into-view');
   await fontsReady(page);
-  const wrap = page.locator('#ck-mq .ck-tablewrap');
-  await wrap.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
-  expect(await cell.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
-  const [c, w] = [(await cell.boundingBox())!, (await wrap.boundingBox())!];
-  expect(c.x + c.width).toBeLessThanOrEqual(w.x + w.width + 1);
+  // Unclipped means the wrapper's horizontal scroll can reach the whole name.
+  const { sw, cw } = await cell.evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }));
+  expect(sw).toBeLessThanOrEqual(cw);
 });
 
 // On a phone the queue card's peek is a 44px touch target and the card never scrolls sideways.

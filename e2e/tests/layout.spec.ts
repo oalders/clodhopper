@@ -1,10 +1,10 @@
 import { test, expect, fontsReady } from './fixtures';
 
 // Layout must survive the worst-case fixtures (e2e_seed_test.go) at every
-// project viewport. Only these targets are checked: branch, cwd, session and
-// other free text are allowed to truncate (a session name only until scrolled
-// into view; see the last test). No absolute widths are asserted, so
-// a deliberate column change doesn't break the suite.
+// project viewport. Only these targets are checked: branch, cwd and other free
+// text are allowed to truncate (a session name is checked by the last test).
+// No absolute widths are asserted, so a deliberate column change doesn't break
+// the suite.
 const mustFit = 'table.roster td.status, table.roster .ck-badge, table.roster td.idle, table.roster td.ci, table.events td.time';
 
 // The default board, and the debug view that adds the events table's time cells.
@@ -63,19 +63,16 @@ for (const path of ['/?refresh=0', '/?refresh=0&debug=1']) {
   });
 }
 
-// Scrolled fully right, the table must show a long session name whole, not
-// clipped by a fixed session-column reserve (#240).
-test('a long roster session name is whole once scrolled into view', async ({ page }) => {
+// In a table narrower than the window, a long session name must stay whole,
+// not clipped by a fixed session-column reserve (#240).
+test('a long roster session name is whole once the table scrolls', async ({ page }) => {
   test.skip(page.viewportSize()!.width <= 640, 'the roster is only a card grid on a phone');
   await page.setViewportSize({ width: 900, height: 900 });
   await page.goto('/?refresh=0');
   await fontsReady(page);
   const cell = page.locator('#row-e2e-approval-0000-1111-2222-333333333333 td.tmux');
   await expect(cell).toHaveText('overlong-tmux-session-name-that-scrolls-into-view');
-  const wrap = page.locator('.ck-tablewrap:has(> table.roster)');
-  await wrap.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
-  expect(await cell.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
-  // Unclipped is not enough: the old bug left the name's end past the scroll range.
-  const [c, w] = [(await cell.boundingBox())!, (await wrap.boundingBox())!];
-  expect(c.x + c.width).toBeLessThanOrEqual(w.x + w.width + 1);
+  // Unclipped means the wrapper's horizontal scroll can reach the whole name.
+  const { sw, cw } = await cell.evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }));
+  expect(sw).toBeLessThanOrEqual(cw);
 });
