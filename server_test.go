@@ -4188,6 +4188,7 @@ func TestSessionCh(t *testing.T) {
 		{"longest in agents", []Agent{{TmuxSession: "abc"}, {TmuxSession: "abcdef"}}, []ledgerRow{{Agent: Agent{TmuxSession: "ab"}}}, 7},
 		{"longest in ledger", []Agent{{TmuxSession: "abc"}}, []ledgerRow{{Agent: Agent{TmuxSession: "abcdefghij"}}}, 11},
 		{"capped", []Agent{{TmuxSession: strings.Repeat("x", 100)}}, nil, 60},
+		{"counts runes, not bytes", []Agent{{TmuxSession: "ééé"}}, nil, 4},
 	} {
 		if got := sessionCh(tc.agents, tc.ledger); got != tc.want {
 			t.Errorf("%s: sessionCh = %d, want %d", tc.name, got, tc.want)

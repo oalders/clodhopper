@@ -176,15 +176,15 @@ test('the merge-queue session name and its peek + end controls are not clipped',
   await expect(end).toHaveText('end');
 });
 
-// The queue table keeps a long session name whole the same way (#240).
-test('a long merge-queue session name is whole once the table scrolls', async ({ page }) => {
+// The queue table fits a long session name the same way (#240).
+test('a long merge-queue session name is not clipped', async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 900 });
   await page.evaluate(() => { window.__ckActionBusy = 1; });
   await page.locator('#ck-mq summary').click();
   const cell = page.locator('#row-e2e-queued-approval-0000-1111-2222-333333333333 td.tmux');
   await expect(cell).toHaveText('overlong-tmux-session-name-that-scrolls-into-view');
   await fontsReady(page);
-  // Unclipped means the wrapper's horizontal scroll can reach the whole name.
+  // th,td clip with overflow:hidden, so a cut-off name has scrollWidth > clientWidth.
   const { sw, cw } = await cell.evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }));
   expect(sw).toBeLessThanOrEqual(cw);
 });

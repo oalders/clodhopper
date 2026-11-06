@@ -63,16 +63,16 @@ for (const path of ['/?refresh=0', '/?refresh=0&debug=1']) {
   });
 }
 
-// In a table narrower than the window, a long session name must stay whole,
-// not clipped by a fixed session-column reserve (#240).
-test('a long roster session name is whole once the table scrolls', async ({ page }) => {
-  test.skip(page.viewportSize()!.width <= 640, 'the roster is only a card grid on a phone');
+// In a table wider than the window (so its wrapper scrolls), a long session
+// name must fit its column, not clip at a fixed 20ch reserve (#240).
+test('a long roster session name is not clipped', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop 1440', 'the viewport is set below, so one project suffices');
   await page.setViewportSize({ width: 900, height: 900 });
   await page.goto('/?refresh=0');
   await fontsReady(page);
   const cell = page.locator('#row-e2e-approval-0000-1111-2222-333333333333 td.tmux');
   await expect(cell).toHaveText('overlong-tmux-session-name-that-scrolls-into-view');
-  // Unclipped means the wrapper's horizontal scroll can reach the whole name.
+  // th,td clip with overflow:hidden, so a cut-off name has scrollWidth > clientWidth.
   const { sw, cw } = await cell.evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }));
   expect(sw).toBeLessThanOrEqual(cw);
 });
