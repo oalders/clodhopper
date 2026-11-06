@@ -2171,7 +2171,7 @@ func TestContentTemplate_QueueActionsColumn(t *testing.T) {
 			if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
 				t.Fatal(err)
 			}
-			_, table, _ := strings.Cut(buf.String(), `<table class="mq">`)
+			_, table, _ := strings.Cut(buf.String(), `<table class="mq"`)
 			table, _, _ = strings.Cut(table, "</table>")
 			head, body, _ := strings.Cut(table, "</thead>")
 			ths := strings.Count(head, "<th>") + strings.Count(head, "<th ")
@@ -4170,8 +4170,42 @@ func TestCIMarkSlots(t *testing.T) {
 		}
 	}
 	html := renderDashboard(t, dashboardData{Agents: []Agent{{SessionID: "s", CIConflict: true, CIDraft: true}}})
-	if !strings.Contains(html, `<table class="roster ci-m2">`) {
+	if !strings.Contains(html, `<table class="roster ci-m2"`) {
 		t.Errorf("roster table should carry ci-m2:\n%s", html)
+	}
+}
+
+// The session column's reserve fits the longest name across the roster and the
+// ledger, plus one ch of slack, capped so one runaway name can't widen it unbounded.
+func TestSessionCh(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		agents []Agent
+		ledger []ledgerRow
+		want   int
+	}{
+		{"empty", nil, nil, 1},
+		{"longest in agents", []Agent{{TmuxSession: "abc"}, {TmuxSession: "abcdef"}}, []ledgerRow{{Agent: Agent{TmuxSession: "ab"}}}, 7},
+		{"longest in ledger", []Agent{{TmuxSession: "abc"}}, []ledgerRow{{Agent: Agent{TmuxSession: "abcdefghij"}}}, 11},
+		{"capped", []Agent{{TmuxSession: strings.Repeat("x", 100)}}, nil, 60},
+		{"counts runes, not bytes", []Agent{{TmuxSession: "ééé"}}, nil, 4},
+	} {
+		if got := sessionCh(tc.agents, tc.ledger); got != tc.want {
+			t.Errorf("%s: sessionCh = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A long name on a ledger-only row still widens the merge-queue table: the
+// template must pass .LedgerRows, not just .QueuedAgents, to sessionCh.
+func TestContentTemplate_LedgerSessionWidth(t *testing.T) {
+	ledger := []ledgerRow{{Agent: Agent{SessionID: "l", Branch: "fix-1", TmuxSession: strings.Repeat("s", 30)}, Final: "merged"}}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", dashboardData{LedgerRows: ledger}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), `<table class="mq" style="--sess-w: 31ch">`) {
+		t.Error("merge-queue table is not sized to its ledger row's session name")
 	}
 }
 
@@ -4442,7 +4476,7 @@ func TestContentTemplate_QueuedBlockChip(t *testing.T) {
 		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", dashboardData{ExecEnabled: exec, QueuedAgents: queued}); err != nil {
 			t.Fatal(err)
 		}
-		_, table, found := strings.Cut(buf.String(), `<table class="mq">`)
+		_, table, found := strings.Cut(buf.String(), `<table class="mq"`)
 		if !found {
 			t.Fatalf("exec=%v: no merge-queue table rendered", exec)
 		}

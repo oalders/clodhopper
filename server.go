@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 //go:embed templates/dashboard.html
@@ -34,6 +35,7 @@ var dashboardTmpl = template.Must(
 		"shortTS":     shortTS,
 		"rowClass":    rowClass,
 		"ciMarkSlots": ciMarkSlots,
+		"sessionCh":   sessionCh,
 		"blockChip":   func(a Agent, exec bool) blockChipView { return blockChipView{a, exec} },
 		"blockGroups": blockGroups,
 	}).Parse(dashboardHTML),
@@ -99,6 +101,24 @@ func ciMarkSlots(agents []Agent) int {
 		most = max(most, n)
 	}
 	return most
+}
+
+// sessionCh is the width in ch the session column needs for the longest tmux
+// session name across agents and ledger rows, so the ≥641px min-width calc()
+// reserves enough that scrolling the table reveals the whole name (#240). It is
+// recomputed on every render, so it follows /api/state swaps. The +1 is slack
+// so fractional-ch rounding can't re-clip the last glyph, and the cap stops one
+// runaway name from widening the table without bound. It counts runes, so a
+// wide (CJK/emoji) name may still clip; session names are practically ASCII.
+func sessionCh(agents []Agent, ledger []ledgerRow) int {
+	longest := 0
+	for _, a := range agents {
+		longest = max(longest, utf8.RuneCountInString(a.TmuxSession))
+	}
+	for _, r := range ledger {
+		longest = max(longest, utf8.RuneCountInString(r.TmuxSession))
+	}
+	return min(longest+1, 60)
 }
 
 // rowClass builds the space-separated CSS class list for a roster <tr> from the

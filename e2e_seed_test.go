@@ -135,6 +135,10 @@ func TestE2ESeed(t *testing.T) {
 		if ev.TmuxPane == "%9003" {
 			ev.TmuxSession = "seeded-merge-queue-session-name"
 		}
+		// Pane-less, so the name stands; long enough to outgrow the old 20ch session reserve (#240, layout.spec.ts and merge.spec.ts).
+		if ev.SessionID == "e2e-approval-0000-1111-2222-333333333333" || ev.SessionID == "e2e-queued-approval-0000-1111-2222-333333333333" {
+			ev.TmuxSession = "overlong-tmux-session-name-that-scrolls-into-view"
+		}
 		if err := insertEvent(db, ev); err != nil {
 			t.Fatal(err)
 		}

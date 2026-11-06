@@ -1,5 +1,5 @@
 import type { Page, Request } from '@playwright/test';
-import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint } from './fixtures';
+import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, fontsReady } from './fixtures';
 
 // The PR form's result line for a merge (#188). Runs against serve.sh's exec
 // server (the "exec desktop 1440" project); every /api/action is answered
@@ -174,6 +174,19 @@ test('the merge-queue session name and its peek + end controls are not clipped',
   }
   await actions.locator('button.actcancel').click();
   await expect(end).toHaveText('end');
+});
+
+// The queue table fits a long session name the same way (#240).
+test('a long merge-queue session name is not clipped', async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 900 });
+  await page.evaluate(() => { window.__ckActionBusy = 1; });
+  await page.locator('#ck-mq summary').click();
+  const cell = page.locator('#row-e2e-queued-approval-0000-1111-2222-333333333333 td.tmux');
+  await expect(cell).toHaveText('overlong-tmux-session-name-that-scrolls-into-view');
+  await fontsReady(page);
+  // th,td clip with overflow:hidden, so a cut-off name has scrollWidth > clientWidth.
+  const { sw, cw } = await cell.evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }));
+  expect(sw).toBeLessThanOrEqual(cw);
 });
 
 // On a phone the queue card's peek is a 44px touch target and the card never scrolls sideways.
