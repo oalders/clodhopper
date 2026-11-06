@@ -609,11 +609,11 @@
     @media (min-width: 641px) {
       .ck-tablewrap { overflow-x: auto; }
       table.events { min-width: 118ch; }
-      /* sum of the fixed cols (122ch, plus the CI col's --ci-w, plus 10ch each for the debug id and actions cols when present) + 20ch reserved for the flexible session-name column */
-      table.roster { min-width: calc(142ch + var(--ci-w){{ if .Debug }} + 10ch{{ end }}{{ if or .PeekEnabled .ExecEnabled }} + 10ch{{ end }}); }
+      /* sum of the fixed cols (122ch, plus the CI col's --ci-w, plus 10ch each for the debug id and actions cols when present) + the flexible session col sized to its longest name (--sess-w from sessionCh, plus cell padding; floor 20ch) */
+      table.roster { min-width: calc(122ch + var(--ci-w) + max(20ch, var(--sess-w) + 2 * var(--cell-pad-x)){{ if .Debug }} + 10ch{{ end }}{{ if or .PeekEnabled .ExecEnabled }} + 10ch{{ end }}); }
       table.counts { min-width: 48ch; }
-      /* the fixed cols (96ch, plus 20ch for the actions col when present: room for ⤢ + an armed "✓ confirm ✕") + 20ch for the flexible session col */
-      table.mq { min-width: calc(116ch{{ if or .PeekEnabled .ExecEnabled }} + 20ch{{ end }}); }
+      /* the fixed cols (96ch, plus 20ch for the actions col when present: room for ⤢ + an armed "✓ confirm ✕") + the flexible session col sized like the roster's (--sess-w; floor 20ch) */
+      table.mq { min-width: calc(96ch + max(20ch, var(--sess-w) + 2 * var(--cell-pad-x)){{ if or .PeekEnabled .ExecEnabled }} + 20ch{{ end }}); }
     }
 
     /* ≤640px (phones): the table shape can't fit, so each row becomes a card.
@@ -3078,7 +3078,7 @@
     </div>
     {{ if .Agents }}
     <div class="ck-tablewrap">
-    <table class="roster ci-m{{ ciMarkSlots .Agents }}">
+    <table class="roster ci-m{{ ciMarkSlots .Agents }}" style="--sess-w: {{ sessionCh .Agents nil }}ch">
       {{/* status is 32ch: the nowrap "waiting on N agents · age" badge; "N shells" is as wide and "N tasks" narrower (see waitingOn) is ~24ch of text plus ~46px of dot, gaps and padding; the prefixless "N shells · NNh · stuck?" (~25ch) fits too; recheck when the badge gains a child. Keep the min-width calc() in sync. */}}
       <colgroup>
         <col style="width: var(--ci-w)"><col style="width: 4ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 32ch">
@@ -3153,7 +3153,7 @@
   <details id="ck-mq" class="ck-card">
     <summary class="ck-cardhead"><h2>Merge queue ({{ len .QueuedAgents }}){{ with .LedgerTally }}{{ with .Finished }} · {{ . }} finished{{ end }}{{ with .Left }} · <span class="mqleft">{{ . }} left queue</span>{{ end }}{{ end }}{{ with .QueueNextETA }} · next merge {{ . }}{{ end }}</h2></summary>
     <div class="ck-tablewrap">
-    <table class="mq">
+    <table class="mq" style="--sess-w: {{ sessionCh .QueuedAgents .LedgerRows }}ch">
       <colgroup>
         <col style="width: 24ch"><col style="width: 18ch"><col style="width: 10ch"><col style="width: 44ch"><col>{{ if or .PeekEnabled .ExecEnabled }}<col style="width: 20ch">{{ end }}
       </colgroup>

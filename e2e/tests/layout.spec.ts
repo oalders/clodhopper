@@ -61,3 +61,16 @@ for (const path of ['/?refresh=0', '/?refresh=0&debug=1']) {
     });
   });
 }
+
+// Scrolled fully right, the table must show a long session name whole, not
+// clipped by a fixed session-column reserve (#240).
+test('a long roster session name is whole once scrolled into view', async ({ page }) => {
+  test.skip(page.viewportSize()!.width <= 640, 'the roster is only a card grid on a phone');
+  await page.setViewportSize({ width: 900, height: 900 });
+  await page.goto('/?refresh=0');
+  await fontsReady(page);
+  const cell = page.locator('#row-e2e-approval-0000-1111-2222-333333333333 td.tmux');
+  await expect(cell).toHaveText('overlong-tmux-session-name-that-scrolls-into-view');
+  await page.locator('.ck-tablewrap:has(> table.roster)').evaluate((el) => { el.scrollLeft = el.scrollWidth; });
+  expect(await cell.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+});
