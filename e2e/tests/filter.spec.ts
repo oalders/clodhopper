@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { test, expect, repaintEveryPoll, repaint } from './fixtures';
+import { test, expect, repaintEveryPoll, repaint, namedSess, claudeName } from './fixtures';
 
 // The type-to-filter box over the roster and merge queue, and the source_app /
 // branch dropdowns that narrow them server-side (#216).
@@ -112,11 +112,11 @@ test('hiding the first row of a group moves its divider; clearing restores it', 
 });
 
 test('a Claude session name matches its row', async ({ page }) => {
-  const { rows, shown } = await filterFor(page, 'fix-4265-a2');
+  const { rows, shown } = await filterFor(page, claudeName);
   await expect(shown).toHaveCount(1);
   // No other row's text holds the name, so the one match is the name itself.
-  await expect(rows.filter({ hasText: 'fix-4265-a2' })).toHaveCount(1);
-  await expect(shown).toHaveId('row-e2e-needs-0000-1111-2222-333333333333');
+  await expect(rows.filter({ hasText: claudeName })).toHaveCount(1);
+  await expect(shown).toHaveId(`row-${namedSess}`);
 });
 
 test('a term found only in a title attribute matches', async ({ page }) => {

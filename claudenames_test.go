@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -40,6 +41,9 @@ func TestLookupClaudeNames(t *testing.T) {
 	writeSessionFile(t, dir, "8.json", sess("dup", "newer"), now)
 	writeSessionFile(t, dir, "9.json", sess("stale", "named"), now.Add(-time.Hour))
 	writeSessionFile(t, dir, "10.json", sess("stale", "bad;name"), now)
+	writeSessionFile(t, dir, "10a.json", sess("blank", "   "), now)
+	writeSessionFile(t, dir, "10b.json", sess("lead", " lead"), now)
+	writeSessionFile(t, dir, "10c.json", sess("trail", "trail "), now)
 	writeSessionFile(t, dir, "11.pid.key", sess("key", "secret-key"), now)
 	if err := os.Symlink(filepath.Join(dir, "11.pid.key"), filepath.Join(dir, "y.json")); err != nil {
 		t.Fatal(err)
@@ -57,7 +61,7 @@ func TestLookupClaudeNames(t *testing.T) {
 		t.Fatal("lookupClaudeNames hung (on the FIFO?)")
 	}
 	want := map[string]string{"ok": "fix-4265-a2", "dup": "newer", "runes": strings.Repeat("é", claudeNameMaxRunes)}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
+	if !maps.Equal(got, want) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
@@ -137,10 +141,12 @@ func TestHandleDashboard_ClaudeName(t *testing.T) {
 		table, html, cell string
 		want              int
 	}{
-		{"roster", roster, `<span title="fix-4265-a2">fix-4265-a2</span>`, 2},
-		{"events", events, `<span title="fix-4265-a2">fix-4265-a2</span>`, 2},
-		{"roster", roster, `<span title="cccccccc">cccccccc</span>`, 1},
-		{"events", events, `<span title="cccccccc">cccccccc</span>`, 1},
+		{"roster", roster, `<span title="fix-4265-a2 (aaaaaaaa)">fix-4265-a2</span>`, 1},
+		{"roster", roster, `<span title="fix-4265-a2 (bbbbbbbb)">fix-4265-a2</span>`, 1},
+		{"events", events, `<span title="fix-4265-a2 (aaaaaaaa)">fix-4265-a2</span>`, 1},
+		{"events", events, `<span title="fix-4265-a2 (bbbbbbbb)">fix-4265-a2</span>`, 1},
+		{"roster", roster, `</span>cccccccc</td>`, 1},
+		{"events", events, `</span>cccccccc</td>`, 1},
 	} {
 		if n := strings.Count(c.html, c.cell); n != c.want {
 			t.Errorf("%s: %s in %d id cells, want %d", c.table, c.cell, n, c.want)

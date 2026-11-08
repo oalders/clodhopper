@@ -1,4 +1,4 @@
-import { test, expect, fontsReady } from './fixtures';
+import { test, expect, fontsReady, namedSess } from './fixtures';
 
 // Layout must survive the worst-case fixtures (e2e_seed_test.go) at every
 // project viewport. Only these targets are checked: branch, cwd and other free
@@ -75,4 +75,17 @@ test('a long roster session name is not clipped', async ({ page }, testInfo) => 
   // th,td clip with overflow:hidden, so a cut-off name has scrollWidth > clientWidth.
   const { sw, cw } = await cell.evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }));
   expect(sw).toBeLessThanOrEqual(cw);
+});
+
+// The session-name button sits on its own line under the branch, so on a phone it must wrap inside the card, not widen it (#242).
+test('a session name stays inside its branch cell on a phone', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'phone 390', 'phone width only');
+  await page.goto('/?refresh=0');
+  await fontsReady(page);
+  const cell = page.locator(`#row-${namedSess} td.branch`);
+  const c = (await cell.boundingBox())!;
+  const n = (await cell.locator('.copyname').boundingBox())!;
+  expect(n.x).toBeGreaterThanOrEqual(c.x);
+  expect(n.x + n.width).toBeLessThanOrEqual(c.x + c.width);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

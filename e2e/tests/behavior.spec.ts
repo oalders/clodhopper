@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { test, expect } from './fixtures';
+import { test, expect, namedSess, claudeName } from './fixtures';
 
 const storage = (page: Page, key: string) =>
   page.evaluate((k) => localStorage.getItem(k), key);
@@ -113,14 +113,14 @@ test('a long-hung background shell escalates its row, naming the command', async
 
 test.describe('click-to-copy', () => {
   test.use({ permissions: ['clipboard-read', 'clipboard-write'] });
-  const needs = '[data-session="e2e-needs-0000-1111-2222-333333333333"]';
+  const needs = `[data-session="${namedSess}"]`;
 
   test('clicking a session name copies it', async ({ page }) => {
     await page.goto('/?refresh=0');
     const name = page.locator(`#content .copyname${needs}`);
     await name.click();
     await expect(name).toHaveClass(/\bcopied\b/);
-    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('fix-4265-a2');
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(claudeName);
   });
 
   // The click handler is shared with .copyname, so the path button must still copy its own attribute.

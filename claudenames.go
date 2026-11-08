@@ -77,10 +77,11 @@ func readClaudeSession(path string) (id, name string, mtime time.Time, ok bool) 
 	return s.SessionID, validClaudeName(s.Name), st.ModTime(), true
 }
 
-// validClaudeName returns s, or "" when it is too long, secret-shaped or outside
-// claudeNameRe: refused, never repaired, so a copied name is the real one.
+// validClaudeName returns s, or "" when it is too long, secret-shaped, padded
+// (so a blank name cannot render as an empty button) or outside claudeNameRe:
+// refused, never repaired, so a copied name is the real one.
 func validClaudeName(s string) string {
-	if utf8.RuneCountInString(s) > claudeNameMaxRunes || scrubString(s) != s || !claudeNameRe.MatchString(s) {
+	if utf8.RuneCountInString(s) > claudeNameMaxRunes || strings.TrimSpace(s) != s || scrubString(s) != s || !claudeNameRe.MatchString(s) {
 		return ""
 	}
 	return s
