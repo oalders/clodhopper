@@ -663,8 +663,8 @@
       /* The footer line is context, not content. */
       table.roster td[data-label="app"],
       table.roster td.sess     { color: var(--text-3); font-size: var(--fs-xs); }
-      /* The debug id cell can hold a whole session name (#242); cap it so it cannot squeeze status. */
-      table.roster td.sess     { max-width: 10rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      /* The id cells can hold a whole session name (#242); cap them so one cannot squeeze status or widen the card. */
+      table.roster td.sess, table.events td.sess { max-width: 10rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       /* The desktop session column is redundant on the card — the name already
          rides along as the .tmuxname suffix in the branch cell. Hide it (its <th>
          is in the display:none thead) so the name never shows twice. */

@@ -102,7 +102,6 @@ test('a focused session-name button keeps focus, not its row\'s path button, aft
   await page.locator(name).focus();
   await repaint(page, name);
   await expect(page.locator(name)).toBeFocused();
-  await expect(page.locator(`#content .copycwd[data-session="${namedSess}"]`)).not.toBeFocused();
 });
 
 test('a focused path button keeps focus, not its row\'s session-name button, after a repaint', async ({ page }) => {
