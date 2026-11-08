@@ -120,7 +120,7 @@ go test -count=1 -tags e2eseed -run '^TestE2ESeed$' .
 # serve gets a throwaway HOME, so it never reads the developer's ~/.claude/sessions;
 # this fixture names the needs row (swap.spec.ts, behavior.spec.ts).
 mkdir -p "$tmp/home/.claude/sessions"
-echo '{"sessionId":"e2e-needs-0000-1111-2222-333333333333","name":"fix-4265-a2"}' >"$tmp/home/.claude/sessions/9002.json"
+echo '{"sessionId":"e2e-needs-0000-1111-2222-333333333333","name":"fix-4265-a2 tighten the roster card for overlong session names"}' >"$tmp/home/.claude/sessions/9002.json"
 # Not exec'd, so the EXIT trap outlives serve and removes $tmp.
 # shellcheck disable=SC2086 # ${2-} is empty or exactly --enable-merge (checked above)
 HOME="$tmp/home" "$tmp/clodhopper" serve --host 127.0.0.1 --port "$1" ${2-} ${2:+--pane-peek}

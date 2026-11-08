@@ -120,6 +120,7 @@ test.describe('click-to-copy', () => {
     const name = page.locator(`#content .copyname${needs}`);
     await name.click();
     await expect(name).toHaveClass(/\bcopied\b/);
+    await expect(page.locator(`#content .copycwd${needs}`)).not.toHaveClass(/\bcopied\b/);
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(claudeName);
   });
 

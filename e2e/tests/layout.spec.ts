@@ -77,8 +77,8 @@ test('a long roster session name is not clipped', async ({ page }, testInfo) => 
   expect(sw).toBeLessThanOrEqual(cw);
 });
 
-// The session-name button sits on its own line under the branch, so on a phone it must wrap inside the card, not widen it (#242).
-test('a session name stays inside its branch cell on a phone', async ({ page }, testInfo) => {
+// The session-name button sits on its own line under the branch, so on a phone it must ellipsize inside the card, not wrap or widen it (#242).
+test('a session name ellipsizes inside its branch cell on a phone', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== 'phone 390', 'phone width only');
   await page.goto('/?refresh=0');
   await fontsReady(page);
@@ -87,5 +87,8 @@ test('a session name stays inside its branch cell on a phone', async ({ page }, 
   const n = (await cell.locator('.copyname').boundingBox())!;
   expect(n.x).toBeGreaterThanOrEqual(c.x);
   expect(n.x + n.width).toBeLessThanOrEqual(c.x + c.width);
+  // Clipped text overflows its box; a wrapped name would not, so this proves it is cut to one line.
+  const { sw, cw } = await cell.locator('.copyname').evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }));
+  expect(sw).toBeGreaterThan(cw);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

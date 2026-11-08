@@ -53,9 +53,9 @@ export async function fontsReady(page: Page) {
 
 export { expect };
 
-// The needs row serve.sh gives a Claude session name (#242).
+// The needs row serve.sh gives a Claude session name (#242), long enough to overflow a phone card.
 export const namedSess = 'e2e-needs-0000-1111-2222-333333333333';
-export const claudeName = 'fix-4265-a2';
+export const claudeName = 'fix-4265-a2 tighten the roster card for overlong session names';
 
 // abortUnstubbedExec aborts every /api/action and /api/pane request that no
 // test stub answered, so none reaches the exec server's real handlers, and
