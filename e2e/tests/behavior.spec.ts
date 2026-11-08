@@ -111,11 +111,26 @@ test('a long-hung background shell escalates its row, naming the command', async
   await expect(badge).toHaveAttribute('title', 'Bash: gh pr checks 1 --watch');
 });
 
-test('clicking a session name copies it', async ({ page, context }) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
-  await page.goto('/?refresh=0');
-  const name = page.locator('#content .copyname[data-session="e2e-needs-0000-1111-2222-333333333333"]');
-  await name.click();
-  await expect(name).toHaveClass(/\bcopied\b/);
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('fix-4265-a2');
+test.describe('click-to-copy', () => {
+  test.use({ permissions: ['clipboard-read', 'clipboard-write'] });
+  const needs = '[data-session="e2e-needs-0000-1111-2222-333333333333"]';
+
+  test('clicking a session name copies it', async ({ page }) => {
+    await page.goto('/?refresh=0');
+    const name = page.locator(`#content .copyname${needs}`);
+    await name.click();
+    await expect(name).toHaveClass(/\bcopied\b/);
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('fix-4265-a2');
+  });
+
+  // The click handler is shared with .copyname, so the path button must still copy its own attribute.
+  test('clicking a worktree path copies it', async ({ page }) => {
+    await page.goto('/?refresh=0');
+    const cwd = page.locator(`#content .copycwd${needs}`);
+    const path = await cwd.getAttribute('data-cwd');
+    expect(path).toBeTruthy();
+    await cwd.click();
+    await expect(cwd).toHaveClass(/\bcopied\b/);
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(path);
+  });
 });

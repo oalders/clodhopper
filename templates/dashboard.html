@@ -320,7 +320,9 @@
        and the full target is only realised at <=640px, where the card layout
        resets td to overflow: visible. */
     @media (pointer: coarse) {
-      td.branch .copycwd, td.branch .copyname { padding: 6px 8px; margin: -6px -8px; }
+      td.branch .copycwd { padding: 6px 8px; margin: -6px -8px; }
+      /* .copyname is a block on the next line, so vertical reach would overlap the path button above it. */
+      td.branch .copyname { padding: 0 8px; margin: 0 -8px; }
       /* ~15px of text + 2x15px = 45px. The button is inline (all:unset), so the
          padding grows its hit area without moving the header; as with .copycwd,
          the th's overflow:hidden still clips it to the header row's height. */
@@ -682,6 +684,8 @@
         color: var(--text-3); font-size: var(--fs-xs); font-weight: 400;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       }
+      /* One line like .tmuxname; the title carries the full name. */
+      table.roster td.branch .copyname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       /* Peek and the actions toggle share one controls cell on the card; the
          inner wrapper stretches so each is a full-width-eligible 44px target,
          sitting side by side when both are present. */

@@ -32,6 +32,8 @@ func TestLookupClaudeNames(t *testing.T) {
 	writeSessionFile(t, dir, "2.json", `{"sessionId":"noname"}`, now)
 	writeSessionFile(t, dir, "3.json", `{"sessionId":"bad",`, now)
 	writeSessionFile(t, dir, "4.json", sess("long", strings.Repeat("a", claudeNameMaxRunes+1)), now)
+	// At the cap in runes but twice that in bytes: the cap counts runes.
+	writeSessionFile(t, dir, "4b.json", sess("runes", strings.Repeat("é", claudeNameMaxRunes)), now)
 	writeSessionFile(t, dir, "5.json", sess("shell", "fix$(id)"), now)
 	writeSessionFile(t, dir, "6.json", sess("secret", "ghp_"+strings.Repeat("a", 36)), now)
 	writeSessionFile(t, dir, "7.json", sess("dup", "older"), now.Add(-time.Hour))
@@ -54,9 +56,28 @@ func TestLookupClaudeNames(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("lookupClaudeNames hung (on the FIFO?)")
 	}
-	want := map[string]string{"ok": "fix-4265-a2", "dup": "newer"}
+	want := map[string]string{"ok": "fix-4265-a2", "dup": "newer", "runes": strings.Repeat("é", claudeNameMaxRunes)}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// ReadDir's type check skips a FIFO first, so this covers readClaudeSession's own
+// O_NONBLOCK + Stat defence against one swapped in after the listing.
+func TestReadClaudeSession_FIFO(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "x.json")
+	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan bool)
+	go func() { _, _, _, ok := readClaudeSession(p); done <- ok }()
+	select {
+	case ok := <-done:
+		if ok {
+			t.Error("a FIFO was read as a sessions file")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("readClaudeSession hung on the FIFO")
 	}
 }
 
@@ -107,11 +128,22 @@ func TestHandleDashboard_ClaudeName(t *testing.T) {
 	if strings.Contains(body, `class="copyname" data-session="cccccccc-3333"`) {
 		t.Error("a session with no name must not offer a copy-name button")
 	}
-	// Each session renders one roster id cell (debug) and one events id cell.
-	if n := strings.Count(body, `<span title="fix-4265-a2">fix-4265-a2</span>`); n != 4 {
-		t.Errorf("name replaced the short id in %d id cells, want 4", n)
+	// Counted per table so a regression in one cannot be masked by the other.
+	roster, events, ok := strings.Cut(body, `<table class="events">`)
+	if !ok {
+		t.Fatalf("no events table:\n%s", body)
 	}
-	if n := strings.Count(body, `<span title="cccccccc">cccccccc</span>`); n != 2 {
-		t.Errorf("unnamed session shows its short id in %d id cells, want 2", n)
+	for _, c := range []struct {
+		table, html, cell string
+		want              int
+	}{
+		{"roster", roster, `<span title="fix-4265-a2">fix-4265-a2</span>`, 2},
+		{"events", events, `<span title="fix-4265-a2">fix-4265-a2</span>`, 2},
+		{"roster", roster, `<span title="cccccccc">cccccccc</span>`, 1},
+		{"events", events, `<span title="cccccccc">cccccccc</span>`, 1},
+	} {
+		if n := strings.Count(c.html, c.cell); n != c.want {
+			t.Errorf("%s: %s in %d id cells, want %d", c.table, c.cell, n, c.want)
+		}
 	}
 }

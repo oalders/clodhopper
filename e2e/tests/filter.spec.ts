@@ -111,6 +111,14 @@ test('hiding the first row of a group moves its divider; clearing restores it', 
   await expect(pinned).not.toHaveClass(/group-start/);
 });
 
+test('a Claude session name matches its row', async ({ page }) => {
+  const { rows, shown } = await filterFor(page, 'fix-4265-a2');
+  await expect(shown).toHaveCount(1);
+  // No other row's text holds the name, so the one match is the name itself.
+  await expect(rows.filter({ hasText: 'fix-4265-a2' })).toHaveCount(1);
+  await expect(shown).toHaveId('row-e2e-needs-0000-1111-2222-333333333333');
+});
+
 test('a term found only in a title attribute matches', async ({ page }) => {
   const { shown } = await filterFor(page, 'last completed');
   await expect(shown).not.toHaveCount(0);
