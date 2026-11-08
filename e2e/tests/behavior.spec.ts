@@ -110,3 +110,12 @@ test('a long-hung background shell escalates its row, naming the command', async
   await expect(badge).toHaveText(/^1 shell · running \d+h · stuck\?$/);
   await expect(badge).toHaveAttribute('title', 'Bash: gh pr checks 1 --watch');
 });
+
+test('clicking a session name copies it', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto('/?refresh=0');
+  const name = page.locator('#content .copyname[data-session="e2e-needs-0000-1111-2222-333333333333"]');
+  await name.click();
+  await expect(name).toHaveClass(/\bcopied\b/);
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('fix-4265-a2');
+});

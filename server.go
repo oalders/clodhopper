@@ -304,6 +304,7 @@ type dashboardData struct {
 	VersionDetail  string            // full versionString(); commit + build date, surfaced in the footer's title tooltip
 	Now            time.Time         // render time, passed to shortTS so it can hide same-day dates
 	SessColors     map[string]string // session id -> chip/tint color; see assignSessColors
+	ClaudeNames    map[string]string // session id -> Claude session name, for the events table's id column; see lookupClaudeNames
 	Signature      string            // fingerprint of the report-worthy view; see viewSignature
 	// PeekEnabled is true when serve --pane-peek is set AND this REQUEST's peer
 	// passes remoteAllowed. /api/pane execs tmux and streams live pane text, so
@@ -410,7 +411,10 @@ func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool
 	allowed := allowedHosts()
 	peek := &peekConfig{
 		enabled: panePeek, lines: clampPaneLines(paneLines), cache: newPaneCache(),
-		repos: newRepoCache(), roots: newRootCache(), bindHost: host, allowedHosts: allowed,
+		repos: newRepoCache(), roots: newRootCache(), names: newClaudeNameCache(), bindHost: host, allowedHosts: allowed,
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		peek.namesDir = filepath.Join(home, ".claude", "sessions")
 	}
 	act := &actionConfig{
 		enabled:           enableMerge,
@@ -1036,6 +1040,10 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	setWorktrees(agents, peek.roots, now)
 	// Before enrichCI, so no CI is fetched for a row that will not render.
 	agents = dropDeadPanes(agents, peek.cache.panes(now))
+	names := peek.names.get(peek.namesDir, now)
+	for i := range agents {
+		agents[i].ClaudeName = names[agents[i].SessionID]
+	}
 	blocks, err := listBlocks(db)
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("blocks: %w", err)
@@ -1135,6 +1143,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 		VersionDetail:  versionString(),
 		Now:            now,
 		SessColors:     assignSessColors(agents, events),
+		ClaudeNames:    names,
 		PeekEnabled:    peek.enabled && peerOK(r, peek.bindHost, peek.allowedHosts),
 		ExecEnabled:    execOK,
 		CSRFToken:      act.token,
@@ -1223,6 +1232,8 @@ func viewSignature(d dashboardData) string {
 			// Likewise the queue pill's anchors are hashed, its ticking CIQueueLabel is not;
 			// CIQueueStuck flips with time while those anchors hold, so it is hashed too.
 			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%t:%q:%q:%d:%d:%d:%t:%q:%q:%d:%d:%d:%q:%q:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIDraft, a.CIDone, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueStuck, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree, a.BlockedOn, a.BlockedOnSession)
+			// ClaudeName is the name button's copy target, so a quiet row must repaint when it appears or changes.
+			fmt.Fprintf(h, ":%q", a.ClaudeName)
 			// The PR chip's link and tooltip, and the picker's PR options (a new PR or a retitle repaints).
 			fmt.Fprintf(h, ":%q:%q:%q:%q", a.BlockedOnRepo, a.BlockedOnPR.Title, a.BlockedOnPR.Author, a.BlockPRRepo)
 			for _, p := range a.BlockPRs {

@@ -30,11 +30,13 @@ const (
 // false the feature is entirely off: no roster control renders and /api/pane
 // returns 403.
 type peekConfig struct {
-	enabled bool
-	lines   int
-	cache   *paneCache
-	repos   *cwdCache[string] // cwd → GitHub "owner/repo" for linking the footer's PR #N; nil resolves nothing
-	roots   *cwdCache[string] // cwd → its worktree root, for the branch column's dir suffix; nil resolves nothing
+	enabled  bool
+	lines    int
+	cache    *paneCache
+	repos    *cwdCache[string]            // cwd → GitHub "owner/repo" for linking the footer's PR #N; nil resolves nothing
+	roots    *cwdCache[string]            // cwd → its worktree root, for the branch column's dir suffix; nil resolves nothing
+	names    *cwdCache[map[string]string] // namesDir → Claude session names (lookupClaudeNames); nil or "" resolves nothing
+	namesDir string
 	// bindHost/allowedHosts mirror actionConfig's: /api/pane execs tmux and
 	// streams live transcript text, so it runs the SAME gate the exec-backed
 	// actions do (execPeerAllowed), which needs the Host allowlist too.

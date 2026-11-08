@@ -587,6 +587,7 @@ type Agent struct {
 	Cwd              string
 	LaunchCwd        string // cwd of the session's earliest in-window event: where it was launched, which `claude --resume` looks a session up by, whereas Cwd follows a later `cd`
 	TmuxSession      string // tmux session name, the disambiguating label
+	ClaudeName       string // Claude Code session name (its peer name), set by the server layer from ~/.claude/sessions; "" when unknown
 	TmuxPane         string // tmux pane id ("%N") of the latest event's Claude pane; targets the live pane peek, "" if unknown
 	HasPane          bool   // true when the session recorded a tmux pane id (TmuxPane != ""); gates the session-action buttons under --enable-merge, decoupled from --pane-peek (LiveTmux is only set when peek is on)
 	Launcher         string // "nono" or "claude" from the latest event that recorded one; "" if unknown (legacy rows), which renders no marker

@@ -300,7 +300,7 @@
        buttons unselectable, and the branch name was drag-selectable text before
        it was wrapped in one. The click handler skips a click that ends a
        selection so the two gestures don't fight. */
-    td.branch .copycwd {
+    td.branch .copycwd, td.branch .copyname {
       appearance: none; -webkit-appearance: none;
       background: none; border: 0; padding: 0; margin: 0;
       font: inherit; color: inherit; text-align: left; cursor: pointer;
@@ -320,7 +320,7 @@
        and the full target is only realised at <=640px, where the card layout
        resets td to overflow: visible. */
     @media (pointer: coarse) {
-      td.branch .copycwd { padding: 6px 8px; margin: -6px -8px; }
+      td.branch .copycwd, td.branch .copyname { padding: 6px 8px; margin: -6px -8px; }
       /* ~15px of text + 2x15px = 45px. The button is inline (all:unset), so the
          padding grows its hit area without moving the header; as with .copycwd,
          the th's overflow:hidden still clips it to the header row's height. */
@@ -343,21 +343,23 @@
       transition: color var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
     }
     tr:hover .copyicon,
-    .copycwd:focus-visible .copyicon,
-    .copycwd.copied .copyicon,
-    .copycwd.copyfail .copyicon { opacity: 1; }
+    .copycwd:focus-visible .copyicon, .copyname:focus-visible .copyicon,
+    .copycwd.copied .copyicon, .copyname.copied .copyicon,
+    .copycwd.copyfail .copyicon, .copyname.copyfail .copyicon { opacity: 1; }
     /* Touch has no hover to reveal on, so there the glyph is the only thing
        marking the cell as a control — it stays visible. Companion to the
        (pointer: coarse) hit-area block above. */
     @media (hover: none) {
       .copyicon { opacity: 1; }
     }
-    .copycwd:hover .copyicon { color: var(--text-1); }
-    .copycwd:focus-visible .copyicon { color: var(--brand); }
-    .copycwd.copied .copyicon { color: var(--ok); }
+    .copycwd:hover .copyicon, .copyname:hover .copyicon { color: var(--text-1); }
+    .copycwd:focus-visible .copyicon, .copyname:focus-visible .copyicon { color: var(--brand); }
+    .copycwd.copied .copyicon, .copyname.copied .copyicon { color: var(--ok); }
     /* A failed copy needs a visible state: the clipboard silently keeps its
        old contents, so a user who sees nothing happen would paste the wrong path. */
-    .copycwd.copyfail .copyicon { color: var(--fail); }
+    .copycwd.copyfail .copyicon, .copyname.copyfail .copyicon { color: var(--fail); }
+    /* The Claude session name (peer name), on its own line under the branch so it adds no column. */
+    td.branch .copyname { display: block; color: var(--text-2); font-size: var(--fs-xs); }
 
     /* Live pane peek: a small toggle in the shared controls cell, and a
        full-width monospace capture row that expands beneath it on demand. */
@@ -608,9 +610,9 @@
        longer pins — an accepted trade-off against losing the column entirely. */
     @media (min-width: 641px) {
       .ck-tablewrap { overflow-x: auto; }
-      table.events { min-width: 118ch; }
-      /* sum of the fixed cols (122ch, plus the CI col's --ci-w, plus 10ch each for the debug id and actions cols when present) + the flexible session col sized to its longest name (--sess-w from sessionCh, plus cell padding; floor 20ch) */
-      table.roster { min-width: calc(122ch + var(--ci-w) + max(20ch, var(--sess-w) + 2 * var(--cell-pad-x)){{ if .Debug }} + 10ch{{ end }}{{ if or .PeekEnabled .ExecEnabled }} + 10ch{{ end }}); }
+      table.events { min-width: 124ch; }
+      /* sum of the fixed cols (122ch, plus the CI col's --ci-w, plus 16ch for the debug id col and 10ch for the actions col when present) + the flexible session col sized to its longest name (--sess-w from sessionCh, plus cell padding; floor 20ch) */
+      table.roster { min-width: calc(122ch + var(--ci-w) + max(20ch, var(--sess-w) + 2 * var(--cell-pad-x)){{ if .Debug }} + 16ch{{ end }}{{ if or .PeekEnabled .ExecEnabled }} + 10ch{{ end }}); }
       table.counts { min-width: 48ch; }
       /* the fixed cols (96ch, plus 20ch for the actions col when present: room for ⤢ + an armed "✓ confirm ✕") + the flexible session col sized like the roster's (--sess-w; floor 20ch) */
       table.mq { min-width: calc(96ch + max(20ch, var(--sess-w) + 2 * var(--cell-pad-x)){{ if or .PeekEnabled .ExecEnabled }} + 20ch{{ end }}); }
@@ -670,7 +672,7 @@
       /* Copy-to-clipboard has no utility on a phone — there is nowhere to paste
          a path. Drop the affordance rather than shrink it. */
       table.roster td.branch .copyicon { display: none; }
-      table.roster td.branch .copycwd { cursor: default; }
+      table.roster td.branch .copycwd, table.roster td.branch .copyname { cursor: default; }
       /* Surface the tmux session name on the card as a muted suffix after the
          branch — there is no session column here to fall back on. It shrinks and
          ellipsizes so a long name shows only "some of" itself rather than pushing
@@ -987,8 +989,10 @@
       var armedState = null;
       try { if (window.__ckArmSnapshot) armedState = window.__ckArmSnapshot(); } catch (e) {}
       var active = document.activeElement;
-      var keep = active && active.closest ? active.closest('#content .copycwd') : null;
+      var keep = active && active.closest ? active.closest('#content .copycwd, #content .copyname') : null;
       var key = keep ? keep.getAttribute('data-session') : null;
+      // A row has both buttons, so the class is part of the key: a focused name must not land on the path.
+      var keepCls = keep ? (keep.classList.contains('copyname') ? 'copyname' : 'copycwd') : null;
       // Same treatment for a peek capsule the reader has the keyboard on. The
       // <pre> carries no id of its own, so its identity comes off the parent
       // row's data-peek-row — the session id, NOT the tmux pane id, which two
@@ -1166,7 +1170,7 @@
         }
       }
       if (key) {
-        var btns = document.querySelectorAll('#content .copycwd');
+        var btns = document.querySelectorAll('#content .' + keepCls);
         for (var i = 0; i < btns.length; i++) {
           if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return true; }
         }
@@ -1873,7 +1877,7 @@
     document.addEventListener('ch:contentswap', unflash);
 
     document.addEventListener('click', function (ev) {
-      var btn = ev.target && ev.target.closest ? ev.target.closest('.copycwd') : null;
+      var btn = ev.target && ev.target.closest ? ev.target.closest('.copycwd, .copyname') : null;
       if (!btn) return;
       // A click that ends a drag-selection of the branch name is not a copy
       // request; the button is selectable text first, a control second. Scoped
@@ -1888,21 +1892,21 @@
           if (sel && String(sel) && sel.containsNode && sel.containsNode(btn, true)) return;
         } catch (e) {}
       }
-      var path = btn.getAttribute('data-cwd') || '';
-      if (!path) return;
-      var why = ctrlChars.test(path) ? 'unsafe' : unusableReason(path);
+      var text = btn.getAttribute(btn.classList.contains('copyname') ? 'data-name' : 'data-cwd') || '';
+      if (!text) return;
+      var why = ctrlChars.test(text) ? 'unsafe' : unusableReason(text);
       if (why) {
         flash(btn, false);
         return;
       }
       function done(ok) { flash(btn, ok); }
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(path).then(
+        navigator.clipboard.writeText(text).then(
           function () { done(true); },
-          function () { done(legacyCopy(path)); }
+          function () { done(legacyCopy(text)); }
         );
       } else {
-        done(legacyCopy(path));
+        done(legacyCopy(text));
       }
     });
   })();
@@ -3056,7 +3060,7 @@
      keep the span, which is the only carrier they have. Never an aria-label on
      the <td>: a cell supports name-from-author, so a label there would REPLACE
      the cell's contents for assistive tech instead of composing with them. */}}
-{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ with .Worktree }}, worktree directory {{ . }}{{ end }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}{{ if .TmuxSession }}<span class="tmuxname"><span class="ck-sr">session </span>{{ .TmuxSession }}</span>{{ end }}</td>{{ end }}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ with .Worktree }}, worktree directory {{ . }}{{ end }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}{{ if .TmuxSession }}<span class="tmuxname"><span class="ck-sr">session </span>{{ .TmuxSession }}</span>{{ end }}{{ with .ClaudeName }}<button type="button" class="copyname" data-session="{{ $.SessionID }}" data-name="{{ . }}" title="copy session name {{ . }}" aria-label="session name {{ . }} — copy">{{ . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ end }}</td>{{ end }}
 
 {{/* launcher marks how the session was started (#152) in its own unheaded
      column between CI and branch: 🔒 for the nono sandbox, 🤖 for plain claude. */}}
@@ -3082,7 +3086,7 @@
       {{/* status is 32ch: the nowrap "waiting on N agents · age" badge; "N shells" is as wide and "N tasks" narrower (see waitingOn) is ~24ch of text plus ~46px of dot, gaps and padding; the prefixless "N shells · NNh · stuck?" (~25ch) fits too; recheck when the badge gains a child. Keep the min-width calc() in sync. */}}
       <colgroup>
         <col style="width: var(--ci-w)"><col style="width: 4ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 32ch">
-        <col style="width: 36ch"><col style="width: 8ch">{{ if .Debug }}<col style="width: 10ch">{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<col style="width: 10ch">{{ end }}<col>
+        <col style="width: 36ch"><col style="width: 8ch">{{ if .Debug }}<col style="width: 16ch">{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<col style="width: 10ch">{{ end }}<col>
       </colgroup>
       <thead>
         <tr><th class="ci">CI</th><th class="launcher"><span class="ck-sr">launcher</span></th><th>branch</th><th data-sort="app">app</th><th data-sort="status">status</th><th>doing</th><th data-sort="idle">idle</th>{{ if .Debug }}<th>id</th>{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<th>actions</th>{{ end }}<th>session</th></tr>
@@ -3097,7 +3101,7 @@
           <td data-label="status" data-rank="{{ .StatusRank }}" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if or (eq .Status "needs you") (eq .Status "shell stuck?") }}needs{{ else if or (eq .Status "waiting") (eq .Status "waiting on agents") (eq .Status "blocked") }}background{{ else if eq .Status "working" }}working{{ else if eq .Status "idle" }}idle{{ else if eq .Status "ended" }}ended{{ end }}">{{ $stuck := eq .Status "shell stuck?" }}<span class="ck-badge"{{ if .ShellCmd }} title="{{ .ShellCmd }}{{ with .WaitingOnDetail }} ({{ . }}){{ end }}"{{ else if .WaitingOnDetail }} title="{{ .WaitingOnDetail }}"{{ end }}><span class="ck-dot"></span>{{ if or $stuck (eq .Status "waiting on agents") }}{{ if not $stuck }}waiting on {{ end }}{{ .WaitingOn }}{{ if .WaitingOnDetail }}<span class="ck-sr"> ({{ .WaitingOnDetail }})</span>{{ end }} <span aria-hidden="true">·</span> <span class="ck-sr">running </span><span data-since="{{ .SubagentSince }}">{{ .SubagentAge }}</span>{{ if $stuck }} <span aria-hidden="true">·</span> stuck?{{ end }}{{ else }}{{ .Status }}{{ end }}</span>{{ template "blockchip" (blockChip . $.ExecEnabled) }}</td>
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
-          {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>{{ end }}
+          {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}{{ $id := or .ClaudeName (short .SessionID) }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span><span title="{{ $id }}">{{ $id }}</span>{{ else }}—{{ end }}</td>{{ end }}
           {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · rebase · reload plugins · end · squash · admin · close · ready · mark blocked"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
@@ -3231,7 +3235,7 @@
     <table class="events">
       <colgroup>
         <col style="width: 22ch"><col style="width: 14ch"><col style="width: 16ch">
-        <col style="width: 10ch"><col style="width: 15ch"><col style="width: 8ch"><col>
+        <col style="width: 16ch"><col style="width: 15ch"><col style="width: 8ch"><col>
       </colgroup>
       <thead>
         <tr><th>time</th><th>source_app</th><th>branch</th><th>id</th><th>event</th><th>tool</th><th>summary</th></tr>
@@ -3242,7 +3246,7 @@
           <td class="time" data-label="time">{{ shortTS .TS $.Now }}{{ if .Duration }} +{{ .Duration }}{{ end }}</td>
           <td data-label="source_app">{{ .SourceApp }}</td>
           {{ template "branchcell" . }}
-          <td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ short .SessionID }}{{ else }}—{{ end }}</td>
+          <td class="sess" data-label="id">{{ if .SessionID }}{{ $id := or (index $.ClaudeNames .SessionID) (short .SessionID) }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span><span title="{{ $id }}">{{ $id }}</span>{{ else }}—{{ end }}</td>
           <td class="type" data-label="event">{{ if .Outcome }}<span title="{{ .EventType }}">{{ .Outcome }}</span>{{ else }}{{ .EventType }}{{ end }}</td>
           <td class="tool" data-label="tool">{{ .ToolName }}</td>
           <td class="summary" data-label="summary">{{ .Summary }}</td>

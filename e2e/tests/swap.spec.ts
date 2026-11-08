@@ -97,6 +97,13 @@ test('a focused copy button is focused again after a repaint', async ({ page }) 
   await expect(page.locator(copy)).toBeFocused();
 });
 
+test('a focused session-name button keeps focus, not its row\'s path button, after a repaint', async ({ page }) => {
+  const name = '#content .copyname[data-session="e2e-needs-0000-1111-2222-333333333333"]';
+  await page.locator(name).focus();
+  await repaint(page, name);
+  await expect(page.locator(name)).toBeFocused();
+});
+
 test('a busy action holds repaints off until it settles', async ({ page }) => {
   await page.evaluate(() => { window.__ckActionBusy = 1; });
   const before = await swaps(page);
