@@ -92,6 +92,30 @@ test('a session name is an icon on the desktop and absent on a phone', async ({ 
   await expect(btn).toHaveText('', { useInnerText: true });
 });
 
+// The path button is a box that a wrapped branch fills; the tag must still sit on the branch's last line, not drop below it (#242).
+test('the session-name tag stays beside a wrapped branch', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'narrowest table 641', 'the narrowest table is where a branch wraps');
+  await page.goto('/?refresh=0');
+  await fontsReady(page);
+  const btn = page.locator(`#row-${namedSess} td.branch .copycwd`);
+  // No seeded branch is long enough to wrap, so lengthen this one in place.
+  await btn.evaluate((b) => {
+    const leaf = [...b.querySelectorAll('*')].find((e) => e.childElementCount === 0 && !e.classList.contains('copyicon')) ?? b;
+    leaf.textContent = 'fix-4265 tighten the roster card layout';
+  });
+  const lines = await btn.evaluate((b) => {
+    const r = document.createRange();
+    r.selectNodeContents(b);
+    return [...r.getClientRects()].filter((x) => x.width > 0).map((x) => ({ top: x.top, bottom: x.bottom }));
+  });
+  expect(new Set(lines.map((l) => Math.round(l.top))).size).toBeGreaterThan(1);
+  const last = lines[lines.length - 1];
+  const tag = (await page.locator(`#row-${namedSess} td.branch .copyname`).boundingBox())!;
+  const mid = tag.y + tag.height / 2;
+  expect(mid).toBeGreaterThan(last.top);
+  expect(mid).toBeLessThan(last.bottom);
+});
+
 test.describe('on a touch screen', () => {
   test.use({ hasTouch: true });
   // The coarse-pointer padding grows the hit area around the 1em box; it must not eat the tag (#242).

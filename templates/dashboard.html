@@ -370,6 +370,9 @@
       width: 1em; height: 1em; margin-left: .4em;
       color: var(--text-3); vertical-align: middle; line-height: 1;
     }
+    /* The path button is inline-block, so a wrapped branch fills the cell and pushes the tag
+       to a line of its own; leave the tag's .4em + 1em beside it instead. */
+    td.branch .copycwd:has(~ .copyname) { max-width: calc(100% - 1.4em); }
     td.branch .copyname:hover { color: var(--text-1); }
     td.branch .copyname:focus-visible { color: var(--brand); }
     .tagicon { width: .9em; height: .9em; display: block; }
@@ -694,7 +697,7 @@
       /* Copy-to-clipboard has no utility on a phone — there is nowhere to paste
          a path. Drop the affordance rather than shrink it. */
       table.roster td.branch .copyicon { display: none; }
-      table.roster td.branch .copycwd { cursor: default; }
+      table.roster td.branch .copycwd { cursor: default; max-width: 100%; }
       table.roster td.branch .copyname { display: none; }
       /* Surface the tmux session name on the card as a muted suffix after the
          branch — there is no session column here to fall back on. It shrinks and
