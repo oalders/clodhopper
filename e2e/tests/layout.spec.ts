@@ -96,11 +96,19 @@ test.describe('on a touch screen', () => {
   test.use({ hasTouch: true });
   // The coarse-pointer padding grows the hit area around the 1em box; it must not eat the tag (#242).
   test('the session-name tag keeps its size', async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name !== 'desktop 1440', 'the table layout at any width; one project suffices');
+    test.skip(testInfo.project.name === 'phone 390', 'the phone card hides the name icon');
     await page.goto('/?refresh=0');
     expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
-    const tag = (await page.locator(`#row-${namedSess} .copyname svg.tagicon`).boundingBox())!;
-    expect(tag.width).toBeGreaterThan(8);
+    const btn = page.locator(`#row-${namedSess} .copyname`);
+    const tag = (await btn.locator('svg.tagicon').boundingBox())!;
+    const em = await btn.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+    // .9em whole; border-box crushed it to 1px.
+    expect(tag.width).toBeCloseTo(0.9 * em, 0);
+    // The padding still grows the hit area around it...
+    expect((await btn.boundingBox())!.width).toBeGreaterThan(tag.width + 8);
+    // ...and the cell's overflow:hidden does not clip the tag itself.
+    const cell = (await page.locator(`#row-${namedSess} td.branch`).boundingBox())!;
+    expect(tag.x + tag.width).toBeLessThanOrEqual(cell.x + cell.width);
   });
 });
 

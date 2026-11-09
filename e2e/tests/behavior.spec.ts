@@ -117,6 +117,8 @@ test.describe('click-to-copy', () => {
 
   test('clicking a session name copies it', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === 'phone 390', 'the phone card hides the name icon');
+    // A fake clock keeps the 1.2s flash open until the in-flash checks are done.
+    await page.clock.install();
     await page.goto('/?refresh=0');
     const name = page.locator(`#content .copyname${needs}`);
     const before = await name.boundingBox();
@@ -128,8 +130,9 @@ test.describe('click-to-copy', () => {
     expect(await name.boundingBox()).toEqual(before);
     await expect(page.locator(`#content .copycwd${needs}`)).not.toHaveClass(/\bcopied\b/);
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(claudeName);
+    await page.clock.runFor(1200);
     await expect(name.locator('svg.tagicon')).toBeVisible();
-    await expect(name).not.toHaveClass(/\bcopied\b/);
+    await expect(name.locator('.copyicon')).toHaveText('⧉');
   });
 
   // The click handler is shared with .copyname, so the path button must still copy its own attribute.

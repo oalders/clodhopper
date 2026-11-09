@@ -321,7 +321,7 @@
        resets td to overflow: visible. */
     @media (pointer: coarse) {
       td.branch .copycwd { padding: 6px 8px; margin: -6px -8px; }
-      /* The type selector outranks the later base rule's margin-left; content-box
+      /* The extra element selector outranks the later base rule's margin-left; content-box
          keeps the padding outside the fixed 1em box, which border-box would crush. */
       td.branch button.copyname { box-sizing: content-box; padding: 6px; margin: -6px -6px -6px calc(.4em - 6px); }
       /* ~15px of text + 2x15px = 45px. The button is inline (all:unset), so the
