@@ -114,8 +114,8 @@ test('hiding the first row of a group moves its divider; clearing restores it', 
 test('a Claude session name matches its row', async ({ page }) => {
   const { rows, shown } = await filterFor(page, claudeName);
   await expect(shown).toHaveCount(1);
-  // No other row's text holds the name, so the one match is the name itself.
-  await expect(rows.filter({ hasText: claudeName })).toHaveCount(1);
+  // The name is not visible text anywhere, so the match comes from the icon's title.
+  await expect(rows.filter({ hasText: claudeName })).toHaveCount(0);
   await expect(shown).toHaveId(`row-${namedSess}`);
 });
 

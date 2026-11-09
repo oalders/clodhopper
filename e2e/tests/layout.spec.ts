@@ -2,7 +2,7 @@ import { test, expect, fontsReady, namedSess } from './fixtures';
 
 // Layout must survive the worst-case fixtures (e2e_seed_test.go) at every
 // project viewport. Only these targets are checked: branch, cwd and other free
-// text are allowed to truncate (a session name is checked by the last test).
+// text are allowed to truncate.
 // No absolute widths are asserted, so a deliberate column change doesn't break
 // the suite.
 const mustFit = 'table.roster td.status, table.roster .ck-badge, table.roster td.idle, table.roster td.ci, table.events td.time';
@@ -77,23 +77,16 @@ test('a long roster session name is not clipped', async ({ page }, testInfo) => 
   expect(sw).toBeLessThanOrEqual(cw);
 });
 
-// The session-name button sits on its own line under the branch, so on a phone it must ellipsize inside the card, not wrap or widen it (#242).
-test('a session name ellipsizes inside its branch cell on a phone', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== 'phone 390', 'phone width only');
+// The session name is only copied, so the roster shows a tag icon, not the name; a phone, with nowhere to paste, shows neither (#242).
+test('a session name is an icon on the desktop and absent on a phone', async ({ page }, testInfo) => {
   await page.goto('/?refresh=0');
-  await fontsReady(page);
-  const cell = page.locator(`#row-${namedSess} td.branch`);
-  const c = (await cell.boundingBox())!;
-  const n = (await cell.locator('.copyname').boundingBox())!;
-  const b = (await cell.locator('.copycwd').boundingBox())!;
-  // Its own line under the branch, not squeezing the branch beside it.
-  expect(n.y).toBeGreaterThanOrEqual(b.y + b.height - 1);
-  expect(n.x).toBeGreaterThanOrEqual(c.x);
-  expect(n.x + n.width).toBeLessThanOrEqual(c.x + c.width);
-  // Clipped text overflows its box; a wrapped name would not, so this proves it is cut to one line.
-  const { sw, cw } = await cell.locator('.copyname').evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }));
-  expect(sw).toBeGreaterThan(cw);
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  const btn = page.locator(`#row-${namedSess} td.branch .copyname`);
+  if (testInfo.project.name === 'phone 390') {
+    await expect(btn).toBeHidden();
+    return;
+  }
+  await expect(btn.locator('svg.tagicon')).toBeVisible();
+  await expect(btn).toHaveText('', { useInnerText: true });
 });
 
 // The session colour chip is fixed-size; beside a long name in the capped id cell it must not shrink to a sliver (#242).

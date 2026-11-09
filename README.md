@@ -185,9 +185,10 @@ point of the affordance (it is how you get to the agent), and the board has no
 auth either way, but it is a little more than the branch and app names the
 board used to expose.
 
-Under the branch, the roster also shows each live session's Claude session
-name (the peer name other sessions message it by), read live from
-`~/.claude/sessions` and never stored; click it to copy it. Where a name is
+Beside the branch, a tag icon copies each live session's Claude session name
+(the peer name other sessions message it by) on click; hover it to see the
+name. The name is read live from `~/.claude/sessions` and never stored, and the
+icon is not shown on a phone. Where a name is
 known it replaces the short session id in the id columns.
 
 ### Merging PRs from the dashboard

@@ -115,7 +115,8 @@ test.describe('click-to-copy', () => {
   test.use({ permissions: ['clipboard-read', 'clipboard-write'] });
   const needs = `[data-session="${namedSess}"]`;
 
-  test('clicking a session name copies it', async ({ page }) => {
+  test('clicking a session name copies it', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === 'phone 390', 'the phone card hides the name icon');
     await page.goto('/?refresh=0');
     const name = page.locator(`#content .copyname${needs}`);
     await name.click();

@@ -321,8 +321,7 @@
        resets td to overflow: visible. */
     @media (pointer: coarse) {
       td.branch .copycwd { padding: 6px 8px; margin: -6px -8px; }
-      /* .copyname is a block on the next line, so vertical reach would overlap the path button above it. */
-      td.branch .copyname { padding: 0 8px; margin: 0 -8px; }
+      td.branch .copyname { padding: 6px; margin: -6px -6px -6px calc(.4em - 6px); }
       /* ~15px of text + 2x15px = 45px. The button is inline (all:unset), so the
          padding grows its hit area without moving the header; as with .copycwd,
          the th's overflow:hidden still clips it to the header row's height. */
@@ -360,8 +359,16 @@
     /* A failed copy needs a visible state: the clipboard silently keeps its
        old contents, so a user who sees nothing happen would paste the wrong path. */
     .copycwd.copyfail .copyicon, .copyname.copyfail .copyicon { color: var(--fail); }
-    /* The Claude session name (peer name), on its own line under the branch so it adds no column. */
-    td.branch .copyname { display: block; color: var(--text-2); font-size: var(--fs-xs); }
+    /* The Claude session name (peer name) is only ever copied, never read, so it is
+       a muted tag icon after the branch; the title names it. While a copy flashes,
+       the copy glyph stands in for the tag (it is hidden otherwise: one icon is enough). */
+    td.branch .copyname { margin-left: .4em; color: var(--text-3); vertical-align: middle; line-height: 1; }
+    td.branch .copyname:hover { color: var(--text-1); }
+    td.branch .copyname:focus-visible { color: var(--brand); }
+    .tagicon { width: .9em; height: .9em; display: block; }
+    .copyname .copyicon { display: none; margin-left: 0; }
+    .copyname.copied .copyicon, .copyname.copyfail .copyicon { display: inline; }
+    .copyname.copied .tagicon, .copyname.copyfail .tagicon { display: none; }
 
     /* Live pane peek: a small toggle in the shared controls cell, and a
        full-width monospace capture row that expands beneath it on demand. */
@@ -680,7 +687,8 @@
       /* Copy-to-clipboard has no utility on a phone — there is nowhere to paste
          a path. Drop the affordance rather than shrink it. */
       table.roster td.branch .copyicon { display: none; }
-      table.roster td.branch .copycwd, table.roster td.branch .copyname { cursor: default; }
+      table.roster td.branch .copycwd { cursor: default; }
+      table.roster td.branch .copyname { display: none; }
       /* Surface the tmux session name on the card as a muted suffix after the
          branch — there is no session column here to fall back on. It shrinks and
          ellipsizes so a long name shows only "some of" itself rather than pushing
@@ -690,13 +698,6 @@
         color: var(--text-3); font-size: var(--fs-xs); font-weight: 400;
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       }
-      /* The card's td is a flex row: wrap it so the name takes a line of its own
-         under the branch, and give .tmuxname a zero basis so it still shrinks
-         beside the branch instead of wrapping too. */
-      table.roster td.branch { flex-wrap: wrap; }
-      table.roster td.branch .tmuxname { flex: 1 1 0; }
-      /* One line like .tmuxname; the title carries the full name. */
-      table.roster td.branch .copyname { flex: 0 0 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       /* Peek and the actions toggle share one controls cell on the card; the
          inner wrapper stretches so each is a full-width-eligible 44px target,
          sitting side by side when both are present. */
@@ -3075,7 +3076,7 @@
      keep the span, which is the only carrier they have. Never an aria-label on
      the <td>: a cell supports name-from-author, so a label there would REPLACE
      the cell's contents for assistive tech instead of composing with them. */}}
-{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ with .Worktree }}, worktree directory {{ . }}{{ end }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}{{ if .TmuxSession }}<span class="tmuxname"><span class="ck-sr">session </span>{{ .TmuxSession }}</span>{{ end }}{{ with .ClaudeName }}<button type="button" class="copyname" data-session="{{ $.SessionID }}" data-name="{{ . }}" title="copy session name {{ . }}" aria-label="session name {{ . }} — copy">{{ . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ end }}</td>{{ end }}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ with .Worktree }}, worktree directory {{ . }}{{ end }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}{{ if .TmuxSession }}<span class="tmuxname"><span class="ck-sr">session </span>{{ .TmuxSession }}</span>{{ end }}{{ with .ClaudeName }}<button type="button" class="copyname" data-session="{{ $.SessionID }}" data-name="{{ . }}" title="copy session name {{ . }}" aria-label="session name {{ . }} — copy"><svg class="tagicon" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2.5v4.6l7.4 7.4 5.6-5.6-7.4-7.4H2.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="5" cy="5" r="1.2" fill="currentColor"/></svg><span class="copyicon" aria-hidden="true">⧉</span></button>{{ end }}</td>{{ end }}
 
 {{/* launcher marks how the session was started (#152) in its own unheaded
      column between CI and branch: 🔒 for the nono sandbox, 🤖 for plain claude. */}}
