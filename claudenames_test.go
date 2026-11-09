@@ -66,31 +66,54 @@ func TestLookupClaudeNames(t *testing.T) {
 	}
 }
 
-// ReadDir's type check skips a FIFO first, so this covers readClaudeSession's own
-// O_NONBLOCK + Stat defence against one swapped in after the listing. A writer
-// holds valid JSON in the pipe, so only the Stat refusal can make ok false.
+// ReadDir's type check skips a FIFO or symlink first, so these cover
+// readClaudeSession's own defences against one swapped in after the listing.
+// With no writer only O_NONBLOCK stops the open hanging; with a writer holding
+// valid JSON only the Stat refusal can make ok false.
 func TestReadClaudeSession_FIFO(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "x.json")
-	if err := syscall.Mkfifo(p, 0o600); err != nil {
+	for _, writer := range []bool{false, true} {
+		t.Run(fmt.Sprintf("writer=%v", writer), func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "x.json")
+			if err := syscall.Mkfifo(p, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if writer {
+				w, err := os.OpenFile(p, os.O_RDWR, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() { _ = w.Close() }()
+				if _, err := w.WriteString(`{"sessionId":"x","name":"n"}`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			done := make(chan bool)
+			go func() { _, _, _, ok := readClaudeSession(p); done <- ok }()
+			select {
+			case ok := <-done:
+				if ok {
+					t.Error("a FIFO was read as a sessions file")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("readClaudeSession hung on the FIFO")
+			}
+		})
+	}
+}
+
+// O_NOFOLLOW: a symlink to a valid sessions file is refused, not followed.
+func TestReadClaudeSession_Symlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real")
+	if err := os.WriteFile(target, []byte(`{"sessionId":"x","name":"n"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	w, err := os.OpenFile(p, os.O_RDWR, 0)
-	if err != nil {
+	link := filepath.Join(dir, "x.json")
+	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = w.Close() }()
-	if _, err := w.WriteString(`{"sessionId":"x","name":"n"}`); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan bool)
-	go func() { _, _, _, ok := readClaudeSession(p); done <- ok }()
-	select {
-	case ok := <-done:
-		if ok {
-			t.Error("a FIFO was read as a sessions file")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("readClaudeSession hung on the FIFO")
+	if _, _, _, ok := readClaudeSession(link); ok {
+		t.Error("a symlink was followed")
 	}
 }
 

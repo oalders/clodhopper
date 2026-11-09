@@ -95,3 +95,13 @@ test('a session name ellipsizes inside its branch cell on a phone', async ({ pag
   expect(sw).toBeGreaterThan(cw);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+// The session colour chip is fixed-size; beside a long name in the capped id cell it must not shrink to a sliver (#242).
+test('the id cell keeps its colour chip whole beside a session name on a phone', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'phone 390', 'phone width only');
+  await page.goto('/?refresh=0&debug=1');
+  await fontsReady(page);
+  const chip = (await page.locator(`#row-${namedSess} td.sess .chip`).boundingBox())!;
+  const plain = (await page.locator('table.roster tr[id^="row-"] td.sess .chip').last().boundingBox())!;
+  expect(chip.width).toBeGreaterThanOrEqual(plain.width - 0.5);
+});
