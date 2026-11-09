@@ -120,7 +120,7 @@ test.describe('click-to-copy', () => {
     // A paused fake clock holds the 1.2s flash open until the in-flash checks are done.
     await page.clock.install();
     await page.goto('/?refresh=0');
-    await page.clock.pauseAt(Date.now() + 1000);
+    await page.clock.pauseAt(Date.now() + 5000);
     const name = page.locator(`#content .copyname${needs}`);
     const before = await name.boundingBox();
     await name.click();

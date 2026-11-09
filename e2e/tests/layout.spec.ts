@@ -100,6 +100,7 @@ test.describe('on a touch screen', () => {
     await page.goto('/?refresh=0');
     expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
     const btn = page.locator(`#row-${namedSess} .copyname`);
+    await btn.scrollIntoViewIfNeeded();
     const tag = (await btn.locator('svg.tagicon').boundingBox())!;
     const em = await btn.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
     // .9em whole; border-box crushed it to 1px.
@@ -110,8 +111,8 @@ test.describe('on a touch screen', () => {
     const cell = (await page.locator(`#row-${namedSess} td.branch`).boundingBox())!;
     expect(tag.x).toBeGreaterThanOrEqual(cell.x);
     expect(tag.x + tag.width).toBeLessThanOrEqual(cell.x + cell.width);
-    // A touch in the left padding, beside the tag, still lands on the button.
-    const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('.copyname') !== null, [tag.x - 3, tag.y + tag.height / 2]);
+    // A touch in the left padding (3px, inside its 6px), beside the tag, still lands on the button.
+    const hit = await page.evaluate(([x, y]) => !!document.elementFromPoint(x, y)?.closest('.copyname'), [tag.x - 3, tag.y + tag.height / 2]);
     expect(hit).toBe(true);
   });
 });
