@@ -81,6 +81,7 @@ test('a long roster session name is not clipped', async ({ page }, testInfo) => 
 test('a session name is an icon on the desktop and absent on a phone', async ({ page }, testInfo) => {
   await page.goto('/?refresh=0');
   const btn = page.locator(`#row-${namedSess} td.branch .copyname`);
+  await expect(page.locator(`#row-${namedSess} td.branch`)).not.toContainText(claudeName, { useInnerText: true });
   if (testInfo.project.name === 'phone 390') {
     // Present but hidden: a missing fixture must not pass for a hidden icon.
     await expect(btn).toHaveCount(1);
@@ -89,7 +90,18 @@ test('a session name is an icon on the desktop and absent on a phone', async ({ 
   }
   await expect(btn.locator('svg.tagicon')).toBeVisible();
   await expect(btn).toHaveText('', { useInnerText: true });
-  await expect(page.locator(`#row-${namedSess} td.branch`)).not.toContainText(claudeName, { useInnerText: true });
+});
+
+test.describe('on a touch screen', () => {
+  test.use({ hasTouch: true });
+  // The coarse-pointer padding grows the hit area around the 1em box; it must not eat the tag (#242).
+  test('the session-name tag keeps its size', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop 1440', 'the table layout at any width; one project suffices');
+    await page.goto('/?refresh=0');
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+    const tag = (await page.locator(`#row-${namedSess} .copyname svg.tagicon`).boundingBox())!;
+    expect(tag.width).toBeGreaterThan(8);
+  });
 });
 
 // The session colour chip is fixed-size; beside a long name in the capped id cell it must not shrink to a sliver (#242).

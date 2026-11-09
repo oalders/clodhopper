@@ -321,8 +321,9 @@
        resets td to overflow: visible. */
     @media (pointer: coarse) {
       td.branch .copycwd { padding: 6px 8px; margin: -6px -8px; }
-      /* button. outranks the base .copyname rule below, which would reset margin-left. */
-      td.branch button.copyname { padding: 6px; margin: -6px -6px -6px calc(.4em - 6px); }
+      /* The type selector outranks the later base rule's margin-left; content-box
+         keeps the padding outside the fixed 1em box, which border-box would crush. */
+      td.branch button.copyname { box-sizing: content-box; padding: 6px; margin: -6px -6px -6px calc(.4em - 6px); }
       /* ~15px of text + 2x15px = 45px. The button is inline (all:unset), so the
          padding grows its hit area without moving the header; as with .copycwd,
          the th's overflow:hidden still clips it to the header row's height. */
@@ -362,8 +363,8 @@
     .copycwd.copyfail .copyicon, .copyname.copyfail .copyicon { color: var(--fail); }
     /* The Claude session name (peer name) is only ever copied, never read, so it is
        a muted tag icon after the branch; the title names it. While a copy flashes,
-       the copy glyph stands in for the tag (it is hidden otherwise: one icon is enough). */
-    /* A fixed box, so swapping the tag for ✓/✗ cannot reflow the branch beside it. */
+       the copy glyph stands in for the tag (it is hidden otherwise: one icon is
+       enough), inside a fixed box so the swap cannot reflow the branch beside it. */
     td.branch .copyname {
       display: inline-flex; align-items: center; justify-content: center;
       width: 1em; height: 1em; margin-left: .4em;
