@@ -1,4 +1,4 @@
-import { test, expect, fontsReady, namedSess } from './fixtures';
+import { test, expect, fontsReady, namedSess, claudeName } from './fixtures';
 
 // Layout must survive the worst-case fixtures (e2e_seed_test.go) at every
 // project viewport. Only these targets are checked: branch, cwd and other free
@@ -82,11 +82,14 @@ test('a session name is an icon on the desktop and absent on a phone', async ({ 
   await page.goto('/?refresh=0');
   const btn = page.locator(`#row-${namedSess} td.branch .copyname`);
   if (testInfo.project.name === 'phone 390') {
+    // Present but hidden: a missing fixture must not pass for a hidden icon.
+    await expect(btn).toHaveCount(1);
     await expect(btn).toBeHidden();
     return;
   }
   await expect(btn.locator('svg.tagicon')).toBeVisible();
   await expect(btn).toHaveText('', { useInnerText: true });
+  await expect(page.locator(`#row-${namedSess} td.branch`)).not.toContainText(claudeName, { useInnerText: true });
 });
 
 // The session colour chip is fixed-size; beside a long name in the capped id cell it must not shrink to a sliver (#242).

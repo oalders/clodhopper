@@ -121,6 +121,9 @@ test.describe('click-to-copy', () => {
     const name = page.locator(`#content .copyname${needs}`);
     await name.click();
     await expect(name).toHaveClass(/\bcopied\b/);
+    // The tick stands in for the tag while the copy flashes, then the tag returns.
+    await expect(name.locator('.copyicon')).toHaveText('✓');
+    await expect(name.locator('svg.tagicon')).toBeHidden();
     await expect(page.locator(`#content .copycwd${needs}`)).not.toHaveClass(/\bcopied\b/);
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(claudeName);
   });

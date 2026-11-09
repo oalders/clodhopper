@@ -186,9 +186,9 @@ auth either way, but it is a little more than the branch and app names the
 board used to expose.
 
 Beside the branch, a tag icon copies each live session's Claude session name
-(the peer name other sessions message it by) on click; hover it to see the
-name. The name is read live from `~/.claude/sessions` and never stored, and the
-icon is not shown on a phone. Where a name is
+(the peer name other sessions message it by); hover it to see the name. The
+name is read live from `~/.claude/sessions` and never stored. Phones don't show
+the icon. Where a name is
 known it replaces the short session id in the id columns.
 
 ### Merging PRs from the dashboard
