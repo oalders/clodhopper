@@ -67,10 +67,19 @@ func TestLookupClaudeNames(t *testing.T) {
 }
 
 // ReadDir's type check skips a FIFO first, so this covers readClaudeSession's own
-// O_NONBLOCK + Stat defence against one swapped in after the listing.
+// O_NONBLOCK + Stat defence against one swapped in after the listing. A writer
+// holds valid JSON in the pipe, so only the Stat refusal can make ok false.
 func TestReadClaudeSession_FIFO(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "x.json")
 	if err := syscall.Mkfifo(p, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w, err := os.OpenFile(p, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = w.Close() }()
+	if _, err := w.WriteString(`{"sessionId":"x","name":"n"}`); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan bool)

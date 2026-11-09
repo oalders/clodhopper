@@ -664,7 +664,9 @@
       table.roster td[data-label="app"],
       table.roster td.sess     { color: var(--text-3); font-size: var(--fs-xs); }
       /* The id cells can hold a whole session name (#242); cap them so one cannot squeeze status or widen the card. */
-      table.roster td.sess, table.events td.sess { max-width: 10rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      table.roster td.sess, table.events td.sess { max-width: 10rem; overflow: hidden; white-space: nowrap; }
+      /* The card's td is a flex box, so the ellipsis has to sit on the name span itself. */
+      table.roster td.sess span[title], table.events td.sess span[title] { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
       /* The desktop session column is redundant on the card — the name already
          rides along as the .tmuxname suffix in the branch cell. Hide it (its <th>
          is in the display:none thead) so the name never shows twice. */
@@ -687,7 +689,12 @@
         overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
       }
       /* One line like .tmuxname; the title carries the full name. */
-      table.roster td.branch .copyname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      /* The card's td is a flex row: wrap it so the name takes a line of its own
+         under the branch, and give .tmuxname a zero basis so it still shrinks
+         beside the branch instead of wrapping too. */
+      table.roster td.branch { flex-wrap: wrap; }
+      table.roster td.branch .tmuxname { flex: 1 1 0; }
+      table.roster td.branch .copyname { flex: 0 0 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       /* Peek and the actions toggle share one controls cell on the card; the
          inner wrapper stretches so each is a full-width-eligible 44px target,
          sitting side by side when both are present. */

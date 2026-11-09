@@ -85,6 +85,9 @@ test('a session name ellipsizes inside its branch cell on a phone', async ({ pag
   const cell = page.locator(`#row-${namedSess} td.branch`);
   const c = (await cell.boundingBox())!;
   const n = (await cell.locator('.copyname').boundingBox())!;
+  const b = (await cell.locator('.copycwd').boundingBox())!;
+  // Its own line under the branch, not squeezing the branch beside it.
+  expect(n.y).toBeGreaterThanOrEqual(b.y + b.height - 1);
   expect(n.x).toBeGreaterThanOrEqual(c.x);
   expect(n.x + n.width).toBeLessThanOrEqual(c.x + c.width);
   // Clipped text overflows its box; a wrapped name would not, so this proves it is cut to one line.
