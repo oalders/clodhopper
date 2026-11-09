@@ -108,7 +108,11 @@ test.describe('on a touch screen', () => {
     expect((await btn.boundingBox())!.width).toBeGreaterThan(tag.width + 8);
     // ...and the cell's overflow:hidden does not clip the tag itself.
     const cell = (await page.locator(`#row-${namedSess} td.branch`).boundingBox())!;
+    expect(tag.x).toBeGreaterThanOrEqual(cell.x);
     expect(tag.x + tag.width).toBeLessThanOrEqual(cell.x + cell.width);
+    // A touch in the left padding, beside the tag, still lands on the button.
+    const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('.copyname') !== null, [tag.x - 3, tag.y + tag.height / 2]);
+    expect(hit).toBe(true);
   });
 });
 

@@ -117,9 +117,10 @@ test.describe('click-to-copy', () => {
 
   test('clicking a session name copies it', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === 'phone 390', 'the phone card hides the name icon');
-    // A fake clock keeps the 1.2s flash open until the in-flash checks are done.
+    // A paused fake clock holds the 1.2s flash open until the in-flash checks are done.
     await page.clock.install();
     await page.goto('/?refresh=0');
+    await page.clock.pauseAt(Date.now() + 1000);
     const name = page.locator(`#content .copyname${needs}`);
     const before = await name.boundingBox();
     await name.click();
