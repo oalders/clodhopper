@@ -157,20 +157,49 @@ test('the session-name tag shows only while the branch is hovered', async ({ pag
   await expect(tag).toHaveCSS('opacity', '0');
   await page.locator(`#row-${namedSess} td.status`).hover();
   await expect(tag).toHaveCSS('opacity', '0');
-  await page.locator(`#row-${namedSess} td.branch .copycwd`).hover({ position: { x: 4, y: 4 } });
+  const branch = page.locator(`#row-${namedSess} td.branch .copycwd`);
+  const before = await branch.boundingBox();
+  await branch.hover({ position: { x: 4, y: 4 } });
+  await expect(tag).toHaveCSS('opacity', '1');
+  // Revealing it must not move the branch, and leaving must hide it again.
+  expect(await branch.boundingBox()).toEqual(before);
+  await page.locator(`#row-${namedSess} td.status`).hover();
+  await expect(tag).toHaveCSS('opacity', '0');
+});
+
+// A row with no path renders the tag as the cell's own child, outside any button; no seeded row has
+// a name but no path, so move this one's tag out to reach that rule (#242).
+test('a path-less row reveals the session-name tag on a cell hover', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop 1440', 'hover styling is the same at every table width, and the phone hides the tag');
+  await page.goto('/?refresh=0');
+  const cell = page.locator(`#row-${namedSess} td.branch`);
+  await cell.evaluate((td) => {
+    const btn = td.querySelector('.copycwd')!;
+    btn.replaceWith(document.createTextNode('main'), btn.querySelector('.copyname')!);
+  });
+  const tag = cell.locator(':scope > .copyname');
+  await expect(tag).toHaveCount(1);
+  await expect(cell.locator('.copycwd')).toHaveCount(0);
+  await expect(tag).toHaveCSS('opacity', '0');
+  await cell.hover();
   await expect(tag).toHaveCSS('opacity', '1');
 });
 
 test.describe('on a touch screen', () => {
   test.use({ hasTouch: true });
+  // Touch has no hover to reveal the tag on, so it is always shown (#242).
+  test('the session-name tag is always shown', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === 'phone 390', 'the phone card hides the name icon');
+    await page.goto('/?refresh=0');
+    expect(await page.evaluate(() => matchMedia('(hover: none)').matches)).toBe(true);
+    await expect(page.locator(`#row-${namedSess} td.branch .copyname`)).toHaveCSS('opacity', '1');
+  });
   // The coarse-pointer padding grows the hit area around the 1em box; it must not eat the tag (#242).
   test('the session-name tag keeps its size', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === 'phone 390', 'the phone card hides the name icon');
     await page.goto('/?refresh=0');
     expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
     const btn = page.locator(`#row-${namedSess} .copyname`);
-    // No hover to reveal it on a touch screen, so it is always shown.
-    await expect(btn).toHaveCSS('opacity', '1');
     await btn.scrollIntoViewIfNeeded();
     const tag = (await btn.locator('svg.tagicon').boundingBox())!;
     const em = await btn.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
