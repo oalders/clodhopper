@@ -355,7 +355,8 @@
     @media (hover: none) {
       .copyicon { opacity: 1; }
     }
-    .copycwd:hover .copyicon, .copyname:hover .copyicon { color: var(--text-1); }
+    /* :where keeps the old weight: hovering the nested tag must not light the path's ⧉ (#242). */
+    .copycwd:hover:where(:not(:has(.copyname:hover))) .copyicon, .copyname:hover .copyicon { color: var(--text-1); }
     .copycwd:focus-visible .copyicon { color: var(--brand); }
     .copycwd.copied .copyicon, .copyname.copied .copyicon { color: var(--ok); }
     /* A failed copy needs a visible state: the clipboard silently keeps its
@@ -368,7 +369,7 @@
     td.branch .copyname {
       display: inline-flex; align-items: center; justify-content: center;
       width: 1em; height: 1em; margin-left: .4em;
-      color: var(--text-3); vertical-align: middle; line-height: 1;
+      color: var(--text-3); vertical-align: middle; line-height: 1; cursor: pointer;
     }
     td.branch .copyname:hover { color: var(--text-1); }
     .tagicon { width: .9em; height: .9em; display: block; }

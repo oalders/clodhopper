@@ -93,37 +93,42 @@ test('a session name is an icon on the desktop and absent on a phone', async ({ 
 });
 
 // The tag sits inside the path button so it follows a wrapped branch's last word: not below it, and not pushed to the cell's right edge (#242).
+// Real branches have no spaces, so a hyphenated one (breaking at its hyphens) is checked too.
 for (const hasTouch of [false, true]) {
   test.describe(hasTouch ? 'on a touch screen' : 'with a mouse', () => {
     test.use({ hasTouch });
-    test('the session-name tag follows a wrapped branch\'s last word', async ({ page }, testInfo) => {
-      test.skip(testInfo.project.name !== 'narrowest table 641', 'the narrowest table is where a branch wraps');
-      await page.goto('/?refresh=0');
-      await fontsReady(page);
-      // No seeded branch is long enough to wrap, so lengthen this one's text node in place; at 641px
-      // its last line is too full for the tag, so the last word must move down with it.
-      const lines = await page.locator(`#row-${namedSess} td.branch .copycwd`).evaluate((b) => {
-        const text = b.firstChild;
-        if (!(text instanceof Text) || !text.data.trim()) throw new Error('the path button does not start with the branch text');
-        text.data = 'fix-4265 tighten the roster card layout';
-        const r = document.createRange();
-        r.selectNodeContents(text);
-        return [...r.getClientRects()].map((x) => ({ top: x.top, bottom: x.bottom, right: x.right }));
+    for (const branch of ['fix-4265 tighten the roster card layout', 'fix-4265-tighten-the-roster-card-layout']) {
+      test(`the session-name tag follows a wrapped branch's last word: ${branch}`, async ({ page }, testInfo) => {
+        test.skip(testInfo.project.name !== 'narrowest table 641', 'the narrowest table is where a branch wraps');
+        await page.goto('/?refresh=0');
+        await fontsReady(page);
+        // The touch run must really take the coarse-pointer padding rule, not repeat the mouse case.
+        expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(hasTouch);
+        // No seeded branch is long enough to wrap, so lengthen this one's text node in place; at 641px
+        // its last line is too full for the tag, so the last word must move down with it.
+        const lines = await page.locator(`#row-${namedSess} td.branch .copycwd`).evaluate((b, branch) => {
+          const text = b.firstChild;
+          if (!(text instanceof Text) || !text.data.trim()) throw new Error('the path button does not start with the branch text');
+          text.data = branch;
+          const r = document.createRange();
+          r.selectNodeContents(text);
+          return [...r.getClientRects()].map((x) => ({ top: x.top, bottom: x.bottom, right: x.right }));
+        }, branch);
+        expect(lines.length, 'the lengthened branch must wrap for this test to mean anything').toBeGreaterThan(1);
+        const last = lines[lines.length - 1];
+        const tag = (await page.locator(`#row-${namedSess} td.branch .copyname svg.tagicon`).boundingBox())!;
+        const mid = tag.y + tag.height / 2;
+        expect(mid).toBeGreaterThan(last.top);
+        expect(mid).toBeLessThan(last.bottom);
+        // Beside the last word: the gap is the tag's margin plus the hidden ⧉ slot, well under 3em.
+        const em = await page.locator(`#row-${namedSess} td.branch .copyname`).evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+        expect(tag.x).toBeGreaterThanOrEqual(last.right);
+        expect(tag.x - last.right).toBeLessThan(3 * em);
+        // ...and inside the cell, whose overflow:hidden would otherwise clip it unseen.
+        const cell = (await page.locator(`#row-${namedSess} td.branch`).boundingBox())!;
+        expect(tag.x + tag.width).toBeLessThanOrEqual(cell.x + cell.width);
       });
-      expect(lines.length, 'the lengthened branch must wrap for this test to mean anything').toBeGreaterThan(1);
-      const last = lines[lines.length - 1];
-      const tag = (await page.locator(`#row-${namedSess} td.branch .copyname svg.tagicon`).boundingBox())!;
-      const mid = tag.y + tag.height / 2;
-      expect(mid).toBeGreaterThan(last.top);
-      expect(mid).toBeLessThan(last.bottom);
-      // Beside the last word: the gap is the tag's margin plus the hidden ⧉ slot, well under 3em.
-      const em = await page.locator(`#row-${namedSess} td.branch .copyname`).evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
-      expect(tag.x).toBeGreaterThanOrEqual(last.right);
-      expect(tag.x - last.right).toBeLessThan(3 * em);
-      // ...and inside the cell, whose overflow:hidden would otherwise clip it unseen.
-      const cell = (await page.locator(`#row-${namedSess} td.branch`).boundingBox())!;
-      expect(tag.x + tag.width).toBeLessThanOrEqual(cell.x + cell.width);
-    });
+    }
   });
 }
 
