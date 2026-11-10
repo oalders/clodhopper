@@ -97,8 +97,8 @@ test('a session name is an icon on the desktop and absent on a phone', async ({ 
 for (const hasTouch of [false, true]) {
   test.describe(hasTouch ? 'on a touch screen' : 'with a mouse', () => {
     test.use({ hasTouch });
-    for (const branch of ['fix-4265 tighten the roster card layout', 'fix-4265-tighten-the-roster-card-layout']) {
-      test(`the session-name tag follows a wrapped branch's last word: ${branch}`, async ({ page }, testInfo) => {
+    for (const [label, branch] of [['spaced', 'fix-4265 tighten the roster card layout'], ['hyphenated', 'fix-4265-tighten-the-roster-card-layout']]) {
+      test(`the session-name tag follows a wrapped branch's last word (${label})`, async ({ page }, testInfo) => {
         test.skip(testInfo.project.name !== 'narrowest table 641', 'the narrowest table is where a branch wraps');
         await page.goto('/?refresh=0');
         await fontsReady(page);
@@ -131,6 +131,21 @@ for (const hasTouch of [false, true]) {
     }
   });
 }
+
+// The tag sits inside the path button, so hovering it hovers the button too; only the tag, not the path's ⧉, may light (#242).
+test('hovering the session-name tag does not light the path icon', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop 1440', 'hover styling is the same at every table width');
+  await page.goto('/?refresh=0');
+  // The colour fades, so a mid-fade read would differ from any other; settle it at once.
+  await page.addStyleTag({ content: '*, *::before, *::after { transition: none !important; }' });
+  const tag = page.locator(`#row-${namedSess} td.branch .copyname`);
+  const pathIcon = page.locator(`#row-${namedSess} td.branch .copytail > .copyicon`);
+  await expect(tag).toHaveCSS('cursor', 'pointer');
+  await page.locator(`#row-${namedSess} td.branch .copycwd`).hover({ position: { x: 4, y: 4 } });
+  const lit = await pathIcon.evaluate((e) => getComputedStyle(e).color);
+  await tag.hover();
+  await expect(pathIcon).not.toHaveCSS('color', lit);
+});
 
 test.describe('on a touch screen', () => {
   test.use({ hasTouch: true });
