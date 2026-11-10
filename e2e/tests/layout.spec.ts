@@ -134,17 +134,19 @@ for (const hasTouch of [false, true]) {
 
 // The tag sits inside the path button, so hovering it hovers the button too; only the tag, not the path's ⧉, may light (#242).
 test('hovering the session-name tag does not light the path icon', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== 'desktop 1440', 'hover styling is the same at every table width');
+  test.skip(testInfo.project.name !== 'desktop 1440', 'hover styling is the same at every table width, and the phone hides both icons');
   await page.goto('/?refresh=0');
   // The colour fades, so a mid-fade read would differ from any other; settle it at once.
   await page.addStyleTag({ content: '*, *::before, *::after { transition: none !important; }' });
   const tag = page.locator(`#row-${namedSess} td.branch .copyname`);
   const pathIcon = page.locator(`#row-${namedSess} td.branch .copytail > .copyicon`);
-  await expect(tag).toHaveCSS('cursor', 'pointer');
+  const rest = await pathIcon.evaluate((e) => getComputedStyle(e).color);
   await page.locator(`#row-${namedSess} td.branch .copycwd`).hover({ position: { x: 4, y: 4 } });
   const lit = await pathIcon.evaluate((e) => getComputedStyle(e).color);
+  expect(lit, 'hovering the path must light its icon for this test to mean anything').not.toBe(rest);
   await tag.hover();
-  await expect(pathIcon).not.toHaveCSS('color', lit);
+  await expect(pathIcon).toHaveCSS('color', rest);
+  await expect(tag).toHaveCSS('color', lit);
 });
 
 test.describe('on a touch screen', () => {
