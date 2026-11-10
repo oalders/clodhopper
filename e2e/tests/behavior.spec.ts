@@ -131,6 +131,9 @@ test.describe('click-to-copy', () => {
     expect(await name.boundingBox()).toEqual(before);
     await expect(page.locator(`#content .copycwd${needs}`)).not.toHaveClass(/\bcopied\b/);
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(claudeName);
+    // The tag is hover-revealed, but the flash must stay in sight once the pointer leaves.
+    await page.locator(`#row-${namedSess} td.status`).hover();
+    await expect(name).toHaveCSS('opacity', '1');
     await page.clock.runFor(1200);
     await expect(name.locator('svg.tagicon')).toBeVisible();
     await expect(name.locator('.copyicon')).toHaveText('⧉');

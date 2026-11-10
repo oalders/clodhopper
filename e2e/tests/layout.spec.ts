@@ -149,6 +149,18 @@ test('hovering the session-name tag does not light the path icon', async ({ page
   await expect(tag).toHaveCSS('color', lit);
 });
 
+// The tag stays out of sight until the branch is hovered; hovering elsewhere on the row is not enough (#242).
+test('the session-name tag shows only while the branch is hovered', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop 1440', 'hover styling is the same at every table width, and the phone hides the tag');
+  await page.goto('/?refresh=0');
+  const tag = page.locator(`#row-${namedSess} td.branch .copyname`);
+  await expect(tag).toHaveCSS('opacity', '0');
+  await page.locator(`#row-${namedSess} td.status`).hover();
+  await expect(tag).toHaveCSS('opacity', '0');
+  await page.locator(`#row-${namedSess} td.branch .copycwd`).hover({ position: { x: 4, y: 4 } });
+  await expect(tag).toHaveCSS('opacity', '1');
+});
+
 test.describe('on a touch screen', () => {
   test.use({ hasTouch: true });
   // The coarse-pointer padding grows the hit area around the 1em box; it must not eat the tag (#242).
@@ -157,6 +169,8 @@ test.describe('on a touch screen', () => {
     await page.goto('/?refresh=0');
     expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
     const btn = page.locator(`#row-${namedSess} .copyname`);
+    // No hover to reveal it on a touch screen, so it is always shown.
+    await expect(btn).toHaveCSS('opacity', '1');
     await btn.scrollIntoViewIfNeeded();
     const tag = (await btn.locator('svg.tagicon').boundingBox())!;
     const em = await btn.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
