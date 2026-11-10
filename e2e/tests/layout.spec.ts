@@ -1,8 +1,8 @@
-import { test, expect, fontsReady } from './fixtures';
+import { test, expect, fontsReady, namedSess, claudeName } from './fixtures';
 
 // Layout must survive the worst-case fixtures (e2e_seed_test.go) at every
 // project viewport. Only these targets are checked: branch, cwd and other free
-// text are allowed to truncate (a session name is checked by the last test).
+// text are allowed to truncate.
 // No absolute widths are asserted, so a deliberate column change doesn't break
 // the suite.
 const mustFit = 'table.roster td.status, table.roster .ck-badge, table.roster td.idle, table.roster td.ci, table.events td.time';
@@ -75,4 +75,154 @@ test('a long roster session name is not clipped', async ({ page }, testInfo) => 
   // th,td clip with overflow:hidden, so a cut-off name has scrollWidth > clientWidth.
   const { sw, cw } = await cell.evaluate((el) => ({ sw: el.scrollWidth, cw: el.clientWidth }));
   expect(sw).toBeLessThanOrEqual(cw);
+});
+
+// The session name is only copied, so the roster shows a tag icon, not the name; a phone, with nowhere to paste, shows neither (#242).
+test('a session name is an icon on the desktop and absent on a phone', async ({ page }, testInfo) => {
+  await page.goto('/?refresh=0');
+  const btn = page.locator(`#row-${namedSess} td.branch .copyname`);
+  await expect(page.locator(`#row-${namedSess} td.branch`)).not.toContainText(claudeName, { useInnerText: true });
+  if (testInfo.project.name === 'phone 390') {
+    // Present but hidden: a missing fixture must not pass for a hidden icon.
+    await expect(btn).toHaveCount(1);
+    await expect(btn).toBeHidden();
+    return;
+  }
+  await expect(btn.locator('svg.tagicon')).toBeVisible();
+  await expect(btn).toHaveText('', { useInnerText: true });
+});
+
+// The tag sits inside the path button so it follows a wrapped branch's last word: not below it, and not pushed to the cell's right edge (#242).
+// Real branches have no spaces, so a hyphenated one (breaking at its hyphens) is checked too.
+for (const hasTouch of [false, true]) {
+  test.describe(hasTouch ? 'on a touch screen' : 'with a mouse', () => {
+    test.use({ hasTouch });
+    for (const [label, branch] of [['spaced', 'fix-4265 tighten the roster card layout'], ['hyphenated', 'fix-4265-tighten-the-roster-card-layout']]) {
+      test(`the session-name tag follows a wrapped branch's last word (${label})`, async ({ page }, testInfo) => {
+        test.skip(testInfo.project.name !== 'narrowest table 641', 'the narrowest table is where a branch wraps');
+        await page.goto('/?refresh=0');
+        await fontsReady(page);
+        // The touch run must really take the coarse-pointer padding rule, not repeat the mouse case.
+        expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(hasTouch);
+        // No seeded branch is long enough to wrap, so lengthen this one's text node in place; at 641px
+        // its last line is too full for the tag, so the last word must move down with it.
+        const lines = await page.locator(`#row-${namedSess} td.branch .copycwd`).evaluate((b, branch) => {
+          const text = b.firstChild;
+          if (!(text instanceof Text) || !text.data.trim()) throw new Error('the path button does not start with the branch text');
+          text.data = branch;
+          const r = document.createRange();
+          r.selectNodeContents(text);
+          return [...r.getClientRects()].map((x) => ({ top: x.top, bottom: x.bottom, right: x.right }));
+        }, branch);
+        expect(lines.length, 'the lengthened branch must wrap for this test to mean anything').toBeGreaterThan(1);
+        const last = lines[lines.length - 1];
+        const tag = (await page.locator(`#row-${namedSess} td.branch .copyname svg.tagicon`).boundingBox())!;
+        const mid = tag.y + tag.height / 2;
+        expect(mid).toBeGreaterThan(last.top);
+        expect(mid).toBeLessThan(last.bottom);
+        // Beside the last word: the gap is the tag's margin plus the hidden ⧉ slot, well under 3em.
+        const em = await page.locator(`#row-${namedSess} td.branch .copyname`).evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+        expect(tag.x).toBeGreaterThanOrEqual(last.right);
+        expect(tag.x - last.right).toBeLessThan(3 * em);
+        // ...and inside the cell, whose overflow:hidden would otherwise clip it unseen.
+        const cell = (await page.locator(`#row-${namedSess} td.branch`).boundingBox())!;
+        expect(tag.x + tag.width).toBeLessThanOrEqual(cell.x + cell.width);
+      });
+    }
+  });
+}
+
+// The tag sits inside the path button, so hovering it hovers the button too; only the tag, not the path's ⧉, may light (#242).
+test('hovering the session-name tag does not light the path icon', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop 1440', 'hover styling is the same at every table width, and the phone hides both icons');
+  await page.goto('/?refresh=0');
+  // The colour fades, so a mid-fade read would differ from any other; settle it at once.
+  await page.addStyleTag({ content: '*, *::before, *::after { transition: none !important; }' });
+  const tag = page.locator(`#row-${namedSess} td.branch .copyname`);
+  const pathIcon = page.locator(`#row-${namedSess} td.branch .copytail > .copyicon`);
+  const rest = await pathIcon.evaluate((e) => getComputedStyle(e).color);
+  await page.locator(`#row-${namedSess} td.branch .copycwd`).hover({ position: { x: 4, y: 4 } });
+  const lit = await pathIcon.evaluate((e) => getComputedStyle(e).color);
+  expect(lit, 'hovering the path must light its icon for this test to mean anything').not.toBe(rest);
+  await tag.hover();
+  await expect(pathIcon).toHaveCSS('color', rest);
+  await expect(tag).toHaveCSS('color', lit);
+});
+
+// The tag stays out of sight until the branch is hovered; hovering elsewhere on the row is not enough (#242).
+test('the session-name tag shows only while the branch is hovered', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop 1440', 'hover styling is the same at every table width, and the phone hides the tag');
+  await page.goto('/?refresh=0');
+  const tag = page.locator(`#row-${namedSess} td.branch .copyname`);
+  await expect(tag).toHaveCSS('opacity', '0');
+  await page.locator(`#row-${namedSess} td.status`).hover();
+  await expect(tag).toHaveCSS('opacity', '0');
+  const branch = page.locator(`#row-${namedSess} td.branch .copycwd`);
+  const before = await branch.boundingBox();
+  await branch.hover({ position: { x: 4, y: 4 } });
+  await expect(tag).toHaveCSS('opacity', '1');
+  // Revealing it must not move the branch, and leaving must hide it again.
+  expect(await branch.boundingBox()).toEqual(before);
+  await page.locator(`#row-${namedSess} td.status`).hover();
+  await expect(tag).toHaveCSS('opacity', '0');
+});
+
+// A row with no path renders the tag as the cell's own child, outside any button; no seeded row has
+// a name but no path, so move this one's tag out to reach that rule (#242).
+test('a path-less row reveals the session-name tag on a cell hover', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop 1440', 'hover styling is the same at every table width, and the phone hides the tag');
+  await page.goto('/?refresh=0');
+  const cell = page.locator(`#row-${namedSess} td.branch`);
+  await cell.evaluate((td) => {
+    const btn = td.querySelector('.copycwd')!;
+    btn.replaceWith(document.createTextNode('main'), btn.querySelector('.copyname')!);
+  });
+  const tag = cell.locator(':scope > .copyname');
+  await expect(tag).toHaveCount(1);
+  await expect(cell.locator('.copycwd')).toHaveCount(0);
+  await expect(tag).toHaveCSS('opacity', '0');
+  await cell.hover();
+  await expect(tag).toHaveCSS('opacity', '1');
+});
+
+test.describe('on a touch screen', () => {
+  test.use({ hasTouch: true });
+  // Touch has no hover to reveal the tag on, so it is always shown (#242).
+  test('the session-name tag is always shown', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === 'phone 390', 'the phone card hides the name icon');
+    await page.goto('/?refresh=0');
+    expect(await page.evaluate(() => matchMedia('(hover: none)').matches)).toBe(true);
+    await expect(page.locator(`#row-${namedSess} td.branch .copyname`)).toHaveCSS('opacity', '1');
+  });
+  // The coarse-pointer padding grows the hit area around the 1em box; it must not eat the tag (#242).
+  test('the session-name tag keeps its size', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === 'phone 390', 'the phone card hides the name icon');
+    await page.goto('/?refresh=0');
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true);
+    const btn = page.locator(`#row-${namedSess} .copyname`);
+    await btn.scrollIntoViewIfNeeded();
+    const tag = (await btn.locator('svg.tagicon').boundingBox())!;
+    const em = await btn.evaluate((el) => parseFloat(getComputedStyle(el).fontSize));
+    // .9em whole; border-box crushed it to 1px.
+    expect(tag.width).toBeCloseTo(0.9 * em, 0);
+    // The padding still grows the hit area around it...
+    expect((await btn.boundingBox())!.width).toBeGreaterThan(tag.width + 8);
+    // ...and the cell's overflow:hidden does not clip the tag itself.
+    const cell = (await page.locator(`#row-${namedSess} td.branch`).boundingBox())!;
+    expect(tag.x).toBeGreaterThanOrEqual(cell.x);
+    expect(tag.x + tag.width).toBeLessThanOrEqual(cell.x + cell.width);
+    // A touch in the left padding (3px, inside its 6px), beside the tag, still lands on the button.
+    const hit = await page.evaluate(([x, y]) => !!document.elementFromPoint(x, y)?.closest('.copyname'), [tag.x - 3, tag.y + tag.height / 2]);
+    expect(hit).toBe(true);
+  });
+});
+
+// The session colour chip is fixed-size; beside a long name in the capped id cell it must not shrink to a sliver (#242).
+test('the id cell keeps its colour chip whole beside a session name on a phone', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'phone 390', 'phone width only');
+  await page.goto('/?refresh=0&debug=1');
+  await fontsReady(page);
+  const chip = (await page.locator(`#row-${namedSess} td.sess .chip`).boundingBox())!;
+  const plain = (await page.locator('table.roster tr[id^="row-"] td.sess .chip').last().boundingBox())!;
+  expect(chip.width).toBeGreaterThanOrEqual(plain.width - 0.5);
 });

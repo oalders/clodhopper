@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { test, expect } from './fixtures';
+import { test, expect, namedSess, claudeName } from './fixtures';
 
 const storage = (page: Page, key: string) =>
   page.evaluate((k) => localStorage.getItem(k), key);
@@ -109,4 +109,44 @@ test('a long-hung background shell escalates its row, naming the command', async
   const badge = status.locator('.ck-badge');
   await expect(badge).toHaveText(/^1 shell · running \d+h · stuck\?$/);
   await expect(badge).toHaveAttribute('title', 'Bash: gh pr checks 1 --watch');
+});
+
+test.describe('click-to-copy', () => {
+  test.use({ permissions: ['clipboard-read', 'clipboard-write'] });
+  const needs = `[data-session="${namedSess}"]`;
+
+  test('clicking a session name copies it', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === 'phone 390', 'the phone card hides the name icon');
+    // A paused fake clock holds the 1.2s flash open until the in-flash checks are done.
+    await page.clock.install();
+    await page.goto('/?refresh=0');
+    await page.clock.pauseAt(Date.now() + 5000);
+    const name = page.locator(`#content .copyname${needs}`);
+    const before = await name.boundingBox();
+    await name.click();
+    await expect(name).toHaveClass(/\bcopied\b/);
+    // The tick stands in for the tag while the copy flashes, in the same box, then the tag returns.
+    await expect(name.locator('.copyicon')).toHaveText('✓');
+    await expect(name.locator('svg.tagicon')).toBeHidden();
+    expect(await name.boundingBox()).toEqual(before);
+    await expect(page.locator(`#content .copycwd${needs}`)).not.toHaveClass(/\bcopied\b/);
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(claudeName);
+    // The tag is hover-revealed, but the flash must stay in sight once the pointer leaves.
+    await page.locator(`#row-${namedSess} td.status`).hover();
+    await expect(name).toHaveCSS('opacity', '1');
+    await page.clock.runFor(1200);
+    await expect(name.locator('svg.tagicon')).toBeVisible();
+    await expect(name.locator('.copyicon')).toHaveText('⧉');
+  });
+
+  // The click handler is shared with .copyname, so the path button must still copy its own attribute.
+  test('clicking a worktree path copies it', async ({ page }) => {
+    await page.goto('/?refresh=0');
+    const cwd = page.locator(`#content .copycwd${needs}`);
+    const path = await cwd.getAttribute('data-cwd');
+    expect(path).toBeTruthy();
+    await cwd.click();
+    await expect(cwd).toHaveClass(/\bcopied\b/);
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(path);
+  });
 });

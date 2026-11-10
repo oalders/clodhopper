@@ -425,8 +425,8 @@ func TestHandleDashboard_RedactedCwdIsRefusedByTheCopyGuard(t *testing.T) {
 		`if (s.indexOf('` + redacted + `') !== -1) return 'redacted';`,
 		`if (s.charAt(s.length - 1) === '…') return 'truncated';`,
 		`if (pathAllow.test(s)) return 'unsafe';`,
-		`var path = btn.getAttribute('data-cwd') || '';`,
-		`var why = ctrlChars.test(path) ? 'unsafe' : unusableReason(path);`,
+		`var text = btn.getAttribute(btn.classList.contains('copyname') ? 'data-name' : 'data-cwd') || '';`,
+		`var why = ctrlChars.test(text) ? 'unsafe' : unusableReason(text);`,
 		// The return is what keeps a refused path off the clipboard; the ✗ alone
 		// would still show if it were dropped.
 		"flash(btn, false);\n        return;",
@@ -1073,6 +1073,7 @@ func serveMuxFor(t *testing.T) http.Handler {
 	db, _ := openDB(filepath.Join(t.TempDir(), "events.db"))
 	t.Cleanup(func() { db.Close() })
 	t.Setenv("CLODHOPPER_ALLOWED_HOSTS", "board.tailnet.ts.net")
+	t.Setenv("HOME", t.TempDir()) // else a render reads the developer's real ~/.claude/sessions
 	peek, act := newServeConfigs("100.64.0.2", false, paneLinesDefault, false)
 	return newServeMux(db, newCICache(), peek, act)
 }
