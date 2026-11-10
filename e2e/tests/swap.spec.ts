@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, swaps, namedSess } from './fixtures';
+import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, swaps } from './fixtures';
 
 // What swapContent carries across a poll's #content repaint. Runs against
 // serve.sh's exec server (the "exec desktop 1440" project), whose stub tmux
@@ -92,20 +92,6 @@ test('an open actions panel stays open across a repaint', async ({ page }) => {
 test('a focused copy button is focused again after a repaint', async ({ page }) => {
   const s = await later(page, '#content .copycwd[data-cwd$="/worktree-waiting"]', 'data-session');
   const copy = `#content .copycwd[data-session="${s}"]`;
-  await page.locator(copy).focus();
-  await repaint(page, copy);
-  await expect(page.locator(copy)).toBeFocused();
-});
-
-test('a focused session-name button keeps focus, not its row\'s path button, after a repaint', async ({ page }) => {
-  const name = `#content .copyname[data-session="${namedSess}"]`;
-  await page.locator(name).focus();
-  await repaint(page, name);
-  await expect(page.locator(name)).toBeFocused();
-});
-
-test('a focused path button keeps focus, not its row\'s session-name button, after a repaint', async ({ page }) => {
-  const copy = `#content .copycwd[data-session="${namedSess}"]`;
   await page.locator(copy).focus();
   await repaint(page, copy);
   await expect(page.locator(copy)).toBeFocused();

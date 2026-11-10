@@ -156,13 +156,13 @@ func TestHandleDashboard_ClaudeName(t *testing.T) {
 		t.Fatalf("both same-named sessions and the unnamed one should each render a row:\n%s", body)
 	}
 	for _, id := range ids[:2] {
-		btn := regexp.MustCompile(`<td class="branch"[^\n]*<button type="button" class="copyname" data-session="` + id + `" data-name="fix-4265-a2"`)
+		btn := regexp.MustCompile(`<td class="branch"[^\n]*<span class="copyname" data-session="` + id + `" data-name="fix-4265-a2"`)
 		if !btn.MatchString(body) {
-			t.Errorf("roster branch cell for %s has no copy-name button:\n%s", id, body)
+			t.Errorf("roster branch cell for %s has no copy-name tag:\n%s", id, body)
 		}
 	}
 	if strings.Contains(body, `class="copyname" data-session="cccccccc-3333"`) {
-		t.Error("a session with no name must not offer a copy-name button")
+		t.Error("a session with no name must not offer a copy-name tag")
 	}
 	// Counted per table so a regression in one cannot be masked by the other.
 	roster, events, ok := strings.Cut(body, `<table class="events">`)

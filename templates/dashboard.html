@@ -300,7 +300,7 @@
        buttons unselectable, and the branch name was drag-selectable text before
        it was wrapped in one. The click handler skips a click that ends a
        selection so the two gestures don't fight. */
-    td.branch .copycwd, td.branch .copyname {
+    td.branch .copycwd {
       appearance: none; -webkit-appearance: none;
       background: none; border: 0; padding: 0; margin: 0;
       font: inherit; color: inherit; text-align: left; cursor: pointer;
@@ -321,9 +321,9 @@
        resets td to overflow: visible. */
     @media (pointer: coarse) {
       td.branch .copycwd { padding: 6px 8px; margin: -6px -8px; }
-      /* The extra element selector outranks the later base rule's margin-left; content-box
+      /* The extra .copycwd outranks the later base rule's margin-left; content-box
          keeps the padding outside the fixed 1em box, which border-box would crush. */
-      td.branch button.copyname { box-sizing: content-box; padding: 6px; margin: -6px -6px -6px calc(.4em - 6px); }
+      td.branch .copycwd .copyname { box-sizing: content-box; padding: 6px; margin: -6px -6px -6px calc(.4em - 6px); }
       /* ~15px of text + 2x15px = 45px. The button is inline (all:unset), so the
          padding grows its hit area without moving the header; as with .copycwd,
          the th's overflow:hidden still clips it to the header row's height. */
@@ -346,7 +346,7 @@
       transition: color var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
     }
     tr:hover .copyicon,
-    .copycwd:focus-visible .copyicon, .copyname:focus-visible .copyicon,
+    .copycwd:focus-visible .copyicon,
     .copycwd.copied .copyicon, .copyname.copied .copyicon,
     .copycwd.copyfail .copyicon, .copyname.copyfail .copyicon { opacity: 1; }
     /* Touch has no hover to reveal on, so there the glyph is the only thing
@@ -356,7 +356,7 @@
       .copyicon { opacity: 1; }
     }
     .copycwd:hover .copyicon, .copyname:hover .copyicon { color: var(--text-1); }
-    .copycwd:focus-visible .copyicon, .copyname:focus-visible .copyicon { color: var(--brand); }
+    .copycwd:focus-visible .copyicon { color: var(--brand); }
     .copycwd.copied .copyicon, .copyname.copied .copyicon { color: var(--ok); }
     /* A failed copy needs a visible state: the clipboard silently keeps its
        old contents, so a user who sees nothing happen would paste the wrong path. */
@@ -370,13 +370,11 @@
       width: 1em; height: 1em; margin-left: .4em;
       color: var(--text-3); vertical-align: middle; line-height: 1;
     }
-    /* The path button is inline-block, so a wrapped branch fills the cell and pushes the tag
-       to a line of its own; leave the tag's .4em + 1em beside it instead. */
-    td.branch .copycwd:has(~ .copyname) { max-width: calc(100% - 1.4em); }
     td.branch .copyname:hover { color: var(--text-1); }
-    td.branch .copyname:focus-visible { color: var(--brand); }
     .tagicon { width: .9em; height: .9em; display: block; }
     .copyname .copyicon { display: none; margin-left: 0; }
+    /* No break between the ⧉ and the tag, so a full last line carries its last word down with them, not the tag alone (#242). */
+    td.branch .copytail { white-space: nowrap; }
     .copyname.copied .copyicon, .copyname.copyfail .copyicon { display: inline; }
     .copyname.copied .tagicon, .copyname.copyfail .tagicon { display: none; }
 
@@ -697,7 +695,7 @@
       /* Copy-to-clipboard has no utility on a phone — there is nowhere to paste
          a path. Drop the affordance rather than shrink it. */
       table.roster td.branch .copyicon { display: none; }
-      table.roster td.branch .copycwd { cursor: default; max-width: 100%; }
+      table.roster td.branch .copycwd { cursor: default; }
       table.roster td.branch .copyname { display: none; }
       /* Surface the tmux session name on the card as a muted suffix after the
          branch — there is no session column here to fall back on. It shrinks and
@@ -1015,10 +1013,8 @@
       var armedState = null;
       try { if (window.__ckArmSnapshot) armedState = window.__ckArmSnapshot(); } catch (e) {}
       var active = document.activeElement;
-      var keep = active && active.closest ? active.closest('#content .copycwd, #content .copyname') : null;
+      var keep = active && active.closest ? active.closest('#content .copycwd') : null;
       var key = keep ? keep.getAttribute('data-session') : null;
-      // A row has both buttons, so the class is part of the key: a focused name must not land on the path.
-      var keepCls = keep ? (keep.classList.contains('copyname') ? 'copyname' : 'copycwd') : null;
       // Same treatment for a peek capsule the reader has the keyboard on. The
       // <pre> carries no id of its own, so its identity comes off the parent
       // row's data-peek-row — the session id, NOT the tmux pane id, which two
@@ -1196,7 +1192,7 @@
         }
       }
       if (key) {
-        var btns = document.querySelectorAll('#content .' + keepCls);
+        var btns = document.querySelectorAll('#content .copycwd');
         for (var i = 0; i < btns.length; i++) {
           if (btns[i].getAttribute('data-session') === key) { btns[i].focus({ preventScroll: true }); return true; }
         }
@@ -3060,6 +3056,11 @@
      activity table inlines it plus its Worktree suffix, which EventRow lacks. */}}
 {{ define "branchcell" }}<td class="branch" data-label="branch">{{ template "branchinner" . }}</td>{{ end }}
 
+{{/* claudetag is the session-name tag. It sits INSIDE the path button, so it flows
+     after the branch's last word (a sibling would follow the button's box, not its
+     text); being a span, not a nested button, it is mouse-only. */}}
+{{ define "claudetag" }}{{ with .ClaudeName }}<span class="copyname" data-session="{{ $.SessionID }}" data-name="{{ . }}" title="{{ . }}"><svg class="tagicon" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2.5v4.6l7.4 7.4 5.6-5.6-7.4-7.4H2.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="5" cy="5" r="1.2" fill="currentColor"/></svg><span class="copyicon" aria-hidden="true">⧉</span></span>{{ end }}{{ end }}
+
 {{/* branchcellroster is the roster's branch <td>. Grouped rows carry a
      screen-reader-only "(cluster)" note so the multi-session binding conveyed
      visually by the left accent bar (the .grouped CSS) is also announced to
@@ -3086,7 +3087,7 @@
      keep the span, which is the only carrier they have. Never an aria-label on
      the <td>: a cell supports name-from-author, so a label there would REPLACE
      the cell's contents for assistive tech instead of composing with them. */}}
-{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ with .Worktree }}, worktree directory {{ . }}{{ end }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copyicon" aria-hidden="true">⧉</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}{{ if .TmuxSession }}<span class="tmuxname"><span class="ck-sr">session </span>{{ .TmuxSession }}</span>{{ end }}{{ with .ClaudeName }}<button type="button" class="copyname" data-session="{{ $.SessionID }}" data-name="{{ . }}" title="{{ . }}" aria-label="session name {{ . }} — copy"><svg class="tagicon" viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2.5v4.6l7.4 7.4 5.6-5.6-7.4-7.4H2.5z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><circle cx="5" cy="5" r="1.2" fill="currentColor"/></svg><span class="copyicon" aria-hidden="true">⧉</span></button>{{ end }}</td>{{ end }}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ with .Worktree }}, worktree directory {{ . }}{{ end }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copytail"><span class="copyicon" aria-hidden="true">⧉</span>{{ template "claudetag" . }}</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}{{ if .TmuxSession }}<span class="tmuxname"><span class="ck-sr">session </span>{{ .TmuxSession }}</span>{{ end }}{{ if not .Cwd }}{{ template "claudetag" . }}{{ end }}</td>{{ end }}
 
 {{/* launcher marks how the session was started (#152) in its own unheaded
      column between CI and branch: 🔒 for the nono sandbox, 🤖 for plain claude. */}}
