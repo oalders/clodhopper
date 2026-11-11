@@ -438,6 +438,7 @@ func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool
 		repos:             peek.repos,
 		roots:             peek.roots,
 		openPRs:           newOpenPRCache(gate),
+		ci:                newCICache(gate),
 		ghGate:            gate,
 	}
 	return peek, act
@@ -525,8 +526,7 @@ func runServe(args []string) int {
 	defer db.Close()
 
 	peek, act := newServeConfigs(*host, *panePeek, *paneLines, *enableMerge)
-	ci := newCICache(act.ghGate)
-	act.ci = ci
+	ci := act.ci
 	if act.enabled {
 		tok, err := randomToken()
 		if err != nil {

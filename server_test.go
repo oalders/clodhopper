@@ -4957,7 +4957,8 @@ func TestCwdCacheGateInflightWaiter(t *testing.T) {
 	go func() { got <- c.get("/wt", now) }()
 	<-started
 	go func() { got <- c.get("/wt", now) }()
-	time.Sleep(50 * time.Millisecond) // let the waiter reach the in-flight lookup
+	// A waiter leaves no observable trace, so a late one passes without covering the waiter path.
+	time.Sleep(50 * time.Millisecond)
 	close(release)
 	for range 2 {
 		if v := <-got; v != "good" {
@@ -4971,6 +4972,7 @@ func TestCwdCacheGateInflightWaiter(t *testing.T) {
 
 // A tripped gate sets GHRateLimited and puts the note in the rendered meta line.
 func TestDashboardRateLimitedNote(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	db := openTestDB(t)
 	gate := &ghGate{}
 	gate.trip(time.Now())
@@ -4989,5 +4991,15 @@ func TestDashboardRateLimitedNote(t *testing.T) {
 	meta, _, _ = strings.Cut(meta, "</div>")
 	if !strings.Contains(meta, "GitHub rate limited") {
 		t.Errorf("meta line %q lacks the rate-limit note", meta)
+	}
+}
+
+// newServeConfigs hands every gh-backed cache the one gate the meta line reads,
+// so a rate limit seen by any of them holds them all back.
+func TestNewServeConfigsSharesOneGate(t *testing.T) {
+	_, act := newServeConfigs("127.0.0.1", false, paneLinesDefault, false)
+	g := act.ghGate
+	if g == nil || act.ci.gate != g || act.ledger.finals.gate != g || act.openPRs.gate != g {
+		t.Errorf("gates: act %p, ci %p, finals %p, open PRs %p; want one shared non-nil gate", g, act.ci.gate, act.ledger.finals.gate, act.openPRs.gate)
 	}
 }
