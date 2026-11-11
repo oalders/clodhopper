@@ -23,7 +23,7 @@ let unstubbed: string[] = [];
 
 test.beforeEach(async ({ page }) => {
   unstubbed = await abortUnstubbedExec(page);
-  // Without force=1 the cached queued answer stands for cwdTTL (60s); force is
+  // Without force=1 the cached queued answer stands for 60s (ciTTL); force is
   // throttled server-side, hence the poll.
   await expect.poll(async () => {
     await page.request.get('/api/state?force=1');

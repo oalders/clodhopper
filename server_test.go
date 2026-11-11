@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -598,7 +600,7 @@ func TestBuildDashboardData_DebugFlag(t *testing.T) {
 	defer db.Close()
 	mk := func(target string) dashboardData {
 		r := httptest.NewRequest(http.MethodGet, target, nil)
-		d, err := buildDashboardData(r, db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
+		d, err := buildDashboardData(r, db, newCICache(nil), &peekConfig{cache: newPaneCache()}, &actionConfig{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -668,7 +670,7 @@ func TestHandleState_ReturnsSignatureAndHTML(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/api/state?debug=1", nil)
 	rec := httptest.NewRecorder()
-	handleState(rec, req, db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
+	handleState(rec, req, db, newCICache(nil), &peekConfig{cache: newPaneCache()}, &actionConfig{})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d", rec.Code)
 	}
@@ -697,7 +699,7 @@ func TestBuildDashboardDataMergeFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	ci := newCICache()
+	ci := newCICache(nil)
 	peek := &peekConfig{}
 	cfg := &actionConfig{enabled: true, token: "tok"}
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -729,7 +731,7 @@ func TestBuildDashboardDataDropsDeadPane(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.RemoteAddr = "127.0.0.1:5555"
 	r.Host = "127.0.0.1:4555"
-	data, err := buildDashboardData(r, db, newCICache(), peek, &actionConfig{})
+	data, err := buildDashboardData(r, db, newCICache(nil), peek, &actionConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1012,7 +1014,7 @@ func TestBuildDashboardDataRepoOnlyForLivePane(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.RemoteAddr = "127.0.0.1:5555"
 	r.Host = "127.0.0.1:4555"
-	data, err := buildDashboardData(r, db, newCICache(), peek, &actionConfig{})
+	data, err := buildDashboardData(r, db, newCICache(nil), peek, &actionConfig{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1036,7 +1038,7 @@ func TestBuildDashboardDataPeerGatesExecAndPeek(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	ci := newCICache()
+	ci := newCICache(nil)
 	peek := &peekConfig{enabled: true}
 	cfg := &actionConfig{enabled: true, token: "tok"}
 
@@ -1075,7 +1077,7 @@ func serveMuxFor(t *testing.T) http.Handler {
 	t.Setenv("CLODHOPPER_ALLOWED_HOSTS", "board.tailnet.ts.net")
 	t.Setenv("HOME", t.TempDir()) // else a render reads the developer's real ~/.claude/sessions
 	peek, act := newServeConfigs("100.64.0.2", false, paneLinesDefault, false)
-	return newServeMux(db, newCICache(), peek, act)
+	return newServeMux(db, newCICache(nil), peek, act)
 }
 
 func serveGet(h http.Handler, target, host string) *httptest.ResponseRecorder {
@@ -1550,7 +1552,7 @@ func getBody(t *testing.T, db *sql.DB, target string) string {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	rec := httptest.NewRecorder()
-	handleDashboard(rec, req, db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
+	handleDashboard(rec, req, db, newCICache(nil), &peekConfig{cache: newPaneCache()}, &actionConfig{})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d", rec.Code)
 	}
@@ -1582,7 +1584,7 @@ func TestHandleDashboardClientGoneWritesHeaderOnce(t *testing.T) {
 	}
 	defer db.Close()
 	w := &goneWriter{h: http.Header{}}
-	handleDashboard(w, httptest.NewRequest(http.MethodGet, "/", nil), db, newCICache(), &peekConfig{cache: newPaneCache()}, &actionConfig{})
+	handleDashboard(w, httptest.NewRequest(http.MethodGet, "/", nil), db, newCICache(nil), &peekConfig{cache: newPaneCache()}, &actionConfig{})
 	if w.headers != 1 {
 		t.Errorf("WriteHeader called %d times, want 1", w.headers)
 	}
@@ -3056,7 +3058,7 @@ func TestBuildDashboardDataExecEnabledFollowsPeer(t *testing.T) {
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.RemoteAddr = c.addr
 		r.Host = "127.0.0.1:4555"
-		d, err := buildDashboardData(r, db, newCICache(), &peekConfig{cache: newPaneCache()}, cfg)
+		d, err := buildDashboardData(r, db, newCICache(nil), &peekConfig{cache: newPaneCache()}, cfg)
 		if err != nil {
 			t.Fatalf("buildDashboardData: %v", err)
 		}
@@ -3245,7 +3247,7 @@ func TestBuildDashboardDataRenderRunsTheFullGate(t *testing.T) {
 		return r
 	}
 
-	ok, err := buildDashboardData(req(), db, newCICache(), peek, cfg)
+	ok, err := buildDashboardData(req(), db, newCICache(nil), peek, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3265,7 +3267,7 @@ func TestBuildDashboardDataRenderRunsTheFullGate(t *testing.T) {
 		{"rebound Host", rebound},
 		{"proxied request", proxied},
 	} {
-		got, err := buildDashboardData(c.r, db, newCICache(), peek, cfg)
+		got, err := buildDashboardData(c.r, db, newCICache(nil), peek, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3797,7 +3799,7 @@ func TestSuppressWatchedCI_RowIsolation(t *testing.T) {
 
 // The suppressed row renders the pending dot while an unsuppressed failing row
 // in the same table keeps its red one. Rendered directly (getBody hardcodes
-// newCICache(), so every row there renders "—").
+// newCICache(nil), so every row there renders "—").
 func TestDashboardRendersSuppressedCIAsPending(t *testing.T) {
 	html := renderDashboard(t, dashboardData{Agents: []Agent{
 		{SessionID: "watcher", Branch: "fix-111", Status: statusBackground, CI: "pending"},
@@ -4124,7 +4126,7 @@ func TestEnrichCIQueueFields(t *testing.T) {
 		"/g": {val: ciResult{State: "green"}, at: now},
 	}}
 	agents := []Agent{{SessionID: "q", Cwd: "/q"}, {SessionID: "g", Cwd: "/g"}}
-	enrichCI(agents, ci, now)
+	enrichCI(agents, nil, ci, now)
 	if q := agents[0]; q.CIQueuePos != 2 || q.CIQueueETA != queued.QueueETA.Unix() || q.CIQueueSince != queued.QueueSince.Unix() || q.CIQueueLabel != queueLabel(queued, now) || q.CIQueueLabel == "" {
 		t.Errorf("queued agent = %+v", q)
 	}
@@ -4340,7 +4342,7 @@ func TestBuildDashboardDataBlockLapsesOnMergedBlocker(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Stamped an hour ahead so cwdTTL cannot lapse mid-test and gh is never run.
-		ci := newCICache()
+		ci := newCICache(nil)
 		ci.m["/a"] = cwdEntry[ciResult]{at: now.Add(time.Hour)}
 		ci.m["/b"] = cwdEntry[ciResult]{val: ciResult{Done: done}, at: now.Add(time.Hour)}
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -4550,7 +4552,7 @@ func TestBuildDashboardDataFilters(t *testing.T) {
 	// Older than s1's Stop, so s1's roster status is unchanged.
 	insertEvent(db, Event{TS: now.Add(-time.Minute).UTC().Format(time.RFC3339), SourceApp: "a", Branch: "x", SessionID: "s1", EventType: "PreToolUse", PayloadJSON: "{}"})
 	// Stamped an hour ahead so cwdTTL cannot lapse mid-test and gh is never run.
-	ci := newCICache()
+	ci := newCICache(nil)
 	ci.m["/q"] = cwdEntry[ciResult]{val: ciResult{Queue: "queued", QueuePos: 1, QueueETA: now.Add(10 * time.Minute)}, at: now.Add(time.Hour)}
 	l, _ := testLedger(nil)
 	build := func(target string) dashboardData {
@@ -4661,7 +4663,7 @@ func TestBuildDashboardDataOpenPRsOnlyForExecPeer(t *testing.T) {
 	} {
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
 		r.RemoteAddr, r.Host = c.addr, "127.0.0.1:4555"
-		d, err := buildDashboardData(r, db, newCICache(), &peekConfig{cache: newPaneCache()}, cfg)
+		d, err := buildDashboardData(r, db, newCICache(nil), &peekConfig{cache: newPaneCache()}, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -4728,5 +4730,144 @@ func TestSetBlockPRs(t *testing.T) {
 	}
 	if a := agents[3]; !slices.Contains(a.BlockPRs, openPR{Number: 7}) {
 		t.Errorf("other-repo PR row = %v, want #7 kept: its own PR is in another repo", a.BlockPRs)
+	}
+}
+
+// ciTTL keeps a verdict that can still move for a minute, a settled open PR
+// for three, and a done PR or a confirmed "no PR" for ten.
+func TestCITTL(t *testing.T) {
+	for _, tc := range []struct {
+		r    ciResult
+		want time.Duration
+	}{
+		{ciResult{}, cwdTTL}, // an error or unknown result
+		{ciResult{State: "pending", PRNumber: 1}, cwdTTL},
+		{ciResult{State: "green", Queue: "queued", PRNumber: 1}, cwdTTL},
+		{ciResult{State: "ejected", PRNumber: 1}, cwdTTL},
+		{ciResult{State: "green", PRNumber: 1}, 3 * time.Minute},
+		{ciResult{State: "failing", PRNumber: 1}, 3 * time.Minute},
+		{ciResult{State: "soft-failing", PRNumber: 1}, 3 * time.Minute},
+		{ciResult{Done: "merged", PRNumber: 1}, 10 * time.Minute},
+		{ciResult{NoPR: true}, 10 * time.Minute},
+	} {
+		if got := ciTTL(tc.r); got != tc.want {
+			t.Errorf("ciTTL(%+v) = %v, want %v", tc.r, got, tc.want)
+		}
+	}
+}
+
+// Each entry keeps the TTL ttlFor gave it when stored; expire still stales them all.
+func TestCwdCachePerEntryTTL(t *testing.T) {
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	calls := map[string]int{}
+	c := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{}, ttlFor: ciTTL, lookup: func(cwd string) ciResult {
+		calls[cwd]++
+		if cwd == "/done" {
+			return ciResult{Done: "merged"}
+		}
+		return ciResult{State: "pending"}
+	}}
+	c.get("/done", now)
+	c.get("/pending", now)
+	c.get("/done", now.Add(5*time.Minute))
+	c.get("/pending", now.Add(61*time.Second))
+	if calls["/done"] != 1 || calls["/pending"] != 2 {
+		t.Errorf("lookups = %v, want /done 1 (fresh at 5m), /pending 2 (stale at 61s)", calls)
+	}
+	c.expire(now.Add(5 * time.Minute))
+	if c.get("/done", now.Add(5*time.Minute)); calls["/done"] != 2 {
+		t.Errorf("after expire: /done looked up %d times, want 2", calls["/done"])
+	}
+}
+
+// ghFailure tells a confirmed "no PR" and a rate limit (primary, secondary or a
+// 429) apart from every other gh failure, a bare 403 included.
+func TestGHFailure(t *testing.T) {
+	for _, tc := range []struct {
+		stderr            string
+		rateLimited, noPR bool
+	}{
+		{"no pull requests found for branch \"fix-1\"\n", false, true},
+		{"GraphQL: API rate limit exceeded for user ID 1.\n", true, false},
+		{"HTTP 403: You have exceeded a secondary rate limit.\n", true, false},
+		{"HTTP 429: Too Many Requests\n", true, false},
+		{"HTTP 403: Resource not accessible by integration\n", false, false},
+	} {
+		rl, noPR := ghFailure(&exec.ExitError{Stderr: []byte(tc.stderr)})
+		if rl != tc.rateLimited || noPR != tc.noPR {
+			t.Errorf("ghFailure(%q) = %t, %t; want %t, %t", tc.stderr, rl, noPR, tc.rateLimited, tc.noPR)
+		}
+	}
+}
+
+// While the gate is limited, get serves the last good value (stale or not)
+// without a lookup, force or no force; a lookup that trips it keeps the old
+// value; and the gate clears ghRateLimitBackoff after the trip.
+func TestCwdCacheGate(t *testing.T) {
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	gate := &ghGate{}
+	calls, trip := 0, false
+	c := &cwdCache[string]{m: map[string]cwdEntry[string]{}, gate: gate, lookup: func(string) string {
+		calls++
+		if trip {
+			gate.trip(now.Add(cwdTTL))
+			return ""
+		}
+		return "good"
+	}}
+	c.get("/wt", now)
+	trip = true
+	if got := c.get("/wt", now.Add(cwdTTL)); got != "good" || calls != 2 {
+		t.Fatalf("tripping lookup: got %q after %d lookups, want good after 2", got, calls)
+	}
+	trip = false
+	c.expire(now.Add(2 * cwdTTL))
+	if got := c.get("/wt", now.Add(2*cwdTTL)); got != "good" || calls != 2 {
+		t.Errorf("limited, forced: got %q after %d lookups, want good after 2", got, calls)
+	}
+	if got := c.get("/other", now.Add(2*cwdTTL)); got != "" || calls != 2 {
+		t.Errorf("limited miss: got %q after %d lookups, want empty after 2", got, calls)
+	}
+	if !gate.limited(now.Add(cwdTTL+ghRateLimitBackoff-time.Second)) || gate.limited(now.Add(cwdTTL+ghRateLimitBackoff)) {
+		t.Error("gate should hold for exactly ghRateLimitBackoff after the trip")
+	}
+	if c.get("/wt", now.Add(cwdTTL+ghRateLimitBackoff)); calls != 3 {
+		t.Errorf("after the backoff: %d lookups, want 3", calls)
+	}
+}
+
+// enrichCI never looks up a main/master row, still looks up a branch-less one
+// (a timed-out gitBranch), and looks up two cwds under one worktree root once.
+func TestEnrichCIKeys(t *testing.T) {
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	looked := map[string]int{}
+	ci := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{}, lookup: func(key string) ciResult {
+		mu.Lock()
+		looked[key]++
+		mu.Unlock()
+		return ciResult{State: "green", PRNumber: 7}
+	}}
+	roots := &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: filepath.Dir}
+	agents := []Agent{
+		{Branch: "main", Cwd: "/repo/x"},
+		{Branch: "master", Cwd: "/legacy/x"},
+		{Branch: "", Cwd: "/timedout/x"},
+		{Branch: "fix-1", Cwd: "/wt/a"},
+		{Branch: "fix-1", Cwd: "/wt/b"},
+	}
+	enrichCI(agents, roots, ci, now)
+	if want := map[string]int{"/timedout": 1, "/wt": 1}; !maps.Equal(looked, want) {
+		t.Errorf("lookups = %v, want %v", looked, want)
+	}
+	if agents[0].PRNumber != 0 || agents[4].PRNumber != 7 {
+		t.Errorf("main row PR %d (want 0), shared-root row PR %d (want 7)", agents[0].PRNumber, agents[4].PRNumber)
+	}
+}
+
+// The rate-limited note repaints a polling client both when it appears and when it clears.
+func TestViewSignatureTracksRateLimited(t *testing.T) {
+	if viewSignature(dashboardData{}) == viewSignature(dashboardData{GHRateLimited: true}) {
+		t.Error("signature unchanged when GHRateLimited flipped")
 	}
 }

@@ -395,14 +395,16 @@ func TestHandleActionTeardown(t *testing.T) {
 			stub, logPath := mergeTmuxStub(t, "$4")
 			cfg := newActionCfg(mergePR, "/bin/true")
 			cfg.tmux = stub
-			cfg.ledger = newQueueLedger()
+			cfg.ledger = newQueueLedger(nil)
 			if c.ledger {
 				q := queuedRow("live-1")
 				q.TmuxSession = c.snap
 				cfg.ledger.record([]Agent{q}, now)
 			}
 			cfg.panes = &paneCache{set: map[string]livePane{c.pane: {session: c.session, title: c.title}}, at: now}
-			cfg.ci = &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{dir: {val: c.ci, at: now}}}
+			// Keyed on dir's worktree root, as enrichCI stores it, so teardown must look it up through ciKey.
+			cfg.roots = &cwdCache[string]{m: map[string]cwdEntry[string]{dir: {val: "/wt-root", at: now}}}
+			cfg.ci = &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{"/wt-root": {val: c.ci, at: now}}}
 
 			w := httptest.NewRecorder()
 			handleAction(w, actionReq("live-1", "teardown", true, "secret", "127.0.0.1"), db, cfg, now)
@@ -2411,7 +2413,7 @@ func TestHandleActionBlockPR(t *testing.T) {
 		return map[string][]openPR{"o/r": {{Number: 7}, {Number: 9}}}[repo]
 	}}
 	// #9 merged since the open list was cached.
-	cfg.ledger = newQueueLedger()
+	cfg.ledger = newQueueLedger(nil)
 	cfg.ledger.finals.lookup = func(key string) ciResult {
 		return map[string]ciResult{"o/r#9": {PRNumber: 9, Done: "merged"}}[key]
 	}

@@ -82,7 +82,7 @@ func blockOnPR(db *sql.DB, blocked string, n int) int {
 		return 1
 	}
 	key := repo + "#" + strconv.Itoa(n)
-	switch r := lookupPRFinal(key); {
+	switch r := lookupPRFinal(key, nil); {
 	case r.PRNumber != n:
 		fmt.Fprintf(os.Stderr, "clodhopper block: could not confirm %s is an open PR (is gh installed and authenticated?)\n", key)
 		return 1

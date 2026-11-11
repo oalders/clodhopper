@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"database/sql"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"hash/fnv"
@@ -321,6 +323,8 @@ type dashboardData struct {
 	// the one in handleAction.
 	ExecEnabled bool
 	Debug       bool // true when ?debug=1; renders the Activity + Recent-events diagnostics sections (off by default: the roster is the whole board)
+	// GHRateLimited is true while the ghGate holds gh lookups back, so the meta line can say why CI looks frozen.
+	GHRateLimited bool
 }
 
 // refreshOption is one entry in the auto-refresh interval dropdown.
@@ -409,6 +413,7 @@ func windowOptions(current int) []windowOption {
 // allowlist.
 func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool) (*peekConfig, *actionConfig) {
 	allowed := allowedHosts()
+	gate := &ghGate{}
 	peek := &peekConfig{
 		enabled: panePeek, lines: clampPaneLines(paneLines), cache: newPaneCache(),
 		repos: newRepoCache(), roots: newRootCache(), names: newClaudeNameCache(), bindHost: host, allowedHosts: allowed,
@@ -429,9 +434,11 @@ func newServeConfigs(host string, panePeek bool, paneLines int, enableMerge bool
 		allowedHosts:      allowed,
 		inflight:          newInflightSet(),
 		panes:             peek.cache,
-		ledger:            newQueueLedger(),
+		ledger:            newQueueLedger(gate),
 		repos:             peek.repos,
-		openPRs:           newOpenPRCache(),
+		roots:             peek.roots,
+		openPRs:           newOpenPRCache(gate),
+		ghGate:            gate,
 	}
 	return peek, act
 }
@@ -517,8 +524,8 @@ func runServe(args []string) int {
 	}
 	defer db.Close()
 
-	ci := newCICache()
 	peek, act := newServeConfigs(*host, *panePeek, *paneLines, *enableMerge)
+	ci := newCICache(act.ghGate)
 	act.ci = ci
 	if act.enabled {
 		tok, err := randomToken()
@@ -558,13 +565,16 @@ func runServe(args []string) int {
 
 // cwdCache memoises per-cwd lookups (CI status; the peek's GitHub repo) so the
 // dashboard (which auto-refreshes) does not shell out on every render. Keyed by
-// cwd; entries expire after cwdTTL, or early once expire marks them stale.
-// The key need not be a cwd: queueLedger's finals use "owner/repo#N".
+// cwd; an entry expires after its TTL (ttlFor's, else ttl), or early once expire
+// marks it stale. The key need not be a cwd: queueLedger's finals use
+// "owner/repo#N", and the CI cache a worktree root (ciKey).
 type cwdCache[T any] struct {
 	mu       sync.Mutex
 	m        map[string]cwdEntry[T]
 	lookup   func(cwd string) T
 	ttl      time.Duration         // how long an entry stays fresh; 0 means cwdTTL
+	ttlFor   func(T) time.Duration // per-value TTL, overriding ttl; nil uses ttl
+	gate     *ghGate               // while limited, serve held entries and run no lookup; nil never limits
 	forcedAt time.Time             // entries stamped before this are stale
 	inflight map[string]*flight[T] // one lookup per cwd; concurrent gets wait on it
 }
@@ -572,6 +582,7 @@ type cwdCache[T any] struct {
 type cwdEntry[T any] struct {
 	val T
 	at  time.Time
+	ttl time.Duration // fixed when stored; 0 (a hand-built entry) reads as cwdTTL
 }
 
 type flight[T any] struct {
@@ -585,8 +596,69 @@ const (
 	ciForceMinInterval = 10 * time.Second
 )
 
-func newCICache() *cwdCache[ciResult] {
-	return &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{}, lookup: lookupCI}
+func newCICache(gate *ghGate) *cwdCache[ciResult] {
+	return &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{}, lookup: func(cwd string) ciResult { return lookupCI(cwd, gate) }, ttlFor: ciTTL, gate: gate}
+}
+
+// ciTTL is how long a CI verdict stays cached: short while it can still move,
+// long once the PR is done or the branch has none (#244).
+func ciTTL(r ciResult) time.Duration {
+	switch {
+	case r.Done != "" || r.NoPR:
+		return 10 * time.Minute
+	case r.Queue == "" && (r.State == "green" || r.State == "failing" || r.State == "soft-failing"):
+		return 3 * time.Minute
+	default: // pending, queued, ejected, or an error / unknown result
+		return cwdTTL
+	}
+}
+
+// ghRateLimitBackoff is how long a tripped ghGate holds every gh lookup back.
+const ghRateLimitBackoff = 5 * time.Minute
+
+// ghGate is serve's shared GitHub rate-limit backoff: once any gh call reports
+// a rate limit, the gh-backed caches serve what they hold for ghRateLimitBackoff
+// instead of spending more of the limit. A nil gate never limits.
+type ghGate struct {
+	mu sync.Mutex
+	at time.Time // when it last tripped; zero when never
+}
+
+func (g *ghGate) trip(now time.Time) {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	g.at = now
+	g.mu.Unlock()
+}
+
+// limited reports whether the gate tripped under ghRateLimitBackoff before now.
+func (g *ghGate) limited(now time.Time) bool {
+	if g == nil {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return !g.at.IsZero() && now.Sub(g.at) < ghRateLimitBackoff
+}
+
+// tripOn trips g when err is a gh failure that hit a rate limit.
+func (g *ghGate) tripOn(err error) {
+	if rateLimited, _ := ghFailure(err); rateLimited {
+		g.trip(time.Now())
+	}
+}
+
+// ghFailure classifies a failed gh call by its stderr: a primary or secondary
+// rate limit (or HTTP 429; a bare 403 is not one), or "no pull requests found".
+func ghFailure(err error) (rateLimited, noPR bool) {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) {
+		return false, false
+	}
+	s := strings.ToLower(string(ee.Stderr))
+	return strings.Contains(s, "rate limit") || strings.Contains(s, "http 429"), strings.Contains(s, "no pull requests found")
 }
 
 func newRepoCache() *cwdCache[string] {
@@ -624,18 +696,19 @@ func (c *cwdCache[T]) get(cwd string, now time.Time) T {
 		return zero
 	}
 	c.mu.Lock()
-	ttl := c.ttl
-	if ttl == 0 {
-		ttl = cwdTTL
-	}
 	e, ok := c.m[cwd]
-	if ok && now.Sub(e.at) < ttl && !e.at.Before(c.forcedAt) {
+	if ok && now.Sub(e.at) < cmp.Or(e.ttl, cwdTTL) && !e.at.Before(c.forcedAt) {
 		c.mu.Unlock()
 		return e.val
 	}
 	if c.lookup == nil {
 		c.mu.Unlock()
 		return zero
+	}
+	// Rate limited: the last good value (stale or not), never a gh call, force or no force.
+	if c.gate.limited(now) {
+		c.mu.Unlock()
+		return e.val
 	}
 	if f, ok := c.inflight[cwd]; ok {
 		c.mu.Unlock()
@@ -656,9 +729,19 @@ func (c *cwdCache[T]) get(cwd string, now time.Time) T {
 		close(f.done)
 	}()
 
-	f.val = c.lookup(cwd)
+	val := c.lookup(cwd)
 	c.mu.Lock()
-	c.m[cwd] = cwdEntry[T]{val: f.val, at: now}
+	if c.gate.limited(now) {
+		// The lookup hit the limit, so its result is a blank, not news: keep the old entry.
+		val = c.m[cwd].val
+	} else {
+		ttl := cmp.Or(c.ttl, cwdTTL)
+		if c.ttlFor != nil {
+			ttl = c.ttlFor(val)
+		}
+		c.m[cwd] = cwdEntry[T]{val: val, at: now, ttl: ttl}
+	}
+	f.val = val
 	c.mu.Unlock()
 	return f.val
 }
@@ -683,12 +766,14 @@ type ciResult struct {
 	PRRepo      string    // the PR's GitHub "owner/repo", parsed from its url; "" if not github.com
 	MergedAt    time.Time // when a merged PR merged, zero otherwise
 	RollupSince time.Time // newest check start in the rollup, zero when none reported one
+	NoPR        bool      // gh confirmed the branch has no PR (not merely an error); see ciTTL
 }
 
 // lookupCI shells out to `gh pr view` in cwd and summarises the result. It is
 // strictly best-effort: a missing gh, no PR, an unauthenticated host, or a
-// timeout all yield "" (rendered as "—"), never an error.
-func lookupCI(cwd string) ciResult {
+// timeout all yield "" (rendered as "—"), never an error. A rate-limited gh
+// trips gate.
+func lookupCI(cwd string, gate *ghGate) ciResult {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return ciResult{}
 	}
@@ -698,17 +783,20 @@ func lookupCI(cwd string) ciResult {
 	cmd.Dir = cwd
 	out, err := cmd.Output()
 	if err != nil {
-		return ciResult{} // no PR for branch, not a repo, gh unauth, or timeout
+		gate.tripOn(err)
+		_, noPR := ghFailure(err)
+		return ciResult{NoPR: noPR} // no PR for branch, not a repo, gh unauth, or timeout
 	}
 	r, id := parsePRView(out)
 	// Queue checks run on a temporary gh-readonly-queue commit the rollup never
 	// sees, so ask for the queue entry directly (#183); same ctx, same deadline.
-	return withMergeQueue(ctx, cwd, r, id)
+	return withMergeQueue(ctx, cwd, r, id, gate)
 }
 
 // withMergeQueue folds open PR id's merge-queue entry into r via gh, run in dir
-// under ctx's deadline. Best-effort: no id or any error leaves r unchanged.
-func withMergeQueue(ctx context.Context, dir string, r ciResult, id string) ciResult {
+// under ctx's deadline. Best-effort: no id or any error leaves r unchanged, a
+// rate-limited one tripping gate.
+func withMergeQueue(ctx context.Context, dir string, r ciResult, id string, gate *ghGate) ciResult {
 	if id == "" {
 		return r
 	}
@@ -716,6 +804,7 @@ func withMergeQueue(ctx context.Context, dir string, r ciResult, id string) ciRe
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
+		gate.tripOn(err)
 		return r // no queue signal, never an error
 	}
 	return applyMergeQueue(r, out, time.Now())
@@ -1062,7 +1151,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	if execOK {
 		openPRs = act.openPRs
 	}
-	enrichCI(agents, ci, now)
+	enrichCI(agents, peek.roots, ci, now)
 	suppressWatchedCI(agents, now)
 	// After dropDeadPanes (a blocker whose pane died counts as gone) and enrichCI
 	// (a merged/closed blocker's CIDone is known); before the split, since
@@ -1148,6 +1237,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 		ExecEnabled:    execOK,
 		CSRFToken:      act.token,
 		Debug:          debug,
+		GHRateLimited:  act.ghGate.limited(now),
 	}
 	data.filterRows(source, branch)
 	data.QueueNextETA = queueNextETA(data.QueuedAgents, now)
@@ -1206,6 +1296,7 @@ func viewSignature(d dashboardData) string {
 	// Unlike the per-row queue labels, the queue card's countdown is hashed so it
 	// cannot freeze on a quiet board; it ticks once a minute until its last minute.
 	fmt.Fprintf(h, "|n:%q", d.QueueNextETA)
+	fmt.Fprintf(h, "|g:%t", d.GHRateLimited)
 
 	// The section tag makes a row moving between the roster and the queue repaint.
 	for _, sec := range []struct {
@@ -1563,7 +1654,7 @@ func etaPhrase(eta, now time.Time) string {
 // with no known branch are skipped: their BranchGuess already names the dir.
 // main/master are skipped too: the primary checkout, whose dir is just the repo's name.
 func setWorktrees(agents []Agent, roots *cwdCache[string], now time.Time) {
-	noSuffix := func(a Agent) bool { return a.Branch == "" || a.Branch == "main" || a.Branch == "master" }
+	noSuffix := func(a Agent) bool { return a.Branch == "" || defaultBranch(a.Branch) }
 	found := lookupCwds(slices.DeleteFunc(slices.Clone(agents), noSuffix), roots, now)
 	for i, a := range agents {
 		if noSuffix(a) {
@@ -1614,11 +1705,28 @@ func lookupKeys[T any](keys []string, c *cwdCache[T], now time.Time) map[string]
 	return results
 }
 
-// enrichCI fills each agent's CI fields.
-func enrichCI(agents []Agent, ci *cwdCache[ciResult], now time.Time) {
-	results := lookupCwds(agents, ci, now)
+// defaultBranch reports whether branch is a repo's main or master.
+func defaultBranch(branch string) bool { return branch == "main" || branch == "master" }
+
+// ciKey is the CI cache key for cwd: its worktree root, so every subdirectory
+// of one worktree shares one gh lookup, falling back to cwd when unresolved.
+func ciKey(roots *cwdCache[string], cwd string, now time.Time) string {
+	return cmp.Or(roots.get(cwd, now), cwd)
+}
+
+// enrichCI fills each agent's CI fields. A main/master row is never looked up:
+// it has no PR of its own. A branch-less row is, as a timed-out gitBranch
+// leaves a feature branch "" too.
+func enrichCI(agents []Agent, roots *cwdCache[string], ci *cwdCache[ciResult], now time.Time) {
+	keys := make([]string, len(agents))
+	for i, a := range agents {
+		if !defaultBranch(a.Branch) {
+			keys[i] = ciKey(roots, a.Cwd, now)
+		}
+	}
+	results := lookupKeys(keys, ci, now)
 	for i := range agents {
-		r := results[agents[i].Cwd]
+		r := results[keys[i]]
 		agents[i].CI, agents[i].CIFails, agents[i].CIPasses, agents[i].CIConflict = r.State, r.Fails, r.Passes, r.Conflict
 		agents[i].CIDraft, agents[i].CIDone = r.Draft, r.Done
 		agents[i].PRNumber, agents[i].PRRepo, agents[i].PRMergedAt = r.PRNumber, r.PRRepo, unixOrZero(r.MergedAt)

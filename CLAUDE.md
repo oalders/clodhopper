@@ -168,8 +168,11 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
 - **Schema migrations** append to the `migrations` slice in `store.go` and run
   best-effort (an already-applied `ALTER` errors harmlessly and is ignored).
 - **CI status** (`server.go`) shells out to one `gh pr view --json
-  id,state,isDraft,mergeStateStatus,statusCheckRollup` per cwd, memoised in `cwdCache` (60s TTL)
-  and fetched concurrently across worktrees. The "refresh CI" button sends
+  id,state,isDraft,mergeStateStatus,statusCheckRollup` per worktree root (`ciKey`; main/master
+  rows are skipped), memoised in `cwdCache` with a per-state TTL (`ciTTL`: 60s to 10min)
+  and fetched concurrently across worktrees. Any gh call that reports a rate limit trips the
+  shared `ghGate`: for 5 min the gh-backed caches serve their last value and run no gh, and the
+  meta line says so. The "refresh CI" button sends
   `/api/state?force=1`, which calls `expire` (throttled to once per
   `ciForceMinInterval`); concurrent `get`s for one cwd share one lookup. The rollup drives the state and fail
   count (`classifyRollup`); `mergeStateStatus` only refines it (UNSTABLE →

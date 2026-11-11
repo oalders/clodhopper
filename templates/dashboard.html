@@ -849,7 +849,7 @@
       <button type="button" id="ck-filtersbtn" class="ck-btn" aria-controls="ck-filters">filters <span id="ck-fbadge" class="ck-fbadge"></span></button>
       <button type="button" id="ck-debug" class="ck-btn" aria-pressed="false" title="show the Activity + Recent-events diagnostics">debug</button>
       <button type="button" id="ck-pin" class="ck-btn" aria-pressed="false" title="freeze the roster's group order so a row can't re-sort away while you act on it — data still updates live">pin order</button>
-      <button type="button" id="ck-ciforce" class="ck-btn" title="re-check PR/CI status now instead of waiting for the cache (up to a minute)">refresh CI</button>
+      <button type="button" id="ck-ciforce" class="ck-btn" title="re-check PR/CI status now instead of waiting for the cache (up to 10 minutes)">refresh CI</button>
       <button type="button" id="ck-theme" class="ck-btn" aria-pressed="false">☾ dark</button>
     </div>
   </header>
@@ -1298,7 +1298,11 @@
       // Idle is shown in minutes once past 60s, so a 30s cadence keeps the
       // displayed value within ~30s of true without per-second churn.
       setInterval(tickIdle, 30000);
-      setInterval(function () { poll(location.search); }, refresh * 1000);
+      // A hidden tab skips its polls (each can run gh, #244) and catches up on return.
+      setInterval(function () { if (!document.hidden) poll(location.search); }, refresh * 1000);
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) poll(location.search);
+      });
     }
   })();
 
@@ -3109,6 +3113,7 @@
   <div class="ck-meta">
     last change {{ .Generated }}
     {{ if .RefreshSecs }}· <span class="live">live</span> (checks every {{ .RefreshSecs }}s){{ else }}· auto-refresh off{{ end }}
+    {{ if .GHRateLimited }}· GitHub rate limited{{ end }}
   </div>
 
   <section class="ck-card">

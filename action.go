@@ -605,8 +605,12 @@ type actionConfig struct {
 	// server-side; nil resolves nothing, so block-pr refuses.
 	repos   *cwdCache[string]
 	openPRs *cwdCache[[]openPR]
-	// ci is the shared CI cache teardown re-checks by the session's latest cwd; nil refuses.
-	ci *cwdCache[ciResult]
+	// ci is the shared CI cache teardown re-checks by the session's latest cwd
+	// (keyed through roots, see ciKey); nil refuses.
+	ci    *cwdCache[ciResult]
+	roots *cwdCache[string]
+	// ghGate is serve's shared gh rate-limit backoff (see ghGate), read for the meta line.
+	ghGate *ghGate
 }
 
 // randomToken returns a 256-bit hex CSRF secret, regenerated each serve start.
@@ -909,7 +913,7 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 				writeActionResult(w, actionResult{ExitCode: -1, Output: "pane now belongs to another tmux session; run merge-pr from a terminal in its worktree"})
 				return
 			}
-			pr := cfg.ci.get(cwd, now)
+			pr := cfg.ci.get(ciKey(cfg.roots, cwd, now), now)
 			if (pr.Done != "merged" && pr.Done != "closed") || finalKey(Agent{PRRepo: pr.PRRepo, PRNumber: pr.PRNumber}) != finalKey(snap) {
 				http.Error(w, "PR is not merged or closed", http.StatusConflict)
 				return

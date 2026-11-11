@@ -44,8 +44,9 @@ type ledgerRow struct {
 	MergedAgo string // time since PRMergedAt ("5m ago"); "" when unknown
 }
 
-func newQueueLedger() *queueLedger {
-	return &queueLedger{m: map[string]ledgerEntry{}, finals: &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{}, lookup: lookupPRFinal}}
+func newQueueLedger(gate *ghGate) *queueLedger {
+	finals := &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{}, lookup: func(key string) ciResult { return lookupPRFinal(key, gate) }, ttlFor: ciTTL, gate: gate}
+	return &queueLedger{m: map[string]ledgerEntry{}, finals: finals}
 }
 
 // record refreshes the entry of every queued row, then applies ledgerTTL and
@@ -240,7 +241,8 @@ func validRepo(repo string) bool {
 // queue entry too, as lookupCI does. Best-effort, like lookupCI: invalid input,
 // a missing gh, an error or a timeout yield the zero ciResult. It skips the
 // rollup, so RollupSince stays zero and an ejection never lapses here (#218).
-func lookupPRFinal(key string) ciResult {
+// A rate-limited gh trips gate.
+func lookupPRFinal(key string, gate *ghGate) ciResult {
 	args, ok := prFinalArgs(key)
 	if !ok {
 		return ciResult{}
@@ -249,10 +251,11 @@ func lookupPRFinal(key string) ciResult {
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "gh", args...).Output()
 	if err != nil {
+		gate.tripOn(err)
 		return ciResult{}
 	}
 	r, id := parsePRView(out)
-	return withMergeQueue(ctx, "", r, id)
+	return withMergeQueue(ctx, "", r, id, gate)
 }
 
 // openPR is one open pull request the block picker offers. Title and Author
@@ -267,8 +270,8 @@ type openPR struct {
 // the PR chip's tooltip, and a new PR can wait a few minutes to be offered.
 const openPRTTL = 5 * time.Minute
 
-func newOpenPRCache() *cwdCache[[]openPR] {
-	return &cwdCache[[]openPR]{m: map[string]cwdEntry[[]openPR]{}, lookup: lookupOpenPRs, ttl: openPRTTL}
+func newOpenPRCache(gate *ghGate) *cwdCache[[]openPR] {
+	return &cwdCache[[]openPR]{m: map[string]cwdEntry[[]openPR]{}, lookup: func(repo string) []openPR { return lookupOpenPRs(repo, gate) }, ttl: openPRTTL, gate: gate}
 }
 
 // prListArgs is the gh argv that lists repo's open PRs, or false when repo
@@ -283,7 +286,7 @@ func prListArgs(repo string) ([]string, bool) {
 
 // lookupOpenPRs lists repo's open PRs through gh. Best-effort, like
 // lookupPRFinal: invalid input, a missing gh, an error or a timeout yield nil.
-func lookupOpenPRs(repo string) []openPR {
+func lookupOpenPRs(repo string, gate *ghGate) []openPR {
 	args, ok := prListArgs(repo)
 	if !ok {
 		return nil
@@ -292,6 +295,7 @@ func lookupOpenPRs(repo string) []openPR {
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "gh", args...).Output()
 	if err != nil {
+		gate.tripOn(err)
 		return nil
 	}
 	return parseOpenPRs(out)
