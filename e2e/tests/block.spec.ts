@@ -106,7 +106,7 @@ test('the ✕ on a blocked row folded into the merge queue sends unblock', async
   await page.locator('#ck-mq > summary').click();
   const qchip = page.locator(`#row-${queued} .blockchip`);
   await expect(qchip.getByRole('button', { name: 'blocked on fix-1235' })).toBeVisible();
-  await qchip.getByRole('button', { name: 'unblock main from fix-1235' }).click();
+  await qchip.getByRole('button', { name: 'unblock mq-queued from fix-1235' }).click();
   await expect(qchip.locator('.actmsg')).toHaveText('unblocked — row will update');
   expect(posts).toHaveLength(1);
   expect(posts[0].postData()).toBe(`session_id=${queued}&action=unblock`);
@@ -175,7 +175,7 @@ test('the row panel blocks on a picked open PR', async ({ page }) => {
   await expect(form.locator('optgroup[label^="open PRs"]')).toHaveAttribute('label', 'open PRs · e2e/draft-conflict');
   await expect(form.locator('option[value="pr:101"]')).toHaveText('#101 Land the parser');
   await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption('pr:101');
-  await form.getByRole('button', { name: 'mark main as blocked on the selected row' }).click();
+  await form.getByRole('button', { name: 'mark mq-draft-conflict as blocked on the selected row' }).click();
   await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');
   expect(posts).toHaveLength(1);
   expect(posts[0].postData()).toBe(`session_id=${draft}&action=block-pr&blocker_pr=101`);
@@ -195,7 +195,7 @@ test('a PR block relaxes the row and its chip links to the PR', async ({ page })
 test('the PR chip ✕ sends unblock for the blocked row', async ({ page }) => {
   const posts = await stubAction(page);
   await page.evaluate(() => { (window as unknown as { __ckActionBusy: number }).__ckActionBusy = 1; });
-  await page.locator(prChip).getByRole('button', { name: 'unblock main from PR #101' }).click();
+  await page.locator(prChip).getByRole('button', { name: 'unblock mq-draft-conflict from PR #101' }).click();
   await expect(page.locator(prChip).locator('.actmsg')).toHaveText('unblocked — row will update');
   expect(posts).toHaveLength(1);
   expect(posts[0].postData()).toBe(`session_id=${draft}&action=unblock`);

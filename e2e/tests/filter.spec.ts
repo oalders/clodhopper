@@ -99,7 +99,7 @@ test('hiding the first row of a group moves its divider; clearing restores it', 
   const { box } = await filterFor(page, 'waiting');
   const lead = page.locator('#row-e2e-approval-0000-1111-2222-333333333333');
   const group = (await lead.getAttribute('data-group'))!;
-  // The group's first row the filter keeps (a blocked row in between misses "waiting" too).
+  // The group's first row the filter keeps.
   const next = page.locator(`#row-e2e-approval-0000-1111-2222-333333333333 ~ tr[data-group="${group}"]:not(.ck-qhide)`).first();
   await expect(lead).toBeHidden();
   await expect(next).toBeVisible();

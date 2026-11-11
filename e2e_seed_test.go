@@ -101,7 +101,8 @@ func TestE2ESeed(t *testing.T) {
 	// Merge-queue rows for queue.spec.ts: e2e/serve.sh creates these dirs under
 	// CLODHOPPER_E2E_REPOS, and its stub gh reports two queued, one ejected, one
 	// merged and one a conflicted draft, plus, on the exec server only, one queued
-	// then merged (ledger.spec.ts). Each is on a feature branch: serve never looks up a main/master row's CI.
+	// then merged (ledger.spec.ts). Each is on an mq-<name> branch, as serve never looks up a
+	// main/master row's CI; block.spec.ts names these branches in its button labels.
 	if repos := os.Getenv("CLODHOPPER_E2E_REPOS"); repos != "" {
 		for _, name := range []string{"queued", "ejected", "merged", "landing", "draft-conflict"} {
 			if _, err := os.Stat(filepath.Join(repos, name)); err != nil {
