@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -4748,6 +4749,7 @@ func TestCITTL(t *testing.T) {
 		{ciResult{State: "failing", PRNumber: 1}, 3 * time.Minute},
 		{ciResult{State: "soft-failing", PRNumber: 1}, 3 * time.Minute},
 		{ciResult{Done: "merged", PRNumber: 1}, 10 * time.Minute},
+		{ciResult{Done: "closed", PRNumber: 1}, cwdTTL}, // a closed PR can be reopened
 		{ciResult{NoPR: true}, 10 * time.Minute},
 	} {
 		if got := ciTTL(tc.r); got != tc.want {
@@ -4848,16 +4850,22 @@ func TestEnrichCIKeys(t *testing.T) {
 		mu.Unlock()
 		return ciResult{State: "green", PRNumber: 7}
 	}}
-	roots := &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: filepath.Dir}
+	roots := &cwdCache[string]{m: map[string]cwdEntry[string]{}, lookup: func(cwd string) string {
+		if cwd == "/notgit/x" {
+			return "" // unresolved: the key falls back to the cwd
+		}
+		return filepath.Dir(cwd)
+	}}
 	agents := []Agent{
 		{Branch: "main", Cwd: "/repo/x"},
 		{Branch: "master", Cwd: "/legacy/x"},
 		{Branch: "", Cwd: "/timedout/x"},
 		{Branch: "fix-1", Cwd: "/wt/a"},
 		{Branch: "fix-1", Cwd: "/wt/b"},
+		{Branch: "fix-2", Cwd: "/notgit/x"},
 	}
 	enrichCI(agents, roots, ci, now)
-	if want := map[string]int{"/timedout": 1, "/wt": 1}; !maps.Equal(looked, want) {
+	if want := map[string]int{"/timedout": 1, "/wt": 1, "/notgit/x": 1}; !maps.Equal(looked, want) {
 		t.Errorf("lookups = %v, want %v", looked, want)
 	}
 	if agents[0].PRNumber != 0 || agents[4].PRNumber != 7 {
@@ -4869,5 +4877,117 @@ func TestEnrichCIKeys(t *testing.T) {
 func TestViewSignatureTracksRateLimited(t *testing.T) {
 	if viewSignature(dashboardData{}) == viewSignature(dashboardData{GHRateLimited: true}) {
 		t.Error("signature unchanged when GHRateLimited flipped")
+	}
+}
+
+// Every gh-backed lookup trips the gate on a rate-limited stderr, and lookupCI
+// alone marks a confirmed "no PR". The fake gh fails the call named by fail
+// (its first two args) with stderr; any other call gets an open PR with an id.
+func TestGHLookupsTripGate(t *testing.T) {
+	const limit = "GraphQL: API rate limit exceeded for user ID 1."
+	ci := func(g *ghGate) bool { return lookupCI(t.TempDir(), g).NoPR }
+	for _, tc := range []struct {
+		name, fail, stderr string
+		run                func(*ghGate) bool // reports NoPR
+		limited, noPR      bool
+	}{
+		{"pr view rate limited", "pr view", limit, ci, true, false},
+		{"no PR", "pr view", `no pull requests found for branch "x"`, ci, false, true},
+		{"merge queue rate limited", "api graphql", limit, ci, true, false},
+		{"ledger final rate limited", "pr view", limit, func(g *ghGate) bool { return lookupPRFinal("o/r#1", g).NoPR }, true, false},
+		{"open PRs rate limited", "pr list", limit, func(g *ghGate) bool { lookupOpenPRs("o/r", g); return false }, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			script := fmt.Sprintf("#!/bin/sh\nif [ \"$1 $2\" = %q ]; then echo %q >&2; exit 1; fi\n"+
+				"echo '{\"id\":\"PR_1\",\"number\":1,\"state\":\"OPEN\",\"statusCheckRollup\":[]}'\n", tc.fail, tc.stderr)
+			if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+			g := &ghGate{}
+			noPR := tc.run(g)
+			if got := g.limited(time.Now()); got != tc.limited || noPR != tc.noPR {
+				t.Errorf("limited = %t, NoPR = %t; want %t, %t", got, noPR, tc.limited, tc.noPR)
+			}
+		})
+	}
+}
+
+// The ledger's finals and the open-PR cache serve their old value, and run no
+// gh, once the gate they were built with trips.
+func TestGHCachesHonourGate(t *testing.T) {
+	dir := t.TempDir()
+	ran := filepath.Join(dir, "ran")
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\necho >"+ran+"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	now := time.Now()
+	g := &ghGate{}
+	finals, open := newQueueLedger(g).finals, newOpenPRCache(g)
+	finals.m["o/r#1"] = cwdEntry[ciResult]{val: ciResult{Done: "merged"}, at: now.Add(-time.Hour)}
+	open.m["o/r"] = cwdEntry[[]openPR]{val: []openPR{{Number: 1}}, at: now.Add(-time.Hour)}
+	g.trip(now)
+	if got := finals.get("o/r#1", now); got.Done != "merged" {
+		t.Errorf("finals = %+v, want the old merged value", got)
+	}
+	if got := open.get("o/r", now); len(got) != 1 {
+		t.Errorf("open PRs = %+v, want the old list", got)
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Error("gh ran while the gate was limited")
+	}
+}
+
+// A get waiting on an in-flight lookup that trips the gate gets the old value, not the blank.
+func TestCwdCacheGateInflightWaiter(t *testing.T) {
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	gate := &ghGate{}
+	var calls atomic.Int32
+	started, release := make(chan struct{}), make(chan struct{})
+	c := &cwdCache[string]{m: map[string]cwdEntry[string]{"/wt": {val: "good", at: now.Add(-time.Hour)}}, gate: gate, lookup: func(string) string {
+		calls.Add(1)
+		close(started)
+		<-release
+		gate.trip(now)
+		return ""
+	}}
+	got := make(chan string, 2)
+	go func() { got <- c.get("/wt", now) }()
+	<-started
+	go func() { got <- c.get("/wt", now) }()
+	time.Sleep(50 * time.Millisecond) // let the waiter reach the in-flight lookup
+	close(release)
+	for range 2 {
+		if v := <-got; v != "good" {
+			t.Errorf("got %q, want the old value", v)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Errorf("%d lookups, want 1", calls.Load())
+	}
+}
+
+// A tripped gate sets GHRateLimited and puts the note in the rendered meta line.
+func TestDashboardRateLimitedNote(t *testing.T) {
+	db := openTestDB(t)
+	gate := &ghGate{}
+	gate.trip(time.Now())
+	data, err := buildDashboardData(httptest.NewRequest(http.MethodGet, "/", nil), db, newCICache(nil), &peekConfig{cache: newPaneCache()}, &actionConfig{ghGate: gate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !data.GHRateLimited {
+		t.Fatal("GHRateLimited not set")
+	}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.Execute(&buf, data); err != nil {
+		t.Fatal(err)
+	}
+	_, meta, _ := strings.Cut(buf.String(), `<div class="ck-meta">`)
+	meta, _, _ = strings.Cut(meta, "</div>")
+	if !strings.Contains(meta, "GitHub rate limited") {
+		t.Errorf("meta line %q lacks the rate-limit note", meta)
 	}
 }

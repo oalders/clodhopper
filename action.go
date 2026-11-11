@@ -918,6 +918,11 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 				http.Error(w, "PR is not merged or closed", http.StatusConflict)
 				return
 			}
+			// A closed PR can be reopened, and a limited gate serves a stale verdict; merged is final.
+			if pr.Done == "closed" && cfg.ghGate.limited(now) {
+				http.Error(w, "GitHub rate limited; cannot confirm the PR is still closed", http.StatusConflict)
+				return
+			}
 		}
 		writeActionResult(w, startMergeWindow(cfg.tmux, cfg.mergePR, pane, cwd, args))
 		return

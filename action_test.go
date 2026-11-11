@@ -374,17 +374,21 @@ func TestHandleActionTeardown(t *testing.T) {
 		code    int
 		starts  bool
 		refusal string // the 200 refusal's text when nothing starts
+		limited bool   // the gh gate is tripped, so the CI verdict may be stale
 	}{
-		{"merged", true, "%12", "s", "", "s", merged, http.StatusOK, true, ""},
-		{"session labelled by its title", true, "%12", "fix/b-live-1", "Fix it", "Fix it", merged, http.StatusOK, true, ""},
-		{"pane has no session", true, "%12", "", "", "", merged, http.StatusOK, false, "belongs to another tmux session"},
-		{"closed", true, "%12", "s", "", "s", ciResult{Done: "closed", PRRepo: "o/r", PRNumber: 7}, http.StatusOK, true, ""},
-		{"no ledger entry", false, "%12", "s", "", "s", merged, http.StatusNotFound, false, ""},
-		{"pane not live", true, "%99", "s", "", "s", merged, http.StatusOK, false, "not in tmux"},
-		{"pane reused by another session", true, "%12", "other", "", "s", merged, http.StatusOK, false, "belongs to another tmux session"},
-		{"PR still open", true, "%12", "s", "", "s", ciResult{State: "passing", PRRepo: "o/r", PRNumber: 7}, http.StatusConflict, false, ""},
-		{"another PR merged", true, "%12", "s", "", "s", ciResult{Done: "merged", PRRepo: "o/r", PRNumber: 8}, http.StatusConflict, false, ""},
-		{"same number merged in another repo", true, "%12", "s", "", "s", ciResult{Done: "merged", PRRepo: "o/other", PRNumber: 7}, http.StatusConflict, false, ""},
+		{"merged", true, "%12", "s", "", "s", merged, http.StatusOK, true, "", false},
+		{"session labelled by its title", true, "%12", "fix/b-live-1", "Fix it", "Fix it", merged, http.StatusOK, true, "", false},
+		{"pane has no session", true, "%12", "", "", "", merged, http.StatusOK, false, "belongs to another tmux session", false},
+		{"closed", true, "%12", "s", "", "s", ciResult{Done: "closed", PRRepo: "o/r", PRNumber: 7}, http.StatusOK, true, "", false},
+		{"no ledger entry", false, "%12", "s", "", "s", merged, http.StatusNotFound, false, "", false},
+		{"pane not live", true, "%99", "s", "", "s", merged, http.StatusOK, false, "not in tmux", false},
+		{"pane reused by another session", true, "%12", "other", "", "s", merged, http.StatusOK, false, "belongs to another tmux session", false},
+		{"PR still open", true, "%12", "s", "", "s", ciResult{State: "passing", PRRepo: "o/r", PRNumber: 7}, http.StatusConflict, false, "", false},
+		{"another PR merged", true, "%12", "s", "", "s", ciResult{Done: "merged", PRRepo: "o/r", PRNumber: 8}, http.StatusConflict, false, "", false},
+		{"same number merged in another repo", true, "%12", "s", "", "s", ciResult{Done: "merged", PRRepo: "o/other", PRNumber: 7}, http.StatusConflict, false, "", false},
+		// A closed PR can be reopened, so a possibly stale "closed" is refused; merged is final.
+		{"merged while rate limited", true, "%12", "s", "", "s", merged, http.StatusOK, true, "", true},
+		{"closed while rate limited", true, "%12", "s", "", "s", ciResult{Done: "closed", PRRepo: "o/r", PRNumber: 7}, http.StatusConflict, false, "", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -405,6 +409,10 @@ func TestHandleActionTeardown(t *testing.T) {
 			// Keyed on dir's worktree root, as enrichCI stores it, so teardown must look it up through ciKey.
 			cfg.roots = &cwdCache[string]{m: map[string]cwdEntry[string]{dir: {val: "/wt-root", at: now}}}
 			cfg.ci = &cwdCache[ciResult]{m: map[string]cwdEntry[ciResult]{"/wt-root": {val: c.ci, at: now}}}
+			if c.limited {
+				cfg.ghGate = &ghGate{}
+				cfg.ghGate.trip(now)
+			}
 
 			w := httptest.NewRecorder()
 			handleAction(w, actionReq("live-1", "teardown", true, "secret", "127.0.0.1"), db, cfg, now)

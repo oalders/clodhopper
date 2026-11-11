@@ -572,8 +572,8 @@ type cwdCache[T any] struct {
 	mu       sync.Mutex
 	m        map[string]cwdEntry[T]
 	lookup   func(cwd string) T
-	ttl      time.Duration         // how long an entry stays fresh; 0 means cwdTTL
-	ttlFor   func(T) time.Duration // per-value TTL, overriding ttl; nil uses ttl
+	ttl      time.Duration         // TTL fixed on each entry as it is stored; 0 means cwdTTL
+	ttlFor   func(T) time.Duration // per-value TTL fixed on the entry instead; nil uses ttl
 	gate     *ghGate               // while limited, serve held entries and run no lookup; nil never limits
 	forcedAt time.Time             // entries stamped before this are stale
 	inflight map[string]*flight[T] // one lookup per cwd; concurrent gets wait on it
@@ -601,14 +601,15 @@ func newCICache(gate *ghGate) *cwdCache[ciResult] {
 }
 
 // ciTTL is how long a CI verdict stays cached: short while it can still move,
-// long once the PR is done or the branch has none (#244).
+// long once the PR merged or the branch has none (#244). A closed PR can be
+// reopened, so it stays short.
 func ciTTL(r ciResult) time.Duration {
 	switch {
-	case r.Done != "" || r.NoPR:
+	case r.Done == "merged" || r.NoPR:
 		return 10 * time.Minute
-	case r.Queue == "" && (r.State == "green" || r.State == "failing" || r.State == "soft-failing"):
+	case r.Done == "" && r.Queue == "" && (r.State == "green" || r.State == "failing" || r.State == "soft-failing"):
 		return 3 * time.Minute
-	default: // pending, queued, ejected, or an error / unknown result
+	default: // pending, queued, ejected, closed, or an error / unknown result
 		return cwdTTL
 	}
 }
@@ -1718,6 +1719,8 @@ func ciKey(roots *cwdCache[string], cwd string, now time.Time) string {
 // it has no PR of its own. A branch-less row is, as a timed-out gitBranch
 // leaves a feature branch "" too.
 func enrichCI(agents []Agent, roots *cwdCache[string], ci *cwdCache[ciResult], now time.Time) {
+	// Warm roots concurrently, so the ciKey calls below are cache hits.
+	lookupCwds(slices.DeleteFunc(slices.Clone(agents), func(a Agent) bool { return defaultBranch(a.Branch) }), roots, now)
 	keys := make([]string, len(agents))
 	for i, a := range agents {
 		if !defaultBranch(a.Branch) {
