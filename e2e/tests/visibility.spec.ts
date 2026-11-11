@@ -32,8 +32,8 @@ test('a hidden tab stops polling and polls once on return', async ({ page }) => 
   });
   await page.goto('/?refresh=5');
   await page.locator('#content').waitFor();
-  // Frozen from here, so only runFor moves time. The jump may fire a tick, hence a baseline,
-  // not an absolute count: every 5s window of runFor holds exactly one 5s tick.
+  // Real time flowed until now (and the jump may fire a tick), hence a baseline, not an
+  // absolute count. Frozen from here: each 5s window of runFor holds exactly one 5s tick.
   await page.clock.pauseAt(t0 + 60 * 60_000);
   const base = await polls(page);
 

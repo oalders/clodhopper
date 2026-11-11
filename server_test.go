@@ -4997,7 +4997,11 @@ func TestDashboardRateLimitedNote(t *testing.T) {
 // newServeConfigs hands every gh-backed cache the one gate the meta line reads,
 // so a rate limit seen by any of them holds them all back.
 func TestNewServeConfigsSharesOneGate(t *testing.T) {
-	_, act := newServeConfigs("127.0.0.1", false, paneLinesDefault, false)
+	t.Setenv("HOME", t.TempDir())
+	peek, act := newServeConfigs("127.0.0.1", false, paneLinesDefault, false)
+	if act.roots != peek.roots || act.repos != peek.repos {
+		t.Error("act and peek must share one roots and one repos cache, or teardown's ciKey misses enrichCI's entries")
+	}
 	g := act.ghGate
 	if g == nil || act.ci.gate != g || act.ledger.finals.gate != g || act.openPRs.gate != g {
 		t.Errorf("gates: act %p, ci %p, finals %p, open PRs %p; want one shared non-nil gate", g, act.ci.gate, act.ledger.finals.gate, act.openPRs.gate)
