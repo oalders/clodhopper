@@ -357,9 +357,12 @@ func TestAgentRoster_DropsSessionSupersededInPane(t *testing.T) {
 	}
 	defer db.Close()
 	now := time.Now().UTC()
-	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	evS := func(secs int, sess, pane, tmuxSess, etype, payload string) {
+		ts := now.Add(time.Duration(-secs) * time.Second).Format(time.RFC3339)
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "main", TmuxSession: tmuxSess, TmuxPane: pane, SessionID: sess, EventType: etype, PayloadJSON: payload})
+	}
 	ev := func(mins int, sess, pane, tmuxSess, etype, payload string) {
-		insertEvent(db, Event{TS: at(mins), SourceApp: "myapp", Branch: "main", TmuxSession: tmuxSess, TmuxPane: pane, SessionID: sess, EventType: etype, PayloadJSON: payload})
+		evS(mins*60, sess, pane, tmuxSess, etype, payload)
 	}
 	// old exits without SessionEnd; new starts in the same pane.
 	ev(50, "old", "%1", "app", "SessionStart", `{"source":"startup"}`)
@@ -380,8 +383,28 @@ func TestAgentRoster_DropsSessionSupersededInPane(t *testing.T) {
 	ev(25, "sub-parent", "%4", "app", "SubagentStop", `{"agent_id":"a1"}`)
 	// A parent mid tool call (its Bash running claude -p) emits nothing until
 	// the call returns, so the child's start must not hide it meanwhile.
-	ev(24, "busy", "%5", "app", "PreToolUse", "{}")
-	ev(23, "busy-child", "%5", "app", "SessionStart", `{"source":"startup"}`)
+	evS(120, "busy", "%5", "app", "PreToolUse", "{}")
+	evS(60, "busy-child", "%5", "app", "SessionStart", `{"source":"startup"}`)
+	// ...but past staleInFlightSecs a hard kill mid tool call is the likelier story.
+	ev(30, "stale-busy", "%11", "app", "PreToolUse", "{}")
+	ev(29, "stale-busy-next", "%11", "app", "SessionStart", `{"source":"startup"}`)
+	// A child a hook launches starts within supersedeGrace of the parent's Stop.
+	evS(300, "quick", "%8", "app", "Stop", "{}")
+	evS(295, "quick-child", "%8", "app", "SessionStart", `{"source":"startup"}`)
+	// A subagent's SessionStart does not take over the pane.
+	ev(15, "sub-start", "%9", "app", "Stop", "{}")
+	ev(14, "sub-starter", "%9", "app", "SessionStart", `{"agent_id":"a1"}`)
+	// Only the pane's current holder ending releases it: an earlier holder's
+	// late SessionEnd must not.
+	ev(13, "ender", "%10", "app", "SessionStart", `{"source":"startup"}`)
+	ev(12, "old2", "%10", "app", "Stop", "{}")
+	ev(11, "new2", "%10", "app", "SessionStart", `{"source":"startup"}`)
+	ev(10, "ender", "%10", "app", "SessionEnd", "{}")
+	// `clodhopper end` writes its SessionEnd with no tmux fields; it still
+	// releases the pane.
+	ev(9, "q2", "%12", "app", "Stop", "{}")
+	ev(8, "q2-child", "%12", "app", "SessionStart", `{"source":"startup"}`)
+	ev(7, "q2-child", "", "", "SessionEnd", "{}")
 	// A child that has ended no longer occupies the pane, even if the parent
 	// (waiting for the user, or on a background shell) never speaks again.
 	ev(22, "quiet", "%6", "app", "Stop", "{}")
@@ -393,11 +416,11 @@ func TestAgentRoster_DropsSessionSupersededInPane(t *testing.T) {
 	ev(17, "nolabel-a", "%7", "", "Stop", "{}")
 	ev(16, "nolabel-b", "%7", "", "SessionStart", `{"source":"startup"}`)
 	// resuming old later makes it current again and supersedes the other.
-	ev(10, "r-old", "%3", "app", "Stop", "{}")
-	ev(9, "r-new", "%3", "app", "SessionStart", `{"source":"startup"}`)
-	ev(8, "r-new", "%3", "app", "Stop", "{}")
-	ev(7, "r-old", "%3", "app", "SessionStart", `{"source":"resume"}`)
 	ev(6, "r-old", "%3", "app", "Stop", "{}")
+	ev(5, "r-new", "%3", "app", "SessionStart", `{"source":"startup"}`)
+	ev(4, "r-new", "%3", "app", "Stop", "{}")
+	ev(3, "r-old", "%3", "app", "SessionStart", `{"source":"resume"}`)
+	ev(2, "r-old", "%3", "app", "Stop", "{}")
 
 	agents, err := agentRoster(db, time.Hour, 0, now)
 	if err != nil {
@@ -408,7 +431,10 @@ func TestAgentRoster_DropsSessionSupersededInPane(t *testing.T) {
 		got = append(got, a.SessionID)
 	}
 	slices.Sort(got)
-	want := []string{"busy", "busy-child", "child", "elsewhere", "new", "nolabel-a", "nolabel-b", "nopane-a", "nopane-b", "parent", "quiet", "r-old", "sub-child", "sub-parent"}
+	want := []string{
+		"busy", "busy-child", "child", "elsewhere", "new", "new2", "nolabel-a", "nolabel-b", "nopane-a", "nopane-b",
+		"parent", "q2", "quick", "quick-child", "quiet", "r-old", "stale-busy-next", "sub-child", "sub-parent", "sub-start",
+	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("sessions = %v, want %v", got, want)
 	}
