@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -343,5 +344,76 @@ func TestAgentRoster_EmptyTmuxPaneDoesNotClobber(t *testing.T) {
 	}
 	if len(agents) != 1 || agents[0].TmuxPane != "%1" {
 		t.Fatalf("want 1 agent keeping pane %%1 (empty later capture must not clobber), got %+v", agents)
+	}
+}
+
+// A pane runs one Claude at a time, so a SessionStart in a pane after another
+// session's last event there means that session's process is gone, even though
+// it never sent SessionEnd (a hard kill, or an exit that skipped the hook).
+func TestAgentRoster_DropsSessionSupersededInPane(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	at := func(mins int) string { return now.Add(time.Duration(-mins) * time.Minute).Format(time.RFC3339) }
+	ev := func(mins int, sess, pane, tmuxSess, etype, payload string) {
+		insertEvent(db, Event{TS: at(mins), SourceApp: "myapp", Branch: "main", TmuxSession: tmuxSess, TmuxPane: pane, SessionID: sess, EventType: etype, PayloadJSON: payload})
+	}
+	// old exits without SessionEnd; new starts in the same pane.
+	ev(50, "old", "%1", "app", "SessionStart", `{"source":"startup"}`)
+	ev(45, "old", "%1", "app", "Stop", "{}")
+	ev(40, "new", "%1", "app", "SessionStart", `{"source":"startup"}`)
+	ev(39, "new", "%1", "app", "Stop", "{}")
+	// parent spawns a headless child in its own pane, then keeps going: the
+	// child's start must not hide the parent, whose later events prove it lives.
+	ev(30, "parent", "%2", "app", "SessionStart", `{"source":"startup"}`)
+	ev(29, "child", "%2", "app", "SessionStart", `{"source":"startup"}`)
+	ev(28, "parent", "%2", "app", "Stop", "{}")
+	// same pane id under another tmux server/session label: not evidence.
+	ev(20, "elsewhere", "%1", "other", "Stop", "{}")
+	// resuming old later makes it current again and supersedes the other.
+	ev(10, "r-old", "%3", "app", "Stop", "{}")
+	ev(9, "r-new", "%3", "app", "SessionStart", `{"source":"startup"}`)
+	ev(8, "r-new", "%3", "app", "Stop", "{}")
+	ev(7, "r-old", "%3", "app", "SessionStart", `{"source":"resume"}`)
+	ev(6, "r-old", "%3", "app", "Stop", "{}")
+
+	agents, err := agentRoster(db, time.Hour, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, a := range agents {
+		got = append(got, a.SessionID)
+	}
+	slices.Sort(got)
+	want := []string{"child", "elsewhere", "new", "parent", "r-old"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("sessions = %v, want %v", got, want)
+	}
+}
+
+// A session id seen only on subagent lifecycle events (an orphan SubagentStop)
+// has no main agent to report on: it used to sit on the roster as "working"
+// forever, because nothing ever set its last event or timestamp.
+func TestAgentRoster_DropsSubagentOnlySession(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	ts := now.Add(-time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "main", TmuxPane: "%1", SessionID: "ghost", EventType: "SubagentStop", PayloadJSON: `{"agent_id":"a1","agent_type":""}`})
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "main", TmuxPane: "%2", SessionID: "real", EventType: "Stop", PayloadJSON: "{}"})
+
+	agents, err := agentRoster(db, time.Hour, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].SessionID != "real" {
+		t.Fatalf("want only session real, got %+v", agents)
 	}
 }

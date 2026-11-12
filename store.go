@@ -800,6 +800,7 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 		a         Agent
 		lastTS    string
 		mainTS    string // like lastTS, but only the main agent's own events bump it
+		lastSeq   int    // scan position of the session's latest event, subagents' included
 		lastCmdTS string
 		lastTool  string
 		lastNotif string
@@ -811,7 +812,14 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 	}
 	byID := map[string]*state{}
 	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
-	for rows.Next() {
+	// paneStart holds, per (tmux pane, tmux session label), the latest
+	// SessionStart seen there; see the superseded check after the scan.
+	type start struct {
+		seq  int
+		sess string
+	}
+	paneStart := map[string]start{}
+	for seq := 0; rows.Next(); seq++ {
 		var ts, app, branch, cwd, tmuxSess, tmuxPane, launcher, sess, etype, tool, summary, slashCmd, notifType, agentID, source, shellStart, shellEnd string
 		var rebasing bool
 		if err := rows.Scan(&ts, &app, &branch, &rebasing, &cwd, &tmuxSess, &tmuxPane, &launcher, &sess, &etype, &tool, &summary, &slashCmd, &notifType, &agentID, &source, &shellStart, &shellEnd); err != nil {
@@ -822,6 +830,10 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 			s = &state{a: Agent{SessionID: sess, firstSeq: nextSeq}, subs: map[string]*subagent{}, subPerms: map[string]string{}, shells: map[string]shell{}, lastLaunch: map[string]time.Time{}}
 			byID[sess] = s
 			nextSeq++
+		}
+		s.lastSeq = seq
+		if etype == "SessionStart" && tmuxPane != "" && tmuxSess != "" {
+			paneStart[tmuxPane+"\x00"+tmuxSess] = start{seq: seq, sess: sess}
 		}
 		// Ascending scan: the last write wins, so these hold the latest values.
 		// Cwd is re-sanitized on the way out, not just on the way in: rows written
@@ -984,6 +996,22 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 
 	out := make([]Agent, 0, len(byID))
 	for _, s := range byID {
+		// A session id seen only on subagent events (an orphan SubagentStop) has
+		// no main agent to report on; with no last event or timestamp it would
+		// otherwise read "working" until it fell out of the window.
+		if s.mainTS == "" {
+			continue
+		}
+		// A pane runs one agent at a time, so another session starting in this
+		// pane after this one's last event means this one's process is gone,
+		// SessionEnd or not (a hard kill, or an exit that skipped the hook). Any
+		// later event of its own, a subagent's included, keeps it: a headless
+		// child started from its Bash tool shares the pane but the parent keeps
+		// emitting. The tmux session label must match too, since pane ids restart
+		// with each tmux server; a renamed session only fails toward keeping it.
+		if st, ok := paneStart[s.a.TmuxPane+"\x00"+s.a.TmuxSession]; ok && st.sess != s.a.SessionID && st.seq > s.lastSeq {
+			continue
+		}
 		idleSecs := idleSeconds(s.lastTS, now)
 		label, rank, active := deriveStatus(s.a.LastEvent, s.lastNotif, s.lastTool, idleSecs)
 		if !active {
