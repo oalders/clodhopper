@@ -775,9 +775,9 @@ func startGap(last, next string) time.Duration {
 // a SessionEnd, once another session takes over its tmux pane (see the
 // superseded check below), or once it falls out of the waitingCap query window
 // (serve also hides a row whose tmux pane has died; see dropDeadPanes). A
-// session id with no main-agent event (an orphan SubagentStop) gets no row. A positive
-// staleShell escalates a row held only by a likely hung background shell (see
-// statusShellStuck); 0 disables that. now is injected so the result is
+// session id with no main-agent event (an orphan SubagentStop) gets no row. A
+// positive staleShell escalates a row held only by a likely hung background
+// shell (see statusShellStuck); 0 disables that. now is injected so the result is
 // deterministic under test.
 func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time) ([]Agent, error) {
 	since := now.Add(-waitingCap).UTC().Format(time.RFC3339)
@@ -1043,15 +1043,17 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 		// event of its own (a subagent's included), by the child starting within
 		// supersedeGrace of it, by being mid tool call (the Bash call running the
 		// child; until staleInFlightSecs, after which a hard kill mid-tool is the
-		// likelier story), or by the child ending. The tmux session label must match
-		// too, since pane ids restart with each tmux server; a renamed session only
-		// fails toward keeping the row. Two live tmux servers with the same pane id
-		// and session name (default "0") can still collide. Once the successor
-		// itself exits cleanly the older row is no longer superseded, but the pane
-		// is then back at a shell in its launch dir, which dropDeadPanes hides.
+		// likelier story), by a background shell of its own still running (it may be
+		// what launched the child, at any time), or by the child ending. The tmux
+		// session label must match too, since pane ids restart with each tmux
+		// server; a renamed session only fails toward keeping the row. Two live tmux
+		// servers with the same pane id and session name (default "0") can still
+		// collide. Once the successor itself exits cleanly the older row is no
+		// longer superseded, but the pane is then back at a shell in its launch dir,
+		// which dropDeadPanes hides.
 		if st, ok := paneStart[s.a.TmuxPane+"\x00"+s.a.TmuxSession]; ok && st.seq > s.lastSeq &&
 			startGap(s.lastTS, st.ts) >= supersedeGrace &&
-			(s.a.LastEvent != "PreToolUse" || idleSecs >= staleInFlightSecs) {
+			(s.a.LastEvent != "PreToolUse" || idleSecs >= staleInFlightSecs) && len(s.shells) == 0 {
 			continue
 		}
 		label, rank, active := deriveStatus(s.a.LastEvent, s.lastNotif, s.lastTool, idleSecs)

@@ -983,10 +983,10 @@ func broadcastReload(cfg *actionConfig, agents []Agent, includeBusy bool, now ti
 // broadcast runs send against every row in agents that skip has no reason to
 // pass over, and returns a one-line-per-row report, problems first. Rows
 // sharing a pane (agentRoster drops most superseded sessions, but keeps a
-// parent beside a headless child it started there) are sent to once, via the newest session, which is the one actually
-// running there. Each send holds its row's session lock, and sends to different
-// rows run concurrently. ok is false iff a send failed or timed out; skips are
-// expected and do not fail it.
+// parent beside a headless child it started there) are sent to once, via the
+// newest session, which is the one actually running there. Each send holds its
+// row's session lock, and sends to different rows run concurrently. ok is
+// false iff a send failed or timed out; skips are expected and do not fail it.
 func broadcast(cfg *actionConfig, agents []Agent, skip func(Agent) string, send func(Agent) actionResult) (res actionResult, sent, skipped, errs int) {
 	if len(agents) == 0 {
 		return actionResult{Output: "no sessions on the roster"}, 0, 0, 0

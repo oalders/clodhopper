@@ -391,6 +391,18 @@ func TestAgentRoster_DropsSessionSupersededInPane(t *testing.T) {
 	// A child a hook launches starts within supersedeGrace of the parent's Stop.
 	evS(300, "quick", "%8", "app", "Stop", "{}")
 	evS(295, "quick-child", "%8", "app", "SessionStart", `{"source":"startup"}`)
+	// The grace boundary: exactly supersedeGrace later supersedes, a second less does not.
+	evS(400, "at-grace", "%13", "app", "Stop", "{}")
+	evS(370, "at-grace-next", "%13", "app", "SessionStart", `{"source":"startup"}`)
+	evS(400, "in-grace", "%14", "app", "Stop", "{}")
+	evS(371, "in-grace-child", "%14", "app", "SessionStart", `{"source":"startup"}`)
+	// The grace still applies once a mid-tool session's in-flight bound lapses.
+	ev(40, "stale-busy-quick", "%15", "app", "PreToolUse", "{}")
+	evS(40*60-5, "stale-busy-quick-child", "%15", "app", "SessionStart", `{"source":"startup"}`)
+	// A running background shell may launch the child at any time.
+	ev(35, "shelled", "%16", "app", "PostToolUse", `{"background_task_id":"t1"}`)
+	ev(34, "shelled", "%16", "app", "Stop", "{}")
+	ev(20, "shelled-child", "%16", "app", "SessionStart", `{"source":"startup"}`)
 	// A subagent's SessionStart does not take over the pane.
 	ev(15, "sub-start", "%9", "app", "Stop", "{}")
 	ev(14, "sub-starter", "%9", "app", "SessionStart", `{"agent_id":"a1"}`)
@@ -432,8 +444,8 @@ func TestAgentRoster_DropsSessionSupersededInPane(t *testing.T) {
 	}
 	slices.Sort(got)
 	want := []string{
-		"busy", "busy-child", "child", "elsewhere", "new", "new2", "nolabel-a", "nolabel-b", "nopane-a", "nopane-b",
-		"parent", "q2", "quick", "quick-child", "quiet", "r-old", "stale-busy-next", "sub-child", "sub-parent", "sub-start",
+		"at-grace-next", "busy", "busy-child", "child", "elsewhere", "in-grace", "in-grace-child", "new", "new2", "nolabel-a", "nolabel-b", "nopane-a", "nopane-b",
+		"parent", "q2", "quick", "quick-child", "quiet", "r-old", "shelled", "shelled-child", "stale-busy-next", "stale-busy-quick", "stale-busy-quick-child", "sub-child", "sub-parent", "sub-start",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("sessions = %v, want %v", got, want)
@@ -460,5 +472,21 @@ func TestAgentRoster_DropsSubagentOnlySession(t *testing.T) {
 	}
 	if len(agents) != 1 || agents[0].SessionID != "real" {
 		t.Fatalf("want only session real, got %+v", agents)
+	}
+}
+
+func TestStartGap(t *testing.T) {
+	for _, tc := range []struct {
+		last, next string
+		want       time.Duration
+	}{
+		{"2026-01-01T00:00:00Z", "2026-01-01T00:00:30Z", 30 * time.Second},
+		{"2026-01-01T00:00:30Z", "2026-01-01T00:00:00Z", -30 * time.Second},
+		{"bogus", "2026-01-01T00:00:00Z", -1},
+		{"2026-01-01T00:00:00Z", "", -1},
+	} {
+		if got := startGap(tc.last, tc.next); got != tc.want {
+			t.Errorf("startGap(%q, %q) = %v, want %v", tc.last, tc.next, got, tc.want)
+		}
 	}
 }
