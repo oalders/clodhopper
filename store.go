@@ -754,8 +754,10 @@ func deriveStatus(lastEvent, notifType, lastTool string, idleSecs int) (label st
 // agent's current state. Every live session within waitingCap is kept — a
 // working agent that goes quiet is relabeled idle (see deriveStatus) rather than
 // dropped, so it survives a lunch or overnight gap and only leaves the board on
-// a SessionEnd or once it falls out of the waitingCap query window (serve also
-// hides a row whose tmux pane has died; see dropDeadPanes). A positive
+// a SessionEnd, once another session takes over its tmux pane (see the
+// superseded check below), or once it falls out of the waitingCap query window
+// (serve also hides a row whose tmux pane has died; see dropDeadPanes). A
+// session id with no main-agent event (an orphan SubagentStop) gets no row. A positive
 // staleShell escalates a row held only by a likely hung background shell (see
 // statusShellStuck); 0 disables that. now is injected so the result is
 // deterministic under test.
@@ -813,7 +815,8 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 	byID := map[string]*state{}
 	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
 	// paneStart holds, per (tmux pane, tmux session label), the latest
-	// SessionStart seen there; see the superseded check after the scan.
+	// SessionStart seen there whose session has not since ended; see the
+	// superseded check after the scan.
 	type start struct {
 		seq  int
 		sess string
@@ -832,8 +835,16 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 			nextSeq++
 		}
 		s.lastSeq = seq
-		if etype == "SessionStart" && tmuxPane != "" && tmuxSess != "" {
-			paneStart[tmuxPane+"\x00"+tmuxSess] = start{seq: seq, sess: sess}
+		if tmuxPane != "" && tmuxSess != "" {
+			key := tmuxPane + "\x00" + tmuxSess
+			switch {
+			case etype == "SessionStart" && agentID == "": // a main agent's start only
+				paneStart[key] = start{seq: seq, sess: sess}
+			case etype == "SessionEnd" && paneStart[key].sess == sess:
+				// An ended session no longer holds the pane: a headless child
+				// (claude -p from a hook or Bash) must not keep its parent hidden.
+				delete(paneStart, key)
+			}
 		}
 		// Ascending scan: the last write wins, so these hold the latest values.
 		// Cwd is re-sanitized on the way out, not just on the way in: rows written
@@ -1003,13 +1014,16 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 			continue
 		}
 		// A pane runs one agent at a time, so another session starting in this
-		// pane after this one's last event means this one's process is gone,
-		// SessionEnd or not (a hard kill, or an exit that skipped the hook). Any
-		// later event of its own, a subagent's included, keeps it: a headless
-		// child started from its Bash tool shares the pane but the parent keeps
-		// emitting. The tmux session label must match too, since pane ids restart
-		// with each tmux server; a renamed session only fails toward keeping it.
-		if st, ok := paneStart[s.a.TmuxPane+"\x00"+s.a.TmuxSession]; ok && st.sess != s.a.SessionID && st.seq > s.lastSeq {
+		// pane after this one's last event, and not yet ended, means this one's
+		// process is gone, SessionEnd or not (a hard kill, or an exit that
+		// skipped the hook). A headless child (claude -p from a hook or the Bash
+		// tool) shares the pane, so the parent is kept by any later event of its
+		// own (a subagent's included), by being mid tool call (the Bash call
+		// running the child), or by the child ending. The tmux session label must
+		// match too, since pane ids restart with each tmux server; a renamed
+		// session only fails toward keeping the row. Two live tmux servers with
+		// the same pane id and session name (default "0") can still collide.
+		if st, ok := paneStart[s.a.TmuxPane+"\x00"+s.a.TmuxSession]; ok && st.sess != s.a.SessionID && st.seq > s.lastSeq && s.a.LastEvent != "PreToolUse" {
 			continue
 		}
 		idleSecs := idleSeconds(s.lastTS, now)

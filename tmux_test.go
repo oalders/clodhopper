@@ -364,6 +364,9 @@ func TestAgentRoster_DropsSessionSupersededInPane(t *testing.T) {
 	// old exits without SessionEnd; new starts in the same pane.
 	ev(50, "old", "%1", "app", "SessionStart", `{"source":"startup"}`)
 	ev(45, "old", "%1", "app", "Stop", "{}")
+	// same pane id under another tmux server/session label, last heard before
+	// new starts: not evidence, so only the label keeps it.
+	ev(44, "elsewhere", "%1", "other", "Stop", "{}")
 	ev(40, "new", "%1", "app", "SessionStart", `{"source":"startup"}`)
 	ev(39, "new", "%1", "app", "Stop", "{}")
 	// parent spawns a headless child in its own pane, then keeps going: the
@@ -371,8 +374,24 @@ func TestAgentRoster_DropsSessionSupersededInPane(t *testing.T) {
 	ev(30, "parent", "%2", "app", "SessionStart", `{"source":"startup"}`)
 	ev(29, "child", "%2", "app", "SessionStart", `{"source":"startup"}`)
 	ev(28, "parent", "%2", "app", "Stop", "{}")
-	// same pane id under another tmux server/session label: not evidence.
-	ev(20, "elsewhere", "%1", "other", "Stop", "{}")
+	// A subagent's event counts as its session's own.
+	ev(27, "sub-parent", "%4", "app", "Stop", "{}")
+	ev(26, "sub-child", "%4", "app", "SessionStart", `{"source":"startup"}`)
+	ev(25, "sub-parent", "%4", "app", "SubagentStop", `{"agent_id":"a1"}`)
+	// A parent mid tool call (its Bash running claude -p) emits nothing until
+	// the call returns, so the child's start must not hide it meanwhile.
+	ev(24, "busy", "%5", "app", "PreToolUse", "{}")
+	ev(23, "busy-child", "%5", "app", "SessionStart", `{"source":"startup"}`)
+	// A child that has ended no longer occupies the pane, even if the parent
+	// (waiting for the user, or on a background shell) never speaks again.
+	ev(22, "quiet", "%6", "app", "Stop", "{}")
+	ev(21, "quiet-child", "%6", "app", "SessionStart", `{"source":"startup"}`)
+	ev(20, "quiet-child", "%6", "app", "SessionEnd", "{}")
+	// No pane or no label: nothing to compare, so nothing is superseded.
+	ev(19, "nopane-a", "", "", "Stop", "{}")
+	ev(18, "nopane-b", "", "", "SessionStart", `{"source":"startup"}`)
+	ev(17, "nolabel-a", "%7", "", "Stop", "{}")
+	ev(16, "nolabel-b", "%7", "", "SessionStart", `{"source":"startup"}`)
 	// resuming old later makes it current again and supersedes the other.
 	ev(10, "r-old", "%3", "app", "Stop", "{}")
 	ev(9, "r-new", "%3", "app", "SessionStart", `{"source":"startup"}`)
@@ -389,7 +408,7 @@ func TestAgentRoster_DropsSessionSupersededInPane(t *testing.T) {
 		got = append(got, a.SessionID)
 	}
 	slices.Sort(got)
-	want := []string{"child", "elsewhere", "new", "parent", "r-old"}
+	want := []string{"busy", "busy-child", "child", "elsewhere", "new", "nolabel-a", "nolabel-b", "nopane-a", "nopane-b", "parent", "quiet", "r-old", "sub-child", "sub-parent"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("sessions = %v, want %v", got, want)
 	}

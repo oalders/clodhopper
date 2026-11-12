@@ -408,7 +408,9 @@ Code no chance to emit `SessionEnd`, so the agent would otherwise linger as a
 row whose recorded tmux pane no longer exists (or now belongs to another tmux
 session), so a closed pane or restarted tmux server clears itself. A row whose
 pane is back at a shell (`bash`, `zsh`, `fish` or `sh`) in the directory the
-session was launched from is hidden too, so a crashed Claude clears itself. The
+session was launched from is hidden too, so a crashed Claude clears itself, and
+so is one whose pane has since started another Claude session (a headless
+`claude -p` the agent itself launched there does not count). The
 check runs whether or not `--pane-peek` is on (serve lists tmux panes, cached
 ~5s), and an unreachable tmux hides nothing. A session outside tmux, or one
 killed while its pane is still running something else, still needs an explicit
