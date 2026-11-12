@@ -16,7 +16,7 @@ var ledgerNow = time.Date(2026, 10, 21, 12, 0, 0, 0, time.UTC)
 // testLedger is a ledger whose final-state lookup answers from finals and logs
 // each key it was asked for, so no test reaches gh.
 func testLedger(finals map[string]ciResult) (*queueLedger, *[]string) {
-	l := newQueueLedger()
+	l := newQueueLedger(nil)
 	var asked []string
 	var mu sync.Mutex // gone sessions are looked up concurrently
 	l.finals.lookup = func(key string) ciResult {
@@ -199,7 +199,7 @@ func TestBuildDashboardDataLedgersMergedRow(t *testing.T) {
 	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "w", Cwd: "/w", EventType: "Stop", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "n", Cwd: "/n", EventType: "Notification", PayloadJSON: "{}"})
 	// Stamped an hour ahead so cwdTTL cannot lapse mid-test and gh is never run.
-	ci := newCICache()
+	ci := newCICache(nil)
 	for _, cwd := range []string{"/w", "/n"} {
 		ci.m[cwd] = cwdEntry[ciResult]{val: ciResult{Done: "merged"}, at: now.Add(time.Hour)}
 	}

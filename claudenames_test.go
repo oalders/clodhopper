@@ -149,7 +149,7 @@ func TestHandleDashboard_ClaudeName(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/?debug=1", nil)
 	rec := httptest.NewRecorder()
-	handleDashboard(rec, req, db, newCICache(), &peekConfig{cache: newPaneCache(), names: newClaudeNameCache(), namesDir: dir}, &actionConfig{})
+	handleDashboard(rec, req, db, newCICache(nil), &peekConfig{cache: newPaneCache(), names: newClaudeNameCache(), namesDir: dir}, &actionConfig{})
 	body := rec.Body.String()
 
 	if !strings.Contains(body, "3 live") {
