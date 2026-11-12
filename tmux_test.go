@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -343,5 +344,164 @@ func TestAgentRoster_EmptyTmuxPaneDoesNotClobber(t *testing.T) {
 	}
 	if len(agents) != 1 || agents[0].TmuxPane != "%1" {
 		t.Fatalf("want 1 agent keeping pane %%1 (empty later capture must not clobber), got %+v", agents)
+	}
+}
+
+// A pane runs one Claude at a time, so a SessionStart in a pane after another
+// session's last event there means that session's process is gone, even though
+// it never sent SessionEnd (a hard kill, or an exit that skipped the hook).
+func TestAgentRoster_DropsSessionSupersededInPane(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	evS := func(secs int, sess, pane, tmuxSess, etype, payload string) {
+		ts := now.Add(time.Duration(-secs) * time.Second).Format(time.RFC3339)
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "main", TmuxSession: tmuxSess, TmuxPane: pane, SessionID: sess, EventType: etype, PayloadJSON: payload})
+	}
+	ev := func(mins int, sess, pane, tmuxSess, etype, payload string) {
+		evS(mins*60, sess, pane, tmuxSess, etype, payload)
+	}
+	// old exits without SessionEnd; new starts in the same pane.
+	ev(50, "old", "%1", "app", "SessionStart", `{"source":"startup"}`)
+	ev(45, "old", "%1", "app", "Stop", "{}")
+	// same pane id under another tmux server/session label, last heard before
+	// new starts: not evidence, so only the label keeps it.
+	ev(44, "elsewhere", "%1", "other", "Stop", "{}")
+	ev(40, "new", "%1", "app", "SessionStart", `{"source":"startup"}`)
+	ev(39, "new", "%1", "app", "Stop", "{}")
+	// parent spawns a headless child in its own pane, then keeps going: the
+	// child's start must not hide the parent, whose later events prove it lives.
+	ev(30, "parent", "%2", "app", "SessionStart", `{"source":"startup"}`)
+	ev(29, "child", "%2", "app", "SessionStart", `{"source":"startup"}`)
+	ev(28, "parent", "%2", "app", "Stop", "{}")
+	// A subagent's event counts as its session's own.
+	ev(27, "sub-parent", "%4", "app", "Stop", "{}")
+	ev(26, "sub-child", "%4", "app", "SessionStart", `{"source":"startup"}`)
+	ev(25, "sub-parent", "%4", "app", "SubagentStop", `{"agent_id":"a1"}`)
+	// A parent mid tool call (its Bash running claude -p) emits nothing until
+	// the call returns, so the child's start must not hide it meanwhile.
+	evS(120, "busy", "%5", "app", "PreToolUse", "{}")
+	evS(60, "busy-child", "%5", "app", "SessionStart", `{"source":"startup"}`)
+	// ...but past staleInFlightSecs a hard kill mid tool call is the likelier story.
+	ev(30, "stale-busy", "%11", "app", "PreToolUse", "{}")
+	ev(29, "stale-busy-next", "%11", "app", "SessionStart", `{"source":"startup"}`)
+	// A child a hook launches starts within supersedeGrace of the parent's Stop.
+	evS(300, "quick", "%8", "app", "Stop", "{}")
+	evS(295, "quick-child", "%8", "app", "SessionStart", `{"source":"startup"}`)
+	// The grace boundary: exactly supersedeGrace later supersedes, a second less does not.
+	evS(400, "at-grace", "%13", "app", "Stop", "{}")
+	evS(370, "at-grace-next", "%13", "app", "SessionStart", `{"source":"startup"}`)
+	evS(400, "in-grace", "%14", "app", "Stop", "{}")
+	evS(371, "in-grace-child", "%14", "app", "SessionStart", `{"source":"startup"}`)
+	// The grace still applies once a mid-tool session's in-flight bound lapses.
+	ev(40, "stale-busy-quick", "%15", "app", "PreToolUse", "{}")
+	evS(40*60-5, "stale-busy-quick-child", "%15", "app", "SessionStart", `{"source":"startup"}`)
+	// A running background shell may launch the child at any time.
+	ev(35, "shelled", "%16", "app", "PostToolUse", `{"background_task_id":"t1"}`)
+	ev(34, "shelled", "%16", "app", "Stop", "{}")
+	ev(20, "shelled-child", "%16", "app", "SessionStart", `{"source":"startup"}`)
+	// A subagent's SessionStart does not take over the pane.
+	ev(15, "sub-start", "%9", "app", "Stop", "{}")
+	ev(14, "sub-starter", "%9", "app", "SessionStart", `{"agent_id":"a1"}`)
+	// Only the pane's current holder ending releases it: an earlier holder's
+	// late SessionEnd must not.
+	ev(13, "ender", "%10", "app", "SessionStart", `{"source":"startup"}`)
+	ev(12, "old2", "%10", "app", "Stop", "{}")
+	ev(11, "new2", "%10", "app", "SessionStart", `{"source":"startup"}`)
+	ev(10, "ender", "%10", "app", "SessionEnd", "{}")
+	// `clodhopper end` writes its SessionEnd with no tmux fields; it still
+	// releases the pane.
+	ev(9, "q2", "%12", "app", "Stop", "{}")
+	ev(8, "q2-child", "%12", "app", "SessionStart", `{"source":"startup"}`)
+	ev(7, "q2-child", "", "", "SessionEnd", "{}")
+	// A child that has ended no longer occupies the pane, even if the parent
+	// (waiting for the user, or on a background shell) never speaks again.
+	ev(22, "quiet", "%6", "app", "Stop", "{}")
+	ev(21, "quiet-child", "%6", "app", "SessionStart", `{"source":"startup"}`)
+	ev(20, "quiet-child", "%6", "app", "SessionEnd", "{}")
+	// A live successor's own headless child ending hands the pane back to
+	// the successor, so the dead session stays superseded. The child starts
+	// past the grace and after a Stop, so only the hand-back keeps new.
+	ev(50, "handback-old", "%17", "app", "Stop", "{}")
+	ev(40, "handback-new", "%17", "app", "SessionStart", `{"source":"startup"}`)
+	evS(40*60-10, "handback-new", "%17", "app", "Stop", "{}")
+	evS(40*60-60, "handback-child", "%17", "app", "SessionStart", `{"source":"startup"}`)
+	evS(40*60-70, "handback-child", "%17", "app", "SessionEnd", "{}")
+	// A session resumed in another pane gives up its claim on the first.
+	ev(20, "moved-stay", "%18", "app", "Stop", "{}")
+	ev(19, "moved", "%18", "app", "SessionStart", `{"source":"startup"}`)
+	ev(10, "moved", "%19", "app", "SessionStart", `{"source":"resume"}`)
+	ev(9, "moved", "%19", "app", "Stop", "{}")
+	// No pane or no label: nothing to compare, so nothing is superseded.
+	ev(19, "nopane-lab-a", "", "app", "Stop", "{}")
+	ev(18, "nopane-lab-b", "", "app", "SessionStart", `{"source":"startup"}`)
+	ev(19, "nopane-a", "", "", "Stop", "{}")
+	ev(18, "nopane-b", "", "", "SessionStart", `{"source":"startup"}`)
+	ev(17, "nolabel-a", "%7", "", "Stop", "{}")
+	ev(16, "nolabel-b", "%7", "", "SessionStart", `{"source":"startup"}`)
+	// resuming old later makes it current again and supersedes the other.
+	ev(6, "r-old", "%3", "app", "Stop", "{}")
+	ev(5, "r-new", "%3", "app", "SessionStart", `{"source":"startup"}`)
+	ev(4, "r-new", "%3", "app", "Stop", "{}")
+	ev(3, "r-old", "%3", "app", "SessionStart", `{"source":"resume"}`)
+	ev(2, "r-old", "%3", "app", "Stop", "{}")
+
+	agents, err := agentRoster(db, time.Hour, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, a := range agents {
+		got = append(got, a.SessionID)
+	}
+	slices.Sort(got)
+	want := []string{
+		"at-grace-next", "busy", "busy-child", "child", "elsewhere", "handback-new", "in-grace", "in-grace-child", "moved", "moved-stay", "new", "new2", "nolabel-a", "nolabel-b", "nopane-a", "nopane-b", "nopane-lab-a", "nopane-lab-b",
+		"parent", "q2", "quick", "quick-child", "quiet", "r-old", "shelled", "shelled-child", "stale-busy-next", "stale-busy-quick", "stale-busy-quick-child", "sub-child", "sub-parent", "sub-start",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("sessions = %v, want %v", got, want)
+	}
+}
+
+// A session id seen only on subagent lifecycle events (an orphan SubagentStop)
+// has no main agent to report on: it used to sit on the roster as "working"
+// forever, because nothing ever set its last event or timestamp.
+func TestAgentRoster_DropsSubagentOnlySession(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Now().UTC()
+	ts := now.Add(-time.Minute).Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "main", TmuxPane: "%1", SessionID: "ghost", EventType: "SubagentStop", PayloadJSON: `{"agent_id":"a1","agent_type":""}`})
+	insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "main", TmuxPane: "%2", SessionID: "real", EventType: "Stop", PayloadJSON: "{}"})
+
+	agents, err := agentRoster(db, time.Hour, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(agents) != 1 || agents[0].SessionID != "real" {
+		t.Fatalf("want only session real, got %+v", agents)
+	}
+}
+
+func TestStartGap(t *testing.T) {
+	for _, tc := range []struct {
+		last, next string
+		want       time.Duration
+	}{
+		{"2026-01-01T00:00:00Z", "2026-01-01T00:00:30Z", 30 * time.Second},
+		{"2026-01-01T00:00:30Z", "2026-01-01T00:00:00Z", -30 * time.Second},
+		{"bogus", "2026-01-01T00:00:00Z", -1},
+		{"2026-01-01T00:00:00Z", "", -1},
+	} {
+		if got := startGap(tc.last, tc.next); got != tc.want {
+			t.Errorf("startGap(%q, %q) = %v, want %v", tc.last, tc.next, got, tc.want)
+		}
 	}
 }
