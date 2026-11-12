@@ -422,15 +422,20 @@ func TestAgentRoster_DropsSessionSupersededInPane(t *testing.T) {
 	ev(22, "quiet", "%6", "app", "Stop", "{}")
 	ev(21, "quiet-child", "%6", "app", "SessionStart", `{"source":"startup"}`)
 	ev(20, "quiet-child", "%6", "app", "SessionEnd", "{}")
-	// No pane or no label: nothing to compare, so nothing is superseded.
 	// A live successor's own headless child ending hands the pane back to
-	// the successor, so the dead session stays superseded.
+	// the successor, so the dead session stays superseded. The child starts
+	// past the grace and after a Stop, so only the hand-back keeps new.
 	ev(50, "handback-old", "%17", "app", "Stop", "{}")
 	ev(40, "handback-new", "%17", "app", "SessionStart", `{"source":"startup"}`)
-	evS(40*60-10, "handback-new", "%17", "app", "PreToolUse", "{}")
-	evS(40*60-15, "handback-child", "%17", "app", "SessionStart", `{"source":"startup"}`)
-	evS(40*60-20, "handback-child", "%17", "app", "SessionEnd", "{}")
-	// No pane but a label still claims nothing.
+	evS(40*60-10, "handback-new", "%17", "app", "Stop", "{}")
+	evS(40*60-60, "handback-child", "%17", "app", "SessionStart", `{"source":"startup"}`)
+	evS(40*60-70, "handback-child", "%17", "app", "SessionEnd", "{}")
+	// A session resumed in another pane gives up its claim on the first.
+	ev(20, "moved-stay", "%18", "app", "Stop", "{}")
+	ev(19, "moved", "%18", "app", "SessionStart", `{"source":"startup"}`)
+	ev(10, "moved", "%19", "app", "SessionStart", `{"source":"resume"}`)
+	ev(9, "moved", "%19", "app", "Stop", "{}")
+	// No pane or no label: nothing to compare, so nothing is superseded.
 	ev(19, "nopane-lab-a", "", "app", "Stop", "{}")
 	ev(18, "nopane-lab-b", "", "app", "SessionStart", `{"source":"startup"}`)
 	ev(19, "nopane-a", "", "", "Stop", "{}")
@@ -454,7 +459,7 @@ func TestAgentRoster_DropsSessionSupersededInPane(t *testing.T) {
 	}
 	slices.Sort(got)
 	want := []string{
-		"at-grace-next", "busy", "busy-child", "child", "elsewhere", "handback-new", "in-grace", "in-grace-child", "new", "new2", "nolabel-a", "nolabel-b", "nopane-a", "nopane-b", "nopane-lab-a", "nopane-lab-b",
+		"at-grace-next", "busy", "busy-child", "child", "elsewhere", "handback-new", "in-grace", "in-grace-child", "moved", "moved-stay", "new", "new2", "nolabel-a", "nolabel-b", "nopane-a", "nopane-b", "nopane-lab-a", "nopane-lab-b",
 		"parent", "q2", "quick", "quick-child", "quiet", "r-old", "shelled", "shelled-child", "stale-busy-next", "stale-busy-quick", "stale-busy-quick-child", "sub-child", "sub-parent", "sub-start",
 	}
 	if !slices.Equal(got, want) {
