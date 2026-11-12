@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -832,15 +833,24 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 	}
 	byID := map[string]*state{}
 	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
-	// paneStart holds, per (tmux pane, tmux session label), the latest
-	// SessionStart seen there whose session has not since ended; see the
-	// superseded check after the scan.
+	// paneStarts holds, per (tmux pane, tmux session label), the
+	// SessionStarts seen there whose sessions have not since ended, oldest
+	// first, at most one per session; the last is the pane's holder (see the
+	// superseded check after the scan). A stack, not one entry, so a
+	// headless child ending hands the pane back to the live session that
+	// started before it.
 	type start struct {
 		seq      int
 		sess, ts string
 	}
-	paneStart := map[string]start{}
-	startKey := map[string]string{} // session -> its paneStart key, so a pane-less SessionEnd still releases it
+	paneStarts := map[string][]start{}
+	startKey := map[string]string{} // session -> its paneStarts key, so a pane-less SessionEnd still releases it
+	release := func(sess string) {
+		if key, ok := startKey[sess]; ok {
+			paneStarts[key] = slices.DeleteFunc(paneStarts[key], func(st start) bool { return st.sess == sess })
+			delete(startKey, sess)
+		}
+	}
 	for seq := 0; rows.Next(); seq++ {
 		var ts, app, branch, cwd, tmuxSess, tmuxPane, launcher, sess, etype, tool, summary, slashCmd, notifType, agentID, source, shellStart, shellEnd string
 		var rebasing bool
@@ -857,15 +867,14 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 		switch {
 		case etype == "SessionStart" && agentID == "" && tmuxPane != "" && tmuxSess != "": // a main agent's start only
 			key := tmuxPane + "\x00" + tmuxSess
-			paneStart[key], startKey[sess] = start{seq: seq, sess: sess, ts: ts}, key
+			release(sess) // a resume, here or in another pane, moves the claim
+			paneStarts[key], startKey[sess] = append(paneStarts[key], start{seq: seq, sess: sess, ts: ts}), key
 		case etype == "SessionEnd":
 			// An ended session no longer holds the pane: a headless child
 			// (claude -p from a hook or Bash) must not keep its parent hidden.
 			// Keyed by session, not this event's pane: `clodhopper end` writes
 			// its SessionEnd with no tmux fields.
-			if key, ok := startKey[sess]; ok && paneStart[key].sess == sess {
-				delete(paneStart, key)
-			}
+			release(sess)
 		}
 		// Ascending scan: the last write wins, so these hold the latest values.
 		// Cwd is re-sanitized on the way out, not just on the way in: rows written
@@ -1051,8 +1060,8 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 		// collide. Once the successor itself exits cleanly the older row is no
 		// longer superseded, but the pane is then back at a shell in its launch dir,
 		// which dropDeadPanes hides.
-		if st, ok := paneStart[s.a.TmuxPane+"\x00"+s.a.TmuxSession]; ok && st.seq > s.lastSeq &&
-			startGap(s.lastTS, st.ts) >= supersedeGrace &&
+		if sts := paneStarts[s.a.TmuxPane+"\x00"+s.a.TmuxSession]; len(sts) > 0 && sts[len(sts)-1].seq > s.lastSeq &&
+			startGap(s.lastTS, sts[len(sts)-1].ts) >= supersedeGrace &&
 			(s.a.LastEvent != "PreToolUse" || idleSecs >= staleInFlightSecs) && len(s.shells) == 0 {
 			continue
 		}
