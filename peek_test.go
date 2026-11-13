@@ -156,6 +156,7 @@ func TestPaneLabel(t *testing.T) {
 		{"emoji-only title keeps the handle", livePane{session: "fix-4261", title: "🟢"}, "fix-4261", "fix-4261"},
 		{"emoji and symbols only keep the handle", livePane{session: "fix-12", title: "🟡 · ✓"}, "fix-12", "fix-12"},
 		{"whitespace-only title keeps the handle", livePane{session: "fix-12", title: "  "}, "fix-12", "fix-12"},
+		{"non-Latin title counts as a name", livePane{session: "fix-12", title: "日本語"}, "fix-12", "日本語"},
 		{"title with a digit still wins", livePane{session: "fix-12", title: "🟢 #12"}, "fix-12", "🟢 #12"},
 		{"handle is the branch but no title", livePane{session: "fix-12"}, "fix-12", "fix-12"},
 		{"unknown branch keeps the handle", livePane{session: "fix-12", title: "Fix it"}, "", "fix-12"},
