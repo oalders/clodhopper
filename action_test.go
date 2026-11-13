@@ -2503,3 +2503,12 @@ func TestGitProbeIgnoresPlantedFSMonitor(t *testing.T) {
 		t.Errorf("inherited config = %q, want kept", got)
 	}
 }
+
+func TestRunActionIgnoresPlantedFSMonitor(t *testing.T) {
+	dir, marker := plantedRepo(t)
+	stub := writeStub(t, "gh", "git status >/dev/null && echo ok")
+	if res := runAction(stub, dir, []string{"pr", "ready"}, 10*time.Second); res.ExitCode != 0 {
+		t.Fatalf("stub gh failed: %+v", res)
+	}
+	assertNoMarker(t, marker)
+}

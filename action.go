@@ -141,6 +141,7 @@ func runAction(bin, dir string, args []string, timeout time.Duration) actionResu
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
+	cmd.Env = gitSafeEnv() // gh pr ready's own git calls run in this DB-sourced cwd
 	cmd.Stdin = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Setpgid makes the child's pgid equal its pid, so -pid targets the whole
