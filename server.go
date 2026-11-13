@@ -914,6 +914,8 @@ func parsePRView(out []byte) (ciResult, string) {
 	}
 	r.Conflict = pr.MergeStateStatus == "DIRTY"
 	r.Draft = pr.IsDraft
+	// Raw nodes, not latestRuns' survivors: a superseded run starting still
+	// marks rollup activity for the ejection lapse.
 	for _, n := range pr.StatusCheckRollup {
 		if n.StartedAt.After(r.RollupSince) {
 			r.RollupSince = n.StartedAt

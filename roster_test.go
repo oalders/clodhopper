@@ -60,6 +60,7 @@ func TestClassifyRollup(t *testing.T) {
 		{"run cancelled before it started does not hide a started failure", []rollupNode{attempt("COMPLETED", "FAILURE", 1), attempt("COMPLETED", "CANCELLED", 0)}, ciResult{State: "failing", Fails: 1}},
 		{"run cancelled before it started yields to a queued re-run", []rollupNode{attempt("COMPLETED", "CANCELLED", 0), attempt("QUEUED", "", 0)}, ciResult{State: "pending"}},
 		{"runs that never started are all kept", []rollupNode{attempt("COMPLETED", "CANCELLED", 0), attempt("COMPLETED", "STARTUP_FAILURE", 0)}, ciResult{State: "failing", Fails: 2}},
+		{"stuck queued attempt masks a finished success", []rollupNode{attempt("QUEUED", "", 0), attempt("COMPLETED", "SUCCESS", 2)}, ciResult{State: "pending"}},
 		{"in-progress re-run supersedes a failed run", []rollupNode{attempt("COMPLETED", "FAILURE", 1), attempt("IN_PROGRESS", "", 2)}, ciResult{State: "pending"}},
 		{"queued re-run in another workflow supersedes nothing", []rollupNode{wf(attempt("COMPLETED", "FAILURE", 1), "a"), wf(attempt("QUEUED", "", 0), "b")}, ciResult{State: "failing", Fails: 1}},
 		{"stale in-progress run superseded by a finished re-run", []rollupNode{attempt("IN_PROGRESS", "", 1), attempt("COMPLETED", "SUCCESS", 2)}, ciResult{State: "green", Passes: 1}},
