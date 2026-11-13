@@ -796,8 +796,9 @@ func lookupCI(cwd string, gate *ghGate) ciResult {
 }
 
 // withMergeQueue folds open PR id's merge-queue entry into r via gh under ctx's
-// deadline. Best-effort: no id or any error leaves r unchanged, a
-// rate-limited one tripping gate.
+// deadline. Best-effort: no id or any error leaves r unchanged, a rate-limited
+// one tripping gate. No cmd.Dir: a graphql call needs no repo, so a planted
+// repo config in the DB-sourced cwd never gets read.
 func withMergeQueue(ctx context.Context, r ciResult, id string, gate *ghGate) ciResult {
 	if id == "" {
 		return r
