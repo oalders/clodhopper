@@ -19,6 +19,11 @@ func TestClassifyRollup(t *testing.T) {
 	ctx := func(state string) rollupNode { return rollupNode{Typename: "StatusContext", State: state} }
 	named := func(n rollupNode, name string) rollupNode { n.Name = name; return n }
 	namedCtx := func(state, context string) rollupNode { n := ctx(state); n.Context = context; return n }
+	at := func(n rollupNode, minute int) rollupNode {
+		n.StartedAt = time.Date(2026, 1, 1, 0, minute, 0, 0, time.UTC)
+		return n
+	}
+	wf := func(n rollupNode, workflow string) rollupNode { n.WorkflowName = workflow; return n }
 	cases := []struct {
 		name  string
 		nodes []rollupNode
@@ -37,6 +42,11 @@ func TestClassifyRollup(t *testing.T) {
 		{"same-name run still in progress stays pending", []rollupNode{named(run("IN_PROGRESS", ""), "ci"), namedCtx("PENDING", "ci")}, ciResult{State: "pending"}},
 		{"re-run in progress keeps a same-name gate pending", []rollupNode{named(run("COMPLETED", "SUCCESS"), "ci"), named(run("IN_PROGRESS", ""), "ci"), namedCtx("PENDING", "ci")}, ciResult{State: "pending", Passes: 1}},
 		{"same-name failed run still fails", []rollupNode{named(run("COMPLETED", "FAILURE"), "ci"), namedCtx("PENDING", "ci")}, ciResult{State: "failing", Fails: 1}},
+		{"cancelled run superseded by a re-run is dropped", []rollupNode{at(named(run("COMPLETED", "CANCELLED"), "gate"), 1), at(named(run("COMPLETED", "SUCCESS"), "gate"), 2)}, ciResult{State: "green", Passes: 1}},
+		{"failed re-run of a passed run still fails", []rollupNode{at(named(run("COMPLETED", "SUCCESS"), "gate"), 1), at(named(run("COMPLETED", "FAILURE"), "gate"), 2)}, ciResult{State: "failing", Fails: 1}},
+		{"queued re-run supersedes a failed run", []rollupNode{at(named(run("COMPLETED", "FAILURE"), "gate"), 1), named(run("QUEUED", ""), "gate")}, ciResult{State: "pending"}},
+		{"same name in another workflow is not a re-run", []rollupNode{wf(at(named(run("COMPLETED", "FAILURE"), "test"), 1), "a"), wf(at(named(run("COMPLETED", "SUCCESS"), "test"), 2), "b")}, ciResult{State: "failing", Fails: 1, Passes: 1}},
+		{"equal start times keep both runs", []rollupNode{at(named(run("COMPLETED", "FAILURE"), "gate"), 1), at(named(run("COMPLETED", "SUCCESS"), "gate"), 1)}, ciResult{State: "failing", Fails: 1, Passes: 1}},
 		{"unknown values fail closed", []rollupNode{run("COMPLETED", "NEW"), ctx("NEW"), {Typename: "NewNode"}}, ciResult{State: "failing", Fails: 3}},
 	}
 	for _, c := range cases {

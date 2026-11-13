@@ -872,13 +872,14 @@ func applyMergeQueue(r ciResult, out []byte, now time.Time) ciResult {
 // or a StatusContext (context/state), told apart by __typename. gh reports both
 // kinds' start as startedAt (a StatusContext's is its createdAt).
 type rollupNode struct {
-	Typename   string    `json:"__typename"`
-	Name       string    `json:"name"`
-	Status     string    `json:"status"`
-	Conclusion string    `json:"conclusion"`
-	StartedAt  time.Time `json:"startedAt"`
-	Context    string    `json:"context"`
-	State      string    `json:"state"`
+	Typename     string    `json:"__typename"`
+	Name         string    `json:"name"`
+	WorkflowName string    `json:"workflowName"`
+	Status       string    `json:"status"`
+	Conclusion   string    `json:"conclusion"`
+	StartedAt    time.Time `json:"startedAt"`
+	Context      string    `json:"context"`
+	State        string    `json:"state"`
 }
 
 // parsePRView turns `gh pr view --json id,number,url,state,mergedAt,isDraft,mergeStateStatus,statusCheckRollup`
@@ -926,12 +927,14 @@ func parsePRView(out []byte) (ciResult, string) {
 
 // classifyRollup reduces the rollup to one state plus a fail count. Any failure
 // wins; otherwise any still-pending check keeps it amber; passes and skips alone
-// are green. A pending status named after a finished check run is ignored. An
-// unrecognised value counts as a failure (fail closed).
+// are green. A pending status named after a finished check run is ignored, and
+// so is a check run superseded by a re-run (latestRuns). An unrecognised value
+// counts as a failure (fail closed).
 func classifyRollup(nodes []rollupNode) ciResult {
 	if len(nodes) == 0 {
 		return ciResult{}
 	}
+	nodes = latestRuns(nodes)
 	done := map[string]bool{}
 	for _, n := range nodes {
 		if n.Typename == "CheckRun" && n.Status == "COMPLETED" && n.Name != "" {
@@ -964,6 +967,40 @@ func classifyRollup(nodes []rollupNode) ciResult {
 		r.State = "green"
 	}
 	return r
+}
+
+// latestRuns drops each check run that a newer attempt of the same job
+// (workflow + name) supersedes, as `gh pr checks` does: a cancelled or failed
+// attempt that a re-run replaced must not keep the row red. A run that has not
+// started yet (zero startedAt) counts as newer than one that has. Runs that
+// cannot be ordered (unnamed, or equal start times) are all kept, so a doubt
+// still surfaces rather than hiding a failure. StatusContexts pass through.
+func latestRuns(nodes []rollupNode) []rollupNode {
+	type key struct{ workflow, name string }
+	newest := map[key]time.Time{}
+	unstarted := map[key]bool{}
+	for _, n := range nodes {
+		if n.Typename != "CheckRun" || n.Name == "" {
+			continue
+		}
+		k := key{n.WorkflowName, n.Name}
+		if n.StartedAt.IsZero() {
+			unstarted[k] = true
+		} else if n.StartedAt.After(newest[k]) {
+			newest[k] = n.StartedAt
+		}
+	}
+	out := nodes[:0:0]
+	for _, n := range nodes {
+		if n.Typename == "CheckRun" && n.Name != "" && !n.StartedAt.IsZero() {
+			k := key{n.WorkflowName, n.Name}
+			if unstarted[k] || n.StartedAt.Before(newest[k]) {
+				continue // superseded by a re-run
+			}
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // rollupBucket maps one node to "pass", "skip", "pending" or "fail".
