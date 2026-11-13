@@ -2492,6 +2492,7 @@ func assertNoMarker(t *testing.T, marker string) {
 func TestGitProbeIgnoresPlantedFSMonitor(t *testing.T) {
 	dir, marker := plantedRepo(t)
 	// An inherited GIT_CONFIG_PARAMETERS (a parent git's -c) is kept, but ours win.
+	// Set after plantedRepo, so its positive control runs without it.
 	t.Setenv("GIT_CONFIG_PARAMETERS", "'clodhopper.test=kept' 'core.fsmonitor=touch "+marker+"'")
 	gitBin, _ := exec.LookPath("git")
 	if _, ok := gitProbe(gitBin, dir, "status"); !ok {

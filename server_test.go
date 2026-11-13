@@ -5028,7 +5028,19 @@ esac`)
 	if err != nil {
 		t.Fatal("gh api graphql did not run")
 	}
-	if strings.TrimSpace(string(got)) == dir {
-		t.Error("gh api graphql ran in the DB-sourced cwd")
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDir, err := filepath.EvalSymlinks(wd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotDir, err := filepath.EvalSymlinks(strings.TrimSpace(string(got)))
+	if err != nil {
+		t.Fatalf("resolve graphql cwd %q: %v", got, err)
+	}
+	if gotDir != wantDir {
+		t.Errorf("gh api graphql ran in %q, want the process cwd %q", gotDir, wantDir)
 	}
 }

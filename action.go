@@ -538,14 +538,14 @@ const (
 	gitProbeTimeout = 5 * time.Second
 )
 
-// gitSafeEnv is os.Environ() with core.fsmonitor and hooks forced off (hooks as
-// defence in depth; no probe runs one), via GIT_CONFIG_PARAMETERS in the quoted
-// 'k=v' form every git honours (GIT_CONFIG_COUNT needs 2.31+). Ours follow any
-// inherited entries, and git applies later ones last, so ours win; appended
-// last so this key wins too. Not a general defang: filter drivers,
-// diff.external, gpg.program, sshCommand and credential helpers stay live.
-// Today's commands (rev-parse, remote get-url, gh pr view's config/remote
-// -v/symbolic-ref/rev-parse) reach none; re-check before adding one.
+// gitSafeEnv is os.Environ() with core.fsmonitor and hooks (defence in depth)
+// forced off, so git/gh run in a DB-sourced cwd ignore either if planted. It
+// uses GIT_CONFIG_PARAMETERS in the quoted 'k=v' form every git honours; git
+// applies it after any GIT_CONFIG_COUNT entries and in order, so ours, placed
+// after inherited entries, win (and exec keeps the last duplicate key). Not a
+// general defang: filter drivers, diff.external, gpg.program, sshCommand and
+// credential helpers stay live. None was reachable from these commands when
+// checked (git 2.43, gh 2.103), so re-check before adding a command.
 func gitSafeEnv() []string {
 	return append(os.Environ(), "GIT_CONFIG_PARAMETERS="+strings.TrimSpace(
 		os.Getenv("GIT_CONFIG_PARAMETERS")+" 'core.fsmonitor=false' 'core.hooksPath=/dev/null'"))
