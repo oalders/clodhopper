@@ -43,7 +43,8 @@ STUB
 chmod +x "$tmp/bin/tmux"
 # A stub gh puts two seeded merge-queue rows (e2e_seed_test.go) in the queue,
 # ejects one, reports the merged row's PR merged and the draft-conflict row's a
-# conflicted draft, keyed on the row's cwd; every other cwd has no PR. The exec
+# conflicted draft, keyed on the row's cwd (the queue reply on the PR id that
+# cwd's pr view gave); every other cwd has no PR. The exec
 # server also gets a "landing" row, queued on its first lookup (serve's first
 # render) and merged after, for ledger.spec.ts.
 # Single-shot: landing.seen never resets and ledger.spec.ts dismisses the row, so that spec cannot retry.
@@ -74,7 +75,7 @@ if [ "${1-} ${2-} ${3-}" = "api graphql -f" ]; then
 		echo '{"data":{"node":{"mergeQueueEntry":{"state":"QUEUED","position":2,"estimatedTimeToMerge":3600,"enqueuedAt":null},"timelineItems":{"nodes":[]}}}}'
 		;;
 	id=PR_draft-conflict) echo '{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[]}}}}' ;;
-	id=PR_ejected | id=PR_merged)
+	id=PR_ejected)
 		echo '{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[{"__typename":"RemovedFromMergeQueueEvent","reason":"merge conflict"}]}}}}'
 		;;
 	*) exit 1 ;;
