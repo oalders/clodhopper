@@ -538,6 +538,19 @@ const (
 	gitProbeTimeout = 5 * time.Second
 )
 
+// gitSafeEnv is os.Environ() with repo config that runs commands (core.fsmonitor,
+// hooks) disabled, so git/gh run in a DB-sourced cwd cannot execute a planted
+// .git/config. It does not stop planted filter drivers (.gitattributes plus
+// filter.<name>.*), which no current probe or gh pr view's git calls reach.
+// Appended last so ours win; any operator GIT_CONFIG_* is deliberately clobbered.
+func gitSafeEnv() []string {
+	return append(os.Environ(),
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=core.fsmonitor", "GIT_CONFIG_VALUE_0=false",
+		"GIT_CONFIG_KEY_1=core.hooksPath", "GIT_CONFIG_VALUE_1=/dev/null",
+	)
+}
+
 // gitProbe runs a READ-ONLY git command in dir and returns its trimmed stdout.
 // Best-effort with a tight timeout, mirroring gitBranch in the capture path: any
 // failure (no git, not a repo, timeout, non-zero exit) yields ("", false) and the
@@ -550,6 +563,7 @@ func gitProbe(gitBin, dir string, args ...string) (string, bool) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, gitBin, append([]string{"-C", dir}, args...)...)
 	cmd.Stdin = nil
+	cmd.Env = gitSafeEnv()
 	// Same process-group + WaitDelay treatment runAction documents at length: a
 	// git that leaves a daemonising grandchild (credential cache, ssh
 	// ControlMaster) would otherwise outlive gitProbeTimeout holding the output

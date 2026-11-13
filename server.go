@@ -782,6 +782,7 @@ func lookupCI(cwd string, gate *ghGate) ciResult {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", "pr", "view", "--json", "id,number,url,state,mergedAt,isDraft,mergeStateStatus,statusCheckRollup")
 	cmd.Dir = cwd
+	cmd.Env = gitSafeEnv() // gh's own git calls run in this DB-sourced cwd
 	out, err := cmd.Output()
 	if err != nil {
 		gate.tripOn(err)
@@ -791,18 +792,17 @@ func lookupCI(cwd string, gate *ghGate) ciResult {
 	r, id := parsePRView(out)
 	// Queue checks run on a temporary gh-readonly-queue commit the rollup never
 	// sees, so ask for the queue entry directly (#183); same ctx, same deadline.
-	return withMergeQueue(ctx, cwd, r, id, gate)
+	return withMergeQueue(ctx, r, id, gate)
 }
 
-// withMergeQueue folds open PR id's merge-queue entry into r via gh, run in dir
-// under ctx's deadline. Best-effort: no id or any error leaves r unchanged, a
+// withMergeQueue folds open PR id's merge-queue entry into r via gh under ctx's
+// deadline. Best-effort: no id or any error leaves r unchanged, a
 // rate-limited one tripping gate.
-func withMergeQueue(ctx context.Context, dir string, r ciResult, id string, gate *ghGate) ciResult {
+func withMergeQueue(ctx context.Context, r ciResult, id string, gate *ghGate) ciResult {
 	if id == "" {
 		return r
 	}
 	cmd := exec.CommandContext(ctx, "gh", "api", "graphql", "-f", "id="+id, "-f", "query="+mergeQueueQuery)
-	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
 		gate.tripOn(err)

@@ -255,7 +255,7 @@ func lookupPRFinal(key string, gate *ghGate) ciResult {
 		return ciResult{}
 	}
 	r, id := parsePRView(out)
-	return withMergeQueue(ctx, "", r, id, gate)
+	return withMergeQueue(ctx, r, id, gate)
 }
 
 // openPR is one open pull request the block picker offers. Title and Author

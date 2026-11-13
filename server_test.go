@@ -5007,3 +5007,12 @@ func TestNewServeConfigsSharesOneGate(t *testing.T) {
 		t.Errorf("gates: act %p, ci %p, finals %p, open PRs %p; want one shared non-nil gate", g, act.ci.gate, act.ledger.finals.gate, act.openPRs.gate)
 	}
 }
+
+// gh runs git in the DB-sourced cwd; the stub stands in for that git call.
+func TestLookupCIIgnoresPlantedFSMonitor(t *testing.T) {
+	dir, marker := plantedRepo(t)
+	stub := writeStub(t, "gh", `git status >/dev/null; exit 1`)
+	t.Setenv("PATH", filepath.Dir(stub)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	lookupCI(dir, &ghGate{})
+	assertNoMarker(t, marker)
+}

@@ -2461,3 +2461,34 @@ func TestHandleActionBlockPR(t *testing.T) {
 		t.Errorf("pr blocks = %v, want a on o/r#7", blocks)
 	}
 }
+
+// plantedRepo makes a committed git repo whose .git/config sets a core.fsmonitor
+// that touches the returned marker, as a sandboxed agent could plant (#202).
+func plantedRepo(t *testing.T) (dir, marker string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir = t.TempDir()
+	marker = filepath.Join(t.TempDir(), "pwned")
+	runGit(t, dir, "init")
+	runGit(t, dir, "commit", "--allow-empty", "-m", "x")
+	runGit(t, dir, "config", "core.fsmonitor", "touch "+marker)
+	return dir, marker
+}
+
+func assertNoMarker(t *testing.T, marker string) {
+	t.Helper()
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("planted core.fsmonitor ran")
+	}
+}
+
+func TestGitProbeIgnoresPlantedFSMonitor(t *testing.T) {
+	dir, marker := plantedRepo(t)
+	gitBin, _ := exec.LookPath("git")
+	if _, ok := gitProbe(gitBin, dir, "status"); !ok {
+		t.Fatal("git status failed")
+	}
+	assertNoMarker(t, marker)
+}
