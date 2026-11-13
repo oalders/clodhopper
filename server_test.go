@@ -5009,14 +5009,26 @@ func TestNewServeConfigsSharesOneGate(t *testing.T) {
 }
 
 // gh runs git in the DB-sourced cwd; the stub stands in for that git call.
+// The graphql call needs no repo, so it must not run there either.
 func TestLookupCIIgnoresPlantedFSMonitor(t *testing.T) {
 	dir, marker := plantedRepo(t)
-	ran := filepath.Join(t.TempDir(), "ran")
-	stub := writeStub(t, "gh", `git status >/dev/null && touch `+ran+`; exit 1`)
+	tmp := t.TempDir()
+	ran, apiDir := filepath.Join(tmp, "ran"), filepath.Join(tmp, "api-dir")
+	stub := writeStub(t, "gh", `case $1 in
+pr) git status >/dev/null && touch `+ran+` && echo '{"id":"PR_1","state":"OPEN"}' ;;
+api) pwd >`+apiDir+`; exit 1 ;;
+esac`)
 	t.Setenv("PATH", filepath.Dir(stub)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	lookupCI(dir, &ghGate{})
 	if _, err := os.Stat(ran); err != nil {
 		t.Fatal("stub gh or its git status did not run")
 	}
 	assertNoMarker(t, marker)
+	got, err := os.ReadFile(apiDir)
+	if err != nil {
+		t.Fatal("gh api graphql did not run")
+	}
+	if strings.TrimSpace(string(got)) == dir {
+		t.Error("gh api graphql ran in the DB-sourced cwd")
+	}
 }

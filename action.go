@@ -539,14 +539,16 @@ const (
 )
 
 // gitSafeEnv is os.Environ() with core.fsmonitor and hooks forced off (hooks as
-// defence in depth; no probe runs one), via GIT_CONFIG_PARAMETERS, which every git
-// honours (GIT_CONFIG_COUNT needs 2.31+). Appended last so it wins. Not a general
-// defang: filter drivers, diff.external, gpg.program, sshCommand and credential
-// helpers stay live. Today's commands (rev-parse, remote get-url, gh pr view's
-// config/symbolic-ref/rev-parse) reach none; re-check before adding one.
+// defence in depth; no probe runs one), via GIT_CONFIG_PARAMETERS in the quoted
+// 'k=v' form every git honours (GIT_CONFIG_COUNT needs 2.31+). Ours follow any
+// inherited entries, and git applies later ones last, so ours win; appended
+// last so this key wins too. Not a general defang: filter drivers,
+// diff.external, gpg.program, sshCommand and credential helpers stay live.
+// Today's commands (rev-parse, remote get-url, gh pr view's config/remote
+// -v/symbolic-ref/rev-parse) reach none; re-check before adding one.
 func gitSafeEnv() []string {
-	return append(os.Environ(),
-		"GIT_CONFIG_PARAMETERS='core.fsmonitor=false' 'core.hooksPath=/dev/null'")
+	return append(os.Environ(), "GIT_CONFIG_PARAMETERS="+strings.TrimSpace(
+		os.Getenv("GIT_CONFIG_PARAMETERS")+" 'core.fsmonitor=false' 'core.hooksPath=/dev/null'"))
 }
 
 // gitProbe runs a READ-ONLY git command in dir and returns its trimmed stdout.
