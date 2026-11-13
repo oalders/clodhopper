@@ -2474,6 +2474,11 @@ func plantedRepo(t *testing.T) (dir, marker string) {
 	runGit(t, dir, "init")
 	runGit(t, dir, "commit", "--allow-empty", "-m", "x")
 	runGit(t, dir, "config", "core.fsmonitor", "touch "+marker)
+	// Positive control: the fixture must actually trigger fsmonitor.
+	runGit(t, dir, "status")
+	if err := os.Remove(marker); err != nil {
+		t.Fatalf("planted core.fsmonitor did not run: %v", err)
+	}
 	return dir, marker
 }
 

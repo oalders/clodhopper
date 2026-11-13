@@ -5011,8 +5011,12 @@ func TestNewServeConfigsSharesOneGate(t *testing.T) {
 // gh runs git in the DB-sourced cwd; the stub stands in for that git call.
 func TestLookupCIIgnoresPlantedFSMonitor(t *testing.T) {
 	dir, marker := plantedRepo(t)
-	stub := writeStub(t, "gh", `git status >/dev/null; exit 1`)
+	ran := filepath.Join(t.TempDir(), "ran")
+	stub := writeStub(t, "gh", `git status >/dev/null && touch `+ran+`; exit 1`)
 	t.Setenv("PATH", filepath.Dir(stub)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	lookupCI(dir, &ghGate{})
+	if _, err := os.Stat(ran); err != nil {
+		t.Fatal("stub gh or its git status did not run")
+	}
 	assertNoMarker(t, marker)
 }

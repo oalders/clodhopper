@@ -538,17 +538,15 @@ const (
 	gitProbeTimeout = 5 * time.Second
 )
 
-// gitSafeEnv is os.Environ() with repo config that runs commands (core.fsmonitor,
-// hooks) disabled, so git/gh run in a DB-sourced cwd cannot execute a planted
-// .git/config. It does not stop planted filter drivers (.gitattributes plus
-// filter.<name>.*), which no current probe or gh pr view's git calls reach.
-// Appended last so ours win; any operator GIT_CONFIG_* is deliberately clobbered.
+// gitSafeEnv is os.Environ() with core.fsmonitor and hooks forced off (hooks as
+// defence in depth; no probe runs one), via GIT_CONFIG_PARAMETERS, which every git
+// honours (GIT_CONFIG_COUNT needs 2.31+). Appended last so it wins. Not a general
+// defang: filter drivers, diff.external, gpg.program, sshCommand and credential
+// helpers stay live. Today's commands (rev-parse, remote get-url, gh pr view's
+// config/symbolic-ref/rev-parse) reach none; re-check before adding one.
 func gitSafeEnv() []string {
 	return append(os.Environ(),
-		"GIT_CONFIG_COUNT=2",
-		"GIT_CONFIG_KEY_0=core.fsmonitor", "GIT_CONFIG_VALUE_0=false",
-		"GIT_CONFIG_KEY_1=core.hooksPath", "GIT_CONFIG_VALUE_1=/dev/null",
-	)
+		"GIT_CONFIG_PARAMETERS='core.fsmonitor=false' 'core.hooksPath=/dev/null'")
 }
 
 // gitProbe runs a READ-ONLY git command in dir and returns its trimmed stdout.
