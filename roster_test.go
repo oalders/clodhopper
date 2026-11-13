@@ -24,6 +24,14 @@ func TestClassifyRollup(t *testing.T) {
 		return n
 	}
 	wf := func(n rollupNode, workflow string) rollupNode { n.WorkflowName = workflow; return n }
+	// attempt is one run of the Actions job ci/gate, started at minute (0: not started).
+	attempt := func(status, conclusion string, minute int) rollupNode {
+		n := wf(named(run(status, conclusion), "gate"), "ci")
+		if minute > 0 {
+			n = at(n, minute)
+		}
+		return n
+	}
 	cases := []struct {
 		name  string
 		nodes []rollupNode
@@ -42,11 +50,17 @@ func TestClassifyRollup(t *testing.T) {
 		{"same-name run still in progress stays pending", []rollupNode{named(run("IN_PROGRESS", ""), "ci"), namedCtx("PENDING", "ci")}, ciResult{State: "pending"}},
 		{"re-run in progress keeps a same-name gate pending", []rollupNode{named(run("COMPLETED", "SUCCESS"), "ci"), named(run("IN_PROGRESS", ""), "ci"), namedCtx("PENDING", "ci")}, ciResult{State: "pending", Passes: 1}},
 		{"same-name failed run still fails", []rollupNode{named(run("COMPLETED", "FAILURE"), "ci"), namedCtx("PENDING", "ci")}, ciResult{State: "failing", Fails: 1}},
-		{"cancelled run superseded by a re-run is dropped", []rollupNode{at(named(run("COMPLETED", "CANCELLED"), "gate"), 1), at(named(run("COMPLETED", "SUCCESS"), "gate"), 2)}, ciResult{State: "green", Passes: 1}},
-		{"failed re-run of a passed run still fails", []rollupNode{at(named(run("COMPLETED", "SUCCESS"), "gate"), 1), at(named(run("COMPLETED", "FAILURE"), "gate"), 2)}, ciResult{State: "failing", Fails: 1}},
-		{"queued re-run supersedes a failed run", []rollupNode{at(named(run("COMPLETED", "FAILURE"), "gate"), 1), named(run("QUEUED", ""), "gate")}, ciResult{State: "pending"}},
-		{"same name in another workflow is not a re-run", []rollupNode{wf(at(named(run("COMPLETED", "FAILURE"), "test"), 1), "a"), wf(at(named(run("COMPLETED", "SUCCESS"), "test"), 2), "b")}, ciResult{State: "failing", Fails: 1, Passes: 1}},
-		{"equal start times keep both runs", []rollupNode{at(named(run("COMPLETED", "FAILURE"), "gate"), 1), at(named(run("COMPLETED", "SUCCESS"), "gate"), 1)}, ciResult{State: "failing", Fails: 1, Passes: 1}},
+		{"cancelled run superseded by a re-run is dropped", []rollupNode{attempt("COMPLETED", "CANCELLED", 1), attempt("COMPLETED", "SUCCESS", 2)}, ciResult{State: "green", Passes: 1}},
+		{"failed re-run of a passed run still fails", []rollupNode{attempt("COMPLETED", "SUCCESS", 1), attempt("COMPLETED", "FAILURE", 2)}, ciResult{State: "failing", Fails: 1}},
+		{"queued re-run supersedes a failed run", []rollupNode{attempt("COMPLETED", "FAILURE", 1), attempt("QUEUED", "", 0)}, ciResult{State: "pending"}},
+		{"same name in another workflow is not a re-run", []rollupNode{wf(attempt("COMPLETED", "FAILURE", 1), "a"), wf(attempt("COMPLETED", "SUCCESS", 2), "b")}, ciResult{State: "failing", Fails: 1, Passes: 1}},
+		{"same name without a workflow is not a re-run", []rollupNode{wf(attempt("COMPLETED", "FAILURE", 1), ""), wf(attempt("COMPLETED", "SUCCESS", 2), "")}, ciResult{State: "failing", Fails: 1, Passes: 1}},
+		{"equal start times keep both runs", []rollupNode{attempt("COMPLETED", "FAILURE", 1), attempt("COMPLETED", "SUCCESS", 1)}, ciResult{State: "failing", Fails: 1, Passes: 1}},
+		{"run cancelled before it started does not supersede its re-run", []rollupNode{attempt("COMPLETED", "CANCELLED", 0), attempt("COMPLETED", "SUCCESS", 2)}, ciResult{State: "failing", Fails: 1, Passes: 1}},
+		{"completed run with no start does not hide an older failure", []rollupNode{attempt("COMPLETED", "FAILURE", 1), attempt("COMPLETED", "STARTUP_FAILURE", 0)}, ciResult{State: "failing", Fails: 2}},
+		{"stale in-progress run superseded by a finished re-run", []rollupNode{attempt("IN_PROGRESS", "", 1), attempt("COMPLETED", "SUCCESS", 2)}, ciResult{State: "green", Passes: 1}},
+		{"only the newest of three attempts counts", []rollupNode{attempt("COMPLETED", "FAILURE", 1), attempt("COMPLETED", "CANCELLED", 2), attempt("COMPLETED", "SUCCESS", 3)}, ciResult{State: "green", Passes: 1}},
+		{"unnamed runs are never deduped", []rollupNode{at(wf(run("COMPLETED", "FAILURE"), "ci"), 1), at(wf(run("COMPLETED", "SUCCESS"), "ci"), 2)}, ciResult{State: "failing", Fails: 1, Passes: 1}},
 		{"unknown values fail closed", []rollupNode{run("COMPLETED", "NEW"), ctx("NEW"), {Typename: "NewNode"}}, ciResult{State: "failing", Fails: 3}},
 	}
 	for _, c := range cases {
@@ -81,6 +95,7 @@ func TestParsePRView(t *testing.T) {
 		{"merged keeps its number, repo and merge time", `{"number":7,"url":"https://github.com/o/r/pull/7","state":"MERGED","mergedAt":"2026-10-21T11:00:00Z"}`, ciResult{Done: "merged", PRNumber: 7, PRRepo: "o/r", MergedAt: time.Date(2026, 10, 21, 11, 0, 0, 0, time.UTC)}},
 		{"a non-github url yields no repo", `{"number":7,"url":"https://ghe.example/o/r/pull/7","state":"CLOSED"}`, ciResult{Done: "closed", PRNumber: 7}},
 		{"rollup since is the newest check start", `{"statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-18T11:30:00Z"},{"__typename":"StatusContext","state":"SUCCESS","startedAt":"2026-10-18T11:40:00Z"},{"__typename":"CheckRun","status":"QUEUED","startedAt":"0001-01-01T00:00:00Z"}]}`, ciResult{State: "pending", Passes: 2, RollupSince: time.Date(2026, 10, 18, 11, 40, 0, 0, time.UTC)}},
+		{"a re-run supersedes by workflowName and startedAt", `{"statusCheckRollup":[{"__typename":"CheckRun","name":"gate","workflowName":"ci","status":"COMPLETED","conclusion":"CANCELLED","startedAt":"2026-10-18T11:30:00Z"},{"__typename":"CheckRun","name":"gate","workflowName":"ci","status":"COMPLETED","conclusion":"SUCCESS","startedAt":"2026-10-18T11:31:00Z"},{"__typename":"CheckRun","name":"gate","workflowName":"other","status":"COMPLETED","conclusion":"FAILURE","startedAt":"2026-10-18T11:29:00Z"}]}`, ciResult{State: "failing", Fails: 1, Passes: 1, RollupSince: time.Date(2026, 10, 18, 11, 31, 0, 0, time.UTC)}},
 		{"malformed", `not json`, ciResult{}},
 	}
 	for _, c := range cases {
