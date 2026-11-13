@@ -868,17 +868,18 @@ func applyMergeQueue(r ciResult, out []byte, now time.Time) ciResult {
 	return r
 }
 
-// rollupNode is one statusCheckRollup entry: a CheckRun (name/status/conclusion)
+// rollupNode is one statusCheckRollup entry: a CheckRun (name/workflowName/status/conclusion)
 // or a StatusContext (context/state), told apart by __typename. gh reports both
 // kinds' start as startedAt (a StatusContext's is its createdAt).
 type rollupNode struct {
-	Typename   string    `json:"__typename"`
-	Name       string    `json:"name"`
-	Status     string    `json:"status"`
-	Conclusion string    `json:"conclusion"`
-	StartedAt  time.Time `json:"startedAt"`
-	Context    string    `json:"context"`
-	State      string    `json:"state"`
+	Typename     string    `json:"__typename"`
+	Name         string    `json:"name"`
+	WorkflowName string    `json:"workflowName"`
+	Status       string    `json:"status"`
+	Conclusion   string    `json:"conclusion"`
+	StartedAt    time.Time `json:"startedAt"`
+	Context      string    `json:"context"`
+	State        string    `json:"state"`
 }
 
 // parsePRView turns `gh pr view --json id,number,url,state,mergedAt,isDraft,mergeStateStatus,statusCheckRollup`
@@ -913,6 +914,8 @@ func parsePRView(out []byte) (ciResult, string) {
 	}
 	r.Conflict = pr.MergeStateStatus == "DIRTY"
 	r.Draft = pr.IsDraft
+	// Raw nodes, not latestRuns' survivors: a superseded run starting still
+	// marks rollup activity for the ejection lapse.
 	for _, n := range pr.StatusCheckRollup {
 		if n.StartedAt.After(r.RollupSince) {
 			r.RollupSince = n.StartedAt
@@ -926,12 +929,14 @@ func parsePRView(out []byte) (ciResult, string) {
 
 // classifyRollup reduces the rollup to one state plus a fail count. Any failure
 // wins; otherwise any still-pending check keeps it amber; passes and skips alone
-// are green. A pending status named after a finished check run is ignored. An
-// unrecognised value counts as a failure (fail closed).
+// are green. A pending status named after a finished check run is ignored, and
+// so is a check run superseded by a re-run (latestRuns). An unrecognised value
+// counts as a failure (fail closed).
 func classifyRollup(nodes []rollupNode) ciResult {
 	if len(nodes) == 0 {
 		return ciResult{}
 	}
+	nodes = latestRuns(nodes)
 	done := map[string]bool{}
 	for _, n := range nodes {
 		if n.Typename == "CheckRun" && n.Status == "COMPLETED" && n.Name != "" {
@@ -964,6 +969,67 @@ func classifyRollup(nodes []rollupNode) ciResult {
 		r.State = "green"
 	}
 	return r
+}
+
+// latestRuns drops each GitHub Actions check run that a newer attempt of the
+// same job (workflow + name) supersedes, like `gh pr checks`: a cancelled or
+// failed attempt that a re-run replaced must not keep the row red. Only runs
+// with a workflowName take part: a third-party app's check has none, and two
+// apps posting the same check name are not re-runs of each other.
+//
+// Attempts are ordered by startedAt. A run still waiting to start (zero
+// startedAt, not COMPLETED) counts as newest, so a queued re-run shows its
+// job as pending, and a stuck one masks any finished attempt of that job. A
+// COMPLETED run with no start (cancelled while queued) counts as oldest: it
+// yields to any started or queued attempt, and is kept only when the job has
+// none. Runs that still cannot be ordered are all kept, so a doubt surfaces
+// rather than hiding a failure: unnamed runs and equal start times.
+// StatusContexts pass through. Known gaps: the rollup carries no trigger event
+// or workflow file, so a job run for both push and pull_request on one commit,
+// or two workflow files sharing a `name:`, count as one job and only the newer
+// run counts.
+func latestRuns(nodes []rollupNode) []rollupNode {
+	type key struct{ workflow, name string }
+	newest := map[key]time.Time{} // a missing key reads as the zero time, which any start beats
+	queued := map[key]bool{}
+	for _, n := range nodes {
+		if !rerunnable(n) {
+			continue
+		}
+		k := key{n.WorkflowName, n.Name}
+		switch {
+		case !n.StartedAt.IsZero():
+			if n.StartedAt.After(newest[k]) {
+				newest[k] = n.StartedAt
+			}
+		case n.Status != "COMPLETED":
+			queued[k] = true
+		}
+	}
+	out := make([]rollupNode, 0, len(nodes))
+	for _, n := range nodes {
+		if rerunnable(n) {
+			k := key{n.WorkflowName, n.Name}
+			switch {
+			case !n.StartedAt.IsZero():
+				if queued[k] || n.StartedAt.Before(newest[k]) {
+					continue // superseded by a re-run
+				}
+			case n.Status == "COMPLETED":
+				if queued[k] || !newest[k].IsZero() {
+					continue // never started; any other attempt is newer
+				}
+			}
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// rerunnable reports whether n is an Actions check run latestRuns can order
+// against other attempts of its job.
+func rerunnable(n rollupNode) bool {
+	return n.Typename == "CheckRun" && n.Name != "" && n.WorkflowName != ""
 }
 
 // rollupBucket maps one node to "pass", "skip", "pending" or "fail".

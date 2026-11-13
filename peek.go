@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // paneIDRe matches a tmux pane id ("%" followed by digits, e.g. "%3"). Pane ids
@@ -74,9 +75,11 @@ func paneTitle(raw string) string {
 // leading handle when that handle only repeats something the branch column already
 // shows (shown: the row's branch and worktree dir, either of which a worktree
 // session may be named after), else the handle. A decorated handle ("👟 fix-12")
-// or an app-prefixed one ("muevelo/fix-12") still counts as repeating it.
+// or an app-prefixed one ("muevelo/fix-12") still counts as repeating it. A
+// title with no letter or digit (a bare status emoji such as "🟢") names
+// nothing, so the handle stays.
 func paneLabel(p livePane, shown ...string) string {
-	if p.title == "" {
+	if !strings.ContainsFunc(p.title, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) {
 		return p.session
 	}
 	for _, s := range shown {
