@@ -63,37 +63,44 @@ if [ "${1-} ${2-} ${3-} ${4-}" = "pr view 101 --repo=e2e/draft-conflict" ]; then
 	echo '{"number":101,"state":"OPEN"}'
 	exit 0
 fi
+# The merge-queue lookup runs in serve's own cwd (#202), so it is keyed by the
+# node id pr view gave (PR_<worktree>), as real gh is.
+if [ "${1-} ${2-} ${3-}" = "api graphql -f" ]; then
+	case "${4-}" in
+	id=PR_queued | id=PR_landing)
+		echo '{"data":{"node":{"mergeQueueEntry":{"state":"QUEUED","position":1,"estimatedTimeToMerge":3600,"enqueuedAt":null},"timelineItems":{"nodes":[]}}}}'
+		;;
+	id=PR_queued-approval)
+		echo '{"data":{"node":{"mergeQueueEntry":{"state":"QUEUED","position":2,"estimatedTimeToMerge":3600,"enqueuedAt":null},"timelineItems":{"nodes":[]}}}}'
+		;;
+	id=PR_draft-conflict) echo '{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[]}}}}' ;;
+	id=PR_ejected | id=PR_merged)
+		echo '{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[{"__typename":"RemovedFromMergeQueueEvent","reason":"merge conflict"}]}}}}'
+		;;
+	*) exit 1 ;;
+	esac
+	exit 0
+fi
 dir=$(basename "$(pwd)")
 case "$dir" in queued | queued-approval | ejected | merged | landing | draft-conflict) ;; *) exit 1 ;; esac
 case "${1-}" in
 pr)
 	if [ "$dir" = landing ]; then
 		if [ -e ../landing.seen ]; then
-			echo '{"id":"PR_e2e","number":42,"url":"https://github.com/e2e/landing/pull/42","state":"MERGED","mergedAt":"2026-01-01T00:00:00Z","statusCheckRollup":[]}'
+			echo '{"id":"PR_'"$dir"'","number":42,"url":"https://github.com/e2e/landing/pull/42","state":"MERGED","mergedAt":"2026-01-01T00:00:00Z","statusCheckRollup":[]}'
 		else
 			touch ../landing.seen
-			echo '{"id":"PR_e2e","number":42,"url":"https://github.com/e2e/landing/pull/42","state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[]}'
+			echo '{"id":"PR_'"$dir"'","number":42,"url":"https://github.com/e2e/landing/pull/42","state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[]}'
 		fi
 		exit 0
 	fi
 	# merged: the stale failing rollup and DIRTY must not render for a finished PR (#204).
 	if [ "$dir" = merged ]; then
-		echo '{"id":"PR_e2e","state":"MERGED","mergeStateStatus":"DIRTY","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]}'
+		echo '{"id":"PR_'"$dir"'","state":"MERGED","mergeStateStatus":"DIRTY","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]}'
 	elif [ "$dir" = draft-conflict ]; then
-		echo '{"id":"PR_e2e","state":"OPEN","isDraft":true,"mergeStateStatus":"DIRTY","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}'
+		echo '{"id":"PR_'"$dir"'","state":"OPEN","isDraft":true,"mergeStateStatus":"DIRTY","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}'
 	else
-		echo '{"id":"PR_e2e","state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}'
-	fi
-	;;
-api)
-	if [ "$dir" = queued ] || [ "$dir" = landing ]; then
-		echo '{"data":{"node":{"mergeQueueEntry":{"state":"QUEUED","position":1,"estimatedTimeToMerge":3600,"enqueuedAt":null},"timelineItems":{"nodes":[]}}}}'
-	elif [ "$dir" = queued-approval ]; then
-		echo '{"data":{"node":{"mergeQueueEntry":{"state":"QUEUED","position":2,"estimatedTimeToMerge":3600,"enqueuedAt":null},"timelineItems":{"nodes":[]}}}}'
-	elif [ "$dir" = draft-conflict ]; then
-		echo '{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[]}}}}'
-	else
-		echo '{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[{"__typename":"RemovedFromMergeQueueEvent","reason":"merge conflict"}]}}}}'
+		echo '{"id":"PR_'"$dir"'","state":"OPEN","mergeStateStatus":"CLEAN","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]}'
 	fi
 	;;
 *) exit 1 ;;
