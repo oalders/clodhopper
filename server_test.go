@@ -5007,3 +5007,40 @@ func TestNewServeConfigsSharesOneGate(t *testing.T) {
 		t.Errorf("gates: act %p, ci %p, finals %p, open PRs %p; want one shared non-nil gate", g, act.ci.gate, act.ledger.finals.gate, act.openPRs.gate)
 	}
 }
+
+// gh runs git in the DB-sourced cwd; the stub stands in for that git call.
+// The graphql call needs no repo, so it must not run there either.
+func TestLookupCIIgnoresPlantedFSMonitor(t *testing.T) {
+	dir, marker := plantedRepo(t)
+	tmp := t.TempDir()
+	ran, apiDir := filepath.Join(tmp, "ran"), filepath.Join(tmp, "api-dir")
+	stub := writeStub(t, "gh", `case $1 in
+pr) git status >/dev/null && touch `+ran+` && echo '{"id":"PR_1","state":"OPEN"}' ;;
+api) pwd >`+apiDir+`; exit 1 ;;
+esac`)
+	t.Setenv("PATH", filepath.Dir(stub)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	lookupCI(dir, &ghGate{})
+	if _, err := os.Stat(ran); err != nil {
+		t.Fatal("stub gh or its git status did not run")
+	}
+	assertNoMarker(t, marker)
+	got, err := os.ReadFile(apiDir)
+	if err != nil {
+		t.Fatal("gh api graphql did not run")
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDir, err := filepath.EvalSymlinks(wd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotDir, err := filepath.EvalSymlinks(strings.TrimSpace(string(got)))
+	if err != nil {
+		t.Fatalf("resolve graphql cwd %q: %v", got, err)
+	}
+	if gotDir != wantDir {
+		t.Errorf("gh api graphql ran in %q, want the process cwd %q", gotDir, wantDir)
+	}
+}

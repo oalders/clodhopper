@@ -141,6 +141,7 @@ func runAction(bin, dir string, args []string, timeout time.Duration) actionResu
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = dir
+	cmd.Env = gitSafeEnv() // gh pr ready's own git calls run in this DB-sourced cwd
 	cmd.Stdin = nil
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Setpgid makes the child's pgid equal its pid, so -pid targets the whole
@@ -538,6 +539,19 @@ const (
 	gitProbeTimeout = 5 * time.Second
 )
 
+// gitSafeEnv is os.Environ() with core.fsmonitor forced off, and hooks too as
+// defence in depth, so git/gh run in a DB-sourced cwd ignore either if
+// planted. It uses GIT_CONFIG_PARAMETERS in the quoted 'k=v' form every git
+// honours; git applies it after any GIT_CONFIG_COUNT entries and in order, so
+// ours, placed after inherited entries, win (and exec keeps the last duplicate
+// key). Not a general defang: filter drivers, diff.external, gpg.program,
+// sshCommand and credential helpers stay live. None was reachable from these
+// commands when checked (git 2.43, gh 2.103), so re-check before adding one.
+func gitSafeEnv() []string {
+	return append(os.Environ(), "GIT_CONFIG_PARAMETERS="+strings.TrimSpace(
+		os.Getenv("GIT_CONFIG_PARAMETERS")+" 'core.fsmonitor=false' 'core.hooksPath=/dev/null'"))
+}
+
 // gitProbe runs a READ-ONLY git command in dir and returns its trimmed stdout.
 // Best-effort with a tight timeout, mirroring gitBranch in the capture path: any
 // failure (no git, not a repo, timeout, non-zero exit) yields ("", false) and the
@@ -550,6 +564,7 @@ func gitProbe(gitBin, dir string, args ...string) (string, bool) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, gitBin, append([]string{"-C", dir}, args...)...)
 	cmd.Stdin = nil
+	cmd.Env = gitSafeEnv()
 	// Same process-group + WaitDelay treatment runAction documents at length: a
 	// git that leaves a daemonising grandchild (credential cache, ssh
 	// ControlMaster) would otherwise outlive gitProbeTimeout holding the output

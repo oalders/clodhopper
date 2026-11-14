@@ -2461,3 +2461,54 @@ func TestHandleActionBlockPR(t *testing.T) {
 		t.Errorf("pr blocks = %v, want a on o/r#7", blocks)
 	}
 }
+
+// plantedRepo makes a committed git repo whose .git/config sets a core.fsmonitor
+// that touches the returned marker, as a sandboxed agent could plant (#202).
+func plantedRepo(t *testing.T) (dir, marker string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir = t.TempDir()
+	marker = filepath.Join(t.TempDir(), "pwned")
+	runGit(t, dir, "init")
+	runGit(t, dir, "commit", "--allow-empty", "-m", "x")
+	runGit(t, dir, "config", "core.fsmonitor", "touch "+marker)
+	// Positive control: the fixture must actually trigger fsmonitor.
+	runGit(t, dir, "status")
+	if err := os.Remove(marker); err != nil {
+		t.Fatalf("planted core.fsmonitor did not run: %v", err)
+	}
+	return dir, marker
+}
+
+func assertNoMarker(t *testing.T, marker string) {
+	t.Helper()
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("planted core.fsmonitor ran")
+	}
+}
+
+func TestGitProbeIgnoresPlantedFSMonitor(t *testing.T) {
+	dir, marker := plantedRepo(t)
+	// An inherited GIT_CONFIG_PARAMETERS (a parent git's -c) is kept, but ours win.
+	// Set after plantedRepo, so its positive control runs without it.
+	t.Setenv("GIT_CONFIG_PARAMETERS", "'clodhopper.test=kept' 'core.fsmonitor=touch "+marker+"'")
+	gitBin, _ := exec.LookPath("git")
+	if _, ok := gitProbe(gitBin, dir, "status"); !ok {
+		t.Fatal("git status failed")
+	}
+	assertNoMarker(t, marker)
+	if got, _ := gitProbe(gitBin, dir, "config", "clodhopper.test"); got != "kept" {
+		t.Errorf("inherited config = %q, want kept", got)
+	}
+}
+
+func TestRunActionIgnoresPlantedFSMonitor(t *testing.T) {
+	dir, marker := plantedRepo(t)
+	stub := writeStub(t, "gh", "git status >/dev/null && echo ok")
+	if res := runAction(stub, dir, []string{"pr", "ready"}, 10*time.Second); res.ExitCode != 0 {
+		t.Fatalf("stub gh failed: %+v", res)
+	}
+	assertNoMarker(t, marker)
+}
