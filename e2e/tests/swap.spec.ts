@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, swaps } from './fixtures';
+import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, swaps, fontsReady } from './fixtures';
 
 // What swapContent carries across a poll's #content repaint. Runs against
 // serve.sh's exec server (the "exec desktop 1440" project), whose stub tmux
@@ -76,6 +76,32 @@ for (const pin of [false, true]) {
     expect(await cap.textContent()).toBe(capture);
     expect(await cap.evaluate((el) => el.scrollTop)).toBe(scrolled);
     await expect(cap).toBeFocused();
+  });
+}
+
+for (const pin of [false, true]) {
+  test(`a narrow roster keeps its horizontal scroll across a repaint (pin order ${pin ? 'on' : 'off'})`, async ({ page }) => {
+    if (pin) {
+      await page.locator('#ck-pin').click();
+      await expect(page.locator('#ck-pin')).toHaveAttribute('aria-pressed', 'true');
+    }
+    await page.setViewportSize({ width: 900, height: 900 });
+    await fontsReady(page);
+    const wrap = page.locator('#content .ck-tablewrap:has(> table.roster)');
+    const m = () => wrap.evaluate((el) => ({ left: el.scrollLeft, width: el.clientWidth, max: el.scrollWidth }));
+    const { width, max } = await m();
+    expect(max).toBeGreaterThan(width);
+
+    await wrap.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
+    await repaint(page, '#content table.roster');
+    const end = await m();
+    expect(end.left).toBeGreaterThan(0);
+    expect(end.left + end.width).toBeGreaterThanOrEqual(end.max - 1);
+
+    const mid = Math.floor((max - width) / 2);
+    await wrap.evaluate((el, x) => { el.scrollLeft = x; }, mid);
+    await repaint(page, '#content table.roster');
+    expect((await m()).left).toBe(mid);
   });
 }
 
