@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, swaps } from './fixtures';
+import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, swaps, fontsReady } from './fixtures';
 
 // What swapContent carries across a poll's #content repaint. Runs against
 // serve.sh's exec server (the "exec desktop 1440" project), whose stub tmux
@@ -76,6 +76,47 @@ for (const pin of [false, true]) {
     expect(await cap.textContent()).toBe(capture);
     expect(await cap.evaluate((el) => el.scrollTop)).toBe(scrolled);
     await expect(cap).toBeFocused();
+  });
+}
+
+for (const pin of [false, true]) {
+  test(`a narrow roster keeps its horizontal scroll across a repaint (pin order ${pin ? 'on' : 'off'})`, async ({ page }) => {
+    if (pin) {
+      await page.locator('#ck-pin').click();
+      await expect(page.locator('#ck-pin')).toHaveAttribute('aria-pressed', 'true');
+    }
+    await page.setViewportSize({ width: 900, height: 900 });
+    await fontsReady(page);
+    // One page.evaluate per read/write, not a locator: a locator resolves and then
+    // evaluates in two steps, and a poll swap between them hits a detached wrapper.
+    const m = (to?: number) =>
+      page.evaluate((x) => {
+        const el = document.querySelector('#content .ck-tablewrap:has(> table.roster)')!;
+        if (x !== undefined) el.scrollLeft = x;
+        return { left: el.scrollLeft, width: el.clientWidth, max: el.scrollWidth };
+      }, to);
+    const { width, max } = await m();
+    expect(max).toBeGreaterThan(width);
+
+    const mid = Math.floor((max - width) / 2);
+    await m(mid);
+    await repaint(page, '#content table.roster');
+    expect((await m()).left).toBe(mid);
+
+    const old = await m(max);
+    // Widen the roster's session column, so only a pin to the NEW right edge passes.
+    let n = 0;
+    await page.route('**/api/state?*', async (route) => {
+      const response = await route.fetch();
+      const json = await response.json();
+      const html = json.html.replace(/(<table class="roster[^"]*" style="--sess-w: )(\d+)/, (_: string, p: string, w: string) => p + (+w + 40));
+      return route.fulfill({ response, json: { ...json, html, signature: `widen-${++n}` } });
+    });
+    // Poll, not repaint(): a poll already in flight may still answer at the old width.
+    await expect.poll(async () => (await m()).max).toBeGreaterThan(old.max);
+    const end = await m();
+    expect(end.left).toBeGreaterThan(old.left);
+    expect(end.left + end.width).toBeGreaterThanOrEqual(end.max - 1);
   });
 }
 

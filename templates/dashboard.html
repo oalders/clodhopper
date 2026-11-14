@@ -1079,6 +1079,16 @@
       for (var bp = 0; bp < pickEls.length; bp++) {
         picks[pickEls[bp].closest('.blockform').getAttribute('data-session')] = pickEls[bp].value;
       }
+      // Each table's horizontal scroll too (narrow windows, #249), keyed by its table
+      // class. right needs scrollLeft > 0: an unscrolled, hidden or closed wrapper
+      // measures all zeros and must not read as "at the right edge".
+      var hscroll = {};
+      var wraps = document.querySelectorAll('#content .ck-tablewrap');
+      for (var hw = 0; hw < wraps.length; hw++) {
+        var wt = wraps[hw].querySelector('table');
+        var wl = wraps[hw].scrollLeft;
+        if (wt) hscroll[wt.classList[0]] = { left: wl, right: wl > 0 && wl + wraps[hw].clientWidth >= wraps[hw].scrollWidth - 1 };
+      }
       try { document.dispatchEvent(new CustomEvent('ch:contentswap')); } catch (e) {}
       // Build the new subtree in a disconnected <template>, then swap it into the
       // live #content in one shot. The old form assigned html straight to the
@@ -1186,6 +1196,15 @@
       try { if (window.__ckMQ) window.__ckMQ(); } catch (e) {}
       // After the pin reorder, so the group-start repair sees the final order.
       try { if (window.__ckQFilter) window.__ckQFilter(); } catch (e) {}
+      // Restore horizontal scroll after the pin reorder and queue filter; a reader at
+      // the right edge stays there even if the session column (--sess-w) changed width.
+      var nwraps = document.querySelectorAll('#content .ck-tablewrap');
+      for (var nw = 0; nw < nwraps.length; nw++) {
+        var nt = nwraps[nw].querySelector('table');
+        var hs = nt ? hscroll[nt.classList[0]] : null;
+        if (!hs) continue;
+        nwraps[nw].scrollLeft = hs.right ? nwraps[nw].scrollWidth - nwraps[nw].clientWidth : hs.left;
+      }
       // Re-arm whatever was armed before the swap, after the panel carry-over
       // (an armed group lives inside an actions panel that has just been
       // re-opened) and before focus restore.
