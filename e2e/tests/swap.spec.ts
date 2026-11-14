@@ -87,18 +87,23 @@ for (const pin of [false, true]) {
     }
     await page.setViewportSize({ width: 900, height: 900 });
     await fontsReady(page);
-    const wrap = page.locator('#content .ck-tablewrap:has(> table.roster)');
-    const m = () => wrap.evaluate((el) => ({ left: el.scrollLeft, width: el.clientWidth, max: el.scrollWidth }));
+    // One page.evaluate per read/write, not a locator: a locator resolves and then
+    // evaluates in two steps, and a poll swap between them hits a detached wrapper.
+    const m = (to?: number) =>
+      page.evaluate((x) => {
+        const el = document.querySelector('#content .ck-tablewrap:has(> table.roster)')!;
+        if (x !== undefined) el.scrollLeft = x;
+        return { left: el.scrollLeft, width: el.clientWidth, max: el.scrollWidth };
+      }, to);
     const { width, max } = await m();
     expect(max).toBeGreaterThan(width);
 
     const mid = Math.floor((max - width) / 2);
-    await wrap.evaluate((el, x) => { el.scrollLeft = x; }, mid);
+    await m(mid);
     await repaint(page, '#content table.roster');
     expect((await m()).left).toBe(mid);
 
-    await wrap.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
-    const old = await m();
+    const old = await m(max);
     // Widen the roster's session column, so only a pin to the NEW right edge passes.
     let n = 0;
     await page.route('**/api/state?*', async (route) => {
