@@ -1196,8 +1196,8 @@
       try { if (window.__ckMQ) window.__ckMQ(); } catch (e) {}
       // After the pin reorder, so the group-start repair sees the final order.
       try { if (window.__ckQFilter) window.__ckQFilter(); } catch (e) {}
-      // Restore horizontal scroll once the layout is final; a reader at the right
-      // edge stays there even if the session column (--sess-w) changed width.
+      // Restore horizontal scroll after the pin reorder and queue filter; a reader at
+      // the right edge stays there even if the session column (--sess-w) changed width.
       var nwraps = document.querySelectorAll('#content .ck-tablewrap');
       for (var nw = 0; nw < nwraps.length; nw++) {
         var nt = nwraps[nw].querySelector('table');

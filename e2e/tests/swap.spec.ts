@@ -92,16 +92,26 @@ for (const pin of [false, true]) {
     const { width, max } = await m();
     expect(max).toBeGreaterThan(width);
 
-    await wrap.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
-    await repaint(page, '#content table.roster');
-    const end = await m();
-    expect(end.left).toBeGreaterThan(0);
-    expect(end.left + end.width).toBeGreaterThanOrEqual(end.max - 1);
-
     const mid = Math.floor((max - width) / 2);
     await wrap.evaluate((el, x) => { el.scrollLeft = x; }, mid);
     await repaint(page, '#content table.roster');
     expect((await m()).left).toBe(mid);
+
+    await wrap.evaluate((el) => { el.scrollLeft = el.scrollWidth; });
+    const old = await m();
+    // Widen the roster's session column, so only a pin to the NEW right edge passes.
+    let n = 0;
+    await page.route('**/api/state?*', async (route) => {
+      const response = await route.fetch();
+      const json = await response.json();
+      const html = json.html.replace(/(<table class="roster[^"]*" style="--sess-w: )(\d+)/, (_: string, p: string, w: string) => p + (+w + 40));
+      return route.fulfill({ response, json: { ...json, html, signature: `widen-${++n}` } });
+    });
+    // Poll, not repaint(): a poll already in flight may still answer at the old width.
+    await expect.poll(async () => (await m()).max).toBeGreaterThan(old.max);
+    const end = await m();
+    expect(end.left).toBeGreaterThan(old.left);
+    expect(end.left + end.width).toBeGreaterThanOrEqual(end.max - 1);
   });
 }
 
