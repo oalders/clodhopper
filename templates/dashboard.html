@@ -545,7 +545,7 @@
        border-left would be painted under it). Singletons get no bar. */
     tr.grouped td:first-child { box-shadow: inset 3px 0 0 var(--idle); }
     /* A row nested under its blocker (nestBlocked): indented connector, receding
-       text (an alert row keeps full contrast), and a muted tint that an alert row's own tint overrides. */
+       text and a muted tint, both skipped for alert rows, which keep their own. */
     :where(tr.nested:not(.alert)) td { color: var(--text-2); background: var(--surface-2); } /* :where so hover and any cell's own colour (status, badges) still win */
     .nestmark { color: var(--text-3); margin-right: .3em; white-space: nowrap; }
     tr.nest-2 .nestmark { margin-left: 1em; }

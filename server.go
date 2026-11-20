@@ -1621,7 +1621,7 @@ func nestBlocked(agents []Agent) []Agent {
 			place(i, 0, groupKey(a))
 		}
 	}
-	for i, a := range agents { // a cycle has no root; its rows keep their order rather than vanish
+	for i, a := range agents { // a cycle has no root: its first row stands in as one, so no row vanishes
 		place(i, 0, groupKey(a))
 	}
 	markGroups(out)
