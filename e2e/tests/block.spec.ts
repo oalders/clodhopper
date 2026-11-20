@@ -84,14 +84,16 @@ for (const theme of ['dark', 'light']) {
     const cell = (id: string) => page.locator(`#row-${id} td.branch`);
     const tint = await resolve(page, 'var(--nested-bg)');
     await expect(cell(blocked)).toHaveCSS('background-color', tint);
-    // 12 is above the old --surface-2 tint's dark gap (10) so a too-faint tint fails.
+    // A gap of 12+ (about 5% of the channel range) is visible; the old --surface-2 tint's was 10.
     expect(channelGap(tint, await resolve(page, 'var(--surface)'))).toBeGreaterThan(12);
     expect(channelGap(tint, await page.evaluate(() => getComputedStyle(document.body).backgroundColor))).toBeGreaterThan(12);
     await expect(cell(blockedAsk)).toHaveCSS('background-color', await resolve(page, 'var(--attention-bg)'));
-    await expect(cell(blockedAsk)).not.toHaveCSS('color', await resolve(page, 'var(--text-2)', 'color'));
+    // An alerting nested row keeps a top-level row's text colour, not the nested --text-2.
+    await expect(cell(blockedAsk)).toHaveCSS('color', await cell(blocker).evaluate((el) => getComputedStyle(el).color));
     await page.locator(`#row-${blocked}`).hover();
-    await expect(cell(blocked)).toHaveCSS('background-color', await resolve(page, 'var(--nested-bg-hover)'));
-    await expect(cell(blocked)).not.toHaveCSS('background-color', await resolve(page, 'var(--surface-3)'));
+    const hover = await resolve(page, 'var(--nested-bg-hover)');
+    await expect(cell(blocked)).toHaveCSS('background-color', hover);
+    expect(channelGap(hover, tint)).toBeGreaterThan(12);
   });
 }
 
