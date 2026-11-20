@@ -67,6 +67,16 @@ function resolve(page: Page, value: string, prop: 'color' | 'backgroundColor' = 
   }, [value, prop] as const);
 }
 
+// Largest per-channel gap (0-255) between two computed colours; Chrome reports color-mix as color(srgb 0-1 floats).
+function channelGap(a: string, b: string): number {
+  const rgb = (c: string) => {
+    const n = (c.match(/[\d.]+/g) ?? []).map(Number);
+    return c.startsWith('color(') ? n.slice(0, 3).map((v) => v * 255) : n.slice(0, 3);
+  };
+  const [x, y] = [rgb(a), rgb(b)];
+  return Math.max(...x.map((v, i) => Math.abs(v - y[i])));
+}
+
 for (const theme of ['dark', 'light']) {
   test(`a nested row is tinted apart from the surface and page, an alerting one keeps its own (${theme})`, async ({ page }) => {
     await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
@@ -74,11 +84,14 @@ for (const theme of ['dark', 'light']) {
     const cell = (id: string) => page.locator(`#row-${id} td.branch`);
     const tint = await resolve(page, 'var(--nested-bg)');
     await expect(cell(blocked)).toHaveCSS('background-color', tint);
-    await expect(cell(blocked)).not.toHaveCSS('background-color', await resolve(page, 'var(--surface)'));
-    await expect(cell(blocked)).not.toHaveCSS('background-color', await page.evaluate(() => getComputedStyle(document.body).backgroundColor));
+    // 12 is above the old --surface-2 tint's dark gap (10) so a too-faint tint fails.
+    expect(channelGap(tint, await resolve(page, 'var(--surface)'))).toBeGreaterThan(12);
+    expect(channelGap(tint, await page.evaluate(() => getComputedStyle(document.body).backgroundColor))).toBeGreaterThan(12);
     await expect(cell(blockedAsk)).toHaveCSS('background-color', await resolve(page, 'var(--attention-bg)'));
+    await expect(cell(blockedAsk)).not.toHaveCSS('color', await resolve(page, 'var(--text-2)', 'color'));
     await page.locator(`#row-${blocked}`).hover();
-    await expect(cell(blocked)).not.toHaveCSS('background-color', tint);
+    await expect(cell(blocked)).toHaveCSS('background-color', await resolve(page, 'var(--nested-bg-hover)'));
+    await expect(cell(blocked)).not.toHaveCSS('background-color', await resolve(page, 'var(--surface-3)'));
   });
 }
 
