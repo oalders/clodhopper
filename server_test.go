@@ -42,6 +42,9 @@ func TestRowClass(t *testing.T) {
 		{"group-start+grouped", 5, true, true, "group-start grouped"},
 		{"all three", 1, true, true, "alert group-start grouped"},
 	}
+	if got := rowClass(Agent{StatusRank: 1, NestDepth: 2}); got != "alert nested nest-2" {
+		t.Errorf("rowClass(nested alert) = %q, want %q", got, "alert nested nest-2")
+	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := rowClass(Agent{StatusRank: c.rank, GroupStart: c.groupStart, Grouped: c.group})
@@ -4300,6 +4303,74 @@ func TestApplyBlocks(t *testing.T) {
 	}
 	if a := got["orphan"]; a.Status != statusWaiting || a.BlockedOn != "" || a.BlockedOnSession != "" {
 		t.Errorf("orphan = %q on %q, want untouched (blocker absent)", a.Status, a.BlockedOn)
+	}
+}
+
+// nestOrder renders nestBlocked's result as "id:depth" in row order.
+func nestOrder(agents []Agent) []string {
+	var out []string
+	for _, a := range agents {
+		out = append(out, a.SessionID+":"+strconv.Itoa(a.NestDepth))
+	}
+	return out
+}
+
+func TestNestBlocked(t *testing.T) {
+	cases := []struct {
+		name   string
+		agents []Agent
+		want   []string
+	}{
+		{"child moves under its blocker, siblings in roster order", []Agent{
+			{SessionID: "b1", BlockedOnSession: "x"},
+			{SessionID: "y"},
+			{SessionID: "x"},
+			{SessionID: "b2", BlockedOnSession: "x"},
+		}, []string{"y:0", "x:0", "b1:1", "b2:1"}},
+		{"chain nests per hop and clamps", []Agent{
+			{SessionID: "d4", BlockedOnSession: "d3"},
+			{SessionID: "d3", BlockedOnSession: "d2"},
+			{SessionID: "d2", BlockedOnSession: "d1"},
+			{SessionID: "d1", BlockedOnSession: "root"},
+			{SessionID: "root"},
+		}, []string{"root:0", "d1:1", "d2:2", "d3:3", "d4:3"}},
+		{"absent blocker and PR block stay put", []Agent{
+			{SessionID: "orphan", BlockedOnSession: "gone"},
+			{SessionID: "pr", BlockedOn: "PR #7"},
+			{SessionID: "x"},
+			{SessionID: "c", BlockedOnSession: "x"},
+		}, []string{"orphan:0", "pr:0", "x:0", "c:1"}},
+		{"a cycle keeps every row", []Agent{
+			{SessionID: "p", BlockedOnSession: "q"},
+			{SessionID: "q", BlockedOnSession: "p"},
+		}, []string{"p:0", "q:1"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := nestOrder(nestBlocked(c.agents)); !slices.Equal(got, c.want) {
+				t.Errorf("nestBlocked = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// A child from another branch joins its blocker's group (no divider between
+// them, same pin key) without turning the lone blocker into a cluster.
+func TestNestBlockedAdoptsBlockerGroup(t *testing.T) {
+	got := nestBlocked([]Agent{
+		{SessionID: "child", SourceApp: "app", Branch: "fix-2", BlockedOnSession: "blocker"},
+		{SessionID: "other", SourceApp: "app", Branch: "fix-3"},
+		{SessionID: "blocker", SourceApp: "app", Branch: "fix-1"},
+	})
+	if want := []string{"other:0", "blocker:0", "child:1"}; !slices.Equal(nestOrder(got), want) {
+		t.Fatalf("order = %v, want %v", nestOrder(got), want)
+	}
+	blocker, child := got[1], got[2]
+	if child.GroupKey != blocker.GroupKey || child.GroupStart || !blocker.GroupStart {
+		t.Errorf("child group %q start %v, blocker group %q start %v; want child in blocker's group with no divider", child.GroupKey, child.GroupStart, blocker.GroupKey, blocker.GroupStart)
+	}
+	if child.Grouped || blocker.Grouped {
+		t.Errorf("grouped child %v blocker %v, want neither (lone rows on their own branches)", child.Grouped, blocker.Grouped)
 	}
 }
 

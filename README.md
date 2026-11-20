@@ -317,6 +317,7 @@ emits another event.
 The row panel's **blocked on** picker and **mark blocked** button do what
 `clodhopper block` does: they mark *this* row as waiting on the row you pick,
 not the other way round. The blocked-on chip gains an **✕** that unblocks.
+A row blocked on a session is listed indented under that session's row.
 Like **end**, these only write clodhopper's own database.
 
 A row that leaves the merge-queue section stays there with its PR's outcome:

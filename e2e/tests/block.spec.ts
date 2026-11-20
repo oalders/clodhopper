@@ -2,7 +2,7 @@ import type { Page, Request } from '@playwright/test';
 import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, swaps } from './fixtures';
 
 // The blocked-on chip and the row panel's block picker (#210), against
-// serve.sh's exec server; e2e_seed_test.go blocks fix-1234 on fix-1235,
+// serve.sh's exec server; e2e_seed_test.go blocks fix-1234 and fix-2537 on fix-1235,
 // fix-1236 on the queued row, the queued row on fix-1235, and draft-conflict
 // on its repo's open PR #101.
 
@@ -40,6 +40,16 @@ test('a blocked row is relaxed and its chip names the blocker', async ({ page })
   await expect(page.locator(`#row-${blocked} td.status`)).toHaveClass(/\bbackground\b/);
   await expect(page.locator(`#row-${blocked} .ck-badge`)).toHaveText('blocked');
   await expect(page.locator(chip).getByRole('button', { name: 'blocked on fix-1235' })).toHaveText('fix-1235');
+});
+
+test('blocked rows nest right after their blocker, an alerting one still alerting', async ({ page }) => {
+  const ask = 'e2e-blockedask-0000-1111-2222-333333333333';
+  const after = (id: string) => page.locator(`#row-${id} ~ tr[data-group]`).first();
+  await expect(after(blocker)).toHaveAttribute('id', `row-${blocked}`);
+  await expect(after(blocked)).toHaveAttribute('id', `row-${ask}`);
+  await expect(page.locator(`#row-${blocked}`)).toHaveClass(/\bnested\b/);
+  await expect(page.locator(`#row-${ask}`)).toHaveClass(/\balert\b/);
+  await expect(page.locator(`#row-${ask}`)).toHaveClass(/\bnested\b/);
 });
 
 test('the chip ✕ sends unblock for the blocked row', async ({ page }) => {

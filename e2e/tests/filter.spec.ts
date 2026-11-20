@@ -34,13 +34,15 @@ test('typing narrows the roster, fixes the dividers, and Esc clears it', async (
   const total = await rows.count();
   await page.keyboard.press('/');
   await expect(box).toBeFocused();
-  // fix-1234/5/6 are three single-row groups: only the first visible one has no divider.
+  // fix-1236, then fix-1235 with fix-1234 and fix-2537 (matched by its "blocked on fix-1235" chip)
+  // nested under it: a nested row shares its blocker's group, so only fix-1235 gets a divider.
   await page.keyboard.type('  FIX-123 ');
-  await expect(shown).toHaveCount(3);
+  await expect(shown).toHaveCount(4);
   await expect(shown.first()).not.toHaveClass(/group-start/);
   await expect(shown.nth(1)).toHaveClass(/group-start/);
-  // The fourth match is the queued row's "blocked on fix-1235" chip, folded in the merge queue.
-  await expect(count).toHaveText(/^4 of \d+$/);
+  await expect(shown.nth(3)).not.toHaveClass(/group-start/);
+  // The fifth match is the queued row's "blocked on fix-1235" chip, folded in the merge queue.
+  await expect(count).toHaveText(/^5 of \d+$/);
   await expect(page).toHaveURL(/#q=FIX-123$/);
 
   await page.keyboard.press('Escape');
@@ -259,14 +261,15 @@ test('#q= survives a poll repaint', async ({ page }) => {
   await page.goto('/?refresh=1#q=fix-123');
   const { box, count, shown } = ui(page);
   await expect(box).toHaveValue('fix-123');
-  await expect(shown).toHaveCount(3);
+  await expect(shown).toHaveCount(4);
 
   await repaint(page, '#content table.roster');
-  await expect(shown).toHaveCount(3);
+  await expect(shown).toHaveCount(4);
   await expect(shown.first()).not.toHaveClass(/group-start/);
   await expect(shown.nth(1)).toHaveClass(/group-start/);
-  await expect(shown.nth(2)).toHaveClass(/group-start/);
-  await expect(count).toHaveText(/^4 of \d+$/);
+  await expect(shown.nth(2)).not.toHaveClass(/group-start/);
+  await expect(shown.nth(3)).not.toHaveClass(/group-start/);
+  await expect(count).toHaveText(/^5 of \d+$/);
 });
 
 test('the source_app and branch dropdowns narrow the roster and keep #q=', async ({ page }) => {
@@ -284,7 +287,7 @@ test('the source_app and branch dropdowns narrow the roster and keep #q=', async
   expect(new Set(apps)).toEqual(new Set([appB]));
 
   await box.fill('fix-123');
-  await expect(shown).toHaveCount(3);
+  await expect(shown).toHaveCount(4);
   // Options come from the live roster, so a seeded branch is on offer.
   await page.locator('#branch').selectOption('fix-1234');
   await page.waitForURL(/branch=fix-1234/);

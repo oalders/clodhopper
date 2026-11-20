@@ -544,6 +544,13 @@
        alert/fail-tinted. An inset box-shadow rides over the cell's tint (a
        border-left would be painted under it). Singletons get no bar. */
     tr.grouped td:first-child { box-shadow: inset 3px 0 0 var(--idle); }
+    /* A row nested under its blocker (nestBlocked): indented connector, receding
+       text, and a muted tint that an alert row's own tint overrides. */
+    tr.nested td { color: var(--text-2); }
+    :where(tr.nested:not(.alert)) td { background: var(--surface-2); } /* :where so the roster hover still wins */
+    .nestmark { color: var(--text-3); margin-right: .3em; }
+    tr.nest-2 .nestmark { margin-left: 1em; }
+    tr.nest-3 .nestmark { margin-left: 2em; }
 
     /* StatusBadge: a coloured dot + the status label. The dot inherits the cell's
        status colour via currentColor; working pulses, the attention states glow. */
@@ -806,6 +813,11 @@
          row is both group-start and grouped. */
       tr.group-start { border-top: 2px solid var(--divider); }
       tr.grouped { border-left: 3px solid var(--idle); }
+      tr.nested:not(.alert) { background: var(--surface-2); }
+      .nestmark { display: none; }
+      table.roster tbody tr.nest-1 { margin-left: 22px; }
+      table.roster tbody tr.nest-2 { margin-left: 34px; }
+      table.roster tbody tr.nest-3 { margin-left: 46px; }
       .ck-bulkout tr.fail, .ck-bulkout tr.alert { border-left: 3px solid var(--row-accent); }
       .ck-bulkout td:empty { display: none; } /* a sent row has no reason; skip its bare label */
       /* The peek panel is a full-width scroller, not a card. On desktop the pre's
@@ -3119,7 +3131,7 @@
      keep the span, which is the only carrier they have. Never an aria-label on
      the <td>: a cell supports name-from-author, so a label there would REPLACE
      the cell's contents for assistive tech instead of composing with them. */}}
-{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ with .Worktree }}, worktree directory {{ . }}{{ end }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copytail"><span class="copyicon" aria-hidden="true">⧉</span>{{ template "claudetag" . }}</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}{{ if .TmuxSession }}<span class="tmuxname"><span class="ck-sr">session </span>{{ .TmuxSession }}</span>{{ end }}{{ if not .Cwd }}{{ template "claudetag" . }}{{ end }}</td>{{ end }}
+{{ define "branchcellroster" }}<td class="branch" data-label="branch">{{ if .NestDepth }}<span class="nestmark" aria-hidden="true">└─</span>{{ end }}{{ if .Cwd }}<button type="button" class="copycwd" data-session="{{ .SessionID }}" data-cwd="{{ .Cwd }}" title="{{ .Cwd }}" aria-label="{{ if .Branch }}{{ .Branch }}{{ with .Worktree }}, worktree directory {{ . }}{{ end }}{{ else if .BranchGuess }}worktree directory {{ .BranchGuess }} (branch name unknown){{ else }}no branch{{ end }}{{ if .Rebasing }} (mid-rebase){{ end }}{{ if .Grouped }} (cluster){{ end }} — copy worktree path {{ .Cwd }}">{{ template "branchinnerroster" . }}<span class="copytail"><span class="copyicon" aria-hidden="true">⧉</span>{{ template "claudetag" . }}</span></button>{{ else }}{{ template "branchinner" . }}{{ if .Grouped }}<span class="ck-sr"> (cluster)</span>{{ end }}{{ end }}{{ if .TmuxSession }}<span class="tmuxname"><span class="ck-sr">session </span>{{ .TmuxSession }}</span>{{ end }}{{ if not .Cwd }}{{ template "claudetag" . }}{{ end }}</td>{{ end }}
 
 {{/* launcher marks how the session was started (#152) in its own unheaded
      column between CI and branch: 🔒 for the nono sandbox, 🤖 for plain claude. */}}
