@@ -2,12 +2,13 @@ import type { Page, Request } from '@playwright/test';
 import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, swaps } from './fixtures';
 
 // The blocked-on chip and the row panel's block picker (#210), against
-// serve.sh's exec server; e2e_seed_test.go blocks fix-1234 on fix-1235,
+// serve.sh's exec server; e2e_seed_test.go blocks fix-1234 and fix-2537 on fix-1235,
 // fix-1236 on the queued row, the queued row on fix-1235, and draft-conflict
 // on its repo's open PR #101.
 
 const blocked = 'e2e-blocked-0000-1111-2222-333333333333';
 const blocker = 'e2e-blocker-0000-1111-2222-333333333333';
+const blockedAsk = 'e2e-blockedask-0000-1111-2222-333333333333';
 const queueBlocked = 'e2e-queueblocked-0000-1111-2222-333333333333';
 const queued = 'e2e-queued-0000-1111-2222-333333333333';
 const draft = 'e2e-draft-conflict-0000-1111-2222-333333333333';
@@ -40,6 +41,107 @@ test('a blocked row is relaxed and its chip names the blocker', async ({ page })
   await expect(page.locator(`#row-${blocked} td.status`)).toHaveClass(/\bbackground\b/);
   await expect(page.locator(`#row-${blocked} .ck-badge`)).toHaveText('blocked');
   await expect(page.locator(chip).getByRole('button', { name: 'blocked on fix-1235' })).toHaveText('fix-1235');
+});
+
+test('blocked rows nest right after their blocker, an alerting one still alerting', async ({ page }) => {
+  const after = (id: string) => page.locator(`#row-${id} ~ tr[data-group]`).first();
+  await expect(after(blocker)).toHaveAttribute('id', `row-${blocked}`);
+  await expect(after(blocked)).toHaveAttribute('id', `row-${blockedAsk}`);
+  await expect(page.locator(`#row-${blocked}`)).toHaveClass(/\bnested\b/);
+  await expect(page.locator(`#row-${blockedAsk}`)).toHaveClass(/\balert\b/);
+  await expect(page.locator(`#row-${blockedAsk}`)).toHaveClass(/\bnested\b/);
+  await expect(page.locator(`#row-${blocked}`)).toHaveClass(/\bnest-1\b/);
+  await expect(page.locator(`#row-${blocked} .nestmark`)).toHaveText('└─');
+  await expect(page.locator(`#row-${blocker}`)).not.toHaveClass(/\bnested\b/);
+  await expect(page.locator(`#row-${blocker} .nestmark`)).toHaveCount(0);
+});
+
+// What `value` (e.g. 'var(--nested-bg)') computes to for `prop`, via a probe in the current theme.
+function resolve(page: Page, value: string, prop: 'color' | 'backgroundColor' = 'backgroundColor'): Promise<string> {
+  return page.evaluate(([v, p]) => {
+    const probe = document.body.appendChild(document.createElement('span'));
+    probe.style[p] = v;
+    const c = getComputedStyle(probe)[p];
+    probe.remove();
+    return c;
+  }, [value, prop] as const);
+}
+
+// Largest per-channel gap (0-255) between two computed colours; Chrome reports color-mix as color(srgb 0-1 floats).
+function channelGap(a: string, b: string): number {
+  const rgb = (c: string) => {
+    const n = (c.match(/[\d.]+/g) ?? []).map(Number);
+    return c.startsWith('color(') ? n.slice(0, 3).map((v) => v * 255) : n.slice(0, 3);
+  };
+  const [x, y] = [rgb(a), rgb(b)];
+  return Math.max(...x.map((v, i) => Math.abs(v - y[i])));
+}
+
+for (const theme of ['dark', 'light']) {
+  test(`a nested row is tinted apart from the surface and page, an alerting one keeps its own (${theme})`, async ({ page }) => {
+    await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
+    await page.mouse.move(0, 0); // so no hover state masks the rest tint
+    const cell = (id: string) => page.locator(`#row-${id} td.branch`);
+    const tint = await resolve(page, 'var(--nested-bg)');
+    await expect(cell(blocked)).toHaveCSS('background-color', tint);
+    // A gap of 12+ (about 5% of the channel range) is visible; the old --surface-2 tint's was 10.
+    expect(channelGap(tint, await resolve(page, 'var(--surface)'))).toBeGreaterThan(12);
+    expect(channelGap(tint, await page.evaluate(() => getComputedStyle(document.body).backgroundColor))).toBeGreaterThan(12);
+    await expect(cell(blockedAsk)).toHaveCSS('background-color', await resolve(page, 'var(--attention-bg)'));
+    // An alerting nested row keeps a top-level row's text colour, not the nested --text-2.
+    await expect(cell(blockedAsk)).toHaveCSS('color', await cell(blocker).evaluate((el) => getComputedStyle(el).color));
+    await page.locator(`#row-${blocked}`).hover();
+    const hover = await resolve(page, 'var(--nested-bg-hover)');
+    await expect(cell(blocked)).toHaveCSS('background-color', hover);
+    expect(channelGap(hover, tint)).toBeGreaterThan(12);
+  });
+}
+
+test('on a phone a nested card is inset from its blocker\'s, connector hidden, no sideways scroll', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await expect(page.locator(`#row-${blocked} .nestmark`)).toBeHidden();
+  const x = async (id: string) => (await page.locator(`#row-${id}`).boundingBox())!.x;
+  expect(await x(blocked)).toBeGreaterThan(await x(blocker));
+  const { scrollWidth, innerWidth } = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }));
+  expect(scrollWidth).toBeLessThanOrEqual(innerWidth);
+  // The card tint lives on the tr in the phone layout.
+  await expect(page.locator(`#row-${blocked}`)).toHaveCSS('background-color', await resolve(page, 'var(--nested-bg)'));
+  await expect(page.locator(`#row-${blockedAsk}`)).toHaveCSS('background-color', await resolve(page, 'var(--attention-bg)'));
+});
+
+test('a nested row\'s status cell keeps its status colour', async ({ page }) => {
+  await expect(page.locator(`#row-${blocked}`)).toHaveClass(/\bnested\b/);
+  await expect(page.locator(`#row-${blocked} td.status`)).toHaveCSS('color', await resolve(page, 'var(--background)', 'color'));
+});
+
+test('a branch filter that drops the blocker leaves the child un-nested', async ({ page }) => {
+  await page.goto('/?branch=fix-1234');
+  await expect(page.locator(`#row-${blocked}`)).toBeVisible();
+  await expect(page.locator(`#row-${blocker}`)).toHaveCount(0);
+  await expect(page.locator(`#row-${blocked}`)).not.toHaveClass(/\bnested\b/);
+});
+
+test('under pin order and a status sort, either way, blocked rows ride in their blocker\'s group', async ({ page }) => {
+  await repaintEveryPoll(page);
+  await page.goto('/?refresh=1');
+  await page.locator('#ck-pin').click();
+  await expect(page.locator('#ck-pin')).toHaveAttribute('aria-pressed', 'true');
+  // Alone, the needs-you child would sort to the top and the background one to the bottom.
+  const ids = [blocker, blocked, blockedAsk];
+  const run = () => page.locator('#content table.roster > tbody > tr[data-group]').evaluateAll((rows, ids) => {
+    const at = rows.findIndex((r) => r.id === `row-${ids[0]}`);
+    return rows.slice(at, at + ids.length).map((r) => [r.id, r.getAttribute('data-group')]);
+  }, ids);
+  const g = await page.locator(`#row-${blocker}`).getAttribute('data-group');
+  const want = ids.map((id) => [`row-${id}`, g]);
+  const sortBtn = page.locator('#content th[data-sort="status"] button.sortbtn');
+  for (const dir of ['ascending', 'descending']) {
+    await sortBtn.click();
+    await expect(page.locator('#content th[data-sort="status"]')).toHaveAttribute('aria-sort', dir);
+    expect(await run()).toEqual(want);
+    await repaint(page, '#content table.roster');
+    expect(await run()).toEqual(want);
+  }
 });
 
 test('the chip ✕ sends unblock for the blocked row', async ({ page }) => {

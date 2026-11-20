@@ -636,6 +636,8 @@ type Agent struct {
 	GroupStart       bool     // true on the first roster row of each (SourceApp, Branch) group except the very first row overall; drives the divider between branch groups in the dashboard
 	Grouped          bool     // true when this row's (SourceApp, Branch) group has 2+ live members; drives the left accent bar that binds a multi-session branch cluster (a worktree with several agents). Singleton branches stay false (no bar)
 	GroupKey         string   // hex of the internal group key (per (SourceApp, Branch); per-session for branchless rows). Stable across polls and HTML-attribute-safe, so the dashboard's "pin order" toggle can hold each group's rows together while freezing group order. Not displayed
+	NestKey          string   // the blocker chain root's group key once nestBlocked puts this row under its blocker, so the divider and pin order keep it attached; "" otherwise. Not displayed
+	NestDepth        int      // hops below the chain root nestBlocked placed this row at (0 = not nested, capped at maxNestDepth); drives the indent
 	firstSeq         int      // arrival order (0-based) within the roster window; drives stable color assignment, not displayed
 }
 
@@ -1215,6 +1217,14 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 // real (app, branch) group: "u" = unbranched (one group per session, so they
 // aren't clumped), "b" = branched.
 func groupKey(a Agent) string {
+	if a.NestKey != "" {
+		return a.NestKey
+	}
+	return ownGroupKey(a)
+}
+
+// ownGroupKey is groupKey ignoring NestKey, so a nested row never makes its blocker's group look like a cluster.
+func ownGroupKey(a Agent) string {
 	if a.Branch == "" {
 		return "u\x00" + a.SessionID
 	}
@@ -1229,7 +1239,7 @@ func markGroups(out []Agent) {
 	// multi-session cluster (2+ members) for the binding left accent bar.
 	groupCount := map[string]int{}
 	for _, a := range out {
-		groupCount[groupKey(a)]++
+		groupCount[ownGroupKey(a)]++
 	}
 	// Mark each group's first row so the dashboard can draw a divider between
 	// branch groups (the very first row overall stays false — no leading divider),
@@ -1237,7 +1247,7 @@ func markGroups(out []Agent) {
 	// binds the cluster.
 	for k := range out {
 		out[k].GroupStart = k > 0 && groupKey(out[k]) != groupKey(out[k-1])
-		out[k].Grouped = groupCount[groupKey(out[k])] >= 2
+		out[k].Grouped = groupCount[ownGroupKey(out[k])] >= 2
 		// Hex so the raw key's \x00 separator can't emit an invalid NUL into the
 		// data-group attribute; stable across polls since it is a pure function of
 		// (SourceApp, Branch) / SessionID.

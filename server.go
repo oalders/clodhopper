@@ -140,6 +140,9 @@ func rowClass(a Agent) string {
 	if a.Grouped {
 		classes = append(classes, "grouped")
 	}
+	if a.NestDepth > 0 {
+		classes = append(classes, "nested", "nest-"+strconv.Itoa(a.NestDepth))
+	}
 	return strings.Join(classes, " ")
 }
 
@@ -1308,6 +1311,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 		GHRateLimited:  act.ghGate.limited(now),
 	}
 	data.filterRows(source, branch)
+	data.Agents = nestBlocked(data.Agents) // after filterRows, so a filtered-out blocker leaves no orphan indent
 	data.QueueNextETA = queueNextETA(data.QueuedAgents, now)
 	data.Signature = viewSignature(data)
 	return data, nil
@@ -1352,6 +1356,7 @@ func rosterBranches(agents []Agent, selected string) []string {
 // one exception is the queue card's next-merge countdown (see below).
 // Components are folded in a stable, idle-independent order for the same reason.
 func viewSignature(d dashboardData) string {
+	// Order-independent, so nestBlocked's reorder needs nothing here: nesting derives from hashed BlockedOnSession.
 	h := fnv.New64a()
 
 	// Events are append-only and immutable, so count plus the id bounds detect any
@@ -1567,6 +1572,60 @@ func applyBlocks(agents []Agent, blocks []Block) {
 		agents[i].BlockedOnSession = b.Blocker
 		relaxBlocked(&agents[i])
 	}
+}
+
+// maxNestDepth caps nestBlocked's indent so a long chain still fits the branch cell.
+const maxNestDepth = 3
+
+// nestBlocked returns agents with each row blocked on a session in agents moved
+// to just after its blocker (siblings keep their order), recursively, with
+// NestDepth and NestKey set, then re-marks groups. It builds a fresh slice since
+// agents may share a backing array with the queued rows.
+func nestBlocked(agents []Agent) []Agent {
+	idx := make(map[string]int, len(agents))
+	for i, a := range agents {
+		idx[a.SessionID] = i
+	}
+	blockerShown := func(a Agent) bool {
+		_, ok := idx[a.BlockedOnSession]
+		return ok && a.BlockedOnSession != "" && a.BlockedOnSession != a.SessionID
+	}
+	children := map[string][]int{}
+	for i, a := range agents {
+		if blockerShown(a) {
+			children[a.BlockedOnSession] = append(children[a.BlockedOnSession], i)
+		}
+	}
+	if len(children) == 0 {
+		return agents
+	}
+	out := make([]Agent, 0, len(agents))
+	placed := make([]bool, len(agents))
+	var place func(i, depth int, key string)
+	place = func(i, depth int, key string) {
+		if placed[i] {
+			return
+		}
+		placed[i] = true
+		a := agents[i]
+		if depth > 0 {
+			a.NestDepth, a.NestKey = min(depth, maxNestDepth), key
+		}
+		out = append(out, a)
+		for _, c := range children[a.SessionID] {
+			place(c, depth+1, key)
+		}
+	}
+	for i, a := range agents {
+		if !blockerShown(a) {
+			place(i, 0, groupKey(a))
+		}
+	}
+	for i, a := range agents { // a cycle has no root: its first row stands in as one, so no row vanishes
+		place(i, 0, groupKey(a))
+	}
+	markGroups(out)
+	return out
 }
 
 // relaxBlocked moves a "waiting for you"/"needs you" row to statusBlocked at
