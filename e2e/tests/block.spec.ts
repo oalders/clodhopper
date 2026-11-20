@@ -56,6 +56,13 @@ test('blocked rows nest right after their blocker, an alerting one still alertin
   await expect(page.locator(`#row-${blocker} .nestmark`)).toHaveCount(0);
 });
 
+test('a nested row is tinted apart from a plain row, an alerting one keeps its own', async ({ page }) => {
+  // Read before any hover, so --surface-3 cannot mask the tint.
+  const bg = (id: string) => page.locator(`#row-${id} td.branch`).evaluate((td) => getComputedStyle(td).backgroundColor);
+  expect(await bg(blocked)).not.toBe(await bg(blocker));
+  expect(await bg(blockedAsk)).not.toBe(await bg(blocked));
+});
+
 test('on a phone a nested card is inset from its blocker\'s, connector hidden, no sideways scroll', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
   await expect(page.locator(`#row-${blocked} .nestmark`)).toBeHidden();

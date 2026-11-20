@@ -546,7 +546,7 @@
     tr.grouped td:first-child { box-shadow: inset 3px 0 0 var(--idle); }
     /* A row nested under its blocker (nestBlocked): indented connector, receding
        text and a muted tint, both skipped for alert rows, which keep their own. */
-    :where(tr.nested:not(.alert)) td { color: var(--text-2); background: var(--surface-2); } /* :where so hover and any cell's own colour (status, badges) still win */
+    :where(tr.nested:not(.alert)) td { color: var(--text-2); background: color-mix(in srgb, var(--background) 12%, var(--surface)); } /* :where so hover and any cell's own colour (status, badges) still win */
     .nestmark { color: var(--text-3); margin-right: .3em; white-space: nowrap; }
     tr.nest-2 .nestmark { margin-left: 1em; }
     tr.nest-3 .nestmark { margin-left: 2em; }
@@ -812,7 +812,7 @@
          row is both group-start and grouped. */
       tr.group-start { border-top: 2px solid var(--divider); }
       tr.grouped { border-left: 3px solid var(--idle); }
-      tr.nested:not(.alert) { background: var(--surface-2); }
+      tr.nested:not(.alert) { background: color-mix(in srgb, var(--background) 12%, var(--surface)); }
       .nestmark { display: none; }
       table.roster tbody tr.nest-1 { margin-left: 22px; }
       table.roster tbody tr.nest-2 { margin-left: 34px; }
