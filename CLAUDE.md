@@ -89,11 +89,11 @@ Subcommands, dispatched in `main.go`:
   waiting/needs-you row to `statusBlocked` while its blocker session is still on
   the roster and the blocker's own PR is not merged or closed (caveats in its
   doc comment); `applyPRBlocks` does the same for PR blocks (see its doc comment
-  for when one lapses). `nestBlocked` (server layer, after `filterRows`, so a filtered-out blocker leaves no orphan indent)
-  lists a session-blocked row right under its blocker, adopting the chain
-  root's group via `NestKey` while `Grouped` counts `ownGroupKey`.
-  `agentRoster` itself never sees blocks. They never touch `ingest` or the
-  capture path.
+  for when one lapses). `nestBlocked` (server layer, after `filterRows`, so a
+  filtered-out blocker leaves no orphan indent) lists a session-blocked row
+  right under its blocker, adopting the chain root's group via `NestKey` while
+  `Grouped` counts `ownGroupKey`. `agentRoster` itself never sees blocks.
+  Blocks never touch `ingest` or the capture path.
 
 `store.go` owns the schema, the `Event`/`Agent`/`SourceCount` types, and all
 queries. The dashboard's two main views are both derived here: `agentRoster`

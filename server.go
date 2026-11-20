@@ -1588,7 +1588,7 @@ func nestBlocked(agents []Agent) []Agent {
 	}
 	blockerShown := func(a Agent) bool {
 		_, ok := idx[a.BlockedOnSession]
-		return ok && a.BlockedOnSession != ""
+		return ok && a.BlockedOnSession != "" && a.BlockedOnSession != a.SessionID
 	}
 	children := map[string][]int{}
 	for i, a := range agents {

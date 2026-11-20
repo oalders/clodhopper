@@ -4344,6 +4344,10 @@ func TestNestBlocked(t *testing.T) {
 			{SessionID: "p", BlockedOnSession: "q"},
 			{SessionID: "q", BlockedOnSession: "p"},
 		}, []string{"p:0", "q:1"}, false},
+		{"a self-block nests nothing", []Agent{
+			{SessionID: "s", BlockedOnSession: "s"},
+			{SessionID: "x"},
+		}, []string{"s:0", "x:0"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

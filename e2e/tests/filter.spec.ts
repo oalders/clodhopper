@@ -40,6 +40,7 @@ test('typing narrows the roster, fixes the dividers, and Esc clears it', async (
   await expect(shown).toHaveCount(4);
   await expect(shown.first()).not.toHaveClass(/group-start/);
   await expect(shown.nth(1)).toHaveClass(/group-start/);
+  await expect(shown.nth(2)).not.toHaveClass(/group-start/);
   await expect(shown.nth(3)).not.toHaveClass(/group-start/);
   // The fifth match is the queued row's "blocked on fix-1235" chip, folded in the merge queue.
   await expect(count).toHaveText(/^5 of \d+$/);

@@ -50,6 +50,19 @@ test('blocked rows nest right after their blocker, an alerting one still alertin
   await expect(page.locator(`#row-${blocked}`)).toHaveClass(/\bnested\b/);
   await expect(page.locator(`#row-${blockedAsk}`)).toHaveClass(/\balert\b/);
   await expect(page.locator(`#row-${blockedAsk}`)).toHaveClass(/\bnested\b/);
+  await expect(page.locator(`#row-${blocked}`)).toHaveClass(/\bnest-1\b/);
+  await expect(page.locator(`#row-${blocked} .nestmark`)).toHaveText('└─');
+  await expect(page.locator(`#row-${blocker}`)).not.toHaveClass(/\bnested\b/);
+  await expect(page.locator(`#row-${blocker} .nestmark`)).toHaveCount(0);
+});
+
+test('on a phone a nested card is inset from its blocker\'s, connector hidden, no sideways scroll', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 });
+  await expect(page.locator(`#row-${blocked} .nestmark`)).toBeHidden();
+  const x = async (id: string) => (await page.locator(`#row-${id}`).boundingBox())!.x;
+  expect(await x(blocked)).toBeGreaterThan(await x(blocker));
+  const { scrollWidth, innerWidth } = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }));
+  expect(scrollWidth).toBeLessThanOrEqual(innerWidth);
 });
 
 test('a nested row\'s status cell keeps its status colour', async ({ page }) => {
@@ -77,12 +90,13 @@ test('under pin order and a status sort, either way, blocked rows ride in their 
   await page.locator('#ck-pin').click();
   await expect(page.locator('#ck-pin')).toHaveAttribute('aria-pressed', 'true');
   // Alone, the needs-you child would sort to the top and the background one to the bottom.
+  const ids = [blocker, blocked, blockedAsk];
   const run = () => page.locator('#content table.roster > tbody > tr[data-group]').evaluateAll((rows, ids) => {
     const at = rows.findIndex((r) => r.id === `row-${ids[0]}`);
-    return rows.slice(at, at + 3).map((r) => [r.id, r.getAttribute('data-group')]);
-  }, [blocker]);
+    return rows.slice(at, at + ids.length).map((r) => [r.id, r.getAttribute('data-group')]);
+  }, ids);
   const g = await page.locator(`#row-${blocker}`).getAttribute('data-group');
-  const want = [blocker, blocked, blockedAsk].map((id) => [`row-${id}`, g]);
+  const want = ids.map((id) => [`row-${id}`, g]);
   const sortBtn = page.locator('#content th[data-sort="status"] button.sortbtn');
   for (const dir of ['ascending', 'descending']) {
     await sortBtn.click();
