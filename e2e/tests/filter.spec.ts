@@ -5,6 +5,8 @@ import { test, expect, repaintEveryPoll, repaint, namedSess, claudeName } from '
 // branch dropdowns that narrow them server-side (#216).
 
 const rosterRows = '#content table.roster > tbody > tr[data-group]';
+// The rows a fix-123 filter shows, in order, so a reorder fails by name rather than on a group-start class.
+const fix123Rows = ['queueblocked', 'blocker', 'blocked', 'blockedask'].map((n) => `row-e2e-${n}-0000-1111-2222-333333333333`);
 const appB = 'a-second-project-with-a-long-source-app-name';
 // The page's card-layout breakpoint (max-width: 640px).
 const phone = (page: Page) => page.viewportSize()!.width <= 640;
@@ -38,6 +40,7 @@ test('typing narrows the roster, fixes the dividers, and Esc clears it', async (
   // nested under it: a nested row shares its blocker's group, so only fix-1235 gets a divider.
   await page.keyboard.type('  FIX-123 ');
   await expect(shown).toHaveCount(4);
+  await expect.poll(() => shown.evaluateAll((r) => r.map((x) => x.id))).toEqual(fix123Rows);
   await expect(shown.first()).not.toHaveClass(/group-start/);
   await expect(shown.nth(1)).toHaveClass(/group-start/);
   await expect(shown.nth(2)).not.toHaveClass(/group-start/);
@@ -266,6 +269,7 @@ test('#q= survives a poll repaint', async ({ page }) => {
 
   await repaint(page, '#content table.roster');
   await expect(shown).toHaveCount(4);
+  await expect.poll(() => shown.evaluateAll((r) => r.map((x) => x.id))).toEqual(fix123Rows);
   await expect(shown.first()).not.toHaveClass(/group-start/);
   await expect(shown.nth(1)).toHaveClass(/group-start/);
   await expect(shown.nth(2)).not.toHaveClass(/group-start/);

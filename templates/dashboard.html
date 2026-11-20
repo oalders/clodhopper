@@ -58,6 +58,8 @@
       --pending: #d29922; --none: #6b7785;
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, .40), 0 1px 1px rgba(0, 0, 0, .24);
       --shadow-focus: 0 0 0 3px var(--focus-ring);
+      /* --background is the blue "background" status hue, not the page --bg. Resolved on <html>, so light's --surface applies. */
+      --nested-bg: color-mix(in srgb, var(--background) 12%, var(--surface));
     }
     [data-theme="light"] {
       --bg: #f6f8fa; --surface: #ffffff; --surface-2: #f6f8fa; --surface-3: #eef1f4;
@@ -546,7 +548,9 @@
     tr.grouped td:first-child { box-shadow: inset 3px 0 0 var(--idle); }
     /* A row nested under its blocker (nestBlocked): indented connector, receding
        text and a muted tint, both skipped for alert rows, which keep their own. */
-    :where(tr.nested:not(.alert)) td { color: var(--text-2); background: color-mix(in srgb, var(--background) 12%, var(--surface)); } /* :where so hover and any cell's own colour (status, badges) still win */
+    :where(tr.nested:not(.alert)) td { color: var(--text-2); background: var(--nested-bg); } /* :where so hover and any cell's own colour (status, badges) still win */
+    /* The plain --surface-3 hover all but matches the tint; --text-2 stays >= 4.5:1 on this in both themes. */
+    table.roster tbody tr.nested:not(.alert):hover td { background: color-mix(in srgb, var(--background) 20%, var(--surface)); }
     .nestmark { color: var(--text-3); margin-right: .3em; white-space: nowrap; }
     tr.nest-2 .nestmark { margin-left: 1em; }
     tr.nest-3 .nestmark { margin-left: 2em; }
@@ -812,7 +816,7 @@
          row is both group-start and grouped. */
       tr.group-start { border-top: 2px solid var(--divider); }
       tr.grouped { border-left: 3px solid var(--idle); }
-      tr.nested:not(.alert) { background: color-mix(in srgb, var(--background) 12%, var(--surface)); }
+      tr.nested:not(.alert) { background: var(--nested-bg); }
       .nestmark { display: none; }
       table.roster tbody tr.nest-1 { margin-left: 22px; }
       table.roster tbody tr.nest-2 { margin-left: 34px; }

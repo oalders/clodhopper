@@ -56,12 +56,31 @@ test('blocked rows nest right after their blocker, an alerting one still alertin
   await expect(page.locator(`#row-${blocker} .nestmark`)).toHaveCount(0);
 });
 
-test('a nested row is tinted apart from a plain row, an alerting one keeps its own', async ({ page }) => {
-  // Read before any hover, so --surface-3 cannot mask the tint.
-  const bg = (id: string) => page.locator(`#row-${id} td.branch`).evaluate((td) => getComputedStyle(td).backgroundColor);
-  expect(await bg(blocked)).not.toBe(await bg(blocker));
-  expect(await bg(blockedAsk)).not.toBe(await bg(blocked));
-});
+// What `value` (e.g. 'var(--nested-bg)') computes to for `prop`, via a probe in the current theme.
+function resolve(page: Page, value: string, prop: 'color' | 'backgroundColor' = 'backgroundColor'): Promise<string> {
+  return page.evaluate(([v, p]) => {
+    const probe = document.body.appendChild(document.createElement('span'));
+    probe.style[p] = v;
+    const c = getComputedStyle(probe)[p];
+    probe.remove();
+    return c;
+  }, [value, prop] as const);
+}
+
+for (const theme of ['dark', 'light']) {
+  test(`a nested row is tinted apart from the surface and page, an alerting one keeps its own (${theme})`, async ({ page }) => {
+    await page.evaluate((t) => document.documentElement.setAttribute('data-theme', t), theme);
+    await page.mouse.move(0, 0); // so no hover state masks the rest tint
+    const cell = (id: string) => page.locator(`#row-${id} td.branch`);
+    const tint = await resolve(page, 'var(--nested-bg)');
+    await expect(cell(blocked)).toHaveCSS('background-color', tint);
+    await expect(cell(blocked)).not.toHaveCSS('background-color', await resolve(page, 'var(--surface)'));
+    await expect(cell(blocked)).not.toHaveCSS('background-color', await page.evaluate(() => getComputedStyle(document.body).backgroundColor));
+    await expect(cell(blockedAsk)).toHaveCSS('background-color', await resolve(page, 'var(--attention-bg)'));
+    await page.locator(`#row-${blocked}`).hover();
+    await expect(cell(blocked)).not.toHaveCSS('background-color', tint);
+  });
+}
 
 test('on a phone a nested card is inset from its blocker\'s, connector hidden, no sideways scroll', async ({ page }) => {
   await page.setViewportSize({ width: 375, height: 812 });
@@ -70,18 +89,14 @@ test('on a phone a nested card is inset from its blocker\'s, connector hidden, n
   expect(await x(blocked)).toBeGreaterThan(await x(blocker));
   const { scrollWidth, innerWidth } = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }));
   expect(scrollWidth).toBeLessThanOrEqual(innerWidth);
+  // The card tint lives on the tr in the phone layout.
+  await expect(page.locator(`#row-${blocked}`)).toHaveCSS('background-color', await resolve(page, 'var(--nested-bg)'));
+  await expect(page.locator(`#row-${blockedAsk}`)).toHaveCSS('background-color', await resolve(page, 'var(--attention-bg)'));
 });
 
 test('a nested row\'s status cell keeps its status colour', async ({ page }) => {
-  const want = await page.evaluate(() => {
-    const probe = document.body.appendChild(document.createElement('span'));
-    probe.style.color = 'var(--background)';
-    const c = getComputedStyle(probe).color;
-    probe.remove();
-    return c;
-  });
   await expect(page.locator(`#row-${blocked}`)).toHaveClass(/\bnested\b/);
-  await expect(page.locator(`#row-${blocked} td.status`)).toHaveCSS('color', want);
+  await expect(page.locator(`#row-${blocked} td.status`)).toHaveCSS('color', await resolve(page, 'var(--background)', 'color'));
 });
 
 test('a branch filter that drops the blocker leaves the child un-nested', async ({ page }) => {
