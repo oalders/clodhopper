@@ -4316,38 +4316,45 @@ func nestOrder(agents []Agent) []string {
 
 func TestNestBlocked(t *testing.T) {
 	cases := []struct {
-		name   string
-		agents []Agent
-		want   []string
+		name     string
+		agents   []Agent
+		want     []string
+		oneGroup bool // every row shares the first (root) row's GroupKey
 	}{
 		{"child moves under its blocker, siblings in roster order", []Agent{
 			{SessionID: "b1", BlockedOnSession: "x"},
 			{SessionID: "y"},
 			{SessionID: "x"},
 			{SessionID: "b2", BlockedOnSession: "x"},
-		}, []string{"y:0", "x:0", "b1:1", "b2:1"}},
+		}, []string{"y:0", "x:0", "b1:1", "b2:1"}, false},
 		{"chain nests per hop and clamps", []Agent{
-			{SessionID: "d4", BlockedOnSession: "d3"},
-			{SessionID: "d3", BlockedOnSession: "d2"},
-			{SessionID: "d2", BlockedOnSession: "d1"},
-			{SessionID: "d1", BlockedOnSession: "root"},
-			{SessionID: "root"},
-		}, []string{"root:0", "d1:1", "d2:2", "d3:3", "d4:3"}},
+			{SessionID: "d4", Branch: "b4", BlockedOnSession: "d3"},
+			{SessionID: "d3", Branch: "b3", BlockedOnSession: "d2"},
+			{SessionID: "d2", Branch: "b2", BlockedOnSession: "d1"},
+			{SessionID: "d1", Branch: "b1", BlockedOnSession: "root"},
+			{SessionID: "root", Branch: "b0"},
+		}, []string{"root:0", "d1:1", "d2:2", "d3:3", "d4:3"}, true},
 		{"absent blocker and PR block stay put", []Agent{
 			{SessionID: "orphan", BlockedOnSession: "gone"},
 			{SessionID: "pr", BlockedOn: "PR #7"},
 			{SessionID: "x"},
 			{SessionID: "c", BlockedOnSession: "x"},
-		}, []string{"orphan:0", "pr:0", "x:0", "c:1"}},
+		}, []string{"orphan:0", "pr:0", "x:0", "c:1"}, false},
 		{"a cycle keeps every row", []Agent{
 			{SessionID: "p", BlockedOnSession: "q"},
 			{SessionID: "q", BlockedOnSession: "p"},
-		}, []string{"p:0", "q:1"}},
+		}, []string{"p:0", "q:1"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := nestOrder(nestBlocked(c.agents)); !slices.Equal(got, c.want) {
-				t.Errorf("nestBlocked = %v, want %v", got, c.want)
+			got := nestBlocked(c.agents)
+			if order := nestOrder(got); !slices.Equal(order, c.want) {
+				t.Errorf("nestBlocked = %v, want %v", order, c.want)
+			}
+			for _, a := range got {
+				if c.oneGroup && a.GroupKey != got[0].GroupKey {
+					t.Errorf("%s group %q, want root's %q", a.SessionID, a.GroupKey, got[0].GroupKey)
+				}
 			}
 		})
 	}

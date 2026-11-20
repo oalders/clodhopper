@@ -52,6 +52,25 @@ test('blocked rows nest right after their blocker, an alerting one still alertin
   await expect(page.locator(`#row-${blockedAsk}`)).toHaveClass(/\bnested\b/);
 });
 
+test('a nested row\'s status cell keeps its status colour', async ({ page }) => {
+  const want = await page.evaluate(() => {
+    const probe = document.body.appendChild(document.createElement('span'));
+    probe.style.color = 'var(--background)';
+    const c = getComputedStyle(probe).color;
+    probe.remove();
+    return c;
+  });
+  await expect(page.locator(`#row-${blocked}`)).toHaveClass(/\bnested\b/);
+  await expect(page.locator(`#row-${blocked} td.status`)).toHaveCSS('color', want);
+});
+
+test('a branch filter that drops the blocker leaves the child un-nested', async ({ page }) => {
+  await page.goto('/?branch=fix-1234');
+  await expect(page.locator(`#row-${blocked}`)).toBeVisible();
+  await expect(page.locator(`#row-${blocker}`)).toHaveCount(0);
+  await expect(page.locator(`#row-${blocked}`)).not.toHaveClass(/\bnested\b/);
+});
+
 test('under pin order and a status sort, either way, blocked rows ride in their blocker\'s group', async ({ page }) => {
   await repaintEveryPoll(page);
   await page.goto('/?refresh=1');
