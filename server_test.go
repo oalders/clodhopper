@@ -28,28 +28,27 @@ func TestRowClass(t *testing.T) {
 		name              string
 		rank              int
 		groupStart, group bool
+		nest              int
 		want              string
 	}{
-		{"plain", 5, false, false, ""},
+		{"plain", 5, false, false, 0, ""},
 		// Zero-value Agent: StatusRank 0 is the most severe rank (<= 1), so a
 		// default-initialised row reads as alert. Pins the rank-0 boundary in case a
 		// future by-value Agent{} ever reaches rowClass.
-		{"zero value (rank 0)", 0, false, false, "alert"},
-		{"alert only", 1, false, false, "alert"},
-		{"group-start only", 5, true, false, "group-start"},
-		{"grouped only", 5, false, true, "grouped"},
-		{"alert+grouped", 0, false, true, "alert grouped"},
-		{"group-start+grouped", 5, true, true, "group-start grouped"},
-		{"all three", 1, true, true, "alert group-start grouped"},
-	}
-	if got := rowClass(Agent{StatusRank: 1, NestDepth: 2}); got != "alert nested nest-2" {
-		t.Errorf("rowClass(nested alert) = %q, want %q", got, "alert nested nest-2")
+		{"zero value (rank 0)", 0, false, false, 0, "alert"},
+		{"alert only", 1, false, false, 0, "alert"},
+		{"group-start only", 5, true, false, 0, "group-start"},
+		{"grouped only", 5, false, true, 0, "grouped"},
+		{"alert+grouped", 0, false, true, 0, "alert grouped"},
+		{"group-start+grouped", 5, true, true, 0, "group-start grouped"},
+		{"all three", 1, true, true, 0, "alert group-start grouped"},
+		{"nested alert", 1, false, false, 2, "alert nested nest-2"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := rowClass(Agent{StatusRank: c.rank, GroupStart: c.groupStart, Grouped: c.group})
+			got := rowClass(Agent{StatusRank: c.rank, GroupStart: c.groupStart, Grouped: c.group, NestDepth: c.nest})
 			if got != c.want {
-				t.Errorf("rowClass(rank=%d groupStart=%v grouped=%v) = %q, want %q", c.rank, c.groupStart, c.group, got, c.want)
+				t.Errorf("rowClass(rank=%d groupStart=%v grouped=%v nest=%d) = %q, want %q", c.rank, c.groupStart, c.group, c.nest, got, c.want)
 			}
 		})
 	}

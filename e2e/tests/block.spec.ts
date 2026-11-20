@@ -8,6 +8,7 @@ import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, swaps } fr
 
 const blocked = 'e2e-blocked-0000-1111-2222-333333333333';
 const blocker = 'e2e-blocker-0000-1111-2222-333333333333';
+const blockedAsk = 'e2e-blockedask-0000-1111-2222-333333333333';
 const queueBlocked = 'e2e-queueblocked-0000-1111-2222-333333333333';
 const queued = 'e2e-queued-0000-1111-2222-333333333333';
 const draft = 'e2e-draft-conflict-0000-1111-2222-333333333333';
@@ -43,13 +44,34 @@ test('a blocked row is relaxed and its chip names the blocker', async ({ page })
 });
 
 test('blocked rows nest right after their blocker, an alerting one still alerting', async ({ page }) => {
-  const ask = 'e2e-blockedask-0000-1111-2222-333333333333';
   const after = (id: string) => page.locator(`#row-${id} ~ tr[data-group]`).first();
   await expect(after(blocker)).toHaveAttribute('id', `row-${blocked}`);
-  await expect(after(blocked)).toHaveAttribute('id', `row-${ask}`);
+  await expect(after(blocked)).toHaveAttribute('id', `row-${blockedAsk}`);
   await expect(page.locator(`#row-${blocked}`)).toHaveClass(/\bnested\b/);
-  await expect(page.locator(`#row-${ask}`)).toHaveClass(/\balert\b/);
-  await expect(page.locator(`#row-${ask}`)).toHaveClass(/\bnested\b/);
+  await expect(page.locator(`#row-${blockedAsk}`)).toHaveClass(/\balert\b/);
+  await expect(page.locator(`#row-${blockedAsk}`)).toHaveClass(/\bnested\b/);
+});
+
+test('under pin order and a status sort, either way, blocked rows ride in their blocker\'s group', async ({ page }) => {
+  await repaintEveryPoll(page);
+  await page.goto('/?refresh=1');
+  await page.locator('#ck-pin').click();
+  await expect(page.locator('#ck-pin')).toHaveAttribute('aria-pressed', 'true');
+  // Alone, the needs-you child would sort to the top and the background one to the bottom.
+  const run = () => page.locator('#content table.roster > tbody > tr[data-group]').evaluateAll((rows, ids) => {
+    const at = rows.findIndex((r) => r.id === `row-${ids[0]}`);
+    return rows.slice(at, at + 3).map((r) => [r.id, r.getAttribute('data-group')]);
+  }, [blocker]);
+  const g = await page.locator(`#row-${blocker}`).getAttribute('data-group');
+  const want = [blocker, blocked, blockedAsk].map((id) => [`row-${id}`, g]);
+  const sortBtn = page.locator('#content th[data-sort="status"] button.sortbtn');
+  for (const dir of ['ascending', 'descending']) {
+    await sortBtn.click();
+    await expect(page.locator('#content th[data-sort="status"]')).toHaveAttribute('aria-sort', dir);
+    expect(await run()).toEqual(want);
+    await repaint(page, '#content table.roster');
+    expect(await run()).toEqual(want);
+  }
 });
 
 test('the chip ✕ sends unblock for the blocked row', async ({ page }) => {
