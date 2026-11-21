@@ -175,23 +175,24 @@ func TestPaneLabel(t *testing.T) {
 
 // listPanes maps each pane id to its session name in the form ingest stores, so
 // a messy real-world name compares equal to the row's recorded tmux_session, plus
-// its foreground command and path (last, so a tab in it survives).
+// its root pid (0 when unparseable), foreground command and path (last, so a
+// tab in it survives).
 func TestListPanes(t *testing.T) {
 	dir := t.TempDir()
 	messy := "\ue0a0  fix-2482     Blog post [in progress]"
 	titled := "\U000f0868  fix-1288            \uf418 commerce don't forward"
-	script := "#!/bin/sh\nprintf '%s\\t%s\\t%s\\t%s\\n' '%1' 'my-session' 'zsh' '/src/a\tb' '%7' '" + messy + "' 'claude' '/src/c' '%9' \"" + titled + "\" 'nono' '/src/d'\n"
+	script := "#!/bin/sh\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\n' '%1' '41' 'my-session' 'zsh' '/src/a\tb' '%7' 'x' '" + messy + "' 'claude' '/src/c' '%9' '43' \"" + titled + "\" 'nono' '/src/d'\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
 	want := map[string]livePane{
-		"%1": {session: "my-session", command: "zsh", path: "/src/a\tb"},
+		"%1": {session: "my-session", command: "zsh", path: "/src/a\tb", pid: 41},
 		"%7": {session: tmuxSessionLabel(messy), command: "claude", path: "/src/c"},
-		"%9": {session: "fix-1288", title: "commerce don't forward", command: "nono", path: "/src/d"},
+		"%9": {session: "fix-1288", title: "commerce don't forward", command: "nono", path: "/src/d", pid: 43},
 	}
 	if got := listPanes(); !maps.Equal(got, want) {
-		t.Fatalf("listPanes() = %q, want %q", got, want)
+		t.Fatalf("listPanes() = %+v, want %+v", got, want)
 	}
 	if want["%7"].session != "fix-2482 Blog post [in progress]" {
 		t.Errorf("messy name stored as %q, want the cleaned name", want["%7"].session)

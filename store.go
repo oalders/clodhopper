@@ -593,6 +593,7 @@ type Agent struct {
 	HasPane          bool   // true when the session recorded a tmux pane id (TmuxPane != ""); gates the session-action buttons under --enable-merge, decoupled from --pane-peek (LiveTmux is only set when peek is on)
 	Launcher         string // "nono" or "claude" from the latest event that recorded one; "" if unknown (legacy rows), which renders no marker
 	LiveTmux         bool   // true when TmuxPane is currently a live tmux pane (set by the server layer when --pane-peek is on); drives the peek control
+	MemKB            int64  // KiB used by the live pane's process tree (paneCache.mem), set by the server layer whatever --pane-peek; 0 when unknown
 	Repo             string // GitHub "owner/repo" of Cwd's origin remote, resolved only for LiveTmux rows so the peek can link the footer's "PR #N"; "" if not a github.com remote
 	Status           string // human label (see status* constants)
 	StatusRank       int    // sort key; lower = more urgent
