@@ -213,14 +213,18 @@ var (
 	memWait   = procBudget
 )
 
+// memStale hides memoised figures this old, so a scan wedged in the kernel never freezes them as current.
+const memStale = 12 * paneTTL
+
 // mem returns pane id → KiB of its process tree, refreshed once per paneTTL. It
 // is lazy so /api/pane and the action paths, which call panes()/live(), never pay
 // for the scan. With no pane pid known it scans nothing. A nil cache returns nil.
 // The scan runs in a goroutine, since a read can block in the kernel past
 // procBudget (smaps_rollup on a task stuck holding mmap_lock); after memWait the
-// render gets the previous figures (nil if none) and the late result lands in the memo.
+// render gets the previous figures (nil if none, or older than memStale while a
+// wedged scan stays busy) and the late result lands in the memo.
 // A pane appearing within paneTTL of a scan has no figure until the next scan.
-// serve must share the panes' pid namespace: in a container their pids are not visible, so the figure is absent.
+// serve must share the panes' pid namespace, or the figures may be absent or belong to unrelated processes.
 func (c *paneCache) mem(now time.Time) map[string]int64 {
 	if c == nil {
 		return nil
@@ -232,10 +236,17 @@ func (c *paneCache) mem(now time.Time) map[string]int64 {
 		}
 	}
 	m := &c.memo
+	// prev must run under m.mu; m.at is a caller's now at scan start, so the age is in callers' clock.
+	prev := func() map[string]int64 {
+		if now.Sub(m.at) > memStale {
+			return nil
+		}
+		return m.kb
+	}
 	m.mu.Lock()
 	if m.busy || (m.kb != nil && now.Sub(m.at) < paneTTL) {
 		defer m.mu.Unlock()
-		return m.kb
+		return prev()
 	}
 	m.busy = true
 	m.mu.Unlock()
@@ -256,7 +267,7 @@ func (c *paneCache) mem(now time.Time) map[string]int64 {
 	case <-time.After(memWait):
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		return m.kb
+		return prev()
 	}
 }
 
