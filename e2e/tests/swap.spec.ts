@@ -120,6 +120,27 @@ for (const pin of [false, true]) {
   });
 }
 
+for (const mqOpen of [false, true]) {
+  test(`a scrolled-down page keeps its scroll across a repaint (merge queue ${mqOpen ? 'open' : 'closed'})`, async ({ page }) => {
+    // The peek carry-over forces layout before the fold reopens, while the page is still short.
+    // Closed is the control: nothing reopens late there, so it guards a plain reset, not the clamp.
+    if (mqOpen) {
+      await page.locator('#ck-mq summary').click();
+      await expect(page.locator('#ck-mq')).toHaveAttribute('open');
+    }
+    await openPeek(page, sess);
+    await page.setViewportSize({ width: 1440, height: 400 });
+    // The bottom is where a mid-swap clamp to a shorter page shows.
+    const y = await page.evaluate(() => {
+      window.scrollTo(0, document.documentElement.scrollHeight);
+      return window.scrollY;
+    });
+    expect(y).toBeGreaterThan(0);
+    await repaint(page, '#content table.roster');
+    expect(await page.evaluate(() => window.scrollY)).toBe(y);
+  });
+}
+
 test('an open actions panel stays open across a repaint', async ({ page }) => {
   const btn = page.locator(`#content button.actbtn[data-actions="${sess}"]`);
   await btn.click();

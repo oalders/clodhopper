@@ -1107,6 +1107,10 @@
         var wl = wraps[hw].scrollLeft;
         if (wt) hscroll[wt.classList[0]] = { left: wl, right: wl > 0 && wl + wraps[hw].clientWidth >= wraps[hw].scrollWidth - 1 };
       }
+      // And the page's own scroll (#259): a layout forced mid-swap (the peek carry-over's
+      // scrollTop) runs before the merge-queue fold reopens, so the browser clamps scrollY
+      // to the shorter page. Restored once below, after every step that changes height.
+      var winX = window.scrollX, winY = window.scrollY;
       try { document.dispatchEvent(new CustomEvent('ch:contentswap')); } catch (e) {}
       // Build the new subtree in a disconnected <template>, then swap it into the
       // live #content in one shot. The old form assigned html straight to the
@@ -1228,6 +1232,9 @@
       // re-opened) and before focus restore.
       var armRefocused = false;
       try { if (armedState && window.__ckArmRestore) armRefocused = !!window.__ckArmRestore(armedState); } catch (e) {}
+      // After the re-arm (its caveat can add height), so the page is at its final height.
+      // Skipped when nothing clamped, so an in-progress touch fling is not cut short.
+      if (window.scrollX !== winX || window.scrollY !== winY) window.scrollTo(winX, winY);
       var newPicks = document.querySelectorAll('#content .blockform .blockpick');
       for (var np = 0; np < newPicks.length; np++) {
         var psess = newPicks[np].closest('.blockform').getAttribute('data-session');
