@@ -799,10 +799,10 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		return
 	}
 
-	// "dismiss" drops a row from the merge-queue table's ledger and does nothing
+	// "dismiss" hides a row from the merge-queue table's ledger and does nothing
 	// else: no SessionEnd, no subprocess, never actionArgv.
 	if action == "dismiss" {
-		if !cfg.ledger.dismiss(sessionID) {
+		if !cfg.ledger.dismiss(sessionID, now) {
 			http.Error(w, "unknown session", http.StatusNotFound)
 			return
 		}

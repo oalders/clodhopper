@@ -769,7 +769,7 @@ type ciResult struct {
 	PRNumber    int       // the PR's number, in every state
 	PRRepo      string    // the PR's GitHub "owner/repo", parsed from its url; "" if not github.com
 	MergedAt    time.Time // when a merged PR merged, zero otherwise
-	ViaQueue    bool      // a merged PR's history shows it in the merge queue
+	ViaQueue    bool      // a merged PR's history shows the merge queue merged it
 	RollupSince time.Time // newest check start in the rollup, zero when none reported one
 	NoPR        bool      // gh confirmed the branch has no PR (not merely an error); see ciTTL
 }
@@ -799,9 +799,9 @@ func lookupCI(cwd string, gate *ghGate) ciResult {
 	return withMergeQueue(ctx, r, id, gate)
 }
 
-// withMergeQueue folds PR id's merge-queue entry (or, merged, whether it was
-// ever queued) into r via gh under ctx's
-// deadline. Best-effort: no id or any error leaves r unchanged, a rate-limited
+// withMergeQueue folds PR id's merge-queue entry (or, merged, whether the
+// queue merged it) into r via gh under ctx's deadline. Best-effort: no id or
+// any error leaves r unchanged, a rate-limited
 // one tripping gate. No cmd.Dir: a graphql call needs no repo, so a planted
 // repo config in the DB-sourced cwd never gets read.
 func withMergeQueue(ctx context.Context, r ciResult, id string, gate *ghGate) ciResult {
@@ -855,10 +855,14 @@ func applyMergeQueue(r ciResult, out []byte, now time.Time) ciResult {
 	}
 	node := resp.Data.Node
 	if r.Done != "" {
-		// A merged PR only asks whether it was ever queued: a fast queue can
-		// come and go between two polls, so splitQueued never saw it.
-		for _, n := range node.TimelineItems.Nodes {
-			r.ViaQueue = r.ViaQueue || n.Typename == "AddedToMergeQueueEvent"
+		// A merged PR only asks whether the queue merged it (a fast queue can
+		// come and go between two polls, unseen by splitQueued): its newest
+		// queue event is the add, or a removal for the merge. A PR ejected and
+		// then merged by hand ends on another removal.
+		if n := node.TimelineItems.Nodes; len(n) > 0 {
+			last := n[len(n)-1]
+			r.ViaQueue = last.Typename == "AddedToMergeQueueEvent" ||
+				(last.Typename == "RemovedFromMergeQueueEvent" && strings.EqualFold(last.Reason, "merged"))
 		}
 		return r
 	}

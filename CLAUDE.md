@@ -138,7 +138,7 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   exec-free (it may run `git`/`gh` to resolve the repo and check the PR), so it
   gets the full peer gate; the client sends only a session id and PR number, and
   the repo is resolved server-side (see `blockPRAction`). `dismiss` is exec-free too and only
-  drops an in-memory `queueLedger` entry (404 for an unknown id). `rebase`, like
+  marks an in-memory `queueLedger` entry dismissed (404 for an unknown id). `rebase`, like
   `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
   never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full
   peer gate. The merge-pr actions (`squash`, `squash-admin`, `close`,
@@ -181,7 +181,7 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   "soft-failing", DIRTY → merge conflict); `parsePRView`'s doc comment says why
   BLOCKED is deliberately not mapped. A MERGED or CLOSED PR skips the stale
   rollup for a muted chip and relaxes a needs-you/waiting row to background
-  (`demotePendingCI`). For an OPEN PR, a second call (`gh api graphql`,
+  (`demotePendingCI`). For an OPEN PR (or, to set `ViaQueue` only, a MERGED one), a second call (`gh api graphql`,
   `mergeQueueQuery`, sharing the same 4s deadline) reads the merge
   queue, because queue checks run on a temporary commit the rollup never sees;
   `applyMergeQueue`'s doc comment says when that yields a queue-position pill
@@ -192,7 +192,7 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   `demotePendingCI`).
   Rows `splitQueued` folds into the queue are kept in memory by `queueLedger`
   (`ledger.go`; its doc comment gives the lifecycle and bounds) until dismissed
-  or expired. A merged PR's history is checked too (`ViaQueue`), so a queue stay
+  or expired. A merged PR's history is checked too (`ciResult.ViaQueue`), so a queue stay
   too brief for any poll to catch still lands there (`queueLedger.adopt`).
   The same generic `cwdCache` type also backs the pane peek's GitHub owner/repo for the
   footer's PR #N link (`newRepoCache`/`lookupRepo`, via `git remote get-url origin`),

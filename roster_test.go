@@ -174,6 +174,8 @@ func TestApplyMergeQueueMerged(t *testing.T) {
 		want      ciResult
 	}{
 		{"through the queue", `{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[{"__typename":"AddedToMergeQueueEvent"},{"__typename":"RemovedFromMergeQueueEvent","reason":"merged","createdAt":"2026-10-18T11:45:00Z"}]}}}}`, viaQueue},
+		{"ejected, then merged by hand", `{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[{"__typename":"AddedToMergeQueueEvent"},{"__typename":"RemovedFromMergeQueueEvent","reason":"CI failed","createdAt":"2026-10-18T11:45:00Z"}]}}}}`, merged},
+		{"merged as the queue's head, no removal yet", `{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[{"__typename":"AddedToMergeQueueEvent"}]}}}}`, viaQueue},
 		{"never queued", `{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[]}}}}`, merged},
 		{"malformed", `not json`, merged},
 	} {
