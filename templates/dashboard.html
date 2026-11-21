@@ -275,6 +275,7 @@
     table.mq tr.done td { color: var(--text-2); } /* a merged/closed ledger row: nothing left to do */
     #ck-mq .mqleft { color: var(--attention); font-weight: 600; } /* a PR out of the queue unmerged needs you, even folded */
     td.idle, td.mem { font-variant-numeric: tabular-nums; }
+    table.roster td.mem, table.roster th.mem { text-align: right; } /* figures line up by magnitude */
     td.summary { white-space: pre-wrap; word-break: break-word; }
     td.summary em { font-style: italic; color: var(--text-3); } /* a completed phase, not one in progress */
     td.summary .lastcmd { color: var(--text-3); font-size: .85em; margin-top: 2px; } /* the session's most recent slash command, as a muted second line */
@@ -3167,7 +3168,7 @@
         <col style="width: 36ch"><col style="width: 8ch">{{ if .Debug }}<col style="width: 16ch"><col style="width: 10ch">{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<col style="width: 10ch">{{ end }}<col>
       </colgroup>
       <thead>
-        <tr><th class="ci">CI</th><th class="launcher"><span class="ck-sr">launcher</span></th><th>branch</th><th data-sort="app">app</th><th data-sort="status">status</th><th>doing</th><th data-sort="idle">idle</th>{{ if .Debug }}<th>id</th><th>mem</th>{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<th>actions</th>{{ end }}<th>session</th></tr>
+        <tr><th class="ci">CI</th><th class="launcher"><span class="ck-sr">launcher</span></th><th>branch</th><th data-sort="app">app</th><th data-sort="status">status</th><th>doing</th><th data-sort="idle">idle</th>{{ if .Debug }}<th>id</th><th class="mem">mem</th>{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<th>actions</th>{{ end }}<th>session</th></tr>
       </thead>
       <tbody>
         {{ range .Agents }}

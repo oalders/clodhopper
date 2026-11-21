@@ -1415,8 +1415,7 @@ func viewSignature(d dashboardData) string {
 	// cannot freeze on a quiet board; it ticks once a minute until its last minute.
 	fmt.Fprintf(h, "|n:%q", d.QueueNextETA)
 	fmt.Fprintf(h, "|g:%t", d.GHRateLimited)
-	// Memory in 256 MiB buckets, so a quiet board does not repaint on every poll's drift.
-	fmt.Fprintf(h, "|t:%d:%d", d.AgentCount, d.AgentMemKB>>18)
+	fmt.Fprintf(h, "|t:%d:%s", d.AgentCount, memBucket(d.AgentMemKB))
 
 	// The section tag makes a row moving between the roster and the queue repaint.
 	for _, sec := range []struct {
@@ -1445,6 +1444,9 @@ func viewSignature(d dashboardData) string {
 			fmt.Fprintf(h, "|%s:%q:%q:%q:%q:%q:%q:%q:%q:%d:%d:%t:%t:%q:%q:%d:%d:%d:%t:%q:%q:%d:%d:%d:%q:%q:%q", sec.tag, a.SessionID, a.TmuxSession, a.SourceApp, a.Branch, a.Cwd, a.Status, a.Doing, a.CI, a.CIFails, a.CIPasses, a.CIConflict, a.CIDraft, a.CIDone, a.CIQueue, a.CIQueuePos, a.CIQueueETA, a.CIQueueSince, a.CIQueueStuck, a.CIQueueReason, a.Launcher, a.Subagents, a.Shells, a.SubagentSince, a.Worktree, a.BlockedOn, a.BlockedOnSession)
 			// ClaudeName is the name button's copy target, so a quiet row must repaint when it appears or changes.
 			fmt.Fprintf(h, ":%q", a.ClaudeName)
+			if d.Debug { // only the debug view renders the per-row mem cell
+				fmt.Fprintf(h, ":%s", memBucket(a.MemKB))
+			}
 			// The PR chip's link and tooltip, and the picker's PR options (a new PR or a retitle repaints).
 			fmt.Fprintf(h, ":%q:%q:%q:%q", a.BlockedOnRepo, a.BlockedOnPR.Title, a.BlockedOnPR.Author, a.BlockPRRepo)
 			for _, p := range a.BlockPRs {
@@ -1473,6 +1475,12 @@ func viewSignature(d dashboardData) string {
 	}
 
 	return strconv.FormatUint(h.Sum64(), 16)
+}
+
+// memBucket hashes memory in 256 MiB buckets, so a quiet board does not repaint
+// on every poll's drift, while unknown vs known (no span, or "—") always repaints.
+func memBucket(kb int64) string {
+	return fmt.Sprintf("%t:%d", kb != 0, kb>>18)
 }
 
 // ciWatchSecs bounds how long a CI-watch command suppresses the previous run's

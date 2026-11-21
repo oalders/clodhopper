@@ -117,3 +117,45 @@ func TestPaneCacheMemNil(t *testing.T) {
 		t.Errorf("nil cache mem = %v, want nil", m)
 	}
 }
+
+// A hung scan does not stall renders: mem serves the stale memo after memWait,
+// starts no second scan while one is outstanding, and the late result lands.
+func TestPaneCacheMemHungScan(t *testing.T) {
+	release, calls := make(chan struct{}), 0
+	oldRead, oldWait := readProcs, memWait
+	readProcs = func(map[string]int) procTable {
+		calls++ // only the one scan goroutine ever runs this
+		<-release
+		return procTable{7: {kb: 99, hasKB: true}}
+	}
+	memWait = 20 * time.Millisecond
+	t.Cleanup(func() { readProcs, memWait = oldRead, oldWait })
+
+	now := time.Now()
+	c := &paneCache{set: map[string]livePane{"%1": {pid: 7}}, at: now.Add(time.Hour)}
+	c.memo = paneMem{kb: map[string]int64{"%1": 1}, at: now.Add(-paneTTL)}
+	for i := range 2 {
+		start := time.Now()
+		if kb := c.mem(now)["%1"]; kb != 1 {
+			t.Errorf("call %d during hung scan = %d, want the stale 1", i, kb)
+		}
+		if d := time.Since(start); d > time.Second {
+			t.Errorf("call %d took %v, want about memWait", i, d)
+		}
+	}
+	close(release)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		c.memo.mu.Lock()
+		kb, busy := c.memo.kb["%1"], c.memo.busy
+		c.memo.mu.Unlock()
+		if kb == 99 && !busy {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("late result never landed: kb=%d busy=%t", kb, busy)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("scans started = %d, want 1", calls)
+	}
+}

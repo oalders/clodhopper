@@ -748,20 +748,30 @@ func TestBuildDashboardDataDropsDeadPane(t *testing.T) {
 }
 
 // A live-pane row takes its tree's memory from paneCache.mem, with peek off,
-// and the heading totals cover it; a paneless row counts with no memory.
+// and the heading totals cover it; a paneless row counts with no memory. A
+// queued row with a live pane counts too; a ledger row whose pane is gone does not.
 func TestBuildDashboardDataAgentMemory(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now()
 	ts := now.UTC().Format(time.RFC3339)
 	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "alive", TmuxSession: "work", TmuxPane: "%1", EventType: "Stop", PayloadJSON: "{}"})
 	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "paneless", EventType: "Stop", PayloadJSON: "{}"})
-	// Both memos stamped an hour ahead, so neither tmux nor /proc is ever read.
-	cache := &paneCache{set: map[string]livePane{"%1": {session: "work", pid: 4242}}, at: now.Add(time.Hour)}
-	cache.memo = paneMem{kb: map[string]int64{"%1": 2048}, at: now.Add(time.Hour)}
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "q", Cwd: "/q", TmuxSession: "work", TmuxPane: "%3", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "gone", Cwd: "/g", TmuxSession: "work", TmuxPane: "%4", EventType: "Stop", PayloadJSON: "{}"})
+	// Every memo stamped an hour ahead, so neither tmux, /proc nor gh is ever run.
+	cache := &paneCache{set: map[string]livePane{"%1": {session: "work", pid: 4242}, "%3": {session: "work", pid: 4243}}, at: now.Add(time.Hour)}
+	cache.memo = paneMem{kb: map[string]int64{"%1": 2048, "%3": 1024, "%4": 9999}, at: now.Add(time.Hour)}
+	ci := newCICache(nil)
+	ci.m["/q"] = cwdEntry[ciResult]{val: ciResult{Queue: "queued", QueuePos: 1}, at: now.Add(time.Hour)}
+	l, _ := testLedger(nil)
+	l.record([]Agent{queuedRow("gone")}, now) // %4 is not live, so dropDeadPanes drops its row and only the ledger keeps it
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
-	data, err := buildDashboardData(r, db, newCICache(nil), &peekConfig{cache: cache}, &actionConfig{})
+	data, err := buildDashboardData(r, db, ci, &peekConfig{cache: cache}, &actionConfig{ledger: l})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(data.QueuedAgents) != 1 || data.QueuedAgents[0].SessionID != "q" || !slices.Equal(ledgerIDs(data.LedgerRows), []string{"gone"}) {
+		t.Fatalf("queued %+v, ledger %v; want [q] and [gone]", data.QueuedAgents, ledgerIDs(data.LedgerRows))
 	}
 	mem := map[string]int64{}
 	for _, a := range data.Agents {
@@ -770,15 +780,29 @@ func TestBuildDashboardDataAgentMemory(t *testing.T) {
 	if mem["alive"] != 2048 || mem["paneless"] != 0 {
 		t.Errorf("MemKB by session = %v, want alive=2048 paneless=0", mem)
 	}
-	if data.AgentCount != 2 || data.AgentMemKB != 2048 {
-		t.Errorf("totals = %d, %d, want 2, 2048", data.AgentCount, data.AgentMemKB)
+	if data.AgentCount != 3 || data.AgentMemKB != 3072 {
+		t.Errorf("totals = %d, %d, want 3, 3072", data.AgentCount, data.AgentMemKB)
 	}
-	var buf bytes.Buffer
-	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", data); err != nil {
-		t.Fatal(err)
+	const memSpan = `<span class="ck-cardmeta" title="memory of`
+	render := func(d dashboardData) string {
+		var buf bytes.Buffer
+		if err := dashboardTmpl.ExecuteTemplate(&buf, "content", d); err != nil {
+			t.Fatal(err)
+		}
+		return buf.String()
 	}
-	if body := buf.String(); !strings.Contains(body, "<h2>2 Agents (live") || !strings.Contains(body, `<span class="ck-cardmeta" title="memory of`) || !strings.Contains(body, `">2 MB</span>`) {
+	body := render(data)
+	_, after, _ := strings.Cut(body, memSpan)
+	if span, _, _ := strings.Cut(after, "</span>"); !strings.Contains(body, "<h2>3 Agents (live") || !strings.HasSuffix(span, `">3 MB`) {
 		t.Errorf("card head lacks the count or the memory total:\n%s", body)
+	}
+	data.Debug = true
+	if body := render(data); !strings.Contains(body, `<td class="mem" data-label="mem">2 MB</td>`) || !strings.Contains(body, `<td class="mem" data-label="mem">—</td>`) {
+		t.Errorf("debug mem cells lack a figure or the unknown dash:\n%s", body)
+	}
+	data.AgentMemKB = 0
+	if body := render(data); strings.Contains(body, memSpan) {
+		t.Errorf("unknown memory still renders a total:\n%s", body)
 	}
 }
 
@@ -5009,6 +5033,40 @@ func TestEnrichCIKeys(t *testing.T) {
 func TestViewSignatureTracksRateLimited(t *testing.T) {
 	if viewSignature(dashboardData{}) == viewSignature(dashboardData{GHRateLimited: true}) {
 		t.Error("signature unchanged when GHRateLimited flipped")
+	}
+}
+
+// The heading's count and total, and under ?debug=1 each row's mem cell,
+// repaint on a 256 MiB bucket change or unknown↔known, never on sub-bucket drift.
+func TestViewSignatureTracksMemory(t *testing.T) {
+	const mib = 1 << 10 // KiB per MiB
+	sig := func(count int, total, row int64, debug bool) string {
+		return viewSignature(dashboardData{AgentCount: count, AgentMemKB: total, Debug: debug, Agents: []Agent{{SessionID: "s", MemKB: row}}})
+	}
+	base := sig(1, 300*mib, 300*mib, true)
+	for _, tc := range []struct {
+		name    string
+		got     string
+		changed bool
+	}{
+		{"count", sig(2, 300*mib, 300*mib, true), true},
+		{"total bucket", sig(1, 600*mib, 300*mib, true), true},
+		{"total drift", sig(1, 310*mib, 300*mib, true), false},
+		{"debug row bucket", sig(1, 300*mib, 600*mib, true), true},
+		{"debug row drift", sig(1, 300*mib, 310*mib, true), false},
+	} {
+		if (tc.got != base) != tc.changed {
+			t.Errorf("%s: signature changed = %t, want %t", tc.name, tc.got != base, tc.changed)
+		}
+	}
+	if sig(1, 0, 0, true) == sig(1, 100*mib, 0, true) {
+		t.Error("signature unchanged when the total went 0 → under a bucket")
+	}
+	if sig(1, 0, 0, true) == sig(1, 0, 100*mib, true) {
+		t.Error("signature unchanged when a debug row's mem went 0 → under a bucket")
+	}
+	if sig(1, 0, 0, false) != sig(1, 0, 600*mib, false) {
+		t.Error("signature tracks per-row mem outside the debug view, which does not render it")
 	}
 }
 

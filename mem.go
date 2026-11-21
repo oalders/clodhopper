@@ -201,14 +201,25 @@ func fieldKB(b []byte, key string) (int64, bool) {
 
 // paneMem memoises paneCache.mem under its own lock, so a /proc scan never holds up panes().
 type paneMem struct {
-	mu sync.Mutex
-	kb map[string]int64 // nil until the first scan
-	at time.Time
+	mu   sync.Mutex
+	kb   map[string]int64 // nil until the first scan
+	at   time.Time
+	busy bool // a scan is outstanding; no second one starts
 }
+
+// readProcs and memWait are vars so a test can hang a scan and not wait long for it.
+var (
+	readProcs = readProcTable
+	memWait   = procBudget
+)
 
 // mem returns pane id → KiB of its process tree, refreshed once per paneTTL. It
 // is lazy so /api/pane and the action paths, which call panes()/live(), never pay
 // for the scan. With no pane pid known it scans nothing. A nil cache returns nil.
+// The scan runs in a goroutine, since a read can block in the kernel past
+// procBudget (smaps_rollup on a task stuck holding mmap_lock); after memWait the
+// render gets the previous figures (nil if none) and the late result lands in the memo.
+// A pane appearing within paneTTL of a scan has no figure until the next scan.
 // serve must share the panes' pid namespace: in a container their pids are not visible, so the figure is absent.
 func (c *paneCache) mem(now time.Time) map[string]int64 {
 	if c == nil {
@@ -222,14 +233,31 @@ func (c *paneCache) mem(now time.Time) map[string]int64 {
 	}
 	m := &c.memo
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.kb == nil || now.Sub(m.at) >= paneTTL {
-		m.kb, m.at = map[string]int64{}, now
-		if len(roots) > 0 {
-			m.kb = treeMem(readProcTable(roots), roots)
-		}
+	if m.busy || (m.kb != nil && now.Sub(m.at) < paneTTL) {
+		defer m.mu.Unlock()
+		return m.kb
 	}
-	return m.kb
+	m.busy = true
+	m.mu.Unlock()
+	done, read := make(chan map[string]int64, 1), readProcs
+	go func() {
+		kb := map[string]int64{}
+		if len(roots) > 0 {
+			kb = treeMem(read(roots), roots)
+		}
+		m.mu.Lock()
+		m.kb, m.at, m.busy = kb, now, false
+		m.mu.Unlock()
+		done <- kb
+	}()
+	select {
+	case kb := <-done:
+		return kb
+	case <-time.After(memWait):
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.kb
+	}
 }
 
 // memSize renders KiB as whole MB under 1 GiB, else GB to one decimal (1024-based).
