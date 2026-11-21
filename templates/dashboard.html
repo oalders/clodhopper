@@ -1227,13 +1227,14 @@
         if (!hs) continue;
         nwraps[nw].scrollLeft = hs.right ? nwraps[nw].scrollWidth - nwraps[nw].clientWidth : hs.left;
       }
-      // The page is at its final height now; before focus restore, so preventScroll stays honest.
-      window.scrollTo(winX, winY);
       // Re-arm whatever was armed before the swap, after the panel carry-over
       // (an armed group lives inside an actions panel that has just been
       // re-opened) and before focus restore.
       var armRefocused = false;
       try { if (armedState && window.__ckArmRestore) armRefocused = !!window.__ckArmRestore(armedState); } catch (e) {}
+      // After the re-arm (its caveat can add height), so the page is at its final height.
+      // Skipped when nothing clamped, so an in-progress touch fling is not cut short.
+      if (window.scrollX !== winX || window.scrollY !== winY) window.scrollTo(winX, winY);
       var newPicks = document.querySelectorAll('#content .blockform .blockpick');
       for (var np = 0; np < newPicks.length; np++) {
         var psess = newPicks[np].closest('.blockform').getAttribute('data-session');

@@ -123,6 +123,7 @@ for (const pin of [false, true]) {
 for (const mqOpen of [false, true]) {
   test(`a scrolled-down page keeps its scroll across a repaint (merge queue ${mqOpen ? 'open' : 'closed'})`, async ({ page }) => {
     // The peek carry-over forces layout before the fold reopens, while the page is still short.
+    // Closed is the control: nothing reopens late there, so it guards a plain reset, not the clamp.
     if (mqOpen) {
       await page.locator('#ck-mq summary').click();
       await expect(page.locator('#ck-mq')).toHaveAttribute('open');
