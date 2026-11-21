@@ -13,14 +13,16 @@ import (
 	"unicode"
 )
 
-// A ledger entry lapses ledgerTTL after its row was last seen queued; past
-// ledgerMax entries the least recently seen goes first.
+// A ledger entry lapses ledgerTTL after it was last seen (queued; merged, for
+// an adopted one; dismissed, for a tombstone); past ledgerMax entries the
+// least recently seen goes first.
 const (
 	ledgerTTL = 24 * time.Hour
 	ledgerMax = 100
 )
 
-// queueLedger remembers every row splitQueued folded into the merge queue, so
+// queueLedger remembers every row splitQueued folded into the merge queue (or
+// adopt found merged through it), so
 // the row can stay in that table with its PR's final state once it leaves the
 // queue, its pane dies or its session ends, until dismissed or expired (#211).
 // It lives in memory only, bounded by ledgerTTL and ledgerMax: serve never
@@ -83,9 +85,12 @@ func (l *queueLedger) record(queued []Agent, now time.Time) {
 // entry counts as seen at the merge, so it sorts by merge time and expires
 // ledgerTTL after it; a PR merged that long ago, or at an unknown time, is
 // skipped, so no entry can come back once it expires. It never touches an
-// existing entry, so a dismissed row stays dismissed. Adoption makes the row
-// teardown-eligible; handleAction still re-checks the PR and pane. Call it
-// before record, which applies ledgerTTL and ledgerMax.
+// entry for the same PR, so a dismissed row stays dismissed; one for an
+// earlier PR of the session is replaced. Adoption makes the row
+// teardown-eligible, so a busy row (not setAndForget, which carryOver also
+// requires to show it) waits for a later poll; handleAction still re-checks
+// the PR and pane. Call it before record, which applies ledgerTTL and
+// ledgerMax.
 func (l *queueLedger) adopt(agents []Agent, now time.Time) {
 	if l == nil {
 		return
@@ -93,7 +98,10 @@ func (l *queueLedger) adopt(agents []Agent, now time.Time) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	for _, a := range agents {
-		if _, ok := l.m[a.SessionID]; ok || a.CIDone != "merged" || !a.PRViaQueue || a.PRMergedAt == 0 {
+		if a.CIDone != "merged" || !a.PRViaQueue || a.PRMergedAt == 0 || !setAndForget(a.Status) {
+			continue
+		}
+		if e, ok := l.m[a.SessionID]; ok && finalKey(e.snap) == finalKey(a) {
 			continue
 		}
 		if merged := time.Unix(a.PRMergedAt, 0); now.Sub(merged) < ledgerTTL {

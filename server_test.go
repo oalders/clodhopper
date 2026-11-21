@@ -4995,6 +4995,29 @@ func TestGHLookupsTripGate(t *testing.T) {
 	}
 }
 
+// A merged PR's queue history reaches lookupCI's ViaQueue, while the ledger's
+// final-state lookup skips that graphql call (only a live row is adopted).
+func TestMergedPRQueueLookup(t *testing.T) {
+	dir := t.TempDir()
+	ran := filepath.Join(dir, "graphql-ran")
+	script := "#!/bin/sh\nif [ \"$1 $2\" = 'api graphql' ]; then echo >" + ran + "\n" +
+		`echo '{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[{"__typename":"AddedToMergeQueueEvent"},{"__typename":"RemovedFromMergeQueueEvent","reason":"MERGED"}]}}}}'` +
+		"\nexit 0; fi\n" + `echo '{"id":"PR_1","number":1,"state":"MERGED","mergedAt":"2026-10-18T11:45:00Z","statusCheckRollup":[]}'` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if r := lookupPRFinal("o/r#1", &ghGate{}); r.Done != "merged" || r.ViaQueue {
+		t.Errorf("lookupPRFinal = %+v, want merged without ViaQueue", r)
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Error("lookupPRFinal ran the merge-queue graphql call for a merged PR")
+	}
+	if r := lookupCI(t.TempDir(), &ghGate{}); r.Done != "merged" || !r.ViaQueue {
+		t.Errorf("lookupCI = %+v, want merged via the queue", r)
+	}
+}
+
 // The ledger's finals and the open-PR cache serve their old value, and run no
 // gh, once the gate they were built with trips.
 func TestGHCachesHonourGate(t *testing.T) {

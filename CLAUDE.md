@@ -53,7 +53,7 @@ Subcommands, dispatched in `main.go`:
   (`monitor-ci`, `new-monitor`, `reload-plugins`, `rebase`; see
   `runSessionAction`/`handleAction` in `action.go`), plus an `end` action that
   runs no subprocess at all and just calls `endSessions` to drop the row, and a
-  `dismiss` action that execs nothing and drops a merge-queue ledger row, a
+  `dismiss` action that execs nothing and hides a merge-queue ledger row, a
   `teardown` action (merge-pr `--punt` on a merged/closed ledger row), plus
   `block`/`unblock`/`block-pr`, which write or drop a block row. Before any
   of that, middleware around the whole mux (`newServeMux`) applies the security
@@ -128,7 +128,7 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
    sends `Host: 127.0.0.1`), and restricted to a
    closed argv allowlist — no user-supplied string ever reaches a command line.
   serve's read-only ledger lookup (`lookupPRFinal` in `ledger.go`: `gh pr view
-  N --repo=OWNER/REPO` via `prFinalArgs`, then the same `mergeQueueQuery` call
+  N --repo=OWNER/REPO` via `prFinalArgs`, then, for a still-open PR only, the same `mergeQueueQuery` call
   with the node id gh returned) and the open-PR list's `prListArgs` are both
   built only from validated values, never client input.
   The `end` action never reaches `actionArgv`: it execs nothing, and its
@@ -192,8 +192,8 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   `demotePendingCI`).
   Rows `splitQueued` folds into the queue are kept in memory by `queueLedger`
   (`ledger.go`; its doc comment gives the lifecycle and bounds) until dismissed
-  or expired. A merged PR's history is checked too (`ciResult.ViaQueue`), so a queue stay
-  too brief for any poll to catch still lands there (`queueLedger.adopt`).
+  or expired. A live row whose PR the queue merged unseen (a stay too brief for
+  any poll to catch) is adopted too (`ciResult.ViaQueue` → `queueLedger.adopt`).
   The same generic `cwdCache` type also backs the pane peek's GitHub owner/repo for the
   footer's PR #N link (`newRepoCache`/`lookupRepo`, via `git remote get-url origin`),
   resolved per live-pane row (not concurrently) and likewise best-effort: a

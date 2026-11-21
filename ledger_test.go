@@ -235,20 +235,25 @@ func agentIDs(agents []Agent) []string {
 
 // A live row whose PR the queue merged between two polls is adopted into the
 // ledger and leaves the roster; one merged directly, one merged a ledgerTTL
-// ago and one with an unknown merge time are not.
+// ago, one with an unknown merge time and one still working are not.
 func TestQueueLedgerAdoptsMergedViaQueue(t *testing.T) {
 	l, _ := testLedger(nil)
 	unknown := mergedRow("unknown", true, 0)
 	unknown.PRMergedAt = 0
-	roster := []Agent{mergedRow("via", true, 5*time.Minute), mergedRow("direct", false, 5*time.Minute), mergedRow("old", true, ledgerTTL), unknown}
+	busy := mergedRow("busy", true, time.Minute)
+	busy.Status = statusWorking
+	roster := []Agent{mergedRow("via", true, 5*time.Minute), mergedRow("direct", false, 5*time.Minute), mergedRow("old", true, ledgerTTL), unknown, busy}
 	l.adopt(roster, ledgerNow)
 	l.record(nil, ledgerNow)
 	left, rows := l.carryOver(roster, nil, ledgerNow)
 	if !slices.Equal(ledgerIDs(rows), []string{"via"}) || rows[0].Final != "merged" || rows[0].MergedAgo != "5m ago" {
 		t.Errorf("rows = %+v, want only via, merged 5m ago", rows)
 	}
-	if ids := agentIDs(left); !slices.Equal(ids, []string{"direct", "old", "unknown"}) {
-		t.Errorf("roster = %v, want [direct old unknown]", ids)
+	if ids := agentIDs(left); !slices.Equal(ids, []string{"direct", "old", "unknown", "busy"}) {
+		t.Errorf("roster = %v, want [direct old unknown busy]", ids)
+	}
+	if _, ok := l.snapshot("busy"); ok {
+		t.Error("a working row was adopted, so made teardown-eligible")
 	}
 	// It expires ledgerTTL after the merge and is not adopted again.
 	expiry := time.Unix(roster[0].PRMergedAt, 0).Add(ledgerTTL)
@@ -270,8 +275,8 @@ func TestQueueLedgerDismissSurvivesAdopt(t *testing.T) {
 		t.Fatal("queued row not dismissable")
 	}
 	for _, at := range []time.Time{ledgerNow.Add(time.Minute), ledgerNow.Add(2 * time.Hour)} {
+		l.record(nil, at) // expiry runs first, so a tombstone aged from queuedAt would be gone
 		l.adopt([]Agent{row}, at)
-		l.record(nil, at)
 		if _, rows := l.carryOver([]Agent{row}, nil, at); len(rows) != 0 {
 			t.Errorf("at %v: dismissed row re-adopted: %+v", at, rows)
 		}
@@ -293,8 +298,23 @@ func TestQueueLedgerRequeueClearsDismiss(t *testing.T) {
 	}
 }
 
+// A session's next PR merging through the queue unseen replaces the entry, or
+// tombstone, its earlier PR left.
+func TestQueueLedgerAdoptsNextPR(t *testing.T) {
+	l, _ := testLedger(nil)
+	l.record([]Agent{queuedRow("s1")}, ledgerNow.Add(-2*time.Hour)) // PR o/r#7
+	l.dismiss("s1", ledgerNow.Add(-time.Hour))
+	next := mergedRow("s1", true, time.Minute)
+	next.PRNumber = 8
+	l.adopt([]Agent{next}, ledgerNow)
+	l.record(nil, ledgerNow)
+	if snap, ok := l.snapshot("s1"); !ok || snap.PRNumber != 8 {
+		t.Errorf("snapshot = %+v, %t; want PR 8 adopted", snap, ok)
+	}
+}
+
 // Through the real build, a waiting row whose PR merged through the queue
-// unseen lands in the ledger.
+// unseen lands in the ledger, eligible for teardown.
 func TestBuildDashboardDataAdoptsMergedViaQueue(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Now()
@@ -311,6 +331,9 @@ func TestBuildDashboardDataAdoptsMergedViaQueue(t *testing.T) {
 	}
 	if len(data.Agents) != 0 || !slices.Equal(ledgerIDs(data.LedgerRows), []string{"w"}) {
 		t.Errorf("roster %+v, ledger %v; want none and [w]", data.Agents, ledgerIDs(data.LedgerRows))
+	}
+	if _, ok := l.snapshot("w"); !ok {
+		t.Error("adopted row has no ledger snapshot for teardown")
 	}
 }
 
