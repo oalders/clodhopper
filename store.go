@@ -627,6 +627,7 @@ type Agent struct {
 	PRNumber         int      // the PR's number, 0 if none; with PRRepo, links a merge-queue ledger row to its PR
 	PRRepo           string   // the PR's GitHub "owner/repo", "" if unknown
 	PRMergedAt       int64    // unix seconds the PR merged; 0 when not merged or unknown
+	PRViaQueue       bool     // the merged PR went through the merge queue; see queueLedger.adopt
 	BlockedOn        string   // the blocker row's BlockLabel while a block applies (see applyBlocks), shown as the "blocked on" chip; "" otherwise
 	BlockedOnSession string   // the blocker's session id, so the chip can jump to its row
 	BlockedOnPR      openPR   // the PR a PR block holds this row on (see applyPRBlocks), BlockedOn then "PR #N"; zero otherwise

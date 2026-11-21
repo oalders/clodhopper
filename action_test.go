@@ -1479,7 +1479,7 @@ func TestHandleActionDismissRefusedThroughProxy(t *testing.T) {
 	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "through a proxy") {
 		t.Fatalf("%d %q, want 403 with the proxy reason", w.Code, w.Body.String())
 	}
-	if !cfg.ledger.dismiss("live-1") {
+	if !cfg.ledger.dismiss("live-1", ledgerNow) {
 		t.Fatal("a proxied peer dismissed a ledger row")
 	}
 }

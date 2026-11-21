@@ -53,7 +53,7 @@ Subcommands, dispatched in `main.go`:
   (`monitor-ci`, `new-monitor`, `reload-plugins`, `rebase`; see
   `runSessionAction`/`handleAction` in `action.go`), plus an `end` action that
   runs no subprocess at all and just calls `endSessions` to drop the row, and a
-  `dismiss` action that execs nothing and drops a merge-queue ledger row, a
+  `dismiss` action that execs nothing and hides a merge-queue ledger row, a
   `teardown` action (merge-pr `--punt` on a merged/closed ledger row), plus
   `block`/`unblock`/`block-pr`, which write or drop a block row. Before any
   of that, middleware around the whole mux (`newServeMux`) applies the security
@@ -128,7 +128,7 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
    sends `Host: 127.0.0.1`), and restricted to a
    closed argv allowlist — no user-supplied string ever reaches a command line.
   serve's read-only ledger lookup (`lookupPRFinal` in `ledger.go`: `gh pr view
-  N --repo=OWNER/REPO` via `prFinalArgs`, then the same `mergeQueueQuery` call
+  N --repo=OWNER/REPO` via `prFinalArgs`, then, for a still-open PR only, the same `mergeQueueQuery` call
   with the node id gh returned) and the open-PR list's `prListArgs` are both
   built only from validated values, never client input.
   The `end` action never reaches `actionArgv`: it execs nothing, and its
@@ -138,7 +138,7 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   exec-free (it may run `git`/`gh` to resolve the repo and check the PR), so it
   gets the full peer gate; the client sends only a session id and PR number, and
   the repo is resolved server-side (see `blockPRAction`). `dismiss` is exec-free too and only
-  drops an in-memory `queueLedger` entry (404 for an unknown id). `rebase`, like
+  marks an in-memory `queueLedger` entry dismissed (404 for an unknown id). `rebase`, like
   `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
   never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full
   peer gate. The merge-pr actions (`squash`, `squash-admin`, `close`,
@@ -181,7 +181,7 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   "soft-failing", DIRTY → merge conflict); `parsePRView`'s doc comment says why
   BLOCKED is deliberately not mapped. A MERGED or CLOSED PR skips the stale
   rollup for a muted chip and relaxes a needs-you/waiting row to background
-  (`demotePendingCI`). For an OPEN PR, a second call (`gh api graphql`,
+  (`demotePendingCI`). For an OPEN PR (or, to set `ViaQueue` only, a MERGED one), a second call (`gh api graphql`,
   `mergeQueueQuery`, sharing the same 4s deadline) reads the merge
   queue, because queue checks run on a temporary commit the rollup never sees;
   `applyMergeQueue`'s doc comment says when that yields a queue-position pill
@@ -192,7 +192,8 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   `demotePendingCI`).
   Rows `splitQueued` folds into the queue are kept in memory by `queueLedger`
   (`ledger.go`; its doc comment gives the lifecycle and bounds) until dismissed
-  or expired.
+  or expired. A live row whose PR the queue merged unseen (a stay too brief for
+  any poll to catch) is adopted too (`ciResult.ViaQueue` → `queueLedger.adopt`).
   The same generic `cwdCache` type also backs the pane peek's GitHub owner/repo for the
   footer's PR #N link (`newRepoCache`/`lookupRepo`, via `git remote get-url origin`),
   resolved per live-pane row (not concurrently) and likewise best-effort: a

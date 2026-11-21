@@ -221,11 +221,127 @@ func TestBuildDashboardDataLedgersMergedRow(t *testing.T) {
 	}
 }
 
-// Dismissing drops the entry, and reports whether there was one.
+func mergedRow(id string, via bool, ago time.Duration) Agent {
+	return Agent{SessionID: id, Status: statusWaiting, CIDone: "merged", PRViaQueue: via, PRRepo: "o/r", PRNumber: 7, PRMergedAt: ledgerNow.Add(-ago).Unix()}
+}
+
+func agentIDs(agents []Agent) []string {
+	var ids []string
+	for _, a := range agents {
+		ids = append(ids, a.SessionID)
+	}
+	return ids
+}
+
+// A live row whose PR the queue merged between two polls is adopted into the
+// ledger and leaves the roster; one merged directly, one merged a ledgerTTL
+// ago, one with an unknown merge time and one still working are not.
+func TestQueueLedgerAdoptsMergedViaQueue(t *testing.T) {
+	l, _ := testLedger(nil)
+	unknown := mergedRow("unknown", true, 0)
+	unknown.PRMergedAt = 0
+	busy := mergedRow("busy", true, time.Minute)
+	busy.Status = statusWorking
+	roster := []Agent{mergedRow("via", true, 5*time.Minute), mergedRow("direct", false, 5*time.Minute), mergedRow("old", true, ledgerTTL), unknown, busy}
+	l.adopt(roster, ledgerNow)
+	l.record(nil, ledgerNow)
+	left, rows := l.carryOver(roster, nil, ledgerNow)
+	if !slices.Equal(ledgerIDs(rows), []string{"via"}) || rows[0].Final != "merged" || rows[0].MergedAgo != "5m ago" {
+		t.Errorf("rows = %+v, want only via, merged 5m ago", rows)
+	}
+	if ids := agentIDs(left); !slices.Equal(ids, []string{"direct", "old", "unknown", "busy"}) {
+		t.Errorf("roster = %v, want [direct old unknown busy]", ids)
+	}
+	if _, ok := l.snapshot("busy"); ok {
+		t.Error("a working row was adopted, so made teardown-eligible")
+	}
+	// It expires ledgerTTL after the merge and is not adopted again.
+	expiry := time.Unix(roster[0].PRMergedAt, 0).Add(ledgerTTL)
+	l.adopt(roster, expiry)
+	l.record(nil, expiry)
+	if _, rows := l.carryOver(roster, nil, expiry); len(rows) != 0 {
+		t.Errorf("rows = %+v past ledgerTTL from the merge, want none", rows)
+	}
+}
+
+// A dismissed row is not adopted again, even once the entry it had before its
+// merge would have expired, and teardown can no longer find it.
+func TestQueueLedgerDismissSurvivesAdopt(t *testing.T) {
+	l, _ := testLedger(nil)
+	queuedAt := ledgerNow.Add(-ledgerTTL + time.Hour) // its pre-merge entry would lapse in an hour
+	l.record([]Agent{queuedRow("s1")}, queuedAt)
+	row := mergedRow("s1", true, time.Minute)
+	if !l.dismiss("s1", ledgerNow) {
+		t.Fatal("queued row not dismissable")
+	}
+	for _, at := range []time.Time{ledgerNow.Add(time.Minute), ledgerNow.Add(2 * time.Hour)} {
+		l.record(nil, at) // expiry runs first, so a tombstone aged from queuedAt would be gone
+		l.adopt([]Agent{row}, at)
+		if _, rows := l.carryOver([]Agent{row}, nil, at); len(rows) != 0 {
+			t.Errorf("at %v: dismissed row re-adopted: %+v", at, rows)
+		}
+	}
+	if _, ok := l.snapshot("s1"); ok {
+		t.Error("snapshot of a dismissed entry reported one")
+	}
+}
+
+// Queueing a dismissed row again brings it back.
+func TestQueueLedgerRequeueClearsDismiss(t *testing.T) {
+	l, _ := testLedger(nil)
+	l.record([]Agent{queuedRow("s1")}, ledgerNow)
+	l.dismiss("s1", ledgerNow)
+	l.record([]Agent{queuedRow("s1")}, ledgerNow.Add(time.Minute))
+	l.record(nil, ledgerNow.Add(2*time.Minute))
+	if _, rows := l.carryOver(nil, nil, ledgerNow.Add(2*time.Minute)); !slices.Equal(ledgerIDs(rows), []string{"s1"}) {
+		t.Errorf("rows = %v, want [s1] after re-queueing", ledgerIDs(rows))
+	}
+}
+
+// A session's next PR merging through the queue unseen replaces the entry, or
+// tombstone, its earlier PR left.
+func TestQueueLedgerAdoptsNextPR(t *testing.T) {
+	l, _ := testLedger(nil)
+	l.record([]Agent{queuedRow("s1")}, ledgerNow.Add(-2*time.Hour)) // PR o/r#7
+	l.dismiss("s1", ledgerNow.Add(-time.Hour))
+	next := mergedRow("s1", true, time.Minute)
+	next.PRNumber = 8
+	l.adopt([]Agent{next}, ledgerNow)
+	l.record(nil, ledgerNow)
+	if snap, ok := l.snapshot("s1"); !ok || snap.PRNumber != 8 {
+		t.Errorf("snapshot = %+v, %t; want PR 8 adopted", snap, ok)
+	}
+}
+
+// Through the real build, a waiting row whose PR merged through the queue
+// unseen lands in the ledger, eligible for teardown.
+func TestBuildDashboardDataAdoptsMergedViaQueue(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+	insertEvent(db, Event{TS: now.UTC().Format(time.RFC3339), SourceApp: "x", SessionID: "w", Cwd: "/w", EventType: "Stop", PayloadJSON: "{}"})
+	ci := newCICache(nil)
+	ci.m["/w"] = cwdEntry[ciResult]{val: ciResult{Done: "merged", ViaQueue: true, PRRepo: "o/r", PRNumber: 7, MergedAt: now.Add(-time.Minute)}, at: now.Add(time.Hour)}
+	l, _ := testLedger(nil)
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "127.0.0.1:5555"
+	r.Host = "127.0.0.1:4555"
+	data, err := buildDashboardData(r, db, ci, &peekConfig{cache: newPaneCache()}, &actionConfig{ledger: l})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Agents) != 0 || !slices.Equal(ledgerIDs(data.LedgerRows), []string{"w"}) {
+		t.Errorf("roster %+v, ledger %v; want none and [w]", data.Agents, ledgerIDs(data.LedgerRows))
+	}
+	if _, ok := l.snapshot("w"); !ok {
+		t.Error("adopted row has no ledger snapshot for teardown")
+	}
+}
+
+// Dismissing hides the entry, and reports whether there was one.
 func TestQueueLedgerDismiss(t *testing.T) {
 	l, _ := testLedger(nil)
 	l.record([]Agent{queuedRow("s1")}, ledgerNow)
-	if !l.dismiss("s1") || l.dismiss("s1") {
+	if !l.dismiss("s1", ledgerNow) || l.dismiss("s1", ledgerNow) {
 		t.Fatal("dismiss did not report the entry once")
 	}
 	if _, rows := l.carryOver(nil, nil, ledgerNow); len(rows) != 0 {

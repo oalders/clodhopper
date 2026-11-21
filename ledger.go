@@ -13,16 +13,18 @@ import (
 	"unicode"
 )
 
-// A ledger entry lapses ledgerTTL after its row was last seen queued; past
-// ledgerMax entries the least recently seen goes first.
+// A ledger entry lapses ledgerTTL after it was last seen (queued; merged, for
+// an adopted one; dismissed, for a tombstone); past ledgerMax entries the
+// least recently seen goes first.
 const (
 	ledgerTTL = 24 * time.Hour
 	ledgerMax = 100
 )
 
-// queueLedger remembers every row splitQueued folded into the merge queue, so
-// the row can stay in that table with its PR's final state once it leaves the
-// queue, its pane dies or its session ends, until dismissed or expired (#211).
+// queueLedger remembers every row splitQueued folded into the merge queue (or
+// adopt found merged through it), so the row can stay in that table with its
+// PR's final state once it leaves the queue, its pane dies or its session
+// ends, until dismissed or expired (#211).
 // It lives in memory only, bounded by ledgerTTL and ledgerMax: serve never
 // writes the DB for it.
 type queueLedger struct {
@@ -32,9 +34,10 @@ type queueLedger struct {
 }
 
 type ledgerEntry struct {
-	snap  Agent     // the row as last seen queued
-	seen  time.Time // when it was last seen queued
-	final ciResult  // a gone session's PR once merged or closed: it cannot change, so it is never looked up again
+	snap      Agent     // the row as last seen queued
+	seen      time.Time // when it was last seen queued
+	final     ciResult  // a gone session's PR once merged or closed: it cannot change, so it is never looked up again
+	dismissed bool      // dropped by the user: kept only so adopt cannot bring it back
 }
 
 // ledgerRow is one carried-over row of the merge-queue table.
@@ -76,20 +79,59 @@ func (l *queueLedger) record(queued []Agent, now time.Time) {
 	}
 }
 
-// dismiss drops sessionID's entry, reporting whether there was one.
-func (l *queueLedger) dismiss(sessionID string) bool {
+// adopt records each live row whose PR merged through the merge queue but that
+// splitQueued never saw queued: shepherd-pr and auto-merge can enqueue a PR
+// that merges between two polls (or while no dashboard polls at all). The
+// entry counts as seen at the merge, so it sorts by merge time and expires
+// ledgerTTL after it; a PR merged that long ago, or at an unknown time, is
+// skipped, so no entry can come back once it expires. It never touches an
+// entry for the same PR, so a dismissed row stays dismissed; one for an
+// earlier PR of the session is replaced. Adoption makes the row
+// teardown-eligible, so a busy row (not setAndForget, which carryOver also
+// requires to show it) waits for a later poll; handleAction still re-checks
+// the PR and pane. Call it before record, which applies ledgerTTL and
+// ledgerMax.
+func (l *queueLedger) adopt(agents []Agent, now time.Time) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, a := range agents {
+		if a.CIDone != "merged" || !a.PRViaQueue || a.PRMergedAt == 0 || !setAndForget(a.Status) {
+			continue
+		}
+		if e, ok := l.m[a.SessionID]; ok && finalKey(e.snap) == finalKey(a) {
+			continue
+		}
+		if merged := time.Unix(a.PRMergedAt, 0); now.Sub(merged) < ledgerTTL {
+			l.m[a.SessionID] = ledgerEntry{snap: a, seen: merged}
+		}
+	}
+}
+
+// dismiss marks sessionID's entry dismissed, reporting whether there was a
+// live one. The entry lingers, as seen now, so adopt cannot re-add it: by the
+// time it expires its PR merged ledgerTTL ago, unless a fresh queueing (record)
+// replaces it first. Being in memory only, a dismissal is lost on restart, and
+// ledgerMax can evict it early.
+func (l *queueLedger) dismiss(sessionID string, now time.Time) bool {
 	if l == nil {
 		return false
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	_, ok := l.m[sessionID]
-	delete(l.m, sessionID)
-	return ok
+	e, ok := l.m[sessionID]
+	if !ok || e.dismissed {
+		return false
+	}
+	e.dismissed, e.seen = true, now
+	l.m[sessionID] = e
+	return true
 }
 
 // snapshot returns sessionID's entry's row as last seen queued, and whether
-// there was one.
+// there was one (a dismissed entry counts as none).
 func (l *queueLedger) snapshot(sessionID string) (Agent, bool) {
 	if l == nil {
 		return Agent{}, false
@@ -97,7 +139,7 @@ func (l *queueLedger) snapshot(sessionID string) (Agent, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	e, ok := l.m[sessionID]
-	return e.snap, ok
+	return e.snap, ok && !e.dismissed
 }
 
 // carryOver returns the ledger rows for every entry not in queued, most
@@ -114,6 +156,7 @@ func (l *queueLedger) carryOver(roster, queued []Agent, now time.Time) ([]Agent,
 	l.mu.Lock()
 	entries := maps.Clone(l.m) // the gh lookups below run unlocked
 	l.mu.Unlock()
+	maps.DeleteFunc(entries, func(_ string, e ledgerEntry) bool { return e.dismissed })
 	for _, a := range queued {
 		delete(entries, a.SessionID)
 	}
@@ -238,7 +281,8 @@ func validRepo(repo string) bool {
 }
 
 // lookupPRFinal resolves a gone session's PR through gh, an open one's merge
-// queue entry too, as lookupCI does. Best-effort, like lookupCI: invalid input,
+// queue entry too, as lookupCI does; a merged one skips that call, as its
+// ViaQueue serves only adopt, which needs a live row. Best-effort, like lookupCI: invalid input,
 // a missing gh, an error or a timeout yield the zero ciResult. It skips the
 // rollup, so RollupSince stays zero and an ejection never lapses here (#218).
 // A rate-limited gh trips gate.
@@ -255,6 +299,9 @@ func lookupPRFinal(key string, gate *ghGate) ciResult {
 		return ciResult{}
 	}
 	r, id := parsePRView(out)
+	if r.Done != "" {
+		return r
+	}
 	return withMergeQueue(ctx, r, id, gate)
 }
 
