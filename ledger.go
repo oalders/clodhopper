@@ -22,9 +22,9 @@ const (
 )
 
 // queueLedger remembers every row splitQueued folded into the merge queue (or
-// adopt found merged through it), so
-// the row can stay in that table with its PR's final state once it leaves the
-// queue, its pane dies or its session ends, until dismissed or expired (#211).
+// adopt found merged through it), so the row can stay in that table with its
+// PR's final state once it leaves the queue, its pane dies or its session
+// ends, until dismissed or expired (#211).
 // It lives in memory only, bounded by ledgerTTL and ledgerMax: serve never
 // writes the DB for it.
 type queueLedger struct {
