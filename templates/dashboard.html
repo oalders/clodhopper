@@ -648,8 +648,8 @@
     @media (min-width: 641px) {
       .ck-tablewrap { overflow-x: auto; }
       table.events { min-width: 124ch; }
-      /* sum of the fixed cols (122ch, plus the CI col's --ci-w, plus 16ch for the debug id col and 10ch for the actions col when present) + the flexible session col sized to its longest name (--sess-w from sessionCh, plus cell padding; floor 20ch) */
-      table.roster { min-width: calc(122ch + var(--ci-w) + max(20ch, var(--sess-w) + 2 * var(--cell-pad-x)){{ if .Debug }} + 16ch{{ end }}{{ if or .PeekEnabled .ExecEnabled }} + 10ch{{ end }}); }
+      /* sum of the fixed cols (122ch, plus the CI col's --ci-w, plus 26ch for the debug id and mem cols and 10ch for the actions col when present) + the flexible session col sized to its longest name (--sess-w from sessionCh, plus cell padding; floor 20ch) */
+      table.roster { min-width: calc(122ch + var(--ci-w) + max(20ch, var(--sess-w) + 2 * var(--cell-pad-x)){{ if .Debug }} + 26ch{{ end }}{{ if or .PeekEnabled .ExecEnabled }} + 10ch{{ end }}); }
       table.counts { min-width: 48ch; }
       /* the fixed cols (96ch, plus 20ch for the actions col when present: room for ⤢ + an armed "✓ confirm ✕") + the flexible session col sized like the roster's (--sess-w; floor 20ch) */
       table.mq { min-width: calc(96ch + max(20ch, var(--sess-w) + 2 * var(--cell-pad-x)){{ if or .PeekEnabled .ExecEnabled }} + 20ch{{ end }}); }
@@ -3154,8 +3154,8 @@
 
   <section class="ck-card">
     <div class="ck-cardhead">
-      <h2>Agents (live + waiting on you)</h2>
-      <span class="ck-cardmeta">{{ len .Agents }} live</span>
+      <h2>{{ .AgentCount }} Agent{{ if ne .AgentCount 1 }}s{{ end }} (live + waiting on you)</h2>
+      {{ with .AgentMemKB }}<span class="ck-cardmeta" title="memory of these agents' process trees (PSS on Linux, else RSS)">{{ memSize . }}</span>{{ end }}
     </div>
     {{ if .Agents }}
     <div class="ck-tablewrap">
@@ -3163,10 +3163,10 @@
       {{/* status is 32ch: the nowrap "waiting on N agents · age" badge; "N shells" is as wide and "N tasks" narrower (see waitingOn) is ~24ch of text plus ~46px of dot, gaps and padding; the prefixless "N shells · NNh · stuck?" (~25ch) fits too; recheck when the badge gains a child. Keep the min-width calc() in sync. */}}
       <colgroup>
         <col style="width: var(--ci-w)"><col style="width: 4ch"><col style="width: 24ch"><col style="width: 18ch"><col style="width: 32ch">
-        <col style="width: 36ch"><col style="width: 8ch">{{ if .Debug }}<col style="width: 16ch">{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<col style="width: 10ch">{{ end }}<col>
+        <col style="width: 36ch"><col style="width: 8ch">{{ if .Debug }}<col style="width: 16ch"><col style="width: 10ch">{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<col style="width: 10ch">{{ end }}<col>
       </colgroup>
       <thead>
-        <tr><th class="ci">CI</th><th class="launcher"><span class="ck-sr">launcher</span></th><th>branch</th><th data-sort="app">app</th><th data-sort="status">status</th><th>doing</th><th data-sort="idle">idle</th>{{ if .Debug }}<th>id</th>{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<th>actions</th>{{ end }}<th>session</th></tr>
+        <tr><th class="ci">CI</th><th class="launcher"><span class="ck-sr">launcher</span></th><th>branch</th><th data-sort="app">app</th><th data-sort="status">status</th><th>doing</th><th data-sort="idle">idle</th>{{ if .Debug }}<th>id</th><th>mem</th>{{ end }}{{ if or .PeekEnabled .ExecEnabled }}<th>actions</th>{{ end }}<th>session</th></tr>
       </thead>
       <tbody>
         {{ range .Agents }}
@@ -3178,12 +3178,12 @@
           <td data-label="status" data-rank="{{ .StatusRank }}" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if or (eq .Status "needs you") (eq .Status "shell stuck?") }}needs{{ else if or (eq .Status "waiting") (eq .Status "waiting on agents") (eq .Status "blocked") }}background{{ else if eq .Status "working" }}working{{ else if eq .Status "idle" }}idle{{ else if eq .Status "ended" }}ended{{ end }}">{{ $stuck := eq .Status "shell stuck?" }}<span class="ck-badge"{{ if .ShellCmd }} title="{{ .ShellCmd }}{{ with .WaitingOnDetail }} ({{ . }}){{ end }}"{{ else if .WaitingOnDetail }} title="{{ .WaitingOnDetail }}"{{ end }}><span class="ck-dot"></span>{{ if or $stuck (eq .Status "waiting on agents") }}{{ if not $stuck }}waiting on {{ end }}{{ .WaitingOn }}{{ if .WaitingOnDetail }}<span class="ck-sr"> ({{ .WaitingOnDetail }})</span>{{ end }} <span aria-hidden="true">·</span> <span class="ck-sr">running </span><span data-since="{{ .SubagentSince }}">{{ .SubagentAge }}</span>{{ if $stuck }} <span aria-hidden="true">·</span> stuck?{{ end }}{{ else }}{{ .Status }}{{ end }}</span>{{ template "blockchip" (blockChip . $.ExecEnabled) }}</td>
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
-          {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ $short := short .SessionID }}{{ with .ClaudeName }}<span title="{{ . }} ({{ $short }})">{{ . }}</span>{{ else }}{{ $short }}{{ end }}{{ else }}—{{ end }}</td>{{ end }}
+          {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ $short := short .SessionID }}{{ with .ClaudeName }}<span title="{{ . }} ({{ $short }})">{{ . }}</span>{{ else }}{{ $short }}{{ end }}{{ else }}—{{ end }}</td><td data-label="mem">{{ if .MemKB }}{{ memSize .MemKB }}{{ else }}—{{ end }}</td>{{ end }}
           {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · rebase · reload plugins · end · squash · admin · close · ready · mark blocked"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>
-        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}10{{ else }}9{{ end }}"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
-        {{ if and $.ExecEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}10{{ else }}9{{ end }}"><div class="actpanel">
+        {{ if and $.PeekEnabled .LiveTmux }}<tr class="panerow" hidden id="panerow-{{ .SessionID }}" data-peek-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}11{{ else }}9{{ end }}"><pre class="panecap" tabindex="0" aria-label="pane capture"></pre></td></tr>{{ end }}
+        {{ if and $.ExecEnabled .SessionID }}<tr class="actrow" hidden id="actrow-{{ .SessionID }}" data-actions-row="{{ .SessionID }}"><td colspan="{{ if $.Debug }}11{{ else }}9{{ end }}"><div class="actpanel">
             <div class="actcol sesscol{{ if .HasPane }} haspane{{ end }}" role="group" aria-label="session actions">
               <span class="acteyebrow">session</span>
               <span class="actgroup actsession" data-session="{{ .SessionID }}" data-branch="{{ if .Branch }}{{ .Branch }}{{ else if .BranchGuess }}{{ .BranchGuess }}{{ end }}">

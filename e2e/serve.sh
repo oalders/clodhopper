@@ -35,10 +35,11 @@ mkdir "$tmp/bin"
 cat >"$tmp/bin/tmux" <<'STUB'
 #!/bin/sh
 # Every seeded pane id (e2e_seed_test.go) must be listed, or dropDeadPanes hides its row; %9004 is the landing fixture's.
+# Pane pid 0 so serve reads no host process's memory.
 [ "${1-}" = list-panes ] || exit 1
-printf '%s\tseeded\tclaude\t/nonexistent\n' %9001 %9002 %9004
+printf '%s\t0\tseeded\tclaude\t/nonexistent\n' %9001 %9002 %9004
 # Longer than the merge-queue session column's old 18ch, so merge.spec.ts can catch it clipping.
-printf '%%9003\tseeded-merge-queue-session-name\tclaude\t/nonexistent\n'
+printf '%%9003\t0\tseeded-merge-queue-session-name\tclaude\t/nonexistent\n'
 STUB
 chmod +x "$tmp/bin/tmux"
 # A stub gh puts two seeded merge-queue rows (e2e_seed_test.go) in the queue,

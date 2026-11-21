@@ -40,6 +40,7 @@ var dashboardTmpl = template.Must(
 		"sessionCh":   sessionCh,
 		"blockChip":   func(a Agent, exec bool) blockChipView { return blockChipView{a, exec} },
 		"blockGroups": blockGroups,
+		"memSize":     memSize,
 	}).Parse(dashboardHTML),
 )
 
@@ -291,6 +292,8 @@ type dashboardData struct {
 	QueuedAgents   []Agent     // every merge-queue row, folded under the roster; see splitQueued
 	QueueNextETA   string      // earliest queued ETA as an etaPhrase; "" when none is known
 	LedgerRows     []ledgerRow // rows that left the merge queue, kept in its table until dismissed; see queueLedger
+	AgentCount     int         // the heading's count; see agentTotals
+	AgentMemKB     int64       // KiB of those agents' process trees; 0 when unknown
 	Activity       []SourceCount
 	Events         []Event
 	EventRows      []EventRow // Events folded for display; see foldToolEvents
@@ -1200,6 +1203,18 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	setWorktrees(agents, peek.roots, now)
 	// Before enrichCI, so no CI is fetched for a row that will not render.
 	agents = dropDeadPanes(agents, peek.cache.panes(now))
+	// Not LiveTmux, which only peek sets: the count and memory cover every live pane.
+	livePanes := map[string]string{} // session id → its live pane
+	var mem map[string]int64
+	for i, a := range agents {
+		if a.TmuxPane != "" && peek.cache.live(a.TmuxPane, now) {
+			if mem == nil {
+				mem = peek.cache.mem(now)
+			}
+			livePanes[a.SessionID] = a.TmuxPane
+			agents[i].MemKB = mem[a.TmuxPane]
+		}
+	}
 	names := peek.names.get(peek.namesDir, now)
 	for i := range agents {
 		agents[i].ClaudeName = names[agents[i].SessionID]
@@ -1312,6 +1327,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	}
 	data.filterRows(source, branch)
 	data.Agents = nestBlocked(data.Agents) // after filterRows, so a filtered-out blocker leaves no orphan indent
+	data.AgentCount, data.AgentMemKB = agentTotals(data, livePanes, mem)
 	data.QueueNextETA = queueNextETA(data.QueuedAgents, now)
 	data.Signature = viewSignature(data)
 	return data, nil
@@ -1330,6 +1346,35 @@ func (d *dashboardData) filterRows(source, branch string) {
 	d.QueuedAgents = slices.DeleteFunc(slices.Clone(d.QueuedAgents), func(a Agent) bool { return drop(a.SourceApp, a.Branch) })
 	d.LedgerRows = slices.DeleteFunc(d.LedgerRows, func(r ledgerRow) bool { return drop(r.SourceApp, r.Branch) })
 	d.Activity = slices.DeleteFunc(d.Activity, func(c SourceCount) bool { return drop(c.SourceApp, c.Branch) })
+}
+
+// agentTotals counts every roster row plus each queue and ledger row whose
+// session still has a live pane (livePanes: session id → pane), and sums mem
+// over the counted rows' panes, each pane once since rows may share one.
+func agentTotals(d dashboardData, livePanes map[string]string, mem map[string]int64) (int, int64) {
+	ids := make([]string, 0, len(d.Agents)+len(d.QueuedAgents)+len(d.LedgerRows))
+	for _, a := range d.Agents {
+		ids = append(ids, a.SessionID)
+	}
+	for _, a := range d.QueuedAgents {
+		if _, ok := livePanes[a.SessionID]; ok {
+			ids = append(ids, a.SessionID)
+		}
+	}
+	for _, r := range d.LedgerRows {
+		if _, ok := livePanes[r.SessionID]; ok {
+			ids = append(ids, r.SessionID)
+		}
+	}
+	var kb int64
+	seen := map[string]bool{}
+	for _, id := range ids {
+		if p, ok := livePanes[id]; ok && !seen[p] {
+			seen[p] = true
+			kb += mem[p]
+		}
+	}
+	return len(ids), kb
 }
 
 // rosterBranches lists the branch dropdown's options: the live roster's branches
@@ -1370,6 +1415,8 @@ func viewSignature(d dashboardData) string {
 	// cannot freeze on a quiet board; it ticks once a minute until its last minute.
 	fmt.Fprintf(h, "|n:%q", d.QueueNextETA)
 	fmt.Fprintf(h, "|g:%t", d.GHRateLimited)
+	// Memory in whole GiB only, so a quiet board does not repaint on every poll's drift.
+	fmt.Fprintf(h, "|t:%d:%d", d.AgentCount, d.AgentMemKB>>20)
 
 	// The section tag makes a row moving between the roster and the queue repaint.
 	for _, sec := range []struct {

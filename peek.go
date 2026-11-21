@@ -56,8 +56,12 @@ func clampPaneLines(n int) int {
 
 // livePane is one listed tmux pane: its normalised session name (the matching
 // key, in ingest's tmux_session form), the session name's trailing title segment
-// ("" if it has none; see paneLabel), foreground command and current directory.
-type livePane struct{ session, title, command, path string }
+// ("" if it has none; see paneLabel), foreground command, current directory and
+// the pane's root process id (0 if unparseable), whose tree paneCache.mem sums.
+type livePane struct {
+	session, title, command, path string
+	pid                           int
+}
 
 // paneTitle returns the last PUA-delimited segment of a raw tmux session name
 // when there is more than one ("<icon> fix-12 <icon> Fix the thing" → "Fix the
@@ -95,9 +99,10 @@ func paneLabel(p livePane, shown ...string) string {
 // (which polls) does not shell out to tmux on every render. now is injected so
 // the TTL is testable, matching cwdCache.
 type paneCache struct {
-	mu  sync.Mutex
-	set map[string]livePane
-	at  time.Time
+	mu   sync.Mutex
+	set  map[string]livePane
+	at   time.Time
+	memo paneMem // see mem
 }
 
 func newPaneCache() *paneCache { return &paneCache{} }
@@ -127,7 +132,7 @@ func (c *paneCache) live(pane string, now time.Time) bool {
 
 // listPanes returns every live tmux pane id across all sessions, mapped to its
 // session name (normalised exactly as ingest stores tmux_session), foreground
-// command and current path, or an empty map if tmux is missing, unreachable
+// command, current path and root pid, or an empty map if tmux is missing, unreachable
 // (different socket / container / not running), or times out. Best-effort, like lookupCI.
 func listPanes() map[string]livePane {
 	set := map[string]livePane{}
@@ -136,14 +141,15 @@ func listPanes() map[string]livePane {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{session_name}\t#{pane_current_command}\t#{pane_current_path}").Output()
+	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}\t#{session_name}\t#{pane_current_command}\t#{pane_current_path}").Output()
 	if err != nil {
 		return set
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		// Path last, and SplitN, so a tab inside it cannot shift the other fields.
-		if f := strings.SplitN(line, "\t", 4); len(f) == 4 {
-			set[f[0]] = livePane{session: tmuxSessionLabel(f[1]), title: paneTitle(f[1]), command: f[2], path: f[3]}
+		if f := strings.SplitN(line, "\t", 5); len(f) == 5 {
+			pid, _ := strconv.Atoi(f[1])
+			set[f[0]] = livePane{session: tmuxSessionLabel(f[2]), title: paneTitle(f[2]), command: f[3], path: f[4], pid: pid}
 		}
 	}
 	return set

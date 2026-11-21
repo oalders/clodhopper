@@ -1246,7 +1246,7 @@ func TestHandleDashboard_RendersAgentBoard(t *testing.T) {
 	insertEvent(db, Event{TS: recent, SourceApp: "myapp", Branch: "fix-2499", SessionID: "sess-deadbeef-1", EventType: "Stop", Summary: "Stop", PayloadJSON: "{}"})
 
 	body := getBody(t, db, "/")
-	for _, want := range []string{"Agents (live", "fix-2499", "waiting for you", "address-gh-review", `class="alert"`} {
+	for _, want := range []string{"<h2>1 Agent (live", "fix-2499", "waiting for you", "address-gh-review", `class="alert"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("board missing %q in:\n%s", want, body)
 		}

@@ -107,7 +107,7 @@ func TestHandleDashboard_RosterBranchCopiesCwd(t *testing.T) {
 		SessionID: "sess-copy", EventType: "Stop", PayloadJSON: "{}"})
 
 	body := getBody(t, db, "/")
-	if !strings.Contains(body, "1 live") {
+	if !strings.Contains(body, "<h2>1 Agent (live") {
 		t.Fatalf("expected a roster row to render (nothing to assert on otherwise):\n%s", body)
 	}
 	if !strings.Contains(body, `class="copycwd"`) {
@@ -126,7 +126,7 @@ func TestHandleDashboard_RosterBranchWithoutCwd(t *testing.T) {
 		SessionID: "sess-nocwd", EventType: "Stop", PayloadJSON: "{}"})
 
 	body := getBody(t, db, "/")
-	if !strings.Contains(body, "1 live") {
+	if !strings.Contains(body, "<h2>1 Agent (live") {
 		t.Fatalf("expected a roster row to render:\n%s", body)
 	}
 	// The bare class name also appears in the page's CSS and JS, so match the
@@ -254,7 +254,7 @@ func TestHandleDashboard_ClusterSuffixComposesWithCopyButton(t *testing.T) {
 		SessionID: "sess-c2", EventType: "Stop", PayloadJSON: "{}"})
 
 	body := getBody(t, db, "/")
-	if !strings.Contains(body, "2 live") {
+	if !strings.Contains(body, "<h2>2 Agents (live") {
 		t.Fatalf("expected two roster rows to form a cluster:\n%s", body)
 	}
 	// The button's OWN accessible name, parallel to how (mid-rebase) is folded in.
@@ -570,7 +570,7 @@ func TestHandleDashboard_NonRosterBranchCellsHaveNoCopyButton(t *testing.T) {
 		EventType: "PreToolUse", ToolName: "Bash", Summary: "Bash: git status", PayloadJSON: "{}"})
 
 	body := getBody(t, db, "/?debug=1")
-	if !strings.Contains(body, "0 live") {
+	if !strings.Contains(body, "<h2>0 Agents (live") {
 		t.Fatalf("session-less event should not reach the roster:\n%s", body)
 	}
 	if !strings.Contains(body, "Activity (last 30 min)") || !strings.Contains(body, "Bash: git status") {
@@ -744,6 +744,57 @@ func TestBuildDashboardDataDropsDeadPane(t *testing.T) {
 	}
 	if !slices.Equal(got, []string{"alive"}) {
 		t.Fatalf("roster = %q, want only the live-pane session", got)
+	}
+}
+
+// A live-pane row takes its tree's memory from paneCache.mem, with peek off,
+// and the heading totals cover it; a paneless row counts with no memory.
+func TestBuildDashboardDataAgentMemory(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+	ts := now.UTC().Format(time.RFC3339)
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "alive", TmuxSession: "work", TmuxPane: "%1", EventType: "Stop", PayloadJSON: "{}"})
+	insertEvent(db, Event{TS: ts, SourceApp: "x", SessionID: "paneless", EventType: "Stop", PayloadJSON: "{}"})
+	// Both memos stamped an hour ahead, so neither tmux nor /proc is ever read.
+	cache := &paneCache{set: map[string]livePane{"%1": {session: "work", pid: 4242}}, at: now.Add(time.Hour)}
+	cache.memo = paneMem{kb: map[string]int64{"%1": 2048}, at: now.Add(time.Hour)}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	data, err := buildDashboardData(r, db, newCICache(nil), &peekConfig{cache: cache}, &actionConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem := map[string]int64{}
+	for _, a := range data.Agents {
+		mem[a.SessionID] = a.MemKB
+	}
+	if mem["alive"] != 2048 || mem["paneless"] != 0 {
+		t.Errorf("MemKB by session = %v, want alive=2048 paneless=0", mem)
+	}
+	if data.AgentCount != 2 || data.AgentMemKB != 2048 {
+		t.Errorf("totals = %d, %d, want 2, 2048", data.AgentCount, data.AgentMemKB)
+	}
+	var buf bytes.Buffer
+	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", data); err != nil {
+		t.Fatal(err)
+	}
+	if body := buf.String(); !strings.Contains(body, "<h2>2 Agents (live") || !strings.Contains(body, `(PSS on Linux, else RSS)">2 MB</span>`) {
+		t.Errorf("card head lacks the count or the memory total:\n%s", body)
+	}
+}
+
+// agentTotals counts every roster row, but a queue or ledger row only while its
+// session has a live pane, and sums memory once per pane.
+func TestAgentTotals(t *testing.T) {
+	d := dashboardData{
+		Agents:       []Agent{{SessionID: "r1"}, {SessionID: "r2"}, {SessionID: "r3"}},
+		QueuedAgents: []Agent{{SessionID: "q-live"}, {SessionID: "q-gone"}},
+		LedgerRows:   []ledgerRow{{Agent: Agent{SessionID: "l-live"}}, {Agent: Agent{SessionID: "l-gone"}}},
+	}
+	// r2 and r3 share a pane (a superseded session, say); r1 has no live pane.
+	live := map[string]string{"r2": "%2", "r3": "%2", "q-live": "%5", "l-live": "%6"}
+	mem := map[string]int64{"%2": 100, "%5": 20, "%6": 3, "%9": 9999}
+	if n, kb := agentTotals(d, live, mem); n != 5 || kb != 123 {
+		t.Fatalf("agentTotals = %d, %d, want 5, 123", n, kb)
 	}
 }
 
@@ -2037,9 +2088,9 @@ func TestContentTemplate_SessionNamePreservedInPeekTitle(t *testing.T) {
 // The peek panerow and merge actrow span the whole roster width with a colspan.
 // The base roster is 8 always-on columns (CI, launcher, branch, app, status,
 // doing, idle, session) plus one shared controls column whenever peek OR merge is
-// on. The id column is debug-gated, so it adds a column only under ?debug=1. A
+// on. The id and mem columns are debug-gated, so they add two only under ?debug=1. A
 // panerow only exists when peek is on, so the controls column is always present:
-// the panerow spans 9 at rest and 10 in debug mode. Likewise the actrow
+// the panerow spans 9 at rest and 11 in debug mode. Likewise the actrow
 // (merge-only). A stale colspan would mis-span the table, so each expected count
 // is also checked against the rendered header row's <th> count.
 func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
@@ -2067,7 +2118,7 @@ func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 		if ths := strings.Count(head, "<th>") + strings.Count(head, "<th "); ths != n {
 			t.Errorf("%s: roster renders %d header cells, want %d", ctx, ths, n)
 		}
-		for _, c := range []int{8, 9, 10} {
+		for _, c := range []int{8, 9, 10, 11} {
 			marker := fmt.Sprintf(`colspan="%d"`, c)
 			if c == n {
 				if !strings.Contains(got, marker) {
@@ -2085,10 +2136,10 @@ func TestContentTemplate_PanelRowColspanTracksControlsColumn(t *testing.T) {
 	off.ExecEnabled = false
 	wantColspan(t, render(off), 9, "peek on, merge off")
 
-	// Debug adds the id column, so the same row spans 10.
+	// Debug adds the id and mem columns, so the same row spans 11.
 	dbg := off
 	dbg.Debug = true
-	wantColspan(t, render(dbg), 10, "peek on, merge off, debug")
+	wantColspan(t, render(dbg), 11, "peek on, merge off, debug")
 
 	// Peek on + merge on: both panerow and actrow span 9 at rest.
 	on := base
