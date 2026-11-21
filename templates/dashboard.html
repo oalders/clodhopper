@@ -274,7 +274,7 @@
     table.mq td.actions .actmsg:empty { display: none; } /* else its 100% basis opens an empty second line */
     table.mq tr.done td { color: var(--text-2); } /* a merged/closed ledger row: nothing left to do */
     #ck-mq .mqleft { color: var(--attention); font-weight: 600; } /* a PR out of the queue unmerged needs you, even folded */
-    td.idle { font-variant-numeric: tabular-nums; }
+    td.idle, td.mem { font-variant-numeric: tabular-nums; }
     td.summary { white-space: pre-wrap; word-break: break-word; }
     td.summary em { font-style: italic; color: var(--text-3); } /* a completed phase, not one in progress */
     td.summary .lastcmd { color: var(--text-3); font-size: .85em; margin-top: 2px; } /* the session's most recent slash command, as a muted second line */
@@ -694,6 +694,7 @@
       table.roster td.sess     { grid-area: 4 / 3; }
       table.roster td.launcher { grid-area: 4 / 4; justify-self: end; }
       table.roster td.launcher:empty { display: none; }
+      table.roster td.mem      { display: none; } /* debug-only, with no grid slot */
       table.roster td.actions  { grid-area: 5 / 1 / auto / 5; }
       /* The footer line is context, not content. */
       table.roster td[data-label="app"],
@@ -3155,7 +3156,7 @@
   <section class="ck-card">
     <div class="ck-cardhead">
       <h2>{{ .AgentCount }} Agent{{ if ne .AgentCount 1 }}s{{ end }} (live + waiting on you)</h2>
-      {{ with .AgentMemKB }}<span class="ck-cardmeta" title="memory of these agents' process trees (PSS on Linux, else RSS)">{{ memSize . }}</span>{{ end }}
+      {{ with .AgentMemKB }}<span class="ck-cardmeta" title="memory of these agents' process trees: PSS per process on Linux (RSS where PSS is unreadable), RSS elsewhere">{{ memSize . }}</span>{{ end }}
     </div>
     {{ if .Agents }}
     <div class="ck-tablewrap">
@@ -3178,7 +3179,7 @@
           <td data-label="status" data-rank="{{ .StatusRank }}" class="status {{ if eq .Status "waiting for you" }}waiting{{ else if eq .Status "needs approval" }}approval{{ else if eq .Status "needs input" }}input{{ else if or (eq .Status "needs you") (eq .Status "shell stuck?") }}needs{{ else if or (eq .Status "waiting") (eq .Status "waiting on agents") (eq .Status "blocked") }}background{{ else if eq .Status "working" }}working{{ else if eq .Status "idle" }}idle{{ else if eq .Status "ended" }}ended{{ end }}">{{ $stuck := eq .Status "shell stuck?" }}<span class="ck-badge"{{ if .ShellCmd }} title="{{ .ShellCmd }}{{ with .WaitingOnDetail }} ({{ . }}){{ end }}"{{ else if .WaitingOnDetail }} title="{{ .WaitingOnDetail }}"{{ end }}><span class="ck-dot"></span>{{ if or $stuck (eq .Status "waiting on agents") }}{{ if not $stuck }}waiting on {{ end }}{{ .WaitingOn }}{{ if .WaitingOnDetail }}<span class="ck-sr"> ({{ .WaitingOnDetail }})</span>{{ end }} <span aria-hidden="true">·</span> <span class="ck-sr">running </span><span data-since="{{ .SubagentSince }}">{{ .SubagentAge }}</span>{{ if $stuck }} <span aria-hidden="true">·</span> stuck?{{ end }}{{ else }}{{ .Status }}{{ end }}</span>{{ template "blockchip" (blockChip . $.ExecEnabled) }}</td>
           <td class="summary" data-label="doing">{{ if .Doing }}{{ if .DoingActive }}{{ .Doing }}{{ else }}<em title="last completed">{{ .Doing }}</em>{{ end }}{{ else }}—{{ end }}{{ if and .LastCommand (ne .LastCommand (printf "/%s" .Doing)) }}<div class="lastcmd" title="last slash command">↳ {{ .LastCommand }}</div>{{ end }}</td>
           <td class="idle" data-label="idle" data-since="{{ .IdleSince }}">{{ .Idle }}</td>
-          {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ $short := short .SessionID }}{{ with .ClaudeName }}<span title="{{ . }} ({{ $short }})">{{ . }}</span>{{ else }}{{ $short }}{{ end }}{{ else }}—{{ end }}</td><td data-label="mem">{{ if .MemKB }}{{ memSize .MemKB }}{{ else }}—{{ end }}</td>{{ end }}
+          {{ if $.Debug }}<td class="sess" data-label="id">{{ if .SessionID }}<span class="chip" style="background: {{ index $.SessColors .SessionID }}"></span>{{ $short := short .SessionID }}{{ with .ClaudeName }}<span title="{{ . }} ({{ $short }})">{{ . }}</span>{{ else }}{{ $short }}{{ end }}{{ else }}—{{ end }}</td><td class="mem" data-label="mem">{{ if .MemKB }}{{ memSize .MemKB }}{{ else }}—{{ end }}</td>{{ end }}
           {{ if or $.PeekEnabled $.ExecEnabled }}<td class="actions" data-label="actions"><div class="ctrlwrap">{{ $peek := and $.PeekEnabled .LiveTmux }}{{ $act := and $.ExecEnabled .SessionID }}{{ if $peek }}{{ template "peekbtn" . }}{{ end }}{{ if $act }}<button type="button" class="actbtn" data-actions="{{ .SessionID }}" aria-expanded="false" aria-controls="actrow-{{ .SessionID }}" aria-label="actions" title="monitor ci · + watcher · rebase · reload plugins · end · squash · admin · close · ready · mark blocked"><span class="actdots" aria-hidden="true">⋯</span><span class="actword">actions</span></button>{{ end }}{{ if and (not $peek) (not $act) }}—{{ end }}</div></td>{{ end }}
           <td class="tmux" data-label="session"{{ if .TmuxSession }} title="{{ .TmuxSession }}"{{ end }}>{{ if .TmuxSession }}{{ .TmuxSession }}{{ else }}—{{ end }}</td>
         </tr>

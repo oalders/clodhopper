@@ -1415,8 +1415,8 @@ func viewSignature(d dashboardData) string {
 	// cannot freeze on a quiet board; it ticks once a minute until its last minute.
 	fmt.Fprintf(h, "|n:%q", d.QueueNextETA)
 	fmt.Fprintf(h, "|g:%t", d.GHRateLimited)
-	// Memory in whole GiB only, so a quiet board does not repaint on every poll's drift.
-	fmt.Fprintf(h, "|t:%d:%d", d.AgentCount, d.AgentMemKB>>20)
+	// Memory in 256 MiB buckets, so a quiet board does not repaint on every poll's drift.
+	fmt.Fprintf(h, "|t:%d:%d", d.AgentCount, d.AgentMemKB>>18)
 
 	// The section tag makes a row moving between the roster and the queue repaint.
 	for _, sec := range []struct {

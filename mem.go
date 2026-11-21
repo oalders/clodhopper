@@ -76,12 +76,15 @@ func treeMem(t procTable, roots map[string]int) map[string]int64 {
 	return out
 }
 
+// procBudget caps a process-table read, which runs on the render path.
+const procBudget = 2 * time.Second
+
 // readProcTable snapshots the processes, with memory only for the roots' trees.
 func readProcTable(roots map[string]int) procTable {
 	if runtime.GOOS == "linux" {
 		return readLinuxProcs(roots)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), procBudget)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,rss=").Output()
 	if err != nil {
@@ -111,13 +114,18 @@ func parsePS(out []byte) procTable {
 
 // readLinuxProcs builds the table from /proc: every pid's ppid, then memory for
 // the roots' descendants only, so a busy host pays one small read per agent process.
+// Past procBudget it stops and returns what it has, which can only underestimate.
 func readLinuxProcs(roots map[string]int) procTable {
+	deadline := time.Now().Add(procBudget)
 	ents, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil
 	}
 	t := procTable{}
 	for _, e := range ents {
+		if time.Now().After(deadline) {
+			return t
+		}
 		pid, err := strconv.Atoi(e.Name())
 		if err != nil {
 			continue
@@ -136,6 +144,9 @@ func readLinuxProcs(roots map[string]int) procTable {
 			continue
 		}
 		for _, pid := range descendants(kids, root, seen) {
+			if time.Now().After(deadline) {
+				return t
+			}
 			p := t[pid]
 			p.kb, p.hasKB = linuxProcKB(pid)
 			t[pid] = p
@@ -198,6 +209,7 @@ type paneMem struct {
 // mem returns pane id → KiB of its process tree, refreshed once per paneTTL. It
 // is lazy so /api/pane and the action paths, which call panes()/live(), never pay
 // for the scan. With no pane pid known it scans nothing. A nil cache returns nil.
+// serve must share the panes' pid namespace: in a container their pids are not visible, so the figure is absent.
 func (c *paneCache) mem(now time.Time) map[string]int64 {
 	if c == nil {
 		return nil

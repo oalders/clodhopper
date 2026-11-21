@@ -2,7 +2,10 @@ package main
 
 import (
 	"maps"
+	"os"
+	"runtime"
 	"testing"
+	"time"
 )
 
 // treeMem sums each pane's whole process tree, skipping pids without a figure,
@@ -75,5 +78,42 @@ func TestMemSize(t *testing.T) {
 		if got := memSize(kb); got != want {
 			t.Errorf("memSize(%d) = %q, want %q", kb, got, want)
 		}
+	}
+}
+
+// The real /proc reader finds this test's own process and its memory.
+func TestReadLinuxProcsSelf(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("reads /proc")
+	}
+	pid := os.Getpid()
+	if p := readLinuxProcs(map[string]int{"%1": pid})[pid]; !p.hasKB || p.kb <= 0 {
+		t.Fatalf("own pid %d = %+v, want a positive figure", pid, p)
+	}
+}
+
+// mem scans once, serves its memo within paneTTL, and rescans after it. The
+// pane listing is restamped each step so panes() never runs real tmux.
+func TestPaneCacheMemMemo(t *testing.T) {
+	now := time.Now()
+	c := &paneCache{set: map[string]livePane{"%1": {pid: os.Getpid()}}, at: now}
+	if kb := c.mem(now)["%1"]; kb <= 0 {
+		t.Fatalf("first scan = %d, want a positive figure", kb)
+	}
+	c.memo.kb["%1"] = -1 // sentinel: only a rescan replaces it
+	if kb := c.mem(now.Add(paneTTL - time.Second))["%1"]; kb != -1 {
+		t.Errorf("within paneTTL = %d, want the memoised -1", kb)
+	}
+	later := now.Add(paneTTL)
+	c.at = later
+	if kb := c.mem(later)["%1"]; kb <= 0 {
+		t.Errorf("after paneTTL = %d, want a fresh positive figure", kb)
+	}
+}
+
+func TestPaneCacheMemNil(t *testing.T) {
+	var c *paneCache
+	if m := c.mem(time.Now()); m != nil {
+		t.Errorf("nil cache mem = %v, want nil", m)
 	}
 }

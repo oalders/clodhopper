@@ -777,7 +777,7 @@ func TestBuildDashboardDataAgentMemory(t *testing.T) {
 	if err := dashboardTmpl.ExecuteTemplate(&buf, "content", data); err != nil {
 		t.Fatal(err)
 	}
-	if body := buf.String(); !strings.Contains(body, "<h2>2 Agents (live") || !strings.Contains(body, `(PSS on Linux, else RSS)">2 MB</span>`) {
+	if body := buf.String(); !strings.Contains(body, "<h2>2 Agents (live") || !strings.Contains(body, `<span class="ck-cardmeta" title="memory of`) || !strings.Contains(body, `">2 MB</span>`) {
 		t.Errorf("card head lacks the count or the memory total:\n%s", body)
 	}
 }
