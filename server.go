@@ -769,6 +769,7 @@ type ciResult struct {
 	PRNumber    int       // the PR's number, in every state
 	PRRepo      string    // the PR's GitHub "owner/repo", parsed from its url; "" if not github.com
 	MergedAt    time.Time // when a merged PR merged, zero otherwise
+	ViaQueue    bool      // a merged PR's history shows it in the merge queue
 	RollupSince time.Time // newest check start in the rollup, zero when none reported one
 	NoPR        bool      // gh confirmed the branch has no PR (not merely an error); see ciTTL
 }
@@ -798,7 +799,8 @@ func lookupCI(cwd string, gate *ghGate) ciResult {
 	return withMergeQueue(ctx, r, id, gate)
 }
 
-// withMergeQueue folds open PR id's merge-queue entry into r via gh under ctx's
+// withMergeQueue folds PR id's merge-queue entry (or, merged, whether it was
+// ever queued) into r via gh under ctx's
 // deadline. Best-effort: no id or any error leaves r unchanged, a rate-limited
 // one tripping gate. No cmd.Dir: a graphql call needs no repo, so a planted
 // repo config in the DB-sourced cwd never gets read.
@@ -823,7 +825,8 @@ const mergeQueueQuery = `query($id:ID!){node(id:$id){... on PullRequest{mergeQue
 // Queue; with none, a removal as the newest event means the PR was ejected,
 // which overrides the head commit's (possibly green) state until a check starts
 // after the removal (#215); a removal time that won't parse keeps the ejection
-// (fail toward showing it). Any other or unparseable output leaves r unchanged.
+// (fail toward showing it). For a merged r it only sets ViaQueue. Any other or
+// unparseable output leaves r unchanged.
 // The relative ETA is pinned to now, as the result sits in cwdCache and a
 // relative one would drift.
 func applyMergeQueue(r ciResult, out []byte, now time.Time) ciResult {
@@ -851,6 +854,14 @@ func applyMergeQueue(r ciResult, out []byte, now time.Time) ciResult {
 		return r
 	}
 	node := resp.Data.Node
+	if r.Done != "" {
+		// A merged PR only asks whether it was ever queued: a fast queue can
+		// come and go between two polls, so splitQueued never saw it.
+		for _, n := range node.TimelineItems.Nodes {
+			r.ViaQueue = r.ViaQueue || n.Typename == "AddedToMergeQueueEvent"
+		}
+		return r
+	}
 	if e := node.MergeQueueEntry; e != nil {
 		r.Queue = "queued"
 		if e.State == "UNMERGEABLE" {
@@ -888,7 +899,8 @@ type rollupNode struct {
 
 // parsePRView turns `gh pr view --json id,number,url,state,mergedAt,isDraft,mergeStateStatus,statusCheckRollup`
 // output into a ciResult, plus the PR's node id when it is still OPEN (only an
-// open PR can be in the merge queue). The PR's number, repo and merge time are
+// open PR can be in the merge queue) or MERGED (whether it merged through the
+// queue: see applyMergeQueue). The PR's number, repo and merge time are
 // kept in every state, for the merge-queue ledger (see queueLedger). The rollup drives the state;
 // mergeStateStatus only refines it, because BLOCKED also means "review missing"
 // with green checks. UNKNOWN never flags a conflict: every fresh PR is UNKNOWN
@@ -909,7 +921,11 @@ func parsePRView(out []byte) (ciResult, string) {
 	}
 	repoURL, _, _ := strings.Cut(pr.URL, "/pull/")
 	if pr.State == "MERGED" || pr.State == "CLOSED" {
-		return ciResult{Done: strings.ToLower(pr.State), PRNumber: pr.Number, PRRepo: parseGitHubRepo(repoURL), MergedAt: pr.MergedAt}, ""
+		done := ciResult{Done: strings.ToLower(pr.State), PRNumber: pr.Number, PRRepo: parseGitHubRepo(repoURL), MergedAt: pr.MergedAt}
+		if pr.State == "MERGED" {
+			return done, pr.ID // for ViaQueue: did it merge through the queue?
+		}
+		return done, ""
 	}
 	r := classifyRollup(pr.StatusCheckRollup)
 	r.PRNumber, r.PRRepo = pr.Number, parseGitHubRepo(repoURL)
@@ -1240,6 +1256,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	}
 	// splitQueued and demotePendingCI both key on CIQueue, so their order does not matter (#219).
 	roster, queued := splitQueued(agents, now)
+	act.ledger.adopt(roster, now) // a queue stay too brief for splitQueued to catch
 	act.ledger.record(queued, now)
 	// Before demotePendingCI, which relaxes every merged "needs you" row.
 	roster, ledger := act.ledger.carryOver(roster, queued, now)
@@ -1858,7 +1875,7 @@ func enrichCI(agents []Agent, roots *cwdCache[string], ci *cwdCache[ciResult], n
 		r := results[keys[i]]
 		agents[i].CI, agents[i].CIFails, agents[i].CIPasses, agents[i].CIConflict = r.State, r.Fails, r.Passes, r.Conflict
 		agents[i].CIDraft, agents[i].CIDone = r.Draft, r.Done
-		agents[i].PRNumber, agents[i].PRRepo, agents[i].PRMergedAt = r.PRNumber, r.PRRepo, unixOrZero(r.MergedAt)
+		agents[i].PRNumber, agents[i].PRRepo, agents[i].PRMergedAt, agents[i].PRViaQueue = r.PRNumber, r.PRRepo, unixOrZero(r.MergedAt), r.ViaQueue
 		agents[i].CIQueue, agents[i].CIQueueReason = r.Queue, r.QueueReason
 		if r.Queue != "" {
 			agents[i].CIQueuePos, agents[i].CIQueueETA, agents[i].CIQueueSince = r.QueuePos, unixOrZero(r.QueueETA), unixOrZero(r.QueueSince)

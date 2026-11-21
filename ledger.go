@@ -32,9 +32,10 @@ type queueLedger struct {
 }
 
 type ledgerEntry struct {
-	snap  Agent     // the row as last seen queued
-	seen  time.Time // when it was last seen queued
-	final ciResult  // a gone session's PR once merged or closed: it cannot change, so it is never looked up again
+	snap      Agent     // the row as last seen queued
+	seen      time.Time // when it was last seen queued
+	final     ciResult  // a gone session's PR once merged or closed: it cannot change, so it is never looked up again
+	dismissed bool      // dropped by the user: kept only so adopt cannot bring it back
 }
 
 // ledgerRow is one carried-over row of the merge-queue table.
@@ -76,20 +77,49 @@ func (l *queueLedger) record(queued []Agent, now time.Time) {
 	}
 }
 
-// dismiss drops sessionID's entry, reporting whether there was one.
+// adopt records each live row whose PR merged through the merge queue but that
+// splitQueued never saw queued: shepherd-pr and auto-merge can enqueue a PR
+// that merges between two polls (or while no dashboard polls at all). It never
+// touches an existing entry, so a dismissed row stays dismissed, nor a PR that
+// merged ledgerTTL ago or more, so one cannot return once its entry expires.
+// Call it before record, which applies ledgerTTL and ledgerMax.
+func (l *queueLedger) adopt(agents []Agent, now time.Time) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, a := range agents {
+		if _, ok := l.m[a.SessionID]; ok || a.CIDone != "merged" || !a.PRViaQueue {
+			continue
+		}
+		if a.PRMergedAt != 0 && now.Unix()-a.PRMergedAt >= int64(ledgerTTL/time.Second) {
+			continue
+		}
+		l.m[a.SessionID] = ledgerEntry{snap: a, seen: now}
+	}
+}
+
+// dismiss marks sessionID's entry dismissed, reporting whether there was a
+// live one. The entry lingers (until ledgerTTL or a fresh queueing) so adopt
+// cannot re-add it.
 func (l *queueLedger) dismiss(sessionID string) bool {
 	if l == nil {
 		return false
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	_, ok := l.m[sessionID]
-	delete(l.m, sessionID)
-	return ok
+	e, ok := l.m[sessionID]
+	if !ok || e.dismissed {
+		return false
+	}
+	e.dismissed = true
+	l.m[sessionID] = e
+	return true
 }
 
 // snapshot returns sessionID's entry's row as last seen queued, and whether
-// there was one.
+// there was one (a dismissed entry counts as none).
 func (l *queueLedger) snapshot(sessionID string) (Agent, bool) {
 	if l == nil {
 		return Agent{}, false
@@ -97,7 +127,7 @@ func (l *queueLedger) snapshot(sessionID string) (Agent, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	e, ok := l.m[sessionID]
-	return e.snap, ok
+	return e.snap, ok && !e.dismissed
 }
 
 // carryOver returns the ledger rows for every entry not in queued, most
@@ -114,6 +144,7 @@ func (l *queueLedger) carryOver(roster, queued []Agent, now time.Time) ([]Agent,
 	l.mu.Lock()
 	entries := maps.Clone(l.m) // the gh lookups below run unlocked
 	l.mu.Unlock()
+	maps.DeleteFunc(entries, func(_ string, e ledgerEntry) bool { return e.dismissed })
 	for _, a := range queued {
 		delete(entries, a.SessionID)
 	}

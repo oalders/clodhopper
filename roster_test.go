@@ -110,9 +110,10 @@ func TestParsePRView(t *testing.T) {
 	}
 }
 
-// Only an open PR can be queued, so only an open PR's node id is returned.
-func TestParsePRViewIDOnlyWhenOpen(t *testing.T) {
-	for state, want := range map[string]string{"OPEN": "PR_1", "MERGED": "", "CLOSED": ""} {
+// An open PR's node id is returned for its queue entry, a merged one's for
+// whether it merged through the queue; a closed PR needs neither.
+func TestParsePRViewIDWhenOpenOrMerged(t *testing.T) {
+	for state, want := range map[string]string{"OPEN": "PR_1", "MERGED": "PR_1", "CLOSED": ""} {
 		if _, got := parsePRView([]byte(`{"id":"PR_1","state":"` + state + `","statusCheckRollup":[]}`)); got != want {
 			t.Errorf("%s: id = %q, want %q", state, got, want)
 		}
@@ -159,6 +160,26 @@ func TestApplyMergeQueue(t *testing.T) {
 	queued := ciResult{State: "pending"}
 	if got, want := applyMergeQueue(queued, []byte(out(`null`, removed)), now), (ciResult{State: "ejected", QueueReason: "merge conflict"}); got != want {
 		t.Errorf("zero rollup since: applyMergeQueue = %+v, want %+v", got, want)
+	}
+}
+
+// A merged PR only learns whether it was ever queued: its last removal is the
+// merge, never an ejection.
+func TestApplyMergeQueueMerged(t *testing.T) {
+	merged := ciResult{Done: "merged", PRNumber: 7}
+	viaQueue := merged
+	viaQueue.ViaQueue = true
+	for _, c := range []struct {
+		name, out string
+		want      ciResult
+	}{
+		{"through the queue", `{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[{"__typename":"AddedToMergeQueueEvent"},{"__typename":"RemovedFromMergeQueueEvent","reason":"merged","createdAt":"2026-10-18T11:45:00Z"}]}}}}`, viaQueue},
+		{"never queued", `{"data":{"node":{"mergeQueueEntry":null,"timelineItems":{"nodes":[]}}}}`, merged},
+		{"malformed", `not json`, merged},
+	} {
+		if got := applyMergeQueue(merged, []byte(c.out), time.Now()); got != c.want {
+			t.Errorf("%s: applyMergeQueue = %+v, want %+v", c.name, got, c.want)
+		}
 	}
 }
 

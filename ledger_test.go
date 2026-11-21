@@ -221,6 +221,64 @@ func TestBuildDashboardDataLedgersMergedRow(t *testing.T) {
 	}
 }
 
+// A live row whose PR merged through the queue between two polls is adopted
+// into the ledger and leaves the roster; one merged directly, one merged a
+// ledgerTTL ago and one already dismissed are not.
+func TestQueueLedgerAdoptsMergedViaQueue(t *testing.T) {
+	l, _ := testLedger(nil)
+	merged := func(id string, via bool, ago time.Duration) Agent {
+		return Agent{SessionID: id, Status: statusWaiting, CIDone: "merged", PRViaQueue: via, PRRepo: "o/r", PRNumber: 7, PRMergedAt: ledgerNow.Add(-ago).Unix()}
+	}
+	roster := []Agent{merged("via", true, 5*time.Minute), merged("direct", false, 5*time.Minute), merged("old", true, ledgerTTL), merged("gone", true, time.Minute)}
+	l.record([]Agent{queuedRow("gone")}, ledgerNow.Add(-time.Hour))
+	l.dismiss("gone")
+	l.adopt(roster, ledgerNow)
+	l.record(nil, ledgerNow)
+	left, rows := l.carryOver(roster, nil, ledgerNow)
+	if !slices.Equal(ledgerIDs(rows), []string{"via"}) || rows[0].Final != "merged" || rows[0].MergedAgo != "5m ago" {
+		t.Errorf("rows = %+v, want only via, merged 5m ago", rows)
+	}
+	var ids []string
+	for _, a := range left {
+		ids = append(ids, a.SessionID)
+	}
+	if !slices.Equal(ids, []string{"direct", "old", "gone"}) {
+		t.Errorf("roster = %v, want [direct old gone]", ids)
+	}
+	// Dismissing an adopted row sticks across the next poll's adopt.
+	if !l.dismiss("via") {
+		t.Fatal("adopted row not dismissable")
+	}
+	l.adopt(roster, ledgerNow.Add(time.Minute))
+	if _, rows := l.carryOver(roster, nil, ledgerNow.Add(time.Minute)); len(rows) != 0 {
+		t.Errorf("dismissed row re-adopted: %+v", rows)
+	}
+	if _, ok := l.snapshot("via"); ok {
+		t.Error("snapshot of a dismissed entry reported one")
+	}
+}
+
+// Through the real build, a waiting row whose PR merged through the queue
+// unseen lands in the ledger.
+func TestBuildDashboardDataAdoptsMergedViaQueue(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Now()
+	insertEvent(db, Event{TS: now.UTC().Format(time.RFC3339), SourceApp: "x", SessionID: "w", Cwd: "/w", EventType: "Stop", PayloadJSON: "{}"})
+	ci := newCICache(nil)
+	ci.m["/w"] = cwdEntry[ciResult]{val: ciResult{Done: "merged", ViaQueue: true, PRRepo: "o/r", PRNumber: 7}, at: now.Add(time.Hour)}
+	l, _ := testLedger(nil)
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "127.0.0.1:5555"
+	r.Host = "127.0.0.1:4555"
+	data, err := buildDashboardData(r, db, ci, &peekConfig{cache: newPaneCache()}, &actionConfig{ledger: l})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data.Agents) != 0 || !slices.Equal(ledgerIDs(data.LedgerRows), []string{"w"}) {
+		t.Errorf("roster %+v, ledger %v; want none and [w]", data.Agents, ledgerIDs(data.LedgerRows))
+	}
+}
+
 // Dismissing drops the entry, and reports whether there was one.
 func TestQueueLedgerDismiss(t *testing.T) {
 	l, _ := testLedger(nil)
