@@ -140,12 +140,8 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   fresh `agentRoster()` before writing the `blocks` row. `block-pr` is not
   exec-free (it may run `git`/`gh` to resolve the repo and check the PR), so it
   gets the full peer gate; the client sends only a session id and PR number, and
-  the repo is resolved server-side (see `blockPRAction`). `block-pane` is not
-  exec-free either (it runs `tmux list-panes` and `ps`), so it gets the full
-  peer gate; the client sends only a session id and a pane id, checked against
-  `paneIDRe` before anything runs, then `validatePaneBlock` (shared with
-  `block --on-pane`) re-checks it against a fresh roster and pane listing, and
-  `ps` only ever gets integer pids from that listing. `dismiss` is exec-free too and only
+  the repo is resolved server-side (see `blockPRAction`). `block-pane` execs
+  `tmux` and `ps`, so it gets the full peer gate too (see `blockPaneAction`). `dismiss` is exec-free too and only
   marks an in-memory `queueLedger` entry dismissed (404 for an unknown id). `rebase`, like
   `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
   never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full
