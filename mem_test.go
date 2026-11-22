@@ -73,16 +73,17 @@ func TestParsePS(t *testing.T) {
 
 // readPSProcs parses the table from ps, and a failing ps yields none.
 func TestReadPSProcs(t *testing.T) {
-	stub := writeStub(t, "ps", `[ "$*" = "-axo pid=,ppid=,rss=" ] || exit 2
+	usePS := func(script string) {
+		t.Setenv("PATH", filepath.Dir(writeStub(t, "ps", script))+string(os.PathListSeparator)+os.Getenv("PATH"))
+	}
+	usePS(`[ "$*" = "-axo pid=,ppid=,rss=" ] || exit 2
 echo "    1     0  1200"
 echo "  500     1 34567"`)
-	t.Setenv("PATH", filepath.Dir(stub)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	want := procTable{1: {ppid: 0, kb: 1200, hasKB: true}, 500: {ppid: 1, kb: 34567, hasKB: true}}
 	if got := readPSProcs(); !maps.Equal(got, want) {
 		t.Fatalf("readPSProcs = %v, want %v", got, want)
 	}
-	stub = writeStub(t, "ps", "exit 1")
-	t.Setenv("PATH", filepath.Dir(stub)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	usePS("exit 1")
 	if got := readPSProcs(); got != nil {
 		t.Errorf("failing ps = %v, want nil", got)
 	}

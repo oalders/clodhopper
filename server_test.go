@@ -107,7 +107,7 @@ func TestHandleDashboard_RosterBranchCopiesCwd(t *testing.T) {
 		SessionID: "sess-copy", EventType: "Stop", PayloadJSON: "{}"})
 
 	body := getBody(t, db, "/")
-	if !strings.Contains(body, "<h2>1 Agent (live") {
+	if !strings.Contains(body, agentHeading(1)) {
 		t.Fatalf("expected a roster row to render (nothing to assert on otherwise):\n%s", body)
 	}
 	if !strings.Contains(body, `class="copycwd"`) {
@@ -126,7 +126,7 @@ func TestHandleDashboard_RosterBranchWithoutCwd(t *testing.T) {
 		SessionID: "sess-nocwd", EventType: "Stop", PayloadJSON: "{}"})
 
 	body := getBody(t, db, "/")
-	if !strings.Contains(body, "<h2>1 Agent (live") {
+	if !strings.Contains(body, agentHeading(1)) {
 		t.Fatalf("expected a roster row to render:\n%s", body)
 	}
 	// The bare class name also appears in the page's CSS and JS, so match the
@@ -1629,8 +1629,13 @@ func TestDemotePendingCI(t *testing.T) {
 	}
 }
 
-// agentHeading is the roster heading's opening for n agents (plural form; 1 renders "Agent").
-func agentHeading(n int) string { return fmt.Sprintf("<h2>%d Agents (live", n) }
+// agentHeading is the roster heading's opening for n agents, singular for 1 as the template renders it.
+func agentHeading(n int) string {
+	if n == 1 {
+		return "<h2>1 Agent (live"
+	}
+	return fmt.Sprintf("<h2>%d Agents (live", n)
+}
 
 func getBody(t *testing.T, db *sql.DB, target string) string {
 	t.Helper()
