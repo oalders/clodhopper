@@ -32,13 +32,8 @@ func runBlock(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	kinds := 0
-	for _, set := range []bool{*onBranch != "" || *onSession != "", *onPR != 0, *onPane != ""} {
-		if set {
-			kinds++
-		}
-	}
-	if (*branch == "" && *session == "") || kinds != 1 || *onPR < 0 {
+	kinds := []bool{*onBranch != "" || *onSession != "", *onPR != 0, *onPane != ""}
+	if (*branch == "" && *session == "") || len(slices.DeleteFunc(kinds, func(set bool) bool { return !set })) != 1 || *onPR < 0 {
 		fmt.Fprintln(os.Stderr, "clodhopper block: need --branch or --session, and one of --on-branch/--on-session, a positive --on-pr or --on-pane")
 		return 2
 	}
@@ -125,11 +120,7 @@ func blockOnPane(db *sql.DB, blocked, target string) int {
 		fmt.Fprintf(os.Stderr, "clodhopper block: could not resolve tmux pane %q (is tmux reachable?)\n", target)
 		return 1
 	}
-	now := time.Now()
-	pid, why, err := validatePaneBlock(db, blocked, pane, now)
-	if err == nil && why == "" {
-		err = addPaneBlock(db, blocked, pane, pid, now)
-	}
+	why, err := recordPaneBlock(db, blocked, pane, time.Now())
 	switch {
 	case err != nil:
 		fmt.Fprintln(os.Stderr, "clodhopper block:", err)
@@ -142,11 +133,20 @@ func blockOnPane(db *sql.DB, blocked, target string) int {
 	return 0
 }
 
+// recordPaneBlock stores sessionID's block on pane if validatePaneBlock allows
+// it, else returns why not; err is a DB error. Shared by block-pane and `block --on-pane`.
+func recordPaneBlock(db *sql.DB, sessionID, pane string, now time.Time) (string, error) {
+	pid, why, err := validatePaneBlock(db, sessionID, pane, now)
+	if err != nil || why != "" {
+		return why, err
+	}
+	return "", addPaneBlock(db, sessionID, pane, pid, now)
+}
+
 // validatePaneBlock checks, against a fresh roster, pane listing and ps read,
 // that sessionID may be blocked on pane: the row is live with its own pane
 // listed and matched as dropDeadPanes would, and pane passes paneBlockRefusal.
 // It returns pane's root pid to store, or why it refuses; err is a DB error.
-// Shared by the block-pane action and `block --on-pane`.
 func validatePaneBlock(db *sql.DB, sessionID, pane string, now time.Time) (int, string, error) {
 	agents, err := agentRoster(db, time.Duration(waitingRetainHours())*time.Hour, staleShell(), now)
 	if err != nil {

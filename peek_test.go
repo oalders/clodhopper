@@ -177,22 +177,43 @@ func TestPaneLabel(t *testing.T) {
 // a messy real-world name compares equal to the row's recorded tmux_session, plus
 // its root pid (0 when unparseable), foreground command and path (last, so a
 // tab in it survives), and its session and window ids and window name (the index
-// when the name is empty).
+// when the name is empty). The stub's lines are paneFormat filled in, so the
+// parser is tied to the format's field order. A tab in a free-text field
+// cannot shift the fixed-format ones, and a line whose ids fail to validate is dropped.
 func TestListPanes(t *testing.T) {
 	dir := t.TempDir()
 	messy := "\ue0a0  fix-2482     Blog post [in progress]"
 	titled := "\U000f0868  fix-1288            \uf418 commerce don't forward"
-	script := "#!/bin/sh\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' '%1' '41' 'my-session' 'zsh' '$1' '@1' '0' 'build' '/src/a\tb' '%7' 'x' '" + messy + "' 'claude' '$2' '@2' '3' '' '/src/c' '%9' '43' \"" + titled + "\" 'nono' '$2' '@2' '3' '' '/src/d'\n"
+	line := func(id, pid, sid, wid, idx, name, cmd, win, path string) string {
+		return strings.NewReplacer("#{pane_id}", id, "#{pane_pid}", pid, "#{session_id}", sid, "#{window_id}", wid, "#{window_index}", idx,
+			"#{session_name}", name, "#{pane_current_command}", cmd, "#{window_name}", win, "#{pane_current_path}", path).Replace(paneFormat) + "\n"
+	}
+	listing := line("%1", "41", "$1", "@1", "0", "my-session", "zsh", "build", "/src/a\tb") +
+		line("%7", "x", "$2", "@2", "3", messy, "claude", "", "/src/c") +
+		line("%9", "43", "$2", "@2", "3", titled, "nono", "", "/src/d") +
+		line("%11", "44", "$3", "@5", "1", "evil\tname", "np\tm", "w", "/src/e") +
+		line("%12", "45", "not-an-id", "@6", "1", "s", "bash", "w", "/src/f") +
+		line("%13", "46", "$4", "@7", "x", "s", "bash", "w", "/src/g")
+	if err := os.WriteFile(filepath.Join(dir, "listing"), []byte(listing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Builtins only: PATH holds just this stub.
+	script := "#!/bin/sh\nwhile IFS= read -r l; do printf '%s\\n' \"$l\"; done < '" + filepath.Join(dir, "listing") + "'\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
+	got := listPanes()
+	if p := got["%11"]; p.pid != 44 || p.sessionID != "$3" || p.windowID != "@5" {
+		t.Errorf("tabbed free text: %%11 = %+v, want pid 44, $3, @5 intact", p)
+	}
+	delete(got, "%11")
 	want := map[string]livePane{
 		"%1": {session: "my-session", command: "zsh", path: "/src/a\tb", pid: 41, sessionID: "$1", windowID: "@1", window: "build"},
 		"%7": {session: tmuxSessionLabel(messy), command: "claude", path: "/src/c", sessionID: "$2", windowID: "@2", window: "3"},
 		"%9": {session: "fix-1288", title: "commerce don't forward", command: "nono", path: "/src/d", pid: 43, sessionID: "$2", windowID: "@2", window: "3"},
 	}
-	if got := listPanes(); !maps.Equal(got, want) {
+	if !maps.Equal(got, want) {
 		t.Fatalf("listPanes() = %+v, want %+v", got, want)
 	}
 	if want["%7"].session != "fix-2482 Blog post [in progress]" {
@@ -504,5 +525,25 @@ func TestPaneTpgids(t *testing.T) {
 		if busy, known := paneBusy(id, panes[id], got); busy != want[0] || known != want[1] {
 			t.Errorf("paneBusy(%s) = %v, %v; want %v, %v", id, busy, known, want[0], want[1])
 		}
+	}
+}
+
+// psTpgids runs ps once with a fixed argv whose only varying element is the
+// comma-joined integer pids, and none at all for no pids.
+func TestPsTpgidsArgv(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "argv")
+	ps := writeStub(t, "ps", `printf '[%s]' "$@" >> '`+log+`'; echo '  10  11'`)
+	t.Setenv("PATH", filepath.Dir(ps)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if got := psTpgids(nil); got != nil {
+		t.Errorf("psTpgids(nil) = %v, want nil", got)
+	}
+	if _, err := os.Stat(log); err == nil {
+		t.Error("ps ran for no pids")
+	}
+	if got := psTpgids([]int{10, 20}); !maps.Equal(got, map[int]int{10: 11}) {
+		t.Errorf("psTpgids = %v, want map[10:11]", got)
+	}
+	if argv, _ := os.ReadFile(log); string(argv) != "[-o][pid=,tpgid=][-p][10,20]" {
+		t.Errorf("ps argv = %s, want [-o][pid=,tpgid=][-p][10,20]", argv)
 	}
 }

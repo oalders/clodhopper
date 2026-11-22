@@ -2517,12 +2517,12 @@ func TestRunActionIgnoresPlantedFSMonitor(t *testing.T) {
 // beside it, an idle %3 and an unreadable %6 in window @2, b's own (busy) %5;
 // and a busy %4 in another session.
 var paneListing = strings.Join([]string{
-	"%1\t10\ts\tclaude\t$1\t@1\t1\tmain\t/w/a",
-	"%2\t20\ts\tnpm\t$1\t@1\t1\tmain\t/w/a",
-	"%3\t30\ts\tbash\t$1\t@2\t2\tlogs\t/w/a",
-	"%4\t40\tother\tnpm\t$2\t@3\t1\tmain\t/w/o",
-	"%5\t50\ts\tclaude\t$1\t@4\t3\tb\t/w/b",
-	"%6\t60\ts\tbash\t$1\t@2\t2\tlogs\t/w/a",
+	"%1\t10\t$1\t@1\t1\ts\tclaude\tmain\t/w/a",
+	"%2\t20\t$1\t@1\t1\ts\tnpm\tmain\t/w/a",
+	"%3\t30\t$1\t@2\t2\ts\tbash\tlogs\t/w/a",
+	"%4\t40\t$2\t@3\t1\tother\tnpm\tmain\t/w/o",
+	"%5\t50\t$1\t@4\t3\ts\tclaude\tb\t/w/b",
+	"%6\t60\t$1\t@2\t2\ts\tbash\tlogs\t/w/a",
 }, "\n") + "\n"
 
 // stubPanes puts a fake tmux on PATH that lists paneListing (nothing when
@@ -2590,6 +2590,7 @@ func TestHandleActionBlockPane(t *testing.T) {
 		t.Errorf("LAN peer: %d, want 403", code)
 	}
 	for name, c := range map[string]struct{ sess, pane, want string }{
+		"empty":         {"a", "", "not a tmux pane id"},
 		"not a pane id": {"a", "2", "not a tmux pane id"},
 		"a tmux target": {"a", "s:1.1", "not a tmux pane id"},
 		"not live":      {"z", "%2", "the row must be live on the roster"},

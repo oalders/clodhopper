@@ -1365,15 +1365,12 @@ func blockPRAction(db *sql.DB, cfg *actionConfig, sessionID, blockerPR string, n
 }
 
 // blockPaneAction records that sessionID is blocked on tmux pane pane, which
-// must be a pane id and pass validatePaneBlock against a fresh listing.
+// must be a pane id and pass recordPaneBlock's checks against a fresh listing.
 func blockPaneAction(db *sql.DB, sessionID, pane string, now time.Time) actionResult {
 	if !paneIDRe.MatchString(pane) {
 		return actionResult{ExitCode: -1, Output: "not a tmux pane id"}
 	}
-	pid, why, err := validatePaneBlock(db, sessionID, pane, now)
-	if err == nil && why == "" {
-		err = addPaneBlock(db, sessionID, pane, pid, now)
-	}
+	why, err := recordPaneBlock(db, sessionID, pane, now)
 	switch {
 	case err != nil:
 		debugf("action: block-pane %s: %v", sessionID, err)

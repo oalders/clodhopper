@@ -1268,7 +1268,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	// setAndForget reads statusBlocked. PR then pane blocks last: an earlier chip wins.
 	applyBlocks(agents, blocks)
 	applyPRBlocks(agents, prBlocks, finals, openPRs, now)
-	applyPaneBlocks(agents, paneBlocks, peek.cache, now)
+	applyPaneBlocks(agents, paneBlocks, peek.cache, execOK, now)
 	// Before the split, so queued, ledgered and roster rows all keep their peek.
 	if peek.enabled {
 		for i := range agents {
@@ -1785,25 +1785,29 @@ func setBlockPRs(agents []Agent, repos *cwdCache[string], open *cwdCache[[]openP
 // while its pane is listed with the stored root pid and busy (see paneBusy),
 // and also while that cannot be read (an empty listing, ps failing, no tpgid),
 // as applyPRBlocks keeps a block on a failed lookup. It lapses once the pane is
-// missing from a non-empty listing, has another pid, or is seen at its shell.
+// missing from a non-empty listing, has another pid, or is seen at its shell,
+// by a reading taken no earlier than the block (the memo may predate its job).
 // A lapse is permanent for that stored block (cache.lapses), so the row goes
 // back to "waiting for you" and a later command in the pane cannot revive it;
 // a per-job fingerprint would not do, since bash and zsh give each step of
 // `a && b` and each command of a typed loop its own process group. Known gaps:
 // lapses live in memory, so a serve restart, or a shell gap shorter than one
 // poll, lets a later job hold the row again until the chip's ✕ clears it. An
-// earlier session or PR block keeps the chip. The pane listing and ps run
-// only when a shown row has a pane block.
-func applyPaneBlocks(agents []Agent, blocks []PaneBlock, cache *paneCache, now time.Time) {
+// earlier session or PR block keeps the chip. Only blocks on rows of agents are
+// judged, so one on a row off the roster is not (one on a row a filter hides
+// is, as filterRows runs later). This calls ps only when such a block has not
+// lapsed; setBlockPanes may call it anyway for an exec peer's picker. The chip
+// names the window and command only when named (an exec peer); else "pane %N".
+func applyPaneBlocks(agents []Agent, blocks []PaneBlock, cache *paneCache, named bool, now time.Time) {
 	idx := make(map[string]int, len(agents))
 	for i, a := range agents {
 		idx[a.SessionID] = i
 	}
-	lapsed := cache.lapses(blocks, nil)
+	lapsed := cache.lapses(blocks)
 	if !slices.ContainsFunc(blocks, func(b PaneBlock) bool { _, ok := idx[b.Blocked]; return ok && !lapsed[b] }) {
 		return
 	}
-	panes, fg := cache.panes(now), cache.foreground(now)
+	panes, fg, asOf := cache.reading(now)
 	var newly []PaneBlock
 	for _, b := range blocks {
 		i, ok := idx[b.Blocked]
@@ -1812,7 +1816,8 @@ func applyPaneBlocks(agents []Agent, blocks []PaneBlock, cache *paneCache, now t
 		}
 		p, listed := panes[b.Pane]
 		busy, known := paneBusy(b.Pane, p, fg)
-		if (!listed && len(panes) > 0) || (listed && p.pid != b.PanePID) || (known && !busy) {
+		ts, _ := time.Parse(time.RFC3339Nano, b.TS) // unparseable: zero, so any reading counts
+		if !asOf.Before(ts) && ((!listed && len(panes) > 0) || (listed && p.pid != b.PanePID) || (known && !busy)) {
 			newly = append(newly, b)
 			continue
 		}
@@ -1821,14 +1826,12 @@ func applyPaneBlocks(agents []Agent, blocks []PaneBlock, cache *paneCache, now t
 			continue
 		}
 		label := "pane " + b.Pane
-		if listed {
+		if named && listed {
 			label = paneBlockLabel(panes[agents[i].TmuxPane], p)
 		}
 		agents[i].BlockedOn, agents[i].BlockedOnPane = label, b.Pane
 	}
-	if len(newly) > 0 {
-		cache.lapses(blocks, newly)
-	}
+	cache.lapse(newly)
 }
 
 // blockPane is one block-picker pane option.

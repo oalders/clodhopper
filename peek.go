@@ -163,23 +163,51 @@ func (c *paneCache) foreground(now time.Time) map[string]int {
 	return f.m
 }
 
-// lapses records the newly lapsed pane blocks, forgets those no longer in
-// stored (a re-block's new ts is a new key, and this bounds the set), and
-// returns every lapsed one still stored. A nil cache remembers none.
-func (c *paneCache) lapses(stored, lapsed []PaneBlock) map[PaneBlock]bool {
+// reading returns the pane listing and foreground groups, and when the older
+// of the two was taken, so applyPaneBlocks can ignore a reading that predates a
+// block. A nil cache returns nothing, at the zero time.
+func (c *paneCache) reading(now time.Time) (map[string]livePane, map[string]int, time.Time) {
+	if c == nil {
+		return nil, nil, time.Time{}
+	}
+	fg := c.foreground(now)
+	c.fg.mu.Lock()
+	fgAt := c.fg.at
+	c.fg.mu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.at.Before(fgAt) {
+		return c.set, fg, c.at
+	}
+	return c.set, fg, fgAt
+}
+
+// lapses forgets the lapsed pane blocks no longer in stored (a re-block's new
+// ts is a new key, and this bounds the set) and returns the rest. A nil cache
+// remembers none.
+func (c *paneCache) lapses(stored []PaneBlock) map[PaneBlock]bool {
 	if c == nil {
 		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	maps.DeleteFunc(c.lapsed, func(b PaneBlock, _ bool) bool { return !slices.Contains(stored, b) })
+	return maps.Clone(c.lapsed)
+}
+
+// lapse records pane blocks applyPaneBlocks saw lapse.
+func (c *paneCache) lapse(bs []PaneBlock) {
+	if c == nil || len(bs) == 0 {
+		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.lapsed == nil {
 		c.lapsed = map[PaneBlock]bool{}
 	}
-	for _, b := range lapsed {
+	for _, b := range bs {
 		c.lapsed[b] = true
 	}
-	maps.DeleteFunc(c.lapsed, func(b PaneBlock, _ bool) bool { return !slices.Contains(stored, b) })
-	return maps.Clone(c.lapsed)
 }
 
 // paneBusy reports whether pane id (p) runs a job: its foreground process
@@ -247,6 +275,14 @@ func parseTpgids(out []byte) map[int]int {
 	return m
 }
 
+// paneFormat is listPanes' -F: fixed-format fields, then free text, path last.
+const paneFormat = "#{pane_id}\t#{pane_pid}\t#{session_id}\t#{window_id}\t#{window_index}\t#{session_name}\t#{pane_current_command}\t#{window_name}\t#{pane_current_path}"
+
+var (
+	windowIDRe = regexp.MustCompile(`^@\d+$`)
+	digitsRe   = regexp.MustCompile(`^\d+$`)
+)
+
 // listPanes returns every live tmux pane id across all sessions, mapped to its
 // session name (normalised exactly as ingest stores tmux_session), foreground
 // command, current path and root pid, or an empty map if tmux is missing, unreachable
@@ -258,18 +294,21 @@ func listPanes() map[string]livePane {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}\t#{session_name}\t#{pane_current_command}\t#{session_id}\t#{window_id}\t#{window_index}\t#{window_name}\t#{pane_current_path}").Output()
+	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", paneFormat).Output()
 	if err != nil {
 		return set
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		// Path last, and SplitN, so a tab inside it cannot shift the other fields.
-		if f := strings.SplitN(line, "\t", 9); len(f) == 9 {
-			pid, _ := strconv.Atoi(f[1])
-			set[f[0]] = livePane{
-				session: tmuxSessionLabel(f[2]), title: paneTitle(f[2]), command: f[3], path: f[8], pid: pid,
-				sessionID: f[4], windowID: f[5], window: cmp.Or(truncate(scrubString(f[7]), maxFieldLen), f[6]),
-			}
+		// The fixed-format fields come first and must validate, so a tab in a
+		// free-text one cannot shift them; path is last, so one in it survives.
+		f := strings.SplitN(line, "\t", 9)
+		if len(f) != 9 || !paneIDRe.MatchString(f[0]) || !tmuxSessionIDRe.MatchString(f[2]) || !windowIDRe.MatchString(f[3]) || !digitsRe.MatchString(f[4]) {
+			continue
+		}
+		pid, _ := strconv.Atoi(f[1])
+		set[f[0]] = livePane{
+			session: tmuxSessionLabel(f[5]), title: paneTitle(f[5]), command: f[6], path: f[8], pid: pid,
+			sessionID: f[2], windowID: f[3], window: cmp.Or(truncate(scrubString(f[7]), maxFieldLen), f[4]),
 		}
 	}
 	return set

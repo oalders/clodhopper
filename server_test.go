@@ -5313,7 +5313,7 @@ func TestApplyPaneBlocks(t *testing.T) {
 	}
 	cache := primedPanes(panes, fg, now)
 	agents := fresh()
-	applyPaneBlocks(agents, blocks, cache, now)
+	applyPaneBlocks(agents, blocks, cache, true, now)
 	got := byID(agents)
 	for id, label := range map[string]string{"same": "same window · npm", "other": "window build · python", "unread": "window build · bash"} {
 		if a := got[id]; a.Status != statusBlocked || a.StatusRank != rankBackground || a.BlockedOn != label || a.BlockedOnPane != blocks[slices.IndexFunc(blocks, func(b PaneBlock) bool { return b.Blocked == id })].Pane {
@@ -5332,21 +5332,53 @@ func TestApplyPaneBlocks(t *testing.T) {
 	// A lapse is permanent: %4 busy again does not revive its block, but a re-block (new ts) holds.
 	fg["%4"] = 41
 	agents = fresh()
-	applyPaneBlocks(agents, append(slices.Clone(blocks), PaneBlock{"reblocked", "%4", 40, "t2"}), cache, now)
+	applyPaneBlocks(agents, append(slices.Clone(blocks), PaneBlock{"reblocked", "%4", 40, "t2"}), cache, true, now)
 	if a := byID(agents)["idle"]; a.BlockedOn != "" {
 		t.Errorf("idle after %%4 went busy = %+v, want the lapse kept", a)
 	}
 	agents = append(fresh(), Agent{SessionID: "reblocked", TmuxPane: "%1", Status: statusWaiting})
-	applyPaneBlocks(agents, []PaneBlock{{"reblocked", "%4", 40, "t2"}}, cache, now)
+	applyPaneBlocks(agents, []PaneBlock{{"reblocked", "%4", 40, "t2"}}, cache, true, now)
 	if a := byID(agents)["reblocked"]; a.BlockedOn != "window build · bash" {
 		t.Errorf("reblocked = %+v, want blocked", a)
 	}
 
 	// An empty listing (tmux unreachable) is no evidence: a block holds, on a bare label.
 	agents = []Agent{{SessionID: "x", TmuxPane: "%1", Status: statusWaiting}}
-	applyPaneBlocks(agents, []PaneBlock{{"x", "%2", 20, "t"}}, primedPanes(map[string]livePane{}, nil, now), now)
+	applyPaneBlocks(agents, []PaneBlock{{"x", "%2", 20, "t"}}, primedPanes(map[string]livePane{}, nil, now), true, now)
 	if a := agents[0]; a.Status != statusBlocked || a.BlockedOn != "pane %2" || a.BlockedOnPane != "%2" {
 		t.Errorf("tmux down: %+v, want blocked on a bare pane label", a)
+	}
+
+	// A read-only peer's chip names only the pane, never its window or command.
+	agents = []Agent{{SessionID: "same", TmuxPane: "%1", Status: statusWaiting}}
+	applyPaneBlocks(agents, blocks[:1], cache, false, now)
+	if a := agents[0]; a.Status != statusBlocked || a.BlockedOn != "pane %2" {
+		t.Errorf("read-only peer: %+v, want blocked on \"pane %%2\"", a)
+	}
+}
+
+// The pane memo may predate a block (and its job), so a reading, listing or
+// ps, taken before the block's ts cannot lapse it; one taken at or after can.
+func TestApplyPaneBlocksIgnoresReadingBeforeBlock(t *testing.T) {
+	now := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
+	before, after := now.Add(-2*time.Second), now.Add(time.Second)
+	panes := map[string]livePane{"%1": {pid: 10, sessionID: "$1"}, "%2": {pid: 20, sessionID: "$1"}}
+	idle := map[string]int{"%1": 11, "%2": 20}
+	b := PaneBlock{"a", "%2", 20, now.Format(time.RFC3339Nano)}
+	for name, c := range map[string]struct {
+		cache     *paneCache
+		at        time.Time
+		wantLapse bool
+	}{
+		"stale ps says idle":           {&paneCache{set: panes, at: now, fg: paneFG{m: idle, at: before}}, now, false},
+		"stale listing lacks the pane": {&paneCache{set: map[string]livePane{"%1": panes["%1"]}, at: before, fg: paneFG{m: idle, at: now}}, now, false},
+		"fresh ps says idle":           {primedPanes(panes, idle, after), after, true},
+	} {
+		agents := []Agent{{SessionID: "a", TmuxPane: "%1", Status: statusWaiting}}
+		applyPaneBlocks(agents, []PaneBlock{b}, c.cache, true, c.at)
+		if held := agents[0].Status == statusBlocked; held == c.wantLapse || c.cache.lapsed[b] != c.wantLapse {
+			t.Errorf("%s: %+v, lapsed = %v; want lapse %v", name, agents[0], c.cache.lapsed[b], c.wantLapse)
+		}
 	}
 }
 
@@ -5359,7 +5391,7 @@ func TestApplyPaneBlocksLazy(t *testing.T) {
 	readTpgids = func([]int) map[int]int { calls++; return nil }
 	t.Cleanup(func() { readTpgids = old })
 	cache := newPaneCache()
-	applyPaneBlocks([]Agent{{SessionID: "a"}}, []PaneBlock{{"off-roster", "%2", 20, "t"}}, cache, now)
+	applyPaneBlocks([]Agent{{SessionID: "a"}}, []PaneBlock{{"off-roster", "%2", 20, "t"}}, cache, true, now)
 	if cache.set != nil || calls != 0 {
 		t.Errorf("listed = %v, ps calls = %d; want neither", cache.set != nil, calls)
 	}
@@ -5453,5 +5485,9 @@ func TestViewSignature_TracksBlockPanes(t *testing.T) {
 		if viewSignature(base) == viewSignature(d) {
 			t.Errorf("%s: signature unchanged", name)
 		}
+	}
+	// sameWindow only orders the options, so it alone must not repaint.
+	if viewSignature(base) != viewSignature(vary(func(a *Agent) { a.BlockPanes[0].sameWindow = true })) {
+		t.Error("sameWindow: signature changed")
 	}
 }

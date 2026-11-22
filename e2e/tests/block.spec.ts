@@ -311,7 +311,7 @@ test('a pane block relaxes its lone row and its chip names the pane, with no jum
   await expect(page.locator(`#row-${paneBlocked}`)).not.toHaveClass(/\bnested\b/);
   const label = page.locator(`${paneChip} .blockpane`);
   await expect(label).toHaveText('window build · npm');
-  await expect(label).toHaveAttribute('title', 'blocked on tmux pane %9005 while it runs a command');
+  await expect(label).toHaveAttribute('title', /tmux pane %9005\b/);
   await expect(page.locator(paneChip).locator('.blockjump')).toHaveCount(0);
 });
 
@@ -331,11 +331,30 @@ test('the row panel blocks on a picked busy pane of its tmux session', async ({ 
   await page.locator(`#content button.actbtn[data-actions="${needs}"]`).click();
   const form = page.locator(panel(needs));
   // Only %9005: the other "seeded" panes are roster rows' own, and %9003 is in another session.
-  await expect(form.locator('optgroup[label="panes"] option')).toHaveCount(1);
+  await expect(form.locator('optgroup[label="tmux panes"] option')).toHaveCount(1);
   await expect(form.locator('option[value="pane:%9005"]')).toHaveText('window build · npm');
+  await expect(form.locator('option[value="pane:%9005"]')).toHaveAttribute('title', 'window build · npm');
   await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption('pane:%9005');
   await form.getByRole('button', { name: 'mark main as blocked on the selected row' }).click();
   await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');
   expect(posts).toHaveLength(1);
   expect(posts[0].postData()).toBe(`session_id=${needs}&action=block-pane&blocker_pane=%259005`);
+});
+
+test('a row alone on the board still gets the picker when its tmux session has a busy pane', async ({ page }) => {
+  const posts = await stubAction(page);
+  // The filter leaves pane-wait the only row, with no queued row and no open PRs: only its panes can offer a blocker.
+  await page.goto('/?branch=pane-wait');
+  await page.evaluate(() => { (window as unknown as { __ckActionBusy: number }).__ckActionBusy = 1; });
+  await expect(page.locator('#content table.roster > tbody > tr[data-group]')).toHaveCount(1);
+  await expect(page.locator(`${paneChip} .blockpane`)).toBeVisible();
+  await page.locator(`#content button.actbtn[data-actions="${paneBlocked}"]`).click();
+  const form = page.locator(panel(paneBlocked));
+  await expect(form.locator('optgroup')).toHaveCount(1);
+  await expect(form.locator('optgroup[label="tmux panes"] option[value="pane:%9005"]')).toHaveText('window build · npm');
+  await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption('pane:%9005');
+  await form.getByRole('button', { name: 'mark pane-wait as blocked on the selected row' }).click();
+  await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');
+  expect(posts).toHaveLength(1);
+  expect(posts[0].postData()).toBe(`session_id=${paneBlocked}&action=block-pane&blocker_pane=%259005`);
 });
