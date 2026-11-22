@@ -210,3 +210,29 @@ func TestScrubPayload_ToolInputTaskIDMustBeIDShaped(t *testing.T) {
 		}
 	}
 }
+
+// A subagent that ends its turn with background work still running sends an
+// interim notification; only that marker is kept, as a bool, never the text.
+func TestScrubPayload_ParkedSubagentNotification(t *testing.T) {
+	head := `<task-notification>\n<task-id>a39a6b9515678e114</task-id>\n<output-file>/x/tasks/a39a6b9515678e114.output</output-file>\n<status>completed</status>\n`
+	for _, c := range []struct {
+		name, prompt string
+		want         bool
+	}{
+		{"parked", head + `<summary>Agent \"Shepherd rebase repair\" is waiting on its own background work</summary>\n<result>private result</result>`, true},
+		{"finished", head + `<summary>Agent \"Shepherd rebase repair\" finished</summary>\n<result>private result</result>`, false},
+		{"stopped", head + `<summary>Agent \"Shepherd rebase repair\" was stopped by the user</summary>`, false},
+		{"phrase only in the result", head + `<summary>Agent \"x\" finished</summary>\n<result>private result: Agent \"y\" is waiting on its own background work</result>`, false},
+		{"not a notification", `please read <task-notification><summary>Agent \"x\" is waiting on its own background work</summary>`, false},
+	} {
+		out := scrubPayload([]byte(`{"hook_event_name":"UserPromptSubmit","prompt":"` + c.prompt + `"}`))
+		mustNotContain(t, out, "private result", "Shepherd", "waiting on its own")
+		var p map[string]any
+		if err := json.Unmarshal([]byte(out), &p); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if got, _ := p["task_notification_parked"].(bool); got != c.want {
+			t.Errorf("%s: task_notification_parked = %v, want %v (payload %s)", c.name, got, c.want, out)
+		}
+	}
+}

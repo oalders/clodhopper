@@ -78,6 +78,15 @@ var toolInputAllow = map[string]bool{
 // a user merely quoting the markup is not read as a notification.
 var taskNotificationRe = regexp.MustCompile(`^\s*<task-notification>\s*<task-id>([A-Za-z0-9_-]{1,64})</task-id>`)
 
+// parkedNotificationRe matches a task notification whose summary says the
+// subagent ended its turn with background work of its own still running: an
+// interim reply, so the subagent is parked, not finished. Only the fixed header
+// tags may precede the summary, so the phrase quoted in a free-text <result>
+// (which follows it) never matches. Only the resulting bool is stored.
+var parkedNotificationRe = regexp.MustCompile(`^\s*<task-notification>\s*<task-id>[A-Za-z0-9_-]{1,64}</task-id>` +
+	`(?:\s*<(?:tool-use-id|output-file|status)>[^<]*</(?:tool-use-id|output-file|status)>)*` +
+	`\s*<summary>Agent "[^<\n]*" is waiting on its own background work</summary>`)
+
 // taskIDRe bounds a background-task id ("bmrjj0byy") lifted out of a field we
 // otherwise drop; anything else is refused rather than stored.
 var taskIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -190,6 +199,9 @@ func scrubPayload(raw []byte) string {
 	if prompt, ok := p["prompt"].(string); ok {
 		if m := taskNotificationRe.FindStringSubmatch(prompt); m != nil {
 			out["task_notification_id"] = m[1]
+			if parkedNotificationRe.MatchString(prompt) {
+				out["task_notification_parked"] = true
+			}
 		}
 	}
 	b, err := json.Marshal(out)

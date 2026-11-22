@@ -1119,6 +1119,95 @@ func TestAgentRoster_SubagentShells(t *testing.T) {
 	}
 }
 
+// A subagent that stops with background work of its own still running sends
+// the main agent an interim ("parked") notification. It is still running, so
+// the session is waiting on it, not on the user, until its final notification,
+// however long it stays quiet and however its shells were tracked.
+func TestAgentRoster_ParkedSubagent(t *testing.T) {
+	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	now := time.Date(2026, 11, 22, 18, 46, 0, 0, time.UTC)
+	at := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339) }
+	ins := func(ts, sess, etype, tool, payload string) {
+		insertEvent(db, Event{TS: ts, SourceApp: "myapp", Branch: "fix-2687", SessionID: sess, EventType: etype, ToolName: tool, PayloadJSON: payload})
+	}
+	sub := func(ts, sess, etype string) { ins(ts, sess, etype, "", `{"agent_id":"a1"}`) }
+	notify := func(ts, sess string, parked bool) {
+		p := `{"task_notification_id":"a1"}`
+		if parked {
+			p = `{"task_notification_id":"a1","task_notification_parked":true}`
+		}
+		ins(ts, sess, "UserPromptSubmit", "", p)
+	}
+	stop := func(ts, sess string) { ins(ts, sess, "Stop", "", "{}") }
+	// park: the subagent starts, launches a shell, and stops past
+	// subagentLaunchGrace (so its shell is dropped), then reports parked.
+	park := func(sess string, startAgo time.Duration) {
+		sub(at(startAgo), sess, "SubagentStart")
+		ins(at(startAgo-time.Minute), sess, "PostToolUse", "Bash", `{"agent_id":"a1","background_task_id":"b1"}`)
+		sub(at(startAgo-2*time.Minute), sess, "SubagentStop")
+		notify(at(startAgo-2*time.Minute), sess, true)
+		stop(at(startAgo-2*time.Minute), sess)
+	}
+
+	park("s-parked", 10*time.Minute)
+	// Parked hours ago and silent since: no freshness timeout applies.
+	park("s-quiet", 3*time.Hour)
+	// Woken, checks on its work, and parks again (the fix-2687 incident).
+	park("s-reparked", 10*time.Minute)
+	sub(at(5*time.Minute), "s-reparked", "SubagentStart")
+	sub(at(5*time.Minute-time.Second), "s-reparked", "PreToolUse")
+	sub(at(4*time.Minute), "s-reparked", "SubagentStop")
+	notify(at(4*time.Minute), "s-reparked", true)
+	stop(at(4*time.Minute), "s-reparked")
+	// Woken and finished: the final notification releases the session.
+	park("s-finished", 10*time.Minute)
+	sub(at(5*time.Minute), "s-finished", "SubagentStart")
+	sub(at(4*time.Minute), "s-finished", "SubagentStop")
+	notify(at(4*time.Minute), "s-finished", false)
+	stop(at(4*time.Minute), "s-finished")
+	// A restart kills the subagent with the session.
+	park("s-restarted", 10*time.Minute)
+	ins(at(4*time.Minute), "s-restarted", "SessionStart", "", `{"source":"resume"}`)
+	stop(at(3*time.Minute), "s-restarted")
+	// Resumed and running again: counted once, not as both live and parked.
+	park("s-resumed", 10*time.Minute)
+	sub(at(time.Minute), "s-resumed", "SubagentStart")
+
+	agents, err := agentRoster(db, 16*time.Hour, 0, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]Agent{}
+	for _, a := range agents {
+		got[a.SessionID] = a
+	}
+	for sess, want := range map[string]struct {
+		status    string
+		subagents int
+		since     time.Duration // ago; 0 = not checked
+	}{
+		"s-parked":    {statusSubagents, 1, 10 * time.Minute},
+		"s-quiet":     {statusSubagents, 1, 3 * time.Hour},
+		"s-reparked":  {statusSubagents, 1, 10 * time.Minute},
+		"s-finished":  {statusWaiting, 0, 0},
+		"s-restarted": {statusWaiting, 0, 0},
+		"s-resumed":   {statusSubagents, 1, 10 * time.Minute},
+	} {
+		a := got[sess]
+		if a.Status != want.status || a.Subagents != want.subagents {
+			t.Errorf("%s: want %q with %d subagents, got %q with %d", sess, want.status, want.subagents, a.Status, a.Subagents)
+		}
+		if want.since != 0 && a.SubagentSince != now.Add(-want.since).Unix() {
+			t.Errorf("%s: SubagentSince %d, want %d", sess, a.SubagentSince, now.Add(-want.since).Unix())
+		}
+	}
+}
+
 func TestAgentRoster_StaleWorkingBecomesIdle(t *testing.T) {
 	db, err := openDB(filepath.Join(t.TempDir(), "events.db"))
 	if err != nil {
