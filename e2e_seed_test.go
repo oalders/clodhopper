@@ -66,6 +66,7 @@ func TestE2ESeed(t *testing.T) {
 		queueBlockedSess = "e2e-queueblocked-0000-1111-2222-333333333333"
 		queuedSess       = "e2e-queued-0000-1111-2222-333333333333"
 		blockedAskSess   = "e2e-blockedask-0000-1111-2222-333333333333"
+		paneBlockedSess  = "e2e-paneblocked-0000-1111-2222-333333333333"
 	)
 	sub := "e2e-subagents-0000-1111-2222-333333333333"
 	for i := range 12 {
@@ -100,6 +101,8 @@ func TestE2ESeed(t *testing.T) {
 	add(35*time.Minute, appB, "fix-1236", "worktree-blocked-on-queue", queueBlockedSess, "Stop", "", "")
 	// block.spec.ts: on a permission prompt while blocked on fix-1235, so it nests there and still alerts.
 	add(45*time.Minute, appB, "fix-2537", "worktree-blocked-ask", blockedAskSess, "PermissionRequest", "Bash", "")
+	// block.spec.ts: blocked on serve.sh's busy non-roster pane %9005, so its chip names no row.
+	add(50*time.Minute, appA, "pane-wait", "worktree-pane-wait", paneBlockedSess, "Stop", "", "")
 
 	// Merge-queue rows for queue.spec.ts: e2e/serve.sh creates these dirs under
 	// CLODHOPPER_E2E_REPOS, and its stub gh reports two queued, one ejected, one
@@ -125,13 +128,14 @@ func TestE2ESeed(t *testing.T) {
 		})
 	}
 
-	// Peek-able rows for swap.spec.ts, the queued one included: e2e/serve.sh's stub tmux lists exactly these pane ids.
+	// Peek-able rows for swap.spec.ts, the queued one included, and the pane-blocked row: e2e/serve.sh's stub tmux lists exactly these pane ids, plus block.spec.ts's non-roster %9005.
 	panes := map[string]string{
 		"e2e-waiting-0000-1111-2222-333333333333": "%9001",
 		"e2e-twin-0000-1111-2222-333333333333":    "%9001",
 		"e2e-needs-0000-1111-2222-333333333333":   "%9002",
 		"e2e-queued-0000-1111-2222-333333333333":  "%9003",
 		"e2e-landing-0000-1111-2222-333333333333": "%9004", // its tear down button needs a live pane (ledger.spec.ts)
+		paneBlockedSess: "%9006",
 	}
 	for _, ev := range evs {
 		ev.TmuxPane = panes[ev.SessionID]
@@ -152,6 +156,10 @@ func TestE2ESeed(t *testing.T) {
 		if err := addBlock(db, b.Blocked, b.Blocker, live, now); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// pane-wait's block, with %9005's pid as serve.sh's stub tmux lists it.
+	if err := addPaneBlock(db, paneBlockedSess, "%9005", 4194305, now); err != nil {
+		t.Fatal(err)
 	}
 	// block.spec.ts: draft-conflict waits on PR #101 of its (stub) GitHub repo, which serve.sh's gh reports open.
 	if repos := os.Getenv("CLODHOPPER_E2E_REPOS"); repos != "" {

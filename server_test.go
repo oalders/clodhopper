@@ -5268,3 +5268,190 @@ esac`)
 		t.Errorf("gh api graphql ran in %q, want the process cwd %q", gotDir, wantDir)
 	}
 }
+
+// primedPanes is a paneCache already holding panes and their foreground
+// groups at now, so a test runs neither tmux nor ps.
+func primedPanes(panes map[string]livePane, fg map[string]int, now time.Time) *paneCache {
+	return &paneCache{set: panes, at: now, fg: paneFG{m: fg, at: now}}
+}
+
+// A pane block holds while its pane is listed with the stored pid and busy, or
+// cannot be checked; it lapses for good once the pane is idle, gone from a
+// non-empty listing or holds another process, until a re-block.
+func TestApplyPaneBlocks(t *testing.T) {
+	now := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
+	panes := map[string]livePane{
+		"%1": {pid: 10, sessionID: "$1", windowID: "@1", window: "1", command: "claude"},
+		"%2": {pid: 20, sessionID: "$1", windowID: "@1", window: "1", command: "npm"},
+		"%3": {pid: 30, sessionID: "$1", windowID: "@2", window: "build", command: "python"},
+		"%4": {pid: 40, sessionID: "$1", windowID: "@2", window: "build", command: "bash"},
+		"%5": {pid: 50, sessionID: "$1", windowID: "@2", window: "build", command: "bash"},
+		"%6": {pid: 60, sessionID: "$1", windowID: "@2", window: "build", command: "bash"},
+	}
+	fg := map[string]int{"%2": 21, "%3": 31, "%4": 40, "%5": 51}
+	blocks := []PaneBlock{
+		{"same", "%2", 20, "t"}, {"other", "%3", 30, "t"}, {"idle", "%4", 40, "t"}, {"reused", "%5", 55, "t"},
+		{"unread", "%6", 60, "t"}, {"gone", "%9", 90, "t"}, {"both", "%2", 20, "t"},
+	}
+	fresh := func() []Agent {
+		return []Agent{
+			{SessionID: "same", TmuxPane: "%1", Status: statusWaiting},
+			{SessionID: "other", TmuxPane: "%1", Status: statusNeedsYou, StatusRank: 1},
+			{SessionID: "idle", TmuxPane: "%1", Status: statusWaiting},
+			{SessionID: "reused", TmuxPane: "%1", Status: statusWaiting},
+			{SessionID: "unread", TmuxPane: "%1", Status: statusWaiting},
+			{SessionID: "gone", TmuxPane: "%1", Status: statusWaiting},
+			{SessionID: "both", TmuxPane: "%1", Status: statusBlocked, StatusRank: rankBackground, BlockedOn: "fix-1", BlockedOnSession: "x"},
+		}
+	}
+	byID := func(agents []Agent) map[string]Agent {
+		m := map[string]Agent{}
+		for _, a := range agents {
+			m[a.SessionID] = a
+		}
+		return m
+	}
+	cache := primedPanes(panes, fg, now)
+	agents := fresh()
+	applyPaneBlocks(agents, blocks, cache, now)
+	got := byID(agents)
+	for id, label := range map[string]string{"same": "same window · npm", "other": "window build · python", "unread": "window build · bash"} {
+		if a := got[id]; a.Status != statusBlocked || a.StatusRank != rankBackground || a.BlockedOn != label || a.BlockedOnPane != blocks[slices.IndexFunc(blocks, func(b PaneBlock) bool { return b.Blocked == id })].Pane {
+			t.Errorf("%s = %+v, want blocked on %q", id, a, label)
+		}
+	}
+	for _, id := range []string{"idle", "reused", "gone"} {
+		if a := got[id]; a.Status != statusWaiting || a.BlockedOn != "" || a.BlockedOnPane != "" {
+			t.Errorf("%s = %+v, want the block lapsed", id, a)
+		}
+	}
+	if a := got["both"]; a.BlockedOn != "fix-1" || a.BlockedOnPane != "" {
+		t.Errorf("both = %+v, want the session block's chip", a)
+	}
+
+	// A lapse is permanent: %4 busy again does not revive its block, but a re-block (new ts) holds.
+	fg["%4"] = 41
+	agents = fresh()
+	applyPaneBlocks(agents, append(slices.Clone(blocks), PaneBlock{"reblocked", "%4", 40, "t2"}), cache, now)
+	if a := byID(agents)["idle"]; a.BlockedOn != "" {
+		t.Errorf("idle after %%4 went busy = %+v, want the lapse kept", a)
+	}
+	agents = append(fresh(), Agent{SessionID: "reblocked", TmuxPane: "%1", Status: statusWaiting})
+	applyPaneBlocks(agents, []PaneBlock{{"reblocked", "%4", 40, "t2"}}, cache, now)
+	if a := byID(agents)["reblocked"]; a.BlockedOn != "window build · bash" {
+		t.Errorf("reblocked = %+v, want blocked", a)
+	}
+
+	// An empty listing (tmux unreachable) is no evidence: a block holds, on a bare label.
+	agents = []Agent{{SessionID: "x", TmuxPane: "%1", Status: statusWaiting}}
+	applyPaneBlocks(agents, []PaneBlock{{"x", "%2", 20, "t"}}, primedPanes(map[string]livePane{}, nil, now), now)
+	if a := agents[0]; a.Status != statusBlocked || a.BlockedOn != "pane %2" || a.BlockedOnPane != "%2" {
+		t.Errorf("tmux down: %+v, want blocked on a bare pane label", a)
+	}
+}
+
+// With no pane block on a shown row, applyPaneBlocks runs neither tmux nor ps.
+func TestApplyPaneBlocksLazy(t *testing.T) {
+	now := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
+	t.Setenv("PATH", t.TempDir()) // no tmux: a listing would be empty, not an error
+	calls := 0
+	old := readTpgids
+	readTpgids = func([]int) map[int]int { calls++; return nil }
+	t.Cleanup(func() { readTpgids = old })
+	cache := newPaneCache()
+	applyPaneBlocks([]Agent{{SessionID: "a"}}, []PaneBlock{{"off-roster", "%2", 20, "t"}}, cache, now)
+	if cache.set != nil || calls != 0 {
+		t.Errorf("listed = %v, ps calls = %d; want neither", cache.set != nil, calls)
+	}
+}
+
+// The picker offers each row the busy panes of its own tmux session that no
+// row (shown or not) runs in, same window first, then by label.
+func TestSetBlockPanes(t *testing.T) {
+	now := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
+	panes := map[string]livePane{
+		"%1": {pid: 10, sessionID: "$1", windowID: "@1", window: "1", command: "claude"},
+		"%2": {pid: 20, sessionID: "$1", windowID: "@1", window: "1", command: "npm"},
+		"%3": {pid: 30, sessionID: "$1", windowID: "@1", window: "1", command: "make"},
+		"%4": {pid: 40, sessionID: "$1", windowID: "@2", window: "b", command: "bash"},
+		"%5": {pid: 50, sessionID: "$1", windowID: "@3", window: "b", command: "make"},
+		"%6": {pid: 60, sessionID: "$1", windowID: "@4", window: "a", command: "cargo"},
+		"%7": {pid: 70, sessionID: "$2", windowID: "@5", window: "1", command: "claude"},
+		"%8": {pid: 80, sessionID: "$2", windowID: "@6", window: "2", command: "npm"},
+	}
+	fg := map[string]int{"%1": 11, "%2": 21, "%3": 31, "%4": 40, "%5": 51, "%6": 61, "%7": 71, "%8": 81}
+	roster := []Agent{{SessionID: "a", TmuxPane: "%1"}, {SessionID: "b", TmuxPane: "%7"}, {SessionID: "c", TmuxPane: "%99"}}
+	all := append(slices.Clone(roster), Agent{SessionID: "filtered", TmuxPane: "%3"})
+	setBlockPanes(roster, all, primedPanes(panes, fg, now), now)
+	ids := func(a Agent) (out []string) {
+		for _, p := range a.BlockPanes {
+			out = append(out, p.ID+" "+p.Label)
+		}
+		return out
+	}
+	if got, want := ids(roster[0]), []string{"%2 same window · npm", "%6 window a · cargo", "%5 window b · make"}; !slices.Equal(got, want) {
+		t.Errorf("a = %q, want %q", got, want)
+	}
+	if got, want := ids(roster[1]), []string{"%8 window 2 · npm"}; !slices.Equal(got, want) {
+		t.Errorf("b = %q, want %q", got, want)
+	}
+	if roster[2].BlockPanes != nil {
+		t.Errorf("unlisted row = %v, want none", roster[2].BlockPanes)
+	}
+}
+
+// Only an exec peer's render builds the picker's pane options, so a non-exec
+// peer's board runs no ps for them.
+func TestBuildDashboardDataBlockPanesOnlyForExecPeer(t *testing.T) {
+	stubPanes(t)
+	calls := 0
+	stubbed := readTpgids
+	readTpgids = func(pids []int) map[int]int { calls++; return stubbed(pids) }
+	t.Cleanup(func() { readTpgids = stubbed })
+	db := openTestDB(t)
+	seedPaneRows(t, db, time.Now().UTC())
+	cfg := &actionConfig{enabled: true, token: "tok"}
+	for _, c := range []struct {
+		addr      string
+		wantCalls int
+		want      []blockPane
+	}{
+		{"192.168.1.5:5555", 0, nil},
+		{"127.0.0.1:5555", 1, []blockPane{{ID: "%2", Label: "same window · npm", sameWindow: true}}},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr, r.Host = c.addr, "127.0.0.1:4555"
+		d, err := buildDashboardData(r, db, newCICache(nil), &peekConfig{cache: newPaneCache()}, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := slices.IndexFunc(d.Agents, func(a Agent) bool { return a.SessionID == "a" })
+		if i < 0 || !slices.Equal(d.Agents[i].BlockPanes, c.want) || calls != c.wantCalls {
+			t.Errorf("%s: agents = %+v after %d ps calls, want a offered %v after %d", c.addr, d.Agents, calls, c.want, c.wantCalls)
+		}
+	}
+}
+
+// The pane chip and the picker's pane options are hashed, so a block landing
+// or lapsing, or a pane starting or finishing a job, repaints the board.
+func TestViewSignature_TracksBlockPanes(t *testing.T) {
+	base := dashboardData{Agents: []Agent{{SessionID: "s1", Status: statusBlocked, BlockedOn: "same window · npm", BlockedOnPane: "%2",
+		BlockPanes: []blockPane{{ID: "%3", Label: "window 2 · make"}}}}}
+	vary := func(f func(*Agent)) dashboardData {
+		d := base
+		d.Agents = slices.Clone(base.Agents)
+		d.Agents[0].BlockPanes = slices.Clone(base.Agents[0].BlockPanes)
+		f(&d.Agents[0])
+		return d
+	}
+	for name, d := range map[string]dashboardData{
+		"chip pane":     vary(func(a *Agent) { a.BlockedOnPane = "%4" }),
+		"picker pane":   vary(func(a *Agent) { a.BlockPanes[0].ID = "%5" }),
+		"picker label":  vary(func(a *Agent) { a.BlockPanes[0].Label = "window 2 · cargo" }),
+		"picker opened": vary(func(a *Agent) { a.BlockPanes = append(a.BlockPanes, blockPane{ID: "%6", Label: "window 3 · npm"}) }),
+	} {
+		if viewSignature(base) == viewSignature(d) {
+			t.Errorf("%s: signature unchanged", name)
+		}
+	}
+}

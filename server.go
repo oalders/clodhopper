@@ -1247,6 +1247,10 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	if err != nil {
 		return dashboardData{}, fmt.Errorf("pr blocks: %w", err)
 	}
+	paneBlocks, err := listPaneBlocks(db)
+	if err != nil {
+		return dashboardData{}, fmt.Errorf("pane blocks: %w", err)
+	}
 	var finals *cwdCache[ciResult]
 	if act.ledger != nil {
 		finals = act.ledger.finals
@@ -1261,9 +1265,10 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	suppressWatchedCI(agents, now)
 	// After dropDeadPanes (a blocker whose pane died counts as gone) and enrichCI
 	// (a merged/closed blocker's CIDone is known); before the split, since
-	// setAndForget reads statusBlocked. PR blocks last: a session chip wins.
+	// setAndForget reads statusBlocked. PR then pane blocks last: an earlier chip wins.
 	applyBlocks(agents, blocks)
 	applyPRBlocks(agents, prBlocks, finals, openPRs, now)
+	applyPaneBlocks(agents, paneBlocks, peek.cache, now)
 	// Before the split, so queued, ledgered and roster rows all keep their peek.
 	if peek.enabled {
 		for i := range agents {
@@ -1282,6 +1287,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	demotePendingCI(agents)
 	if execOK {
 		setBlockPRs(roster, peek.repos, openPRs, now)
+		setBlockPanes(roster, agents, peek.cache, now)
 	}
 
 	// Live labels from dropDeadPanes, so activity rows match the roster's (#180).
@@ -1473,6 +1479,11 @@ func viewSignature(d dashboardData) string {
 			fmt.Fprintf(h, ":%q:%q:%q:%q", a.BlockedOnRepo, a.BlockedOnPR.Title, a.BlockedOnPR.Author, a.BlockPRRepo)
 			for _, p := range a.BlockPRs {
 				fmt.Fprintf(h, ":%d:%q", p.Number, p.Title)
+			}
+			// The pane chip's title, and the picker's pane options (a pane going busy or idle repaints).
+			fmt.Fprintf(h, ":%q", a.BlockedOnPane)
+			for _, p := range a.BlockPanes {
+				fmt.Fprintf(h, ":%q:%q", p.ID, p.Label)
 			}
 		}
 	}
@@ -1766,6 +1777,112 @@ func setBlockPRs(agents []Agent, repos *cwdCache[string], open *cwdCache[[]openP
 		if len(agents[i].BlockPRs) > 0 {
 			agents[i].BlockPRRepo = repo
 		}
+	}
+}
+
+// applyPaneBlocks marks each row of agents that a stored pane block holds (see
+// `clodhopper block --on-pane`), relaxing it as applyBlocks does. A block holds
+// while its pane is listed with the stored root pid and busy (see paneBusy),
+// and also while that cannot be read (an empty listing, ps failing, no tpgid),
+// as applyPRBlocks keeps a block on a failed lookup. It lapses once the pane is
+// missing from a non-empty listing, has another pid, or is seen at its shell.
+// A lapse is permanent for that stored block (cache.lapses), so the row goes
+// back to "waiting for you" and a later command in the pane cannot revive it;
+// a per-job fingerprint would not do, since bash and zsh give each step of
+// `a && b` and each command of a typed loop its own process group. Known gaps:
+// lapses live in memory, so a serve restart, or a shell gap shorter than one
+// poll, lets a later job hold the row again until the chip's ✕ clears it. An
+// earlier session or PR block keeps the chip. The pane listing and ps run
+// only when a shown row has a pane block.
+func applyPaneBlocks(agents []Agent, blocks []PaneBlock, cache *paneCache, now time.Time) {
+	idx := make(map[string]int, len(agents))
+	for i, a := range agents {
+		idx[a.SessionID] = i
+	}
+	lapsed := cache.lapses(blocks, nil)
+	if !slices.ContainsFunc(blocks, func(b PaneBlock) bool { _, ok := idx[b.Blocked]; return ok && !lapsed[b] }) {
+		return
+	}
+	panes, fg := cache.panes(now), cache.foreground(now)
+	var newly []PaneBlock
+	for _, b := range blocks {
+		i, ok := idx[b.Blocked]
+		if !ok || lapsed[b] {
+			continue
+		}
+		p, listed := panes[b.Pane]
+		busy, known := paneBusy(b.Pane, p, fg)
+		if (!listed && len(panes) > 0) || (listed && p.pid != b.PanePID) || (known && !busy) {
+			newly = append(newly, b)
+			continue
+		}
+		relaxBlocked(&agents[i])
+		if agents[i].BlockedOn != "" {
+			continue
+		}
+		label := "pane " + b.Pane
+		if listed {
+			label = paneBlockLabel(panes[agents[i].TmuxPane], p)
+		}
+		agents[i].BlockedOn, agents[i].BlockedOnPane = label, b.Pane
+	}
+	if len(newly) > 0 {
+		cache.lapses(blocks, newly)
+	}
+}
+
+// blockPane is one block-picker pane option.
+type blockPane struct {
+	ID, Label  string
+	sameWindow bool
+}
+
+// paneBlockLabel names pane p for the row whose own pane is own: "same window ·
+// npm" or "window 2 · python" (the window's name, else its index), then its
+// foreground command, scrubbed.
+func paneBlockLabel(own, p livePane) string {
+	where := "window " + p.window
+	if sameWindow(own, p) {
+		where = "same window"
+	}
+	return where + " · " + truncate(scrubString(p.command), maxFieldLen)
+}
+
+// sameWindow reports whether p shares own's tmux window.
+func sameWindow(own, p livePane) bool { return own.windowID != "" && own.windowID == p.windowID }
+
+// setBlockPanes fills each roster row's block-picker pane options: the busy
+// panes in its own pane's tmux session that no row of all runs in (see
+// paneBlockRefusal), same window first. ps runs only if some row's pane is listed.
+func setBlockPanes(roster, all []Agent, cache *paneCache, now time.Time) {
+	panes := cache.panes(now)
+	taken := map[string]bool{}
+	for _, a := range all {
+		taken[a.TmuxPane] = true
+	}
+	var fg map[string]int
+	for i := range roster {
+		own, ok := panes[roster[i].TmuxPane]
+		if !ok {
+			continue
+		}
+		if fg == nil {
+			fg = cache.foreground(now)
+		}
+		for id, p := range panes {
+			if paneBlockRefusal(own, id, p, taken, fg) == "" {
+				roster[i].BlockPanes = append(roster[i].BlockPanes, blockPane{ID: id, Label: paneBlockLabel(own, p), sameWindow: sameWindow(own, p)})
+			}
+		}
+		slices.SortFunc(roster[i].BlockPanes, func(a, b blockPane) int {
+			if a.sameWindow != b.sameWindow {
+				if a.sameWindow {
+					return -1
+				}
+				return 1
+			}
+			return cmp.Or(strings.Compare(a.Label, b.Label), strings.Compare(a.ID, b.ID))
+		})
 	}
 }
 

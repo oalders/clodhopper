@@ -619,7 +619,7 @@ func TestPruneOldSweepsOrphanedBlocks(t *testing.T) {
 	}
 }
 
-// unblock drops a row's session and PR blocks alike, and counts both.
+// unblock drops a row's session, PR and pane blocks alike, and counts them all.
 func TestUnblockSessionClearsPRBlocks(t *testing.T) {
 	db := openTestDB(t)
 	now := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
@@ -632,8 +632,13 @@ func TestUnblockSessionClearsPRBlocks(t *testing.T) {
 	if err := addPRBlock(db, "b", "o/r", 8, now); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := unblockSession(db, "a"); err != nil || n != 2 {
-		t.Fatalf("unblock = %d, %v; want 2", n, err)
+	for _, s := range []string{"a", "b"} {
+		if err := addPaneBlock(db, s, "%2", 20, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n, err := unblockSession(db, "a"); err != nil || n != 3 {
+		t.Fatalf("unblock = %d, %v; want 3", n, err)
 	}
 	got, err := listPRBlocks(db)
 	if err != nil {
@@ -642,9 +647,33 @@ func TestUnblockSessionClearsPRBlocks(t *testing.T) {
 	if want := []PRBlock{{"b", "o/r", 8}}; !slices.Equal(got, want) {
 		t.Errorf("pr blocks = %v, want %v", got, want)
 	}
+	if panes, err := listPaneBlocks(db); err != nil || len(panes) != 1 || panes[0].Blocked != "b" {
+		t.Errorf("pane blocks = %+v, %v; want only b's", panes, err)
+	}
 }
 
-// prune sweeps a PR block once its blocked session has no events left.
+// A re-block replaces the row's pane block, with a new ts even within the
+// same second, so applyPaneBlocks' lapse memory does not carry over to it.
+func TestAddPaneBlockReplaces(t *testing.T) {
+	db := openTestDB(t)
+	now := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
+	if err := addPaneBlock(db, "a", "%2", 20, now); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := listPaneBlocks(db)
+	if err := addPaneBlock(db, "a", "%3", 30, now.Add(time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := listPaneBlocks(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || len(got) != 1 || got[0].Pane != "%3" || got[0].PanePID != 30 || got[0] == first[0] || got[0].TS == first[0].TS {
+		t.Errorf("pane blocks = %+v after %+v, want a on %%3 (pid 30) with a new ts", got, first)
+	}
+}
+
+// prune sweeps a PR or pane block once its blocked session has no events left.
 func TestPruneOldSweepsOrphanedPRBlocks(t *testing.T) {
 	db := openTestDB(t)
 	old := time.Now().UTC().AddDate(0, 0, -30).Format(time.RFC3339)
@@ -654,9 +683,15 @@ func TestPruneOldSweepsOrphanedPRBlocks(t *testing.T) {
 		if err := addPRBlock(db, s, "o/r", 7, time.Now()); err != nil {
 			t.Fatal(err)
 		}
+		if err := addPaneBlock(db, s, "%2", 20, time.Now()); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := pruneOld(db, 14); err != nil {
 		t.Fatalf("pruneOld: %v", err)
+	}
+	if panes, err := listPaneBlocks(db); err != nil || len(panes) != 1 || panes[0].Blocked != "new" {
+		t.Errorf("pane blocks after prune = %+v, %v; want only new's", panes, err)
 	}
 	got, err := listPRBlocks(db)
 	if err != nil {

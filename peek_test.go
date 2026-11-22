@@ -176,20 +176,21 @@ func TestPaneLabel(t *testing.T) {
 // listPanes maps each pane id to its session name in the form ingest stores, so
 // a messy real-world name compares equal to the row's recorded tmux_session, plus
 // its root pid (0 when unparseable), foreground command and path (last, so a
-// tab in it survives).
+// tab in it survives), and its session and window ids and window name (the index
+// when the name is empty).
 func TestListPanes(t *testing.T) {
 	dir := t.TempDir()
 	messy := "\ue0a0  fix-2482     Blog post [in progress]"
 	titled := "\U000f0868  fix-1288            \uf418 commerce don't forward"
-	script := "#!/bin/sh\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\n' '%1' '41' 'my-session' 'zsh' '/src/a\tb' '%7' 'x' '" + messy + "' 'claude' '/src/c' '%9' '43' \"" + titled + "\" 'nono' '/src/d'\n"
+	script := "#!/bin/sh\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' '%1' '41' 'my-session' 'zsh' '$1' '@1' '0' 'build' '/src/a\tb' '%7' 'x' '" + messy + "' 'claude' '$2' '@2' '3' '' '/src/c' '%9' '43' \"" + titled + "\" 'nono' '$2' '@2' '3' '' '/src/d'\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
 	want := map[string]livePane{
-		"%1": {session: "my-session", command: "zsh", path: "/src/a\tb", pid: 41},
-		"%7": {session: tmuxSessionLabel(messy), command: "claude", path: "/src/c"},
-		"%9": {session: "fix-1288", title: "commerce don't forward", command: "nono", path: "/src/d", pid: 43},
+		"%1": {session: "my-session", command: "zsh", path: "/src/a\tb", pid: 41, sessionID: "$1", windowID: "@1", window: "build"},
+		"%7": {session: tmuxSessionLabel(messy), command: "claude", path: "/src/c", sessionID: "$2", windowID: "@2", window: "3"},
+		"%9": {session: "fix-1288", title: "commerce don't forward", command: "nono", path: "/src/d", pid: 43, sessionID: "$2", windowID: "@2", window: "3"},
 	}
 	if got := listPanes(); !maps.Equal(got, want) {
 		t.Fatalf("listPanes() = %+v, want %+v", got, want)
@@ -470,5 +471,38 @@ func TestSetWorktreesRealWorktree(t *testing.T) {
 	setWorktrees(agents, newRootCache(), time.Now())
 	if agents[0].Worktree != "gh-1308" {
 		t.Errorf("Worktree = %q, want gh-1308", agents[0].Worktree)
+	}
+}
+
+// parseTpgids keeps well-formed lines with a positive tpgid (-1 is no tty).
+func TestParseTpgids(t *testing.T) {
+	got := parseTpgids([]byte("   10    11\n 20 -1\n30\n x 4\n 40 40 9\n50 51\n"))
+	if want := map[int]int{10: 11, 50: 51}; !maps.Equal(got, want) {
+		t.Errorf("parseTpgids = %v, want %v", got, want)
+	}
+}
+
+// paneTpgids asks once, for the panes with a pid, and maps back by pane id;
+// a pane ps did not report is absent, so paneBusy calls it unknown.
+func TestPaneTpgids(t *testing.T) {
+	var asked [][]int
+	old := readTpgids
+	readTpgids = func(pids []int) map[int]int {
+		asked = append(asked, slices.Sorted(slices.Values(pids)))
+		return map[int]int{10: 11, 20: 20}
+	}
+	t.Cleanup(func() { readTpgids = old })
+	panes := map[string]livePane{"%1": {pid: 10}, "%2": {pid: 20}, "%3": {pid: 30}, "%4": {}}
+	got := paneTpgids(panes)
+	if want := map[string]int{"%1": 11, "%2": 20}; !maps.Equal(got, want) {
+		t.Errorf("paneTpgids = %v, want %v", got, want)
+	}
+	if len(asked) != 1 || !slices.Equal(asked[0], []int{10, 20, 30}) {
+		t.Errorf("readTpgids asked %v, want once for [10 20 30]", asked)
+	}
+	for id, want := range map[string][2]bool{"%1": {true, true}, "%2": {false, true}, "%3": {false, false}} {
+		if busy, known := paneBusy(id, panes[id], got); busy != want[0] || known != want[1] {
+			t.Errorf("paneBusy(%s) = %v, %v; want %v, %v", id, busy, known, want[0], want[1])
+		}
 	}
 }

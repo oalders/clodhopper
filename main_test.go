@@ -76,7 +76,7 @@ func TestStaleShell_DefaultAndOverride(t *testing.T) {
 	}
 }
 
-// block takes exactly one kind of blocker: a row or a positive PR number.
+// block takes exactly one kind of blocker: a row, a positive PR number or a pane.
 func TestRunBlockBlockerFlags(t *testing.T) {
 	t.Setenv("CLODHOPPER_DB", filepath.Join(t.TempDir(), "events.db"))
 	for _, args := range [][]string{
@@ -84,6 +84,8 @@ func TestRunBlockBlockerFlags(t *testing.T) {
 		{"--branch", "b", "--on-branch", "c", "--on-pr", "7"},
 		{"--branch", "b", "--on-session", "c", "--on-pr", "7"},
 		{"--branch", "b", "--on-pr", "-7"},
+		{"--branch", "b", "--on-pane", "%2", "--on-pr", "7"},
+		{"--branch", "b", "--on-session", "c", "--on-pane", "%2"},
 	} {
 		if code := runBlock(args); code != 2 {
 			t.Errorf("runBlock(%q) = %d, want 2", args, code)
@@ -125,6 +127,37 @@ func TestRunBlockOnPR(t *testing.T) {
 		}
 		if blocks, _ := listPRBlocks(db); !slices.Equal(blocks, want) {
 			t.Errorf("%s: pr blocks = %v, want %v", c.name, blocks, want)
+		}
+	}
+}
+
+// block --on-pane resolves its tmux target to a pane id, then stores the block
+// only if validatePaneBlock passes it (see TestHandleActionBlockPane).
+func TestRunBlockOnPane(t *testing.T) {
+	stubPanes(t)
+	dbPath := filepath.Join(t.TempDir(), "events.db")
+	t.Setenv("CLODHOPPER_DB", dbPath)
+	db, err := openDB(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	seedPaneRows(t, db, time.Now().UTC())
+	for _, c := range []struct {
+		name, target string
+		want         int
+	}{
+		{"unresolvable", "nowhere", 1},
+		{"own pane", "%1", 1},
+		{"idle", "%3", 1},
+		{"busy, by target", "work:1.1", 0},
+	} {
+		if code := runBlock([]string{"--session", "a", "--on-pane", c.target}); code != c.want {
+			t.Errorf("%s: runBlock = %d, want %d", c.name, code, c.want)
+		}
+		blocks, _ := listPaneBlocks(db)
+		if got := len(blocks) == 1 && blocks[0].Pane == "%2" && blocks[0].PanePID == 20; got != (c.want == 0) {
+			t.Errorf("%s: pane blocks = %+v", c.name, blocks)
 		}
 	}
 }
