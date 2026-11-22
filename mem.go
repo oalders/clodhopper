@@ -215,7 +215,8 @@ type paneMem struct {
 // readProcs and memWait are vars so a test can hang a scan and not wait long for it.
 var (
 	readProcs = readProcTable
-	memWait   = procBudget + 500*time.Millisecond // margin over procBudget so a scan stopping at its deadline usually lands in this render
+	// A margin over procBudget, so a scan stopping at its deadline usually lands in this render.
+	memWait = procBudget + 500*time.Millisecond
 )
 
 // memStale hides memoised figures this old, so a scan wedged in the kernel never freezes them as current.
