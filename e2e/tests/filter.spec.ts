@@ -152,7 +152,9 @@ test('a CI badge label matches, and no match shows the empty line', async ({ pag
   await expect(page.locator('#content table.roster')).toBeHidden();
   // The no-match line says it all, and the emptied card is just its header.
   await expect(page.locator('#ck-qcount')).toHaveText('');
-  const head = page.locator('section.ck-card > .ck-cardhead', { hasText: /Agents? \(live/ });
+  const head = page.locator('section.ck-card > .ck-cardhead').filter({
+    has: page.getByRole('heading', { name: /Agents? \(live/ }),
+  });
   await expect(head).toHaveCSS('border-bottom-width', '0px');
 });
 

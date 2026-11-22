@@ -3,6 +3,7 @@ package main
 import (
 	"maps"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -70,6 +71,23 @@ func TestParsePS(t *testing.T) {
 	}
 }
 
+// readPSProcs parses the table from ps, and a failing ps yields none.
+func TestReadPSProcs(t *testing.T) {
+	stub := writeStub(t, "ps", `[ "$*" = "-axo pid=,ppid=,rss=" ] || exit 2
+echo "    1     0  1200"
+echo "  500     1 34567"`)
+	t.Setenv("PATH", filepath.Dir(stub)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	want := procTable{1: {ppid: 0, kb: 1200, hasKB: true}, 500: {ppid: 1, kb: 34567, hasKB: true}}
+	if got := readPSProcs(); !maps.Equal(got, want) {
+		t.Fatalf("readPSProcs = %v, want %v", got, want)
+	}
+	stub = writeStub(t, "ps", "exit 1")
+	t.Setenv("PATH", filepath.Dir(stub)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if got := readPSProcs(); got != nil {
+		t.Errorf("failing ps = %v, want nil", got)
+	}
+}
+
 func TestMemSize(t *testing.T) {
 	for kb, want := range map[int64]string{
 		412 * 1024:    "412 MB",
@@ -97,19 +115,25 @@ func TestReadLinuxProcsSelf(t *testing.T) {
 // mem scans once, serves its memo within paneTTL, and rescans after it. The
 // pane listing is restamped each step so panes() never runs real tmux.
 func TestPaneCacheMemMemo(t *testing.T) {
-	now := time.Now()
-	c := &paneCache{set: map[string]livePane{"%1": {pid: os.Getpid()}}, at: now}
-	if kb := c.mem(now)["%1"]; kb <= 0 {
-		t.Fatalf("first scan = %d, want a positive figure", kb)
+	calls := 0
+	oldRead := readProcs
+	readProcs = func(map[string]int) procTable {
+		calls++
+		return procTable{7: {kb: int64(calls), hasKB: true}}
 	}
-	c.memo.kb["%1"] = -1 // sentinel: only a rescan replaces it
-	if kb := c.mem(now.Add(paneTTL - time.Second))["%1"]; kb != -1 {
-		t.Errorf("within paneTTL = %d, want the memoised -1", kb)
+	t.Cleanup(func() { readProcs = oldRead })
+	now := time.Now()
+	c := &paneCache{set: map[string]livePane{"%1": {pid: 7}}, at: now}
+	if kb := c.mem(now)["%1"]; kb != 1 {
+		t.Fatalf("first scan = %d, want 1", kb)
+	}
+	if kb := c.mem(now.Add(paneTTL - time.Second))["%1"]; kb != 1 {
+		t.Errorf("within paneTTL = %d, want the memoised 1", kb)
 	}
 	later := now.Add(paneTTL)
 	c.at = later
-	if kb := c.mem(later)["%1"]; kb <= 0 {
-		t.Errorf("after paneTTL = %d, want a fresh positive figure", kb)
+	if kb := c.mem(later)["%1"]; kb != 2 {
+		t.Errorf("after paneTTL = %d, want the rescan's 2", kb)
 	}
 }
 
@@ -139,7 +163,8 @@ func TestPaneCacheMemHungScan(t *testing.T) {
 
 	now := time.Now()
 	c := &paneCache{set: map[string]livePane{"%1": {pid: 7}}, at: now.Add(time.Hour)}
-	c.memo = paneMem{kb: map[string]int64{"%1": 1}, at: now.Add(-paneTTL)}
+	stamp := now.Add(-paneTTL)
+	c.memo = paneMem{kb: map[string]int64{"%1": 1}, at: stamp}
 	for i := range 2 {
 		start := time.Now()
 		if kb := c.mem(now)["%1"]; kb != 1 {
@@ -149,7 +174,10 @@ func TestPaneCacheMemHungScan(t *testing.T) {
 			t.Errorf("call %d took %v, want about memWait", i, d)
 		}
 	}
-	if kb := c.mem(now.Add(memStale + time.Second)); kb != nil {
+	if kb := c.mem(stamp.Add(memStale))["%1"]; kb != 1 {
+		t.Errorf("at memStale during hung scan = %d, want the stale 1", kb)
+	}
+	if kb := c.mem(stamp.Add(memStale + time.Second)); kb != nil {
 		t.Errorf("past memStale during hung scan = %v, want nil", kb)
 	}
 	if n := calls.Load(); n != 1 {

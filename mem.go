@@ -84,6 +84,11 @@ func readProcTable(roots map[string]int) procTable {
 	if runtime.GOOS == "linux" {
 		return readLinuxProcs(roots)
 	}
+	return readPSProcs()
+}
+
+// readPSProcs snapshots every process via ps, which reports RSS for all of them.
+func readPSProcs() procTable {
 	ctx, cancel := context.WithTimeout(context.Background(), procBudget)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,rss=").Output()
@@ -96,7 +101,7 @@ func readProcTable(roots map[string]int) procTable {
 // parsePS parses `ps -axo pid=,ppid=,rss=` output, skipping malformed lines.
 func parsePS(out []byte) procTable {
 	t := procTable{}
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		f := strings.Fields(line)
 		if len(f) != 3 {
 			continue
@@ -210,7 +215,7 @@ type paneMem struct {
 // readProcs and memWait are vars so a test can hang a scan and not wait long for it.
 var (
 	readProcs = readProcTable
-	memWait   = procBudget
+	memWait   = procBudget + 500*time.Millisecond // a scan stopping at its own deadline still lands in this render
 )
 
 // memStale hides memoised figures this old, so a scan wedged in the kernel never freezes them as current.
@@ -222,7 +227,8 @@ const memStale = 12 * paneTTL
 // The scan runs in a goroutine, since a read can block in the kernel past
 // procBudget (smaps_rollup on a task stuck holding mmap_lock); after memWait the
 // render gets the previous figures (nil if none, or older than memStale while a
-// wedged scan stays busy) and the late result lands in the memo.
+// wedged scan stays busy) and the late result lands in the memo. Nothing clears
+// busy until the stuck read returns, so recovery from a wedged scan waits on it.
 // A pane appearing within paneTTL of a scan has no figure until the next scan.
 // serve must share the panes' pid namespace, or the figures may be absent or belong to unrelated processes.
 func (c *paneCache) mem(now time.Time) map[string]int64 {

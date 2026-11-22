@@ -1370,8 +1370,9 @@ func (d *dashboardData) filterRows(source, branch string) {
 }
 
 // agentTotals counts every roster row plus each queue and ledger row whose
-// session still has a live pane (livePanes: session id → pane), and sums mem
-// over the counted rows' panes, each pane once since rows may share one.
+// session is still on the roster with a live pane (livePanes: session id →
+// pane), since carryOver treats an off-roster session as gone; it sums mem over
+// the counted rows' panes, each pane once since rows may share one.
 func agentTotals(d dashboardData, livePanes map[string]string, mem map[string]int64) (int, int64) {
 	ids := make([]string, 0, len(d.Agents)+len(d.QueuedAgents)+len(d.LedgerRows))
 	for _, a := range d.Agents {
