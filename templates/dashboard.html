@@ -1611,7 +1611,8 @@
   // While pinned, the app/status/idle headers also sort the roster (issue #142).
   // The sort moves whole group-blocks too, keyed per group: app text, the most
   // urgent row's server StatusRank (data-rank, so JS never re-ranks statuses),
-  // and the least idle row's data-since. The chosen column persists as ch-pin-sort.
+  // and the least idle row's data-since. The chosen column persists as ch-pin-sort
+  // across reloads while pinned; turning pin on by the button starts unsorted.
   (function () {
     var btn = document.getElementById('ck-pin');
     var order = [];        // frozen group keys, in first-seen order
@@ -1805,8 +1806,9 @@
       reflect();
       // Turning pin on freezes the board exactly as shown: it starts unsorted and
       // forgets any saved column, since restoring one would reorder the rows the
-      // reader just asked to hold still. (A page load that finds pin already on
-      // does restore ch-pin-sort; there is no on-screen order to betray yet.)
+      // reader just asked to hold still. saveSort() with a null sort stores '',
+      // so a later reload stays unsorted too. (A page load that finds pin already
+      // on does restore ch-pin-sort: that is the sort the reader had before it.)
       // Off just lets the next poll repaint in fresh server order.
       if (enabled) { snapshot(); sort = null; saveSort(); apply(); } else { order = []; sort = null; decorate(); }
     });

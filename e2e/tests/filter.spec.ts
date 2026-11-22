@@ -358,14 +358,37 @@ test('turning pin order on freezes the board as shown, not by a sort saved earli
   test.skip(phone(page), 'the sort headers are table-only');
   await page.goto('/?refresh=0');
   const { shown } = ui(page);
+  const pin = page.locator('#ck-pin');
   const ids = () => shown.evaluateAll((rows) => rows.map((r) => r.id));
+  // Server order leads with clodhopper, so the app-ascending sort saved below would lead with appB.
+  await expect(shown.first().locator('td[data-label="app"]')).toHaveText('clodhopper');
+  expect(appB < 'clodhopper').toBe(true);
   const before = await ids();
-  // A column sort left over from an earlier pin; app-ascending would lead with appB.
+  // A column sort left over from an earlier pin.
   await page.evaluate(() => localStorage.setItem('ch-pin-sort', 'app:asc'));
-  await page.locator('#ck-pin').click();
-  await expect(page.locator('#ck-pin')).toHaveAttribute('aria-pressed', 'true');
+  await pin.click();
+  await expect(pin).toHaveAttribute('aria-pressed', 'true');
   expect(await ids()).toEqual(before);
   await expect(page.locator('#content th[aria-sort]')).toHaveCount(0);
+  // Forgotten, not just ignored: a reload with pin still on comes back unsorted too.
+  expect(await page.evaluate(() => localStorage.getItem('ch-pin-sort'))).toBe('');
+  await page.reload();
+  await expect(pin).toHaveAttribute('aria-pressed', 'true');
+  expect(await ids()).toEqual(before);
+  await expect(page.locator('#content th[aria-sort]')).toHaveCount(0);
+});
+
+test('a page load with pin order already on restores the saved column sort', async ({ page }) => {
+  test.skip(phone(page), 'the sort headers are table-only');
+  await page.addInitScript(() => {
+    localStorage.setItem('ch-pin', 'on');
+    localStorage.setItem('ch-pin-sort', 'app:asc');
+  });
+  await page.goto('/?refresh=0');
+  await expect(page.locator('#ck-pin')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#content th[data-sort="app"]')).toHaveAttribute('aria-sort', 'ascending');
+  // Server order leads with clodhopper; the restored sort puts appB first.
+  await expect(ui(page).shown.first().locator('td[data-label="app"]')).toHaveText(appB);
 });
 
 test('submitting the filters under debug keeps debug and event_type', async ({ page }) => {
