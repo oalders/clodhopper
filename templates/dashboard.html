@@ -1803,10 +1803,12 @@
       enabled = !enabled;
       try { localStorage.setItem('ch-pin', enabled ? 'on' : ''); } catch (e) {}
       reflect();
-      // Off drops only the in-memory sort and the header affordance; ch-pin-sort
-      // stays saved, so re-pinning restores it exactly as a page load does.
+      // Turning pin on freezes the board exactly as shown: it starts unsorted and
+      // forgets any saved column, since restoring one would reorder the rows the
+      // reader just asked to hold still. (A page load that finds pin already on
+      // does restore ch-pin-sort; there is no on-screen order to betray yet.)
       // Off just lets the next poll repaint in fresh server order.
-      if (enabled) { snapshot(); sort = loadSort(); apply(); } else { order = []; sort = null; decorate(); }
+      if (enabled) { snapshot(); sort = null; saveSort(); apply(); } else { order = []; sort = null; decorate(); }
     });
 
     // Delegated from document: the headers are swapped out with #content on

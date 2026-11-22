@@ -354,6 +354,20 @@ test('pin order and dividers hold under a filter across a repaint', async ({ pag
   expect(wrong).toEqual([]);
 });
 
+test('turning pin order on freezes the board as shown, not by a sort saved earlier', async ({ page }) => {
+  test.skip(phone(page), 'the sort headers are table-only');
+  await page.goto('/?refresh=0');
+  const { shown } = ui(page);
+  const ids = () => shown.evaluateAll((rows) => rows.map((r) => r.id));
+  const before = await ids();
+  // A column sort left over from an earlier pin; app-ascending would lead with appB.
+  await page.evaluate(() => localStorage.setItem('ch-pin-sort', 'app:asc'));
+  await page.locator('#ck-pin').click();
+  await expect(page.locator('#ck-pin')).toHaveAttribute('aria-pressed', 'true');
+  expect(await ids()).toEqual(before);
+  await expect(page.locator('#content th[aria-sort]')).toHaveCount(0);
+});
+
 test('submitting the filters under debug keeps debug and event_type', async ({ page }) => {
   await page.goto('/?refresh=0&debug=1');
   // Drop the flag the page just stored, so only the form itself can carry debug=1.
