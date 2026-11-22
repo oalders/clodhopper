@@ -107,7 +107,7 @@ func TestHandleDashboard_RosterBranchCopiesCwd(t *testing.T) {
 		SessionID: "sess-copy", EventType: "Stop", PayloadJSON: "{}"})
 
 	body := getBody(t, db, "/")
-	if !strings.Contains(body, "<h2>1 Agent (live") {
+	if !strings.Contains(body, agentHeading(1)) {
 		t.Fatalf("expected a roster row to render (nothing to assert on otherwise):\n%s", body)
 	}
 	if !strings.Contains(body, `class="copycwd"`) {
@@ -126,7 +126,7 @@ func TestHandleDashboard_RosterBranchWithoutCwd(t *testing.T) {
 		SessionID: "sess-nocwd", EventType: "Stop", PayloadJSON: "{}"})
 
 	body := getBody(t, db, "/")
-	if !strings.Contains(body, "<h2>1 Agent (live") {
+	if !strings.Contains(body, agentHeading(1)) {
 		t.Fatalf("expected a roster row to render:\n%s", body)
 	}
 	// The bare class name also appears in the page's CSS and JS, so match the
@@ -254,7 +254,7 @@ func TestHandleDashboard_ClusterSuffixComposesWithCopyButton(t *testing.T) {
 		SessionID: "sess-c2", EventType: "Stop", PayloadJSON: "{}"})
 
 	body := getBody(t, db, "/")
-	if !strings.Contains(body, "<h2>2 Agents (live") {
+	if !strings.Contains(body, agentHeading(2)) {
 		t.Fatalf("expected two roster rows to form a cluster:\n%s", body)
 	}
 	// The button's OWN accessible name, parallel to how (mid-rebase) is folded in.
@@ -570,7 +570,7 @@ func TestHandleDashboard_NonRosterBranchCellsHaveNoCopyButton(t *testing.T) {
 		EventType: "PreToolUse", ToolName: "Bash", Summary: "Bash: git status", PayloadJSON: "{}"})
 
 	body := getBody(t, db, "/?debug=1")
-	if !strings.Contains(body, "<h2>0 Agents (live") {
+	if !strings.Contains(body, agentHeading(0)) {
 		t.Fatalf("session-less event should not reach the roster:\n%s", body)
 	}
 	if !strings.Contains(body, "Activity (last 30 min)") || !strings.Contains(body, "Bash: git status") {
@@ -793,12 +793,15 @@ func TestBuildDashboardDataAgentMemory(t *testing.T) {
 	}
 	body := render(data)
 	_, after, _ := strings.Cut(body, memSpan)
-	if span, _, _ := strings.Cut(after, "</span>"); !strings.Contains(body, "<h2>3 Agents (live") || !strings.HasSuffix(span, `">3 MB`) {
+	if span, _, _ := strings.Cut(after, "</span>"); !strings.Contains(body, agentHeading(3)) || !strings.HasSuffix(span, `">3 MB`) {
 		t.Errorf("card head lacks the count or the memory total:\n%s", body)
 	}
 	data.Debug = true
-	if body := render(data); !strings.Contains(body, `<td class="mem" data-label="mem">2 MB</td>`) || !strings.Contains(body, `<td class="mem" data-label="mem">—</td>`) {
-		t.Errorf("debug mem cells lack a figure or the unknown dash:\n%s", body)
+	body = render(data)
+	for id, want := range map[string]string{"alive": "2 MB", "paneless": "—"} {
+		if !strings.Contains(rowHTML(t, body, id), `<td class="mem" data-label="mem">`+want+`</td>`) {
+			t.Errorf("debug mem cell of %s lacks %q:\n%s", id, want, body)
+		}
 	}
 	data.AgentMemKB = 0
 	if body := render(data); strings.Contains(body, memSpan) {
@@ -1624,6 +1627,14 @@ func TestDemotePendingCI(t *testing.T) {
 	if a := got["needs-nocheck"]; a.Status != statusNeedsYou {
 		t.Errorf("row with no CI info must be untouched, got %q", a.Status)
 	}
+}
+
+// agentHeading is the roster heading's opening for n agents, singular for 1 as the template renders it.
+func agentHeading(n int) string {
+	if n == 1 {
+		return "<h2>1 Agent (live"
+	}
+	return fmt.Sprintf("<h2>%d Agents (live", n)
 }
 
 func getBody(t *testing.T, db *sql.DB, target string) string {

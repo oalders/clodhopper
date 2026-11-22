@@ -152,7 +152,7 @@ func TestHandleDashboard_ClaudeName(t *testing.T) {
 	handleDashboard(rec, req, db, newCICache(nil), &peekConfig{cache: newPaneCache(), names: newClaudeNameCache(), namesDir: dir}, &actionConfig{})
 	body := rec.Body.String()
 
-	if !strings.Contains(body, "<h2>3 Agents (live") {
+	if !strings.Contains(body, agentHeading(3)) {
 		t.Fatalf("both same-named sessions and the unnamed one should each render a row:\n%s", body)
 	}
 	for _, id := range ids[:2] {

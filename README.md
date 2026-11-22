@@ -356,9 +356,12 @@ unless you opt in: click **debug** in the header (or add `?debug=1` to the URL).
 The choice persists across reloads and rides along with the other query params
 (filters, refresh, roster window).
 
-The roster heading counts its rows plus merge-queue rows whose tmux pane is still
-live, and its corner shows their process trees' total memory, best-effort: PSS on
-Linux, falling back to per-process RSS (so a figure may mix both), RSS elsewhere.
+The roster heading counts its rows plus merge-queue rows whose session is still on
+the roster with a live tmux pane (one that has left the roster no longer counts,
+even if its pane is still live), and its corner shows their process trees' total
+memory, best-effort: PSS on Linux, falling back to per-process RSS (so a figure
+may mix both), RSS elsewhere.
+The total repaints only when it crosses a 256 MiB step, so a small change can lag.
 The debug view adds a per-agent `mem` column.
 
 ### Filtering the board

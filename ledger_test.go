@@ -421,11 +421,17 @@ func ledgerRowHTML(t *testing.T, html, id string) string {
 	if !ok {
 		t.Fatal("no merge-queue section")
 	}
-	_, row, ok := strings.Cut(mq, `id="row-`+id+`"`)
+	return rowHTML(t, mq, id)
+}
+
+// rowHTML is the <tr> of the first row in html with session id id.
+func rowHTML(t *testing.T, html, id string) string {
+	t.Helper()
+	_, row, ok := strings.Cut(html, `id="row-`+id+`"`)
 	if !ok {
-		t.Fatalf("no row %q in the merge-queue section", id)
+		t.Fatalf("no row %q", id)
 	}
-	tr := mq[:len(mq)-len(row)]
+	tr := html[:len(html)-len(row)]
 	tr = tr[strings.LastIndex(tr, "<tr"):]
 	row, _, _ = strings.Cut(row, "</tr>")
 	return tr + row
