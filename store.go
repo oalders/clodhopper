@@ -794,7 +794,8 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 		        COALESCE(CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.source') END,''),
 		        COALESCE(CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.background_task_id') END,''),
 		        COALESCE(CASE WHEN json_valid(payload_json) THEN COALESCE(json_extract(payload_json,'$.task_notification_id'),
-		                 json_extract(payload_json,'$.tool_input.task_id'), json_extract(payload_json,'$.tool_input.shell_id')) END,'')
+		                 json_extract(payload_json,'$.tool_input.task_id'), json_extract(payload_json,'$.tool_input.shell_id')) END,''),
+		        COALESCE(CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.task_notification_parked') END,0)
 		 FROM events WHERE ts >= ? AND session_id IS NOT NULL AND session_id <> ''
 		 ORDER BY id ASC`, since)
 	if err != nil {
@@ -834,6 +835,13 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 		shells    map[string]shell     // running background shells (main agent's and subagents') by task id
 		// lastLaunch: agent_id -> ts of that subagent's latest background start
 		lastLaunch map[string]time.Time
+		// firstStart: agent_id -> its first SubagentStart; a resume does not move it
+		firstStart map[string]time.Time
+		// parked: agent_id -> firstStart of a subagent whose latest notification
+		// to the main agent was interim (it stopped with its own background work
+		// still running). It is still running however quiet it goes, so it counts
+		// until its final notification or a restart.
+		parked map[string]time.Time
 	}
 	byID := map[string]*state{}
 	nextSeq := 0 // rows are id-ascending, so first sighting order == arrival order
@@ -857,13 +865,13 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 	}
 	for seq := 0; rows.Next(); seq++ {
 		var ts, app, branch, cwd, tmuxSess, tmuxPane, launcher, sess, etype, tool, summary, slashCmd, notifType, agentID, source, shellStart, shellEnd string
-		var rebasing bool
-		if err := rows.Scan(&ts, &app, &branch, &rebasing, &cwd, &tmuxSess, &tmuxPane, &launcher, &sess, &etype, &tool, &summary, &slashCmd, &notifType, &agentID, &source, &shellStart, &shellEnd); err != nil {
+		var rebasing, parkedNotif bool
+		if err := rows.Scan(&ts, &app, &branch, &rebasing, &cwd, &tmuxSess, &tmuxPane, &launcher, &sess, &etype, &tool, &summary, &slashCmd, &notifType, &agentID, &source, &shellStart, &shellEnd, &parkedNotif); err != nil {
 			return nil, err
 		}
 		s := byID[sess]
 		if s == nil {
-			s = &state{a: Agent{SessionID: sess, firstSeq: nextSeq}, subs: map[string]*subagent{}, subPerms: map[string]string{}, shells: map[string]shell{}, lastLaunch: map[string]time.Time{}}
+			s = &state{a: Agent{SessionID: sess, firstSeq: nextSeq}, subs: map[string]*subagent{}, subPerms: map[string]string{}, shells: map[string]shell{}, lastLaunch: map[string]time.Time{}, firstStart: map[string]time.Time{}, parked: map[string]time.Time{}}
 			byID[sess] = s
 			nextSeq++
 		}
@@ -933,6 +941,9 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 			// ts is dropped so the session fails toward "waiting for you".
 			if t, err := time.Parse(time.RFC3339, ts); agentID != "" && err == nil {
 				s.subs[agentID] = &subagent{start: t, lastSeen: t}
+				if _, ok := s.firstStart[agentID]; !ok {
+					s.firstStart[agentID] = t
+				}
 			}
 			continue
 		case "SubagentStop":
@@ -986,8 +997,29 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 		if shellEnd != "" && (etype == "UserPromptSubmit" || tool == "TaskStop" || tool == "KillShell") {
 			delete(s.shells, shellEnd)
 		}
+		// A subagent reports to the main agent at every stop, as a task
+		// notification naming its agent id. An interim one (parked) keeps it
+		// counted; any other (finished, stopped) releases it. An unrecognised
+		// wording reads as final: fail toward "waiting for you".
+		if etype == "UserPromptSubmit" && agentID == "" && shellEnd != "" {
+			if parkedNotif {
+				// Its start fell outside the window: date the park from here.
+				since, ok := s.firstStart[shellEnd]
+				if t, err := time.Parse(time.RFC3339, ts); !ok && err == nil {
+					since, ok = t, true
+				}
+				if ok {
+					s.parked[shellEnd] = since
+				}
+			} else {
+				delete(s.parked, shellEnd)
+				delete(s.firstStart, shellEnd)
+			}
+		}
 		if etype == "SessionStart" && source != "compact" {
 			clear(s.shells)
+			clear(s.parked)
+			clear(s.firstStart)
 		}
 		// A subagent's own events are activity, not the main agent's state:
 		// letting them set LastEvent flips a parked session between "working" and
@@ -1088,12 +1120,22 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 		// (staleInFlightSecs while one is mid tool call, as for the main agent) count.
 		if label == statusWaiting {
 			var earliest time.Time
-			for _, sub := range s.subs {
+			for id, sub := range s.subs {
 				if !live(sub) {
 					continue
 				}
+				if _, ok := s.parked[id]; ok {
+					continue // counted below, from its first start
+				}
 				if earliest.IsZero() || sub.start.Before(earliest) {
 					earliest = sub.start
+				}
+				a.Subagents++
+			}
+			// A parked subagent counts however long it has been silent.
+			for _, since := range s.parked {
+				if earliest.IsZero() || since.Before(earliest) {
+					earliest = since
 				}
 				a.Subagents++
 			}
@@ -1122,7 +1164,8 @@ func agentRoster(db *sql.DB, waitingCap, staleShell time.Duration, now time.Time
 				a.SubagentSince = earliest.Unix()
 				a.SubagentAge = humanizeSeconds(int(max(0, now.Unix()-a.SubagentSince)))
 				// Only shells decide: a hung shell holds the row forever, while a
-				// subagent that goes silent already stops counting above.
+				// subagent that goes silent stops counting above unless it is parked
+				// (its final notification ends that, as a restart does).
 				// A subagent's shell can start after the main agent went quiet, so its age is checked too.
 				if staleShell > 0 && oldestID != "" && time.Duration(idleSeconds(s.mainTS, now))*time.Second >= staleShell && now.Sub(oldest.start) >= staleShell {
 					a.Status, a.StatusRank = statusShellStuck, 1
