@@ -55,7 +55,7 @@ Subcommands, dispatched in `main.go`:
   runs no subprocess at all and just calls `endSessions` to drop the row, and a
   `dismiss` action that execs nothing and hides a merge-queue ledger row, a
   `teardown` action (merge-pr `--punt` on a merged/closed ledger row), plus
-  `block`/`unblock`/`block-pr`, which write or drop a block row. Before any
+  `block`/`unblock`/`block-pr`/`block-pane`, which write or drop a block row. Before any
   of that, middleware around the whole mux (`newServeMux`) applies the security
   headers and the Host allowlist (`hostAllowed`, 421 on a miss) to every route,
   so a DNS-rebinding page cannot even read the read-only board (this is in
@@ -78,17 +78,20 @@ Subcommands, dispatched in `main.go`:
   `ingest` never gains write-to-repo
   capability — the capture path stays read-only.
 - **`prune`** (`main.go`) — deletes events older than the retention window,
-  plus `blocks` rows whose sessions have no events left and `pr_blocks` rows whose
-  blocked session has none.
+  plus `blocks` rows whose sessions have no events left and `pr_blocks` and
+  `pane_blocks` rows whose blocked session has none.
 - **`end`** (`end.go`) — writes a synthetic `SessionEnd` for live sessions matching a branch, cwd or session-id prefix, so hard-killed agents leave the roster.
 - **`init`** (`init.go`) — wires the `clodhopper ingest` hooks into a project's `.claude/settings.json` (or `settings.local.json`), skipping ones already present.
 - **`block` / `unblock`** (`block.go`) — record or drop "this session waits on
   that one" in the `blocks` table, or (`--on-pr N`) "waits on that open PR of
-  its own GitHub repo" in `pr_blocks`; `unblock` clears both. `applyBlocks`
+  its own GitHub repo" in `pr_blocks`, or (`--on-pane TARGET`) "waits while
+  that busy tmux pane of its own tmux session runs a command" in `pane_blocks`;
+  `unblock` clears all three. `applyBlocks`
   (server layer, after `dropDeadPanes` and `enrichCI`) relaxes a
   waiting/needs-you row to `statusBlocked` while its blocker session is still on
   the roster and the blocker's own PR is not merged or closed (caveats in its
-  doc comment); `applyPRBlocks` does the same for PR blocks (see its doc comment
+  doc comment); `applyPRBlocks` and `applyPaneBlocks` do the same for PR and
+  pane blocks (see their doc comments
   for when one lapses). `nestBlocked` (server layer, after `filterRows`, so a
   filtered-out blocker leaves no orphan indent) lists a row blocked on a session
   right under its blocker, adopting the chain root's group via `NestKey` while
@@ -137,7 +140,12 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   fresh `agentRoster()` before writing the `blocks` row. `block-pr` is not
   exec-free (it may run `git`/`gh` to resolve the repo and check the PR), so it
   gets the full peer gate; the client sends only a session id and PR number, and
-  the repo is resolved server-side (see `blockPRAction`). `dismiss` is exec-free too and only
+  the repo is resolved server-side (see `blockPRAction`). `block-pane` is not
+  exec-free either (it runs `tmux list-panes` and `ps`), so it gets the full
+  peer gate; the client sends only a session id and a pane id, checked against
+  `paneIDRe` before anything runs, then `validatePaneBlock` (shared with
+  `block --on-pane`) re-checks it against a fresh roster and pane listing, and
+  `ps` only ever gets integer pids from that listing. `dismiss` is exec-free too and only
   marks an in-memory `queueLedger` entry dismissed (404 for an unknown id). `rebase`, like
   `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
   never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full
