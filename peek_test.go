@@ -204,8 +204,9 @@ func TestListPanes(t *testing.T) {
 	}
 	t.Setenv("PATH", dir)
 	got := listPanes()
-	if p := got["%11"]; p.pid != 44 || p.sessionID != "$3" || p.windowID != "@5" {
-		t.Errorf("tabbed free text: %%11 = %+v, want pid 44, $3, @5 intact", p)
+	// The ids hold; the free-text fields after the first tab shift, garbled.
+	if p, want := got["%11"], (livePane{session: "evil", command: "name", path: "m\tw\t/src/e", pid: 44, sessionID: "$3", windowID: "@5", window: "np"}); p != want {
+		t.Errorf("tabbed free text: %%11 = %+v, want %+v", p, want)
 	}
 	delete(got, "%11")
 	want := map[string]livePane{
@@ -545,5 +546,14 @@ func TestPsTpgidsArgv(t *testing.T) {
 	}
 	if argv, _ := os.ReadFile(log); string(argv) != "[-o][pid=,tpgid=][-p][10,20]" {
 		t.Errorf("ps argv = %s, want [-o][pid=,tpgid=][-p][10,20]", argv)
+	}
+}
+
+// A failing ps (exit 1, no output: none of the pids exist) reads no tpgids.
+func TestPsTpgidsFailing(t *testing.T) {
+	ps := writeStub(t, "ps", `exit 1`)
+	t.Setenv("PATH", filepath.Dir(ps)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if got := psTpgids([]int{10}); len(got) != 0 {
+		t.Errorf("psTpgids = %v, want empty", got)
 	}
 }

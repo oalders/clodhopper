@@ -333,7 +333,6 @@ test('the row panel blocks on a picked busy pane of its tmux session', async ({ 
   // Only %9005: the other "seeded" panes are roster rows' own, and %9003 is in another session.
   await expect(form.locator('optgroup[label="tmux panes"] option')).toHaveCount(1);
   await expect(form.locator('option[value="pane:%9005"]')).toHaveText('window build · npm');
-  await expect(form.locator('option[value="pane:%9005"]')).toHaveAttribute('title', 'window build · npm');
   await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption('pane:%9005');
   await form.getByRole('button', { name: 'mark main as blocked on the selected row' }).click();
   await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');

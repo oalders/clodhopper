@@ -2621,3 +2621,32 @@ func TestHandleActionBlockPane(t *testing.T) {
 		t.Errorf("pane blocks = %+v, want a on %%2 (pid 20)", blocks)
 	}
 }
+
+// The block's ts is read after validation, so a pane reading taken while the
+// request was validating (after its now, before validation finished) that
+// shows the pane idle predates the job and cannot lapse the block.
+func TestRecordPaneBlockStampsAfterValidation(t *testing.T) {
+	stubPanes(t)
+	db := openTestDB(t)
+	now := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
+	seedPaneRows(t, db, now.Add(-time.Minute))
+	validated := now.Add(time.Second)
+	old := paneBlockStamp
+	paneBlockStamp = func() time.Time { return validated }
+	t.Cleanup(func() { paneBlockStamp = old })
+	if why, err := recordPaneBlock(db, "a", "%2", now); why != "" || err != nil {
+		t.Fatalf("recordPaneBlock = %q, %v; want ok", why, err)
+	}
+	blocks, err := listPaneBlocks(db)
+	if err != nil || len(blocks) != 1 {
+		t.Fatalf("pane blocks = %+v, %v; want one", blocks, err)
+	}
+	mid := now.Add(time.Second / 2)
+	panes := map[string]livePane{"%1": {pid: 10, sessionID: "$1"}, "%2": {pid: 20, sessionID: "$1"}}
+	cache := &paneCache{set: panes, at: mid, fg: paneFG{m: map[string]int{"%1": 11, "%2": 20}, at: mid}}
+	agents := []Agent{{SessionID: "a", TmuxPane: "%1", Status: statusWaiting}}
+	applyPaneBlocks(agents, blocks, cache, true, mid)
+	if agents[0].Status != statusBlocked || cache.lapsed[blocks[0]] {
+		t.Errorf("a = %+v, lapsed = %v; want the block held", agents[0], cache.lapsed[blocks[0]])
+	}
+}

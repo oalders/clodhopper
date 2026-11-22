@@ -141,7 +141,8 @@ pane, and be busy now: its terminal's foreground process group is not its
 shell's (read with `ps`, so a script run by name counts too). The chip reads
 "window 2 · make", or "same window · make" for a pane beside the row's own,
 and has no jump. With `--enable-merge`, the picker's **panes** group offers
-those busy panes, same window first. The block lapses, for good, once the pane
+those busy panes, same window first. The block lapses, for good (though serve
+keeps lapses only in memory, so a restart can revive one), once the pane
 is back at its shell prompt, is gone from tmux's listing, or holds a different
 process (tmux reuses pane ids); the row then alerts as **waiting for you**
 again. Re-block to wait on a second command. If tmux or `ps` cannot be read,

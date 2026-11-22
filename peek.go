@@ -275,7 +275,8 @@ func parseTpgids(out []byte) map[int]int {
 	return m
 }
 
-// paneFormat is listPanes' -F: fixed-format fields, then free text, path last.
+// paneFormat is listPanes' -F: fixed-format ids, then free text, path last. A
+// tab in a free-text field leaves the ids intact but may garble later labels.
 const paneFormat = "#{pane_id}\t#{pane_pid}\t#{session_id}\t#{window_id}\t#{window_index}\t#{session_name}\t#{pane_current_command}\t#{window_name}\t#{pane_current_path}"
 
 var (
@@ -299,8 +300,9 @@ func listPanes() map[string]livePane {
 		return set
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		// The fixed-format fields come first and must validate, so a tab in a
-		// free-text one cannot shift them; path is last, so one in it survives.
+		// The fixed-format ids come first and must validate, so a tab in a
+		// free-text field cannot shift them; it can shift the free-text fields
+		// after it, garbling those labels (a tab in the last, path, survives).
 		f := strings.SplitN(line, "\t", 9)
 		if len(f) != 9 || !paneIDRe.MatchString(f[0]) || !tmuxSessionIDRe.MatchString(f[2]) || !windowIDRe.MatchString(f[3]) || !digitsRe.MatchString(f[4]) {
 			continue

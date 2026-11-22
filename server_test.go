@@ -5372,7 +5372,9 @@ func TestApplyPaneBlocksIgnoresReadingBeforeBlock(t *testing.T) {
 	}{
 		"stale ps says idle":           {&paneCache{set: panes, at: now, fg: paneFG{m: idle, at: before}}, now, false},
 		"stale listing lacks the pane": {&paneCache{set: map[string]livePane{"%1": panes["%1"]}, at: before, fg: paneFG{m: idle, at: now}}, now, false},
-		"fresh ps says idle":           {primedPanes(panes, idle, after), after, true},
+		"stale listing shows another pid": {&paneCache{set: map[string]livePane{"%1": panes["%1"], "%2": {pid: 99, sessionID: "$1"}}, at: before,
+			fg: paneFG{m: map[string]int{"%1": 11, "%2": 21}, at: now}}, now, false},
+		"fresh ps says idle": {primedPanes(panes, idle, after), after, true},
 	} {
 		agents := []Agent{{SessionID: "a", TmuxPane: "%1", Status: statusWaiting}}
 		applyPaneBlocks(agents, []PaneBlock{b}, c.cache, true, c.at)
@@ -5464,6 +5466,31 @@ func TestBuildDashboardDataBlockPanesOnlyForExecPeer(t *testing.T) {
 	}
 }
 
+// The render's exec gate decides the pane chip's label: a non-exec peer sees
+// only the pane id, an exec peer its window and command.
+func TestBuildDashboardDataPaneChipLabelByPeer(t *testing.T) {
+	stubPanes(t)
+	db := openTestDB(t)
+	now := time.Now().UTC()
+	seedPaneRows(t, db, now)
+	if err := addPaneBlock(db, "a", "%2", 20, now.Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &actionConfig{enabled: true, token: "tok"}
+	for addr, want := range map[string]string{"192.168.1.5:5555": "pane %2", "127.0.0.1:5555": "same window · npm"} {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr, r.Host = addr, "127.0.0.1:4555"
+		d, err := buildDashboardData(r, db, newCICache(nil), &peekConfig{cache: newPaneCache()}, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		i := slices.IndexFunc(d.Agents, func(a Agent) bool { return a.SessionID == "a" })
+		if i < 0 || d.Agents[i].BlockedOn != want {
+			t.Errorf("%s: agents = %+v, want a blocked on %q", addr, d.Agents, want)
+		}
+	}
+}
+
 // The pane chip and the picker's pane options are hashed, so a block landing
 // or lapsing, or a pane starting or finishing a job, repaints the board.
 func TestViewSignature_TracksBlockPanes(t *testing.T) {
@@ -5486,7 +5513,7 @@ func TestViewSignature_TracksBlockPanes(t *testing.T) {
 			t.Errorf("%s: signature unchanged", name)
 		}
 	}
-	// sameWindow only orders the options, so it alone must not repaint.
+	// An unexported ordering hint is not part of the signature.
 	if viewSignature(base) != viewSignature(vary(func(a *Agent) { a.BlockPanes[0].sameWindow = true })) {
 		t.Error("sameWindow: signature changed")
 	}

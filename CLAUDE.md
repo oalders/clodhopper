@@ -55,16 +55,17 @@ Subcommands, dispatched in `main.go`:
   runs no subprocess at all and just calls `endSessions` to drop the row, and a
   `dismiss` action that execs nothing and hides a merge-queue ledger row, a
   `teardown` action (merge-pr `--punt` on a merged/closed ledger row), plus
-  `block`/`unblock`/`block-pr`/`block-pane`, which write or drop a block row. Before any
-  of that, middleware around the whole mux (`newServeMux`) applies the security
-  headers and the Host allowlist (`hostAllowed`, 421 on a miss) to every route,
-  so a DNS-rebinding page cannot even read the read-only board (this is in
-  addition to, not instead of, `execPeerAllowed`'s own Host check). Every action
-  that DOES exec is additionally gated on the peer's address (`remoteAllowed`):
-  loopback or Tailscale only, whatever `--host` binds to, with no override — and
-  the request is refused outright when a forwarding header (`X-Forwarded-For`,
-  `X-Real-IP`, `Forwarded`, `X-Forwarded-Host`) is *present* — for EVERY action,
-  including the exec-free `end`/`block`/`unblock`/`dismiss`, because behind a proxy every peer looks like
+  `block`/`unblock`/`block-pr`/`block-pane`, which write or drop a block row.
+  Before any of that, middleware around the whole mux (`newServeMux`) applies
+  the security headers and the Host allowlist (`hostAllowed`, 421 on a miss) to
+  every route, so a DNS-rebinding page cannot even read the read-only board
+  (this is in addition to, not instead of, `execPeerAllowed`'s own Host check).
+  Every action that DOES exec is additionally gated on the peer's address
+  (`remoteAllowed`): loopback or Tailscale only, whatever `--host` binds to,
+  with no override — and the request is refused outright when a forwarding
+  header (`X-Forwarded-For`, `X-Real-IP`, `Forwarded`, `X-Forwarded-Host`) is
+  *present* — for EVERY action, including the exec-free
+  `end`/`block`/`unblock`/`dismiss`, because behind a proxy every peer looks like
   loopback and no peer can be attributed at all. All three checks (proxy
   refusal, Host allowlist, peer network) live in ONE helper, `execPeerAllowed`,
   shared by handleAction and handlePane so they cannot drift. **Never run
@@ -141,7 +142,8 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   exec-free (it may run `git`/`gh` to resolve the repo and check the PR), so it
   gets the full peer gate; the client sends only a session id and PR number, and
   the repo is resolved server-side (see `blockPRAction`). `block-pane` execs
-  `tmux` and `ps`, so it gets the full peer gate too (see `blockPaneAction`). `dismiss` is exec-free too and only
+  `tmux` and `ps`, so it gets the full peer gate too (see `blockPaneAction`).
+  `dismiss` is exec-free too and only
   marks an in-memory `queueLedger` entry dismissed (404 for an unknown id). `rebase`, like
   `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
   never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full
