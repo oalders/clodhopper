@@ -1370,7 +1370,7 @@ func blockPaneAction(db *sql.DB, sessionID, pane string, now time.Time) actionRe
 	if !paneIDRe.MatchString(pane) {
 		return actionResult{ExitCode: -1, Output: "not a tmux pane id"}
 	}
-	why, err := recordPaneBlock(db, sessionID, pane, now)
+	why, err := recordPaneBlock(db, sessionID, pane, now, time.Now)
 	switch {
 	case err != nil:
 		debugf("action: block-pane %s: %v", sessionID, err)

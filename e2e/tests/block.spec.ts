@@ -183,7 +183,7 @@ test('the row panel blocks on the picked row', async ({ page }) => {
   await expect(form.locator('option[value="e2e-idle-0000-1111-2222-333333333333"]'))
     .toHaveText('a-second-project-with-a-long-source-app-name · a-very-long-worktree-directory-name-standing-in-for-the-branch');
   await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption(blocked);
-  await form.getByRole('button', { name: 'mark fix-1235 as blocked on the selected row' }).click();
+  await form.getByRole('button', { name: 'mark fix-1235 as blocked on the chosen row, PR or pane' }).click();
   await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');
   expect(posts).toHaveLength(1);
   expect(posts[0].postData()).toBe(`session_id=${blocker}&action=block&blocker_session_id=${blocked}`);
@@ -277,7 +277,7 @@ test('the row panel blocks on a picked open PR', async ({ page }) => {
   await expect(form.locator('optgroup[label^="open PRs"]')).toHaveAttribute('label', 'open PRs · e2e/draft-conflict');
   await expect(form.locator('option[value="pr:101"]')).toHaveText('#101 Land the parser');
   await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption('pr:101');
-  await form.getByRole('button', { name: 'mark mq-draft-conflict as blocked on the selected row' }).click();
+  await form.getByRole('button', { name: 'mark mq-draft-conflict as blocked on the chosen row, PR or pane' }).click();
   await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');
   expect(posts).toHaveLength(1);
   expect(posts[0].postData()).toBe(`session_id=${draft}&action=block-pr&blocker_pr=101`);
@@ -334,7 +334,7 @@ test('the row panel blocks on a picked busy pane of its tmux session', async ({ 
   await expect(form.locator('optgroup[label="tmux panes"] option')).toHaveCount(1);
   await expect(form.locator('option[value="pane:%9005"]')).toHaveText('window build · npm');
   await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption('pane:%9005');
-  await form.getByRole('button', { name: 'mark main as blocked on the selected row' }).click();
+  await form.getByRole('button', { name: 'mark main as blocked on the chosen row, PR or pane' }).click();
   await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');
   expect(posts).toHaveLength(1);
   expect(posts[0].postData()).toBe(`session_id=${needs}&action=block-pane&blocker_pane=%259005`);
@@ -352,7 +352,7 @@ test('a row alone on the board still gets the picker when its tmux session has a
   await expect(form.locator('optgroup')).toHaveCount(1);
   await expect(form.locator('optgroup[label="tmux panes"] option[value="pane:%9005"]')).toHaveText('window build · npm');
   await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption('pane:%9005');
-  await form.getByRole('button', { name: 'mark pane-wait as blocked on the selected row' }).click();
+  await form.getByRole('button', { name: 'mark pane-wait as blocked on the chosen row, PR or pane' }).click();
   await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');
   expect(posts).toHaveLength(1);
   expect(posts[0].postData()).toBe(`session_id=${paneBlocked}&action=block-pane&blocker_pane=%259005`);

@@ -2631,10 +2631,7 @@ func TestRecordPaneBlockStampsAfterValidation(t *testing.T) {
 	now := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
 	seedPaneRows(t, db, now.Add(-time.Minute))
 	validated := now.Add(time.Second)
-	old := paneBlockStamp
-	paneBlockStamp = func() time.Time { return validated }
-	t.Cleanup(func() { paneBlockStamp = old })
-	if why, err := recordPaneBlock(db, "a", "%2", now); why != "" || err != nil {
+	if why, err := recordPaneBlock(db, "a", "%2", now, func() time.Time { return validated }); why != "" || err != nil {
 		t.Fatalf("recordPaneBlock = %q, %v; want ok", why, err)
 	}
 	blocks, err := listPaneBlocks(db)

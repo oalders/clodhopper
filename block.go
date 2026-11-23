@@ -120,7 +120,7 @@ func blockOnPane(db *sql.DB, blocked, target string) int {
 		fmt.Fprintf(os.Stderr, "clodhopper block: could not resolve tmux pane %q (is tmux reachable?)\n", target)
 		return 1
 	}
-	why, err := recordPaneBlock(db, blocked, pane, time.Now())
+	why, err := recordPaneBlock(db, blocked, pane, time.Now(), time.Now)
 	switch {
 	case err != nil:
 		fmt.Fprintln(os.Stderr, "clodhopper block:", err)
@@ -133,19 +133,16 @@ func blockOnPane(db *sql.DB, blocked, target string) int {
 	return 0
 }
 
-// paneBlockStamp is recordPaneBlock's clock, a var so a test can fix it.
-var paneBlockStamp = time.Now
-
 // recordPaneBlock stores sessionID's block on pane if validatePaneBlock allows
 // it, else returns why not; err is a DB error. Shared by block-pane and `block --on-pane`.
-// The ts is read only once validation is done, so a pane reading taken before
-// validation saw the job busy predates it and cannot lapse the block.
-func recordPaneBlock(db *sql.DB, sessionID, pane string, now time.Time) (string, error) {
+// stamp is called only once validation is done, so a pane reading taken before
+// validation saw the job busy predates the block's ts and cannot lapse it.
+func recordPaneBlock(db *sql.DB, sessionID, pane string, now time.Time, stamp func() time.Time) (string, error) {
 	pid, why, err := validatePaneBlock(db, sessionID, pane, now)
 	if err != nil || why != "" {
 		return why, err
 	}
-	return "", addPaneBlock(db, sessionID, pane, pid, paneBlockStamp())
+	return "", addPaneBlock(db, sessionID, pane, pid, stamp())
 }
 
 // validatePaneBlock checks, against a fresh roster, pane listing and ps read,
