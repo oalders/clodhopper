@@ -4628,7 +4628,7 @@ func TestContentTemplate_BlockControls(t *testing.T) {
 		t.Error("exec board has no unblock ✕ on the chip")
 	}
 	agents[0].BlockedAlso = []string{"PR #7", "same window · npm"}
-	if more := render(true); !strings.Contains(more, `title="also blocked on PR #7, same window · npm">+2</span>`) || !strings.Contains(more, `title="clear all blocks"`) {
+	if more := render(true); !strings.Contains(more, `<span class="blockmore" title="also blocked on PR #7, same window · npm">+2</span>`) || !strings.Contains(more, `title="clear all blocks"`) {
 		t.Error("a row with hidden blocks lacks the chip's +2 naming them, or its ✕ clearing all")
 	}
 	agents[0].BlockedAlso = nil

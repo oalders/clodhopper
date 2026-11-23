@@ -44,7 +44,7 @@ test('a blocked row is relaxed and its chip names the blocker', async ({ page })
 });
 
 test('a second block on the row shows as +1 on its chip, named in the tooltip', async ({ page }) => {
-  const more = page.locator(`${chip} .blockpane`);
+  const more = page.locator(`${chip} .blockmore`);
   await expect(more).toHaveText('+1');
   await expect(more).toHaveAttribute('title', 'also blocked on PR #101');
   await expect(page.locator(chip).getByRole('button', { name: 'unblock fix-1234 from fix-1235' })).toHaveAttribute('title', 'clear all blocks');
@@ -299,6 +299,8 @@ test('a PR block relaxes the row and its chip links to the PR', async ({ page })
   await expect(link).toHaveAttribute('rel', /noopener/);
   await expect(link).toHaveAttribute('title', 'Land the parser by alice');
   await expect(page.locator(prChip).locator('.blockjump')).toHaveCount(0);
+  await expect(page.locator(`${prChip} .blockmore`)).toHaveCount(0);
+  await expect(page.locator(prChip).getByRole('button', { name: 'unblock mq-draft-conflict from PR #101' })).toHaveAttribute('title', 'clear this block');
 });
 
 test('the PR chip ✕ sends unblock for the blocked row', async ({ page }) => {
