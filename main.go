@@ -128,10 +128,12 @@ COMMANDS
     --session PREFIX      the session whose id starts with PREFIX (the roster fragment)
 
   block     relax a row out of the alert band until its blocker leaves the roster
-            or the blocker's PR merges or closes, or, with --on-pr, until that PR merges or closes
+            or the blocker's PR merges or closes, or, with --on-pr, until that PR merges or closes,
+            or, with --on-pane, while that tmux pane runs a command
     --branch B | --session PREFIX          the blocked session
     --on-branch B | --on-session PREFIX    the session it waits on
     --on-pr N                              or the open PR in its GitHub repo it waits on
+    --on-pane TARGET                       or the busy tmux pane in its tmux session it waits on
 
   unblock   drop every block on the matching live sessions
     --branch B | --session PREFIX

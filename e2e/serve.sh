@@ -35,13 +35,24 @@ mkdir "$tmp/bin"
 cat >"$tmp/bin/tmux" <<'STUB'
 #!/bin/sh
 # Every seeded pane id (e2e_seed_test.go) must be listed, or dropDeadPanes hides its row; %9004 is the landing fixture's.
-# Pane pid 0 so serve reads no host process's memory.
+# Pane pid 0 so serve reads no host process's memory; %9006 is the pane-blocked row's.
 [ "${1-}" = list-panes ] || exit 1
-printf '%s\t0\tseeded\tclaude\t/nonexistent\n' %9001 %9002 %9004
+printf '%s\t0\t$1\t@1\t1\tseeded\tclaude\tmain\t/nonexistent\n' %9001 %9002 %9004 %9006
 # Longer than the merge-queue session column's old 18ch, so merge.spec.ts can catch it clipping.
-printf '%%9003\t0\tseeded-merge-queue-session-name\tclaude\t/nonexistent\n'
+printf '%%9003\t0\t$2\t@9\t1\tseeded-merge-queue-session-name\tclaude\tmain\t/nonexistent\n'
+# A busy non-roster pane in window 2 of "seeded", for block.spec.ts; its pid is above Linux's pid_max, so it names no host process.
+printf '%%9005\t4194305\t$1\t@2\t2\tseeded\tnpm\tbuild\t/nonexistent\n'
 STUB
 chmod +x "$tmp/bin/tmux"
+# A stub ps answers serve's pane foreground read (%9005 runs a job; the pid-0
+# panes are never asked about) and hands every other call to the host's ps.
+real_ps=$(command -v ps)
+cat >"$tmp/bin/ps" <<STUB
+#!/bin/sh
+if [ "\${1-} \${2-}" = "-o pid=,tpgid=" ]; then echo '4194305 4194399'; exit 0; fi
+exec "$real_ps" "\$@"
+STUB
+chmod +x "$tmp/bin/ps"
 # A stub gh puts two seeded merge-queue rows (e2e_seed_test.go) in the queue,
 # ejects one, reports the merged row's PR merged and the draft-conflict row's a
 # conflicted draft, keyed on the row's cwd (the queue reply on the PR id that

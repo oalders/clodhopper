@@ -101,6 +101,7 @@ clodhopper prune [--days 14]              # delete events older than N days
 clodhopper end --branch B                  # mark matching live sessions ended (teardown)
 clodhopper block --branch B --on-branch C  # relax B's row until C's session leaves the board or C's PR merges/closes
 clodhopper block --branch B --on-pr 123    # relax B's row until PR #123 in its repo merges or closes
+clodhopper block --branch B --on-pane %7   # relax B's row while tmux pane %7 (any tmux target) runs a command
 clodhopper unblock --branch B              # drop B's blocks
 ```
 
@@ -131,6 +132,30 @@ it, so without a working `gh` a PR block never lapses on its own — clear it wi
 `clodhopper unblock` or the chip's ✕. With `--enable-merge`, the row panel's
 "blocked on" picker also offers the repo's open PRs (listed through `gh`,
 refreshed every 5 minutes), minus the row's own.
+
+A row can also wait on a command you started yourself in another tmux pane
+(a long build, a test run): `clodhopper block --branch fix-1234 --on-pane
+work:2.1` takes any tmux target and blocks the row while that pane runs a
+command. The pane must be in the row's own tmux session, be no roster row's
+pane, and be busy now: its terminal's foreground process group is not its
+shell's (read with `ps`, so a script run by name counts too). The chip reads
+"window 2 · make", or "same window · make" for a pane beside the row's own,
+and has no jump. With `--enable-merge`, the picker's **panes** group offers
+those busy panes, same window first. The block lapses, for good (though serve
+keeps lapses only in memory, so a restart can revive one), once the pane
+is back at its shell prompt, is gone from tmux's listing, or holds a different
+process (tmux reuses pane ids); the row then alerts as **waiting for you**
+again. Re-block to wait on a second command. If tmux or `ps` cannot be read,
+the block holds. Limits: a pane running `ssh`, a nested shell or a REPL counts
+as busy until that exits; a pane started with a command (`tmux new-window
+make`) has no shell to return to, so it is never offered; and serve must share
+the panes' pid namespace (a containerised serve reads no foreground group, so
+nothing is offered and a stored block never lapses on its own).
+
+An agent that knows the pane can instead watch it itself with a Monitor, and
+the existing background tracking then shows its row as **waiting**. That is a
+workaround, not a replacement: the agent rarely knows which pane, and watching
+costs agent context for the whole run.
 
 By default the dashboard binds `127.0.0.1` (loopback only). If your browser runs
 on a different machine or namespace than the server (e.g. inside a container or
@@ -315,11 +340,13 @@ left behind by a hard-killed agent. The row comes back if that session ever
 emits another event.
 
 The row panel's **blocked on** picker and **mark blocked** button do what
-`clodhopper block` does: they mark *this* row as waiting on the row you pick,
+`clodhopper block` does: they mark *this* row as waiting on the row, PR or pane you pick,
 not the other way round. The blocked-on chip gains an **✕** that unblocks.
 A row blocked on a session is listed indented under that session's row, when
 that row is shown.
-Like **end**, these only write clodhopper's own database.
+Like **end**, these only write clodhopper's own database (a PR or pane block
+first reads `gh`, or tmux and `ps`, to check its target, so like the session
+actions it needs a loopback or Tailscale peer).
 
 A row that leaves the merge-queue section stays there with its PR's outcome:
 **merged** (with when) or **closed**, muted; **left queue**, as an alert, if

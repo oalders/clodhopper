@@ -55,40 +55,45 @@ Subcommands, dispatched in `main.go`:
   runs no subprocess at all and just calls `endSessions` to drop the row, and a
   `dismiss` action that execs nothing and hides a merge-queue ledger row, a
   `teardown` action (merge-pr `--punt` on a merged/closed ledger row), plus
-  `block`/`unblock`/`block-pr`, which write or drop a block row. Before any
-  of that, middleware around the whole mux (`newServeMux`) applies the security
-  headers and the Host allowlist (`hostAllowed`, 421 on a miss) to every route,
-  so a DNS-rebinding page cannot even read the read-only board (this is in
-  addition to, not instead of, `execPeerAllowed`'s own Host check). Every action
-  that DOES exec is additionally gated on the peer's address (`remoteAllowed`):
-  loopback or Tailscale only, whatever `--host` binds to, with no override — and
-  the request is refused outright when a forwarding header (`X-Forwarded-For`,
-  `X-Real-IP`, `Forwarded`, `X-Forwarded-Host`) is *present* — for EVERY action,
-  including the exec-free `end`/`block`/`unblock`/`dismiss`, because behind a proxy every peer looks like
-  loopback and no peer can be attributed at all. All three checks (proxy
+  `block`/`unblock`/`block-pr`/`block-pane`, which write or drop a block row.
+  Before any of that, middleware around the whole mux (`newServeMux`) applies
+  the security headers and the Host allowlist (`hostAllowed`, 421 on a miss) to
+  every route, so a DNS-rebinding page cannot even read the read-only board
+  (this is in addition to, not instead of, `execPeerAllowed`'s own Host check).
+  Every action that DOES exec is additionally gated on the peer's address
+  (`remoteAllowed`): loopback or Tailscale only, whatever `--host` binds to,
+  with no override — and the request is refused outright when a forwarding
+  header (`X-Forwarded-For`, `X-Real-IP`, `Forwarded`, `X-Forwarded-Host`) is
+  *present* — for EVERY action, including the exec-free
+  `end`/`block`/`unblock`/`dismiss`, because behind a proxy every peer looks
+  like loopback and no peer can be attributed at all. All three checks (proxy
   refusal, Host allowlist, peer network) live in ONE helper, `execPeerAllowed`,
   shared by handleAction and handlePane so they cannot drift. **Never run
   `serve --enable-merge` behind a reverse proxy, `tailscale serve`, or a port
   forward**: the peer gate assumes a direct socket, and `ssh -L` or a
-  header-stripping proxy defeats it silently. `/api/pane` (`--pane-peek`) runs the SAME gate — it execs `tmux` and
-  streams live transcript text, and being a GET it carries no CSRF token, so the
-  Host allowlist is what stops a DNS-rebinding page from walking pane ids.
-  The CSRF token is emitted into the page only for a peer that passes the gate,
-  so a peer that fails it gets a genuinely read-only board (no write action of any kind, exec-free ones included).
-  `ingest` never gains write-to-repo
-  capability — the capture path stays read-only.
+  header-stripping proxy defeats it silently. `/api/pane` (`--pane-peek`) runs
+  the SAME gate — it execs `tmux` and streams live transcript text, and being
+  a GET it carries no CSRF token, so the Host allowlist is what stops a
+  DNS-rebinding page from walking pane ids. The CSRF token is emitted into the
+  page only for a peer that passes the gate, so a peer that fails it gets a
+  genuinely read-only board (no write action of any kind, exec-free ones
+  included). `ingest` never gains write-to-repo capability — the capture path
+  stays read-only.
 - **`prune`** (`main.go`) — deletes events older than the retention window,
-  plus `blocks` rows whose sessions have no events left and `pr_blocks` rows whose
-  blocked session has none.
+  plus `blocks` rows whose sessions have no events left and `pr_blocks` and
+  `pane_blocks` rows whose blocked session has none.
 - **`end`** (`end.go`) — writes a synthetic `SessionEnd` for live sessions matching a branch, cwd or session-id prefix, so hard-killed agents leave the roster.
 - **`init`** (`init.go`) — wires the `clodhopper ingest` hooks into a project's `.claude/settings.json` (or `settings.local.json`), skipping ones already present.
 - **`block` / `unblock`** (`block.go`) — record or drop "this session waits on
   that one" in the `blocks` table, or (`--on-pr N`) "waits on that open PR of
-  its own GitHub repo" in `pr_blocks`; `unblock` clears both. `applyBlocks`
+  its own GitHub repo" in `pr_blocks`, or (`--on-pane TARGET`) "waits while
+  that busy tmux pane of its own tmux session runs a command" in `pane_blocks`;
+  `unblock` clears all three. `applyBlocks`
   (server layer, after `dropDeadPanes` and `enrichCI`) relaxes a
   waiting/needs-you row to `statusBlocked` while its blocker session is still on
   the roster and the blocker's own PR is not merged or closed (caveats in its
-  doc comment); `applyPRBlocks` does the same for PR blocks (see its doc comment
+  doc comment); `applyPRBlocks` and `applyPaneBlocks` do the same for PR and
+  pane blocks (see their doc comments
   for when one lapses). `nestBlocked` (server layer, after `filterRows`, so a
   filtered-out blocker leaves no orphan indent) lists a row blocked on a session
   right under its blocker, adopting the chain root's group via `NestKey` while
@@ -133,24 +138,27 @@ me" board), and `activeCounts` tallies activity per (source_app, branch).
   built only from validated values, never client input.
   The `end` action never reaches `actionArgv`: it execs nothing, and its
   `session_id` travels only as a bound SQL parameter. `block`/`unblock` are
-  exec-free like `end` (`actionExecs`; they never reach `actionArgv`); `block` checks both ids against a
-  fresh `agentRoster()` before writing the `blocks` row. `block-pr` is not
-  exec-free (it may run `git`/`gh` to resolve the repo and check the PR), so it
-  gets the full peer gate; the client sends only a session id and PR number, and
-  the repo is resolved server-side (see `blockPRAction`). `dismiss` is exec-free too and only
-  marks an in-memory `queueLedger` entry dismissed (404 for an unknown id). `rebase`, like
-  `reload-plugins`, sends fixed `send-keys` text into a server-resolved pane,
-  never through `actionArgv`; it execs tmux, so it gets `execPeerAllowed`'s full
-  peer gate. The merge-pr actions (`squash`, `squash-admin`, `close`,
-  `teardown`) never run as serve's subprocess: `startMergeWindow` opens a new tmux
-  window in the row's own session running merge-pr (it may wait minutes on a
-  merge queue) and returns at once; its varying argv elements are the
-  `display-message` session id (validated), the stored absolute cwd (refused if
-  it holds a tmux format `#`) and the `LookPath`'d merge-pr. The row drops
-  only once `dropDeadPanes` sees the pane gone (a lone row may need `end`).
-  `teardown` (fixed argv `--punt`, force ignored) execs tmux, so it gets the
-  full peer gate; `handleAction` re-checks the ledger entry, live pane (and its tmux session) and
-  merged/closed PR server-side, never trusting the rendered button.
+  exec-free like `end` (`actionExecs`; they never reach `actionArgv`); `block`
+  checks both ids against a fresh `agentRoster()` before writing the `blocks`
+  row. `block-pr` is not exec-free (it may run `git`/`gh` to resolve the repo
+  and check the PR), so it gets the full peer gate; the client sends only a
+  session id and PR number, and the repo is resolved server-side (see
+  `blockPRAction`). `block-pane` execs `tmux` and `ps`, so it gets the full peer
+  gate too (see `blockPaneAction`). `dismiss` is exec-free too and only marks an
+  in-memory `queueLedger` entry dismissed (404 for an unknown id). `rebase`,
+  like `reload-plugins`, sends fixed `send-keys` text into a server-resolved
+  pane, never through `actionArgv`; it execs tmux, so it gets
+  `execPeerAllowed`'s full peer gate. The merge-pr actions (`squash`,
+  `squash-admin`, `close`, `teardown`) never run as serve's subprocess:
+  `startMergeWindow` opens a new tmux window in the row's own session running
+  merge-pr (it may wait minutes on a merge queue) and returns at once; its
+  varying argv elements are the `display-message` session id (validated), the
+  stored absolute cwd (refused if it holds a tmux format `#`) and the
+  `LookPath`'d merge-pr. The row drops only once `dropDeadPanes` sees the pane
+  gone (a lone row may need `end`). `teardown` (fixed argv `--punt`, force
+  ignored) execs tmux, so it gets the full peer gate; `handleAction` re-checks
+  the ledger entry, live pane (and its tmux session) and merged/closed PR
+  server-side, never trusting the rendered button.
   `broadcast-restart` is a separate path that never reaches `actionArgv`: it
   sends `/exit`, then — only if nono's denied-paths review is the last thing on
   screen (`nonoReviewOnScreen`) — a fixed Escape key to cancel it, then types

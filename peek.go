@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"io"
+	"maps"
 	"net/http"
 	"os/exec"
 	"regexp"
@@ -58,9 +59,12 @@ func clampPaneLines(n int) int {
 // key, in ingest's tmux_session form), the session name's trailing title segment
 // ("" if it has none; see paneLabel), foreground command, current directory and
 // the pane's root process id (0 if unparseable), whose tree paneCache.mem sums.
+// sessionID, windowID and window (its scrubbed name, else its index) place it
+// for a pane block (see applyPaneBlocks).
 type livePane struct {
 	session, title, command, path string
 	pid                           int
+	sessionID, windowID, window   string
 }
 
 // paneTitle returns the last PUA-delimited segment of a raw tmux session name
@@ -103,6 +107,9 @@ type paneCache struct {
 	set  map[string]livePane
 	at   time.Time
 	memo paneMem // see mem
+	fg   paneFG  // see foreground
+	// lapsed holds the pane blocks applyPaneBlocks saw lapse, under mu (see lapses).
+	lapsed map[PaneBlock]bool
 }
 
 func newPaneCache() *paneCache { return &paneCache{} }
@@ -130,6 +137,153 @@ func (c *paneCache) live(pane string, now time.Time) bool {
 	return ok
 }
 
+// paneFG memoises paneCache.foreground under its own lock, so a ps call never holds up panes().
+type paneFG struct {
+	mu sync.Mutex
+	m  map[string]int
+	at time.Time
+}
+
+// foreground returns pane id → its tty's foreground process group (see
+// paneTpgids), refreshed once per paneTTL. Like mem it is lazy, so the
+// panes()/live() callers (/api/pane, the action paths) never run ps; only a
+// render with a pane block or an exec peer's block picker calls it. A nil cache
+// returns nil.
+func (c *paneCache) foreground(now time.Time) map[string]int {
+	if c == nil {
+		return nil
+	}
+	panes := c.panes(now)
+	f := &c.fg
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.m == nil || now.Sub(f.at) >= paneTTL {
+		f.m, f.at = paneTpgids(panes), now
+	}
+	return f.m
+}
+
+// reading returns the pane listing and foreground groups, and when the older
+// of the two was taken, so applyPaneBlocks can ignore a reading that predates a
+// block. A nil cache returns nothing, at the zero time.
+func (c *paneCache) reading(now time.Time) (map[string]livePane, map[string]int, time.Time) {
+	if c == nil {
+		return nil, nil, time.Time{}
+	}
+	fg := c.foreground(now)
+	c.fg.mu.Lock()
+	fgAt := c.fg.at
+	c.fg.mu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.at.Before(fgAt) {
+		return c.set, fg, c.at
+	}
+	return c.set, fg, fgAt
+}
+
+// lapses forgets the lapsed pane blocks no longer in stored (a re-block's new
+// ts is a new key, and this bounds the set) and returns the rest. A nil cache
+// remembers none.
+func (c *paneCache) lapses(stored []PaneBlock) map[PaneBlock]bool {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	maps.DeleteFunc(c.lapsed, func(b PaneBlock, _ bool) bool { return !slices.Contains(stored, b) })
+	return maps.Clone(c.lapsed)
+}
+
+// lapse records pane blocks applyPaneBlocks saw lapse.
+func (c *paneCache) lapse(bs []PaneBlock) {
+	if c == nil || len(bs) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.lapsed == nil {
+		c.lapsed = map[PaneBlock]bool{}
+	}
+	for _, b := range bs {
+		c.lapsed[b] = true
+	}
+}
+
+// paneBusy reports whether pane id (p) runs a job: its foreground process
+// group is not its shell's own. known is false when fg has no group for it.
+// pane_current_command cannot tell this, since a running script shows as its shell.
+func paneBusy(id string, p livePane, fg map[string]int) (busy, known bool) {
+	g, ok := fg[id]
+	return ok && g != p.pid, ok
+}
+
+// readTpgids is a var so a test can stand in for ps.
+var readTpgids = psTpgids
+
+// paneTpgids maps each listed pane with a pid to its tty's foreground process
+// group, via one readTpgids call; a pane ps did not report is absent.
+func paneTpgids(panes map[string]livePane) map[string]int {
+	var pids []int
+	for _, p := range panes {
+		if p.pid > 0 {
+			pids = append(pids, p.pid)
+		}
+	}
+	tp := readTpgids(pids)
+	out := map[string]int{}
+	for id, p := range panes {
+		if g, ok := tp[p.pid]; ok && p.pid > 0 {
+			out[id] = g
+		}
+	}
+	return out
+}
+
+// psTpgids reads pid → tpgid with one ps call, or nil with no pids. pids are
+// integers from the pane listing, never client input. stdout is parsed even on
+// a non-zero exit, since ps -p exits 1 when any pid has gone.
+func psTpgids(pids []int) map[int]int {
+	if len(pids) == 0 {
+		return nil
+	}
+	list := make([]string, len(pids))
+	for i, p := range pids {
+		list[i] = strconv.Itoa(p)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, "ps", "-o", "pid=,tpgid=", "-p", strings.Join(list, ",")).Output()
+	return parseTpgids(out)
+}
+
+// parseTpgids parses `ps -o pid=,tpgid=` output, keeping only positive
+// tpgids (-1 means no controlling tty) and skipping malformed lines.
+func parseTpgids(out []byte) map[int]int {
+	m := map[int]int{}
+	for line := range strings.SplitSeq(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(f[0])
+		g, err2 := strconv.Atoi(f[1])
+		if err1 == nil && err2 == nil && g > 0 {
+			m[pid] = g
+		}
+	}
+	return m
+}
+
+// paneFormat is listPanes' -F: fixed-format ids, then free text, path last. A
+// tab in a free-text field leaves the ids intact but may garble later labels.
+const paneFormat = "#{pane_id}\t#{pane_pid}\t#{session_id}\t#{window_id}\t#{window_index}\t#{session_name}\t#{pane_current_command}\t#{window_name}\t#{pane_current_path}"
+
+var (
+	windowIDRe = regexp.MustCompile(`^@\d+$`)
+	digitsRe   = regexp.MustCompile(`^\d+$`)
+)
+
 // listPanes returns every live tmux pane id across all sessions, mapped to its
 // session name (normalised exactly as ingest stores tmux_session), foreground
 // command, current path and root pid, or an empty map if tmux is missing, unreachable
@@ -141,15 +295,22 @@ func listPanes() map[string]livePane {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}\t#{session_name}\t#{pane_current_command}\t#{pane_current_path}").Output()
+	out, err := exec.CommandContext(ctx, "tmux", "list-panes", "-a", "-F", paneFormat).Output()
 	if err != nil {
 		return set
 	}
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		// Path last, and SplitN, so a tab inside it cannot shift the other fields.
-		if f := strings.SplitN(line, "\t", 5); len(f) == 5 {
-			pid, _ := strconv.Atoi(f[1])
-			set[f[0]] = livePane{session: tmuxSessionLabel(f[2]), title: paneTitle(f[2]), command: f[3], path: f[4], pid: pid}
+		// The fixed-format ids come first and must validate, so a tab in a
+		// free-text field cannot shift them; it can shift the free-text fields
+		// after it, garbling those labels (a tab in the last, path, survives).
+		f := strings.SplitN(line, "\t", 9)
+		if len(f) != 9 || !paneIDRe.MatchString(f[0]) || !tmuxSessionIDRe.MatchString(f[2]) || !windowIDRe.MatchString(f[3]) || !digitsRe.MatchString(f[4]) {
+			continue
+		}
+		pid, _ := strconv.Atoi(f[1])
+		set[f[0]] = livePane{
+			session: tmuxSessionLabel(f[5]), title: paneTitle(f[5]), command: f[6], path: f[8], pid: pid,
+			sessionID: f[2], windowID: f[3], window: cmp.Or(truncate(scrubString(f[7]), maxFieldLen), f[4]),
 		}
 	}
 	return set
@@ -176,33 +337,7 @@ var launcherCommands = map[string]bool{"claude": true, "nono": true}
 // A surviving row matched to its pane (by label or the launch-dir fallback) takes
 // the pane's current session name as its label (#180), shown via paneLabel.
 func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
-	fallback := func(a Agent, p livePane) bool {
-		dir := a.launchCwd()
-		return launcherCommands[p.command] && p.path != "" && dir != "" && cwdKey(p.path) == cwdKey(dir)
-	}
-	claimed, candidates := map[string]bool{}, map[string]int{}
-	for _, a := range agents {
-		p, ok := panes[a.TmuxPane]
-		switch {
-		case !ok:
-		case a.TmuxSession != "" && a.TmuxSession == p.session:
-			claimed[a.TmuxPane] = true
-		case fallback(a, p):
-			candidates[a.TmuxPane]++
-		}
-	}
-	matched := func(a Agent) bool {
-		p, ok := panes[a.TmuxPane]
-		if !ok {
-			return false
-		}
-		return a.TmuxSession == p.session ||
-			(!claimed[a.TmuxPane] && candidates[a.TmuxPane] == 1 && fallback(a, p))
-	}
-	alive := func(a Agent) bool {
-		_, ok := panes[a.TmuxPane]
-		return ok && (a.TmuxSession == "" || matched(a))
-	}
+	alive, matched := paneMatchers(agents, panes)
 	if !slices.ContainsFunc(agents, alive) {
 		return agents
 	}
@@ -225,6 +360,40 @@ func dropDeadPanes(agents []Agent, panes map[string]livePane) []Agent {
 	}
 	markGroups(kept)
 	return kept
+}
+
+// paneMatchers returns dropDeadPanes' tests over agents' stored labels: matched
+// (the listed pane is the row's, by label or the launch-dir fallback) and alive
+// (listed, and matched unless the row recorded no label).
+func paneMatchers(agents []Agent, panes map[string]livePane) (alive, matched func(Agent) bool) {
+	fallback := func(a Agent, p livePane) bool {
+		dir := a.launchCwd()
+		return launcherCommands[p.command] && p.path != "" && dir != "" && cwdKey(p.path) == cwdKey(dir)
+	}
+	claimed, candidates := map[string]bool{}, map[string]int{}
+	for _, a := range agents {
+		p, ok := panes[a.TmuxPane]
+		switch {
+		case !ok:
+		case a.TmuxSession != "" && a.TmuxSession == p.session:
+			claimed[a.TmuxPane] = true
+		case fallback(a, p):
+			candidates[a.TmuxPane]++
+		}
+	}
+	matched = func(a Agent) bool {
+		p, ok := panes[a.TmuxPane]
+		if !ok {
+			return false
+		}
+		return a.TmuxSession == p.session ||
+			(!claimed[a.TmuxPane] && candidates[a.TmuxPane] == 1 && fallback(a, p))
+	}
+	alive = func(a Agent) bool {
+		_, ok := panes[a.TmuxPane]
+		return ok && (a.TmuxSession == "" || matched(a))
+	}
+	return alive, matched
 }
 
 // capturePane returns the last `lines` rows of pane, scrubbed for secret-shaped

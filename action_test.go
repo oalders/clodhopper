@@ -2512,3 +2512,138 @@ func TestRunActionIgnoresPlantedFSMonitor(t *testing.T) {
 	}
 	assertNoMarker(t, marker)
 }
+
+// paneListing is stubPanes' tmux session s ($1): a's own pane %1, a busy %2
+// beside it, an idle %3 and an unreadable %6 in window @2, b's own (busy) %5;
+// and a busy %4 in another session.
+var paneListing = strings.Join([]string{
+	"%1\t10\t$1\t@1\t1\ts\tclaude\tmain\t/w/a",
+	"%2\t20\t$1\t@1\t1\ts\tnpm\tmain\t/w/a",
+	"%3\t30\t$1\t@2\t2\ts\tbash\tlogs\t/w/a",
+	"%4\t40\t$2\t@3\t1\tother\tnpm\tmain\t/w/o",
+	"%5\t50\t$1\t@4\t3\ts\tclaude\tb\t/w/b",
+	"%6\t60\t$1\t@2\t2\ts\tbash\tlogs\t/w/a",
+}, "\n") + "\n"
+
+// stubPanes puts a fake tmux on PATH that lists paneListing (nothing when
+// STUB_NO_PANES is set) and resolves display-message's target "work:1.1" to %2
+// and a pane id to itself, and stands in for ps with fixed tpgids (none for %6).
+func stubPanes(t *testing.T) {
+	t.Helper()
+	listing := filepath.Join(t.TempDir(), "panes")
+	if err := os.WriteFile(listing, []byte(paneListing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	tmux := writeStub(t, "tmux", `if [ "$1" = display-message ]; then
+  case "$4" in work:1.1) echo %2 ;; %*) echo "$4" ;; *) exit 1 ;; esac
+  exit 0
+fi
+[ -n "$STUB_NO_PANES" ] && exit 1
+cat `+listing+"\n")
+	t.Setenv("PATH", filepath.Dir(tmux)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	old := readTpgids
+	readTpgids = func([]int) map[int]int { return map[int]int{10: 11, 20: 21, 30: 30, 40: 41, 50: 51} }
+	t.Cleanup(func() { readTpgids = old })
+}
+
+// seedPaneRows makes rows a and b live in stubPanes' session s on their own
+// panes, and c live on a pane tmux does not list.
+func seedPaneRows(t *testing.T, db *sql.DB, at time.Time) {
+	t.Helper()
+	for sess, pane := range map[string]string{"a": "%1", "b": "%5", "c": "%8"} {
+		if err := insertEvent(db, Event{TS: at.Format(time.RFC3339), SourceApp: "x", SessionID: sess, Cwd: "/w/" + sess, TmuxSession: "s", TmuxPane: pane, EventType: "Stop", PayloadJSON: "{}"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// blockPaneReq is a block-pane POST from peer with blocker_pane set.
+func blockPaneReq(peer, sessionID, pane string) *http.Request {
+	form := url.Values{"session_id": {sessionID}, "action": {"block-pane"}, "blocker_pane": {pane}}
+	r := httptest.NewRequest(http.MethodPost, "/api/action", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("X-Clodhopper-Token", "secret")
+	r.Host = "127.0.0.1"
+	r.RemoteAddr = peer
+	return r
+}
+
+// block-pane runs the full peer gate (it execs tmux and ps), refuses a
+// malformed id before anything else, and otherwise records the block only for
+// a busy, unclaimed pane in the row's own tmux session, with its root pid.
+func TestHandleActionBlockPane(t *testing.T) {
+	stubPanes(t)
+	db := openTestDB(t)
+	now := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
+	seedPaneRows(t, db, now.Add(-time.Minute))
+	cfg := newActionCfg("/nonexistent/merge-pr", "/nonexistent/gh")
+	post := func(r *http.Request) (int, actionJSON) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handleAction(w, r, db, cfg, now)
+		if w.Code != http.StatusOK {
+			return w.Code, actionJSON{}
+		}
+		return w.Code, decodeActionJSON(t, w)
+	}
+	if code, _ := post(blockPaneReq("192.168.1.20:5555", "a", "%2")); code != http.StatusForbidden {
+		t.Errorf("LAN peer: %d, want 403", code)
+	}
+	for name, c := range map[string]struct{ sess, pane, want string }{
+		"empty":         {"a", "", "not a tmux pane id"},
+		"not a pane id": {"a", "2", "not a tmux pane id"},
+		"a tmux target": {"a", "s:1.1", "not a tmux pane id"},
+		"not live":      {"z", "%2", "the row must be live on the roster"},
+		"no live pane":  {"c", "%2", "this row has no live tmux pane"},
+		"own pane":      {"a", "%1", "that is this row's own pane"},
+		"unlisted":      {"a", "%99", "no such tmux pane"},
+		"other session": {"a", "%4", "that pane is not in this row's tmux session"},
+		"roster pane":   {"a", "%5", "that pane is a roster row's own"},
+		"unreadable":    {"a", "%6", "could not read that pane's foreground process (is ps available?)"},
+		"idle":          {"a", "%3", "that pane is idle at its shell"},
+	} {
+		if _, got := post(blockPaneReq("127.0.0.1:5555", c.sess, c.pane)); got.OK || got.Output != c.want {
+			t.Errorf("%s: resp = %+v, want refusal %q", name, got, c.want)
+		}
+	}
+	t.Setenv("STUB_NO_PANES", "1")
+	if _, got := post(blockPaneReq("127.0.0.1:5555", "a", "%2")); got.OK || got.Output != "could not list tmux panes (is tmux reachable?)" {
+		t.Errorf("tmux down: resp = %+v, want a refusal", got)
+	}
+	t.Setenv("STUB_NO_PANES", "")
+	if blocks, _ := listPaneBlocks(db); len(blocks) != 0 {
+		t.Fatalf("pane blocks = %v after refusals, want none", blocks)
+	}
+	if _, got := post(blockPaneReq("127.0.0.1:5555", "a", "%2")); !got.OK {
+		t.Fatalf("block on %%2: resp = %+v, want ok", got)
+	}
+	if blocks, _ := listPaneBlocks(db); len(blocks) != 1 || blocks[0].Blocked != "a" || blocks[0].Pane != "%2" || blocks[0].PanePID != 20 {
+		t.Errorf("pane blocks = %+v, want a on %%2 (pid 20)", blocks)
+	}
+}
+
+// The block's ts is read after validation, so a pane reading taken while the
+// request was validating (after its now, before validation finished) that
+// shows the pane idle predates the job and cannot lapse the block.
+func TestRecordPaneBlockStampsAfterValidation(t *testing.T) {
+	stubPanes(t)
+	db := openTestDB(t)
+	now := time.Date(2026, 11, 22, 10, 0, 0, 0, time.UTC)
+	seedPaneRows(t, db, now.Add(-time.Minute))
+	validated := now.Add(time.Second)
+	if why, err := recordPaneBlock(db, "a", "%2", now, func() time.Time { return validated }); why != "" || err != nil {
+		t.Fatalf("recordPaneBlock = %q, %v; want ok", why, err)
+	}
+	blocks, err := listPaneBlocks(db)
+	if err != nil || len(blocks) != 1 {
+		t.Fatalf("pane blocks = %+v, %v; want one", blocks, err)
+	}
+	mid := now.Add(time.Second / 2)
+	panes := map[string]livePane{"%1": {pid: 10, sessionID: "$1"}, "%2": {pid: 20, sessionID: "$1"}}
+	cache := &paneCache{set: panes, at: mid, fg: paneFG{m: map[string]int{"%1": 11, "%2": 20}, at: mid}}
+	agents := []Agent{{SessionID: "a", TmuxPane: "%1", Status: statusWaiting}}
+	applyPaneBlocks(agents, blocks, cache, true, mid)
+	if agents[0].Status != statusBlocked || cache.lapsed[blocks[0]] {
+		t.Errorf("a = %+v, lapsed = %v; want the block held", agents[0], cache.lapsed[blocks[0]])
+	}
+}

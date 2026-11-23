@@ -176,22 +176,45 @@ func TestPaneLabel(t *testing.T) {
 // listPanes maps each pane id to its session name in the form ingest stores, so
 // a messy real-world name compares equal to the row's recorded tmux_session, plus
 // its root pid (0 when unparseable), foreground command and path (last, so a
-// tab in it survives).
+// tab in it survives), and its session and window ids and window name (the index
+// when the name is empty). The stub's lines are paneFormat filled in, so the
+// parser is tied to the format's field order. A tab in a free-text field
+// cannot shift the fixed-format ones, and a line whose ids fail to validate is dropped.
 func TestListPanes(t *testing.T) {
 	dir := t.TempDir()
 	messy := "\ue0a0  fix-2482     Blog post [in progress]"
 	titled := "\U000f0868  fix-1288            \uf418 commerce don't forward"
-	script := "#!/bin/sh\nprintf '%s\\t%s\\t%s\\t%s\\t%s\\n' '%1' '41' 'my-session' 'zsh' '/src/a\tb' '%7' 'x' '" + messy + "' 'claude' '/src/c' '%9' '43' \"" + titled + "\" 'nono' '/src/d'\n"
+	line := func(id, pid, sid, wid, idx, name, cmd, win, path string) string {
+		return strings.NewReplacer("#{pane_id}", id, "#{pane_pid}", pid, "#{session_id}", sid, "#{window_id}", wid, "#{window_index}", idx,
+			"#{session_name}", name, "#{pane_current_command}", cmd, "#{window_name}", win, "#{pane_current_path}", path).Replace(paneFormat) + "\n"
+	}
+	listing := line("%1", "41", "$1", "@1", "0", "my-session", "zsh", "build", "/src/a\tb") +
+		line("%7", "x", "$2", "@2", "3", messy, "claude", "", "/src/c") +
+		line("%9", "43", "$2", "@2", "3", titled, "nono", "", "/src/d") +
+		line("%11", "44", "$3", "@5", "1", "evil\tname", "np\tm", "w", "/src/e") +
+		line("%12", "45", "not-an-id", "@6", "1", "s", "bash", "w", "/src/f") +
+		line("%13", "46", "$4", "@7", "x", "s", "bash", "w", "/src/g")
+	if err := os.WriteFile(filepath.Join(dir, "listing"), []byte(listing), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Builtins only: PATH holds just this stub.
+	script := "#!/bin/sh\nwhile IFS= read -r l; do printf '%s\\n' \"$l\"; done < '" + filepath.Join(dir, "listing") + "'\n"
 	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
-	want := map[string]livePane{
-		"%1": {session: "my-session", command: "zsh", path: "/src/a\tb", pid: 41},
-		"%7": {session: tmuxSessionLabel(messy), command: "claude", path: "/src/c"},
-		"%9": {session: "fix-1288", title: "commerce don't forward", command: "nono", path: "/src/d", pid: 43},
+	got := listPanes()
+	// Tabs in free text may garble those fields, but never the ids.
+	if p := got["%11"]; p.pid != 44 || p.sessionID != "$3" || p.windowID != "@5" {
+		t.Errorf("tabbed free text: %%11 = %+v, want pid 44, $3, @5", p)
 	}
-	if got := listPanes(); !maps.Equal(got, want) {
+	delete(got, "%11")
+	want := map[string]livePane{
+		"%1": {session: "my-session", command: "zsh", path: "/src/a\tb", pid: 41, sessionID: "$1", windowID: "@1", window: "build"},
+		"%7": {session: tmuxSessionLabel(messy), command: "claude", path: "/src/c", sessionID: "$2", windowID: "@2", window: "3"},
+		"%9": {session: "fix-1288", title: "commerce don't forward", command: "nono", path: "/src/d", pid: 43, sessionID: "$2", windowID: "@2", window: "3"},
+	}
+	if !maps.Equal(got, want) {
 		t.Fatalf("listPanes() = %+v, want %+v", got, want)
 	}
 	if want["%7"].session != "fix-2482 Blog post [in progress]" {
@@ -470,5 +493,68 @@ func TestSetWorktreesRealWorktree(t *testing.T) {
 	setWorktrees(agents, newRootCache(), time.Now())
 	if agents[0].Worktree != "gh-1308" {
 		t.Errorf("Worktree = %q, want gh-1308", agents[0].Worktree)
+	}
+}
+
+// parseTpgids keeps well-formed lines with a positive tpgid (-1 is no tty).
+func TestParseTpgids(t *testing.T) {
+	got := parseTpgids([]byte("   10    11\n 20 -1\n30\n x 4\n 40 40 9\n50 51\n"))
+	if want := map[int]int{10: 11, 50: 51}; !maps.Equal(got, want) {
+		t.Errorf("parseTpgids = %v, want %v", got, want)
+	}
+}
+
+// paneTpgids asks once, for the panes with a pid, and maps back by pane id;
+// a pane ps did not report is absent, so paneBusy calls it unknown.
+func TestPaneTpgids(t *testing.T) {
+	var asked [][]int
+	old := readTpgids
+	readTpgids = func(pids []int) map[int]int {
+		asked = append(asked, slices.Sorted(slices.Values(pids)))
+		return map[int]int{10: 11, 20: 20}
+	}
+	t.Cleanup(func() { readTpgids = old })
+	panes := map[string]livePane{"%1": {pid: 10}, "%2": {pid: 20}, "%3": {pid: 30}, "%4": {}}
+	got := paneTpgids(panes)
+	if want := map[string]int{"%1": 11, "%2": 20}; !maps.Equal(got, want) {
+		t.Errorf("paneTpgids = %v, want %v", got, want)
+	}
+	if len(asked) != 1 || !slices.Equal(asked[0], []int{10, 20, 30}) {
+		t.Errorf("readTpgids asked %v, want once for [10 20 30]", asked)
+	}
+	for id, want := range map[string][2]bool{"%1": {true, true}, "%2": {false, true}, "%3": {false, false}} {
+		if busy, known := paneBusy(id, panes[id], got); busy != want[0] || known != want[1] {
+			t.Errorf("paneBusy(%s) = %v, %v; want %v, %v", id, busy, known, want[0], want[1])
+		}
+	}
+}
+
+// psTpgids runs ps once with a fixed argv whose only varying element is the
+// comma-joined integer pids, and none at all for no pids.
+func TestPsTpgidsArgv(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "argv")
+	ps := writeStub(t, "ps", `printf '[%s]' "$@" >> '`+log+`'; echo '  10  11'`)
+	t.Setenv("PATH", filepath.Dir(ps)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if got := psTpgids(nil); got != nil {
+		t.Errorf("psTpgids(nil) = %v, want nil", got)
+	}
+	if _, err := os.Stat(log); err == nil {
+		t.Error("ps ran for no pids")
+	}
+	if got := psTpgids([]int{10, 20}); !maps.Equal(got, map[int]int{10: 11}) {
+		t.Errorf("psTpgids = %v, want map[10:11]", got)
+	}
+	if argv, _ := os.ReadFile(log); string(argv) != "[-o][pid=,tpgid=][-p][10,20]" {
+		t.Errorf("ps argv = %s, want [-o][pid=,tpgid=][-p][10,20]", argv)
+	}
+}
+
+// A failing ps (exit 1, no output: none of the pids exist) reads no tpgids.
+func TestPsTpgidsFailing(t *testing.T) {
+	// Real ps -p exits 1 when any listed pid has gone, yet still prints the rest.
+	ps := writeStub(t, "ps", "echo '  10  11'; exit 1")
+	t.Setenv("PATH", filepath.Dir(ps)+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if got, want := psTpgids([]int{10, 20}), map[int]int{10: 11}; !maps.Equal(got, want) {
+		t.Errorf("psTpgids = %v, want %v", got, want)
 	}
 }

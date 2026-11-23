@@ -836,6 +836,15 @@ func handleAction(w http.ResponseWriter, r *http.Request, db *sql.DB, cfg *actio
 		return
 	}
 
+	// "block-pane" marks this row blocked on a busy tmux pane (see
+	// applyPaneBlocks). It execs tmux and ps, so actionExecs leaves it under the
+	// full peer gate above. It never reaches actionArgv: blocker_pane must pass
+	// paneIDRe, and ps gets only pids from tmux's own listing.
+	if action == "block-pane" {
+		writeActionResult(w, blockPaneAction(db, sessionID, r.FormValue("blocker_pane"), now))
+		return
+	}
+
 	_, args, inTmux, ok := actionArgv(action, force)
 	if !ok {
 		http.Error(w, "unknown action", http.StatusBadRequest)
@@ -1351,6 +1360,23 @@ func blockPRAction(db *sql.DB, cfg *actionConfig, sessionID, blockerPR string, n
 	if err := addPRBlock(db, sessionID, repo, n, now); err != nil {
 		debugf("action: block-pr %s: %v", sessionID, err)
 		return actionResult{ExitCode: -1, Output: "could not block session"}
+	}
+	return actionResult{ExitCode: 0}
+}
+
+// blockPaneAction records that sessionID is blocked on tmux pane pane, which
+// must be a pane id and pass recordPaneBlock's checks against a fresh listing.
+func blockPaneAction(db *sql.DB, sessionID, pane string, now time.Time) actionResult {
+	if !paneIDRe.MatchString(pane) {
+		return actionResult{ExitCode: -1, Output: "not a tmux pane id"}
+	}
+	why, err := recordPaneBlock(db, sessionID, pane, now, time.Now)
+	switch {
+	case err != nil:
+		debugf("action: block-pane %s: %v", sessionID, err)
+		return actionResult{ExitCode: -1, Output: "could not block session"}
+	case why != "":
+		return actionResult{ExitCode: -1, Output: why}
 	}
 	return actionResult{ExitCode: 0}
 }

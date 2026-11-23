@@ -4,7 +4,7 @@ import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, swaps } fr
 // The blocked-on chip and the row panel's block picker (#210), against
 // serve.sh's exec server; e2e_seed_test.go blocks fix-1234 and fix-2537 on fix-1235,
 // fix-1236 on the queued row, the queued row on fix-1235, and draft-conflict
-// on its repo's open PR #101.
+// on its repo's open PR #101 and pane-wait on serve.sh's busy non-roster pane %9005.
 
 const blocked = 'e2e-blocked-0000-1111-2222-333333333333';
 const blocker = 'e2e-blocker-0000-1111-2222-333333333333';
@@ -183,7 +183,7 @@ test('the row panel blocks on the picked row', async ({ page }) => {
   await expect(form.locator('option[value="e2e-idle-0000-1111-2222-333333333333"]'))
     .toHaveText('a-second-project-with-a-long-source-app-name · a-very-long-worktree-directory-name-standing-in-for-the-branch');
   await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption(blocked);
-  await form.getByRole('button', { name: 'mark fix-1235 as blocked on the selected row' }).click();
+  await form.getByRole('button', { name: 'mark fix-1235 as blocked on the chosen row, PR or pane' }).click();
   await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');
   expect(posts).toHaveLength(1);
   expect(posts[0].postData()).toBe(`session_id=${blocker}&action=block&blocker_session_id=${blocked}`);
@@ -277,7 +277,7 @@ test('the row panel blocks on a picked open PR', async ({ page }) => {
   await expect(form.locator('optgroup[label^="open PRs"]')).toHaveAttribute('label', 'open PRs · e2e/draft-conflict');
   await expect(form.locator('option[value="pr:101"]')).toHaveText('#101 Land the parser');
   await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption('pr:101');
-  await form.getByRole('button', { name: 'mark mq-draft-conflict as blocked on the selected row' }).click();
+  await form.getByRole('button', { name: 'mark mq-draft-conflict as blocked on the chosen row, PR or pane' }).click();
   await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');
   expect(posts).toHaveLength(1);
   expect(posts[0].postData()).toBe(`session_id=${draft}&action=block-pr&blocker_pr=101`);
@@ -301,4 +301,59 @@ test('the PR chip ✕ sends unblock for the blocked row', async ({ page }) => {
   await expect(page.locator(prChip).locator('.actmsg')).toHaveText('unblocked — row will update');
   expect(posts).toHaveLength(1);
   expect(posts[0].postData()).toBe(`session_id=${draft}&action=unblock`);
+});
+
+const paneBlocked = 'e2e-paneblocked-0000-1111-2222-333333333333';
+const paneChip = `#row-${paneBlocked} .blockchip`;
+
+test('a pane block relaxes its lone row and its chip names the pane, with no jump', async ({ page }) => {
+  await expect(page.locator(`#row-${paneBlocked} .ck-badge`)).toHaveText('blocked');
+  await expect(page.locator(`#row-${paneBlocked}`)).not.toHaveClass(/\bnested\b/);
+  const label = page.locator(`${paneChip} .blockpane`);
+  await expect(label).toHaveText('window build · npm');
+  await expect(label).toHaveAttribute('title', /tmux pane %9005\b/);
+  await expect(page.locator(paneChip).locator('.blockjump')).toHaveCount(0);
+});
+
+test('the pane chip ✕ sends unblock for the blocked row', async ({ page }) => {
+  const posts = await stubAction(page);
+  await page.evaluate(() => { (window as unknown as { __ckActionBusy: number }).__ckActionBusy = 1; });
+  await page.locator(paneChip).getByRole('button', { name: 'unblock pane-wait from window build · npm' }).click();
+  await expect(page.locator(paneChip).locator('.actmsg')).toHaveText('unblocked — row will update');
+  expect(posts).toHaveLength(1);
+  expect(posts[0].postData()).toBe(`session_id=${paneBlocked}&action=unblock`);
+});
+
+test('the row panel blocks on a picked busy pane of its tmux session', async ({ page }) => {
+  const posts = await stubAction(page);
+  await page.evaluate(() => { (window as unknown as { __ckActionBusy: number }).__ckActionBusy = 1; });
+  const needs = 'e2e-needs-0000-1111-2222-333333333333';
+  await page.locator(`#content button.actbtn[data-actions="${needs}"]`).click();
+  const form = page.locator(panel(needs));
+  // Only %9005: the other "seeded" panes are roster rows' own, and %9003 is in another session.
+  await expect(form.locator('optgroup[label="tmux panes"] option')).toHaveCount(1);
+  await expect(form.locator('option[value="pane:%9005"]')).toHaveText('window build · npm');
+  await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption('pane:%9005');
+  await form.getByRole('button', { name: 'mark main as blocked on the chosen row, PR or pane' }).click();
+  await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');
+  expect(posts).toHaveLength(1);
+  expect(posts[0].postData()).toBe(`session_id=${needs}&action=block-pane&blocker_pane=%259005`);
+});
+
+test('a row alone on the board still gets the picker when its tmux session has a busy pane', async ({ page }) => {
+  const posts = await stubAction(page);
+  // The filter leaves pane-wait the only row, with no queued row and no open PRs: only its panes can offer a blocker.
+  await page.goto('/?branch=pane-wait');
+  await page.evaluate(() => { (window as unknown as { __ckActionBusy: number }).__ckActionBusy = 1; });
+  await expect(page.locator('#content table.roster > tbody > tr[data-group]')).toHaveCount(1);
+  await expect(page.locator(`${paneChip} .blockpane`)).toBeVisible();
+  await page.locator(`#content button.actbtn[data-actions="${paneBlocked}"]`).click();
+  const form = page.locator(panel(paneBlocked));
+  await expect(form.locator('optgroup')).toHaveCount(1);
+  await expect(form.locator('optgroup[label="tmux panes"] option[value="pane:%9005"]')).toHaveText('window build · npm');
+  await form.getByRole('combobox', { name: 'this row is blocked on' }).selectOption('pane:%9005');
+  await form.getByRole('button', { name: 'mark pane-wait as blocked on the chosen row, PR or pane' }).click();
+  await expect(form.locator('.actmsg')).toHaveText('marked blocked — row will update');
+  expect(posts).toHaveLength(1);
+  expect(posts[0].postData()).toBe(`session_id=${paneBlocked}&action=block-pane&blocker_pane=%259005`);
 });
