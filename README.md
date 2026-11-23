@@ -157,6 +157,10 @@ the existing background tracking then shows its row as **waiting**. That is a
 workaround, not a replacement: the agent rarely knows which pane, and watching
 costs agent context for the whole run.
 
+A row held by several blocks at once shows one chip (a session block first,
+then a PR, then a pane) plus a "+N" hint whose tooltip names the others; the
+chip's ✕ clears them all.
+
 By default the dashboard binds `127.0.0.1` (loopback only). If your browser runs
 on a different machine or namespace than the server (e.g. inside a container or
 VM), bind all interfaces with `clodhopper serve --host 0.0.0.0` (or `CLODHOPPER_HOST=0.0.0.0`)

@@ -1265,7 +1265,7 @@ func buildDashboardData(r *http.Request, db *sql.DB, ci *cwdCache[ciResult], pee
 	suppressWatchedCI(agents, now)
 	// After dropDeadPanes (a blocker whose pane died counts as gone) and enrichCI
 	// (a merged/closed blocker's CIDone is known); before the split, since
-	// setAndForget reads statusBlocked. PR then pane blocks last: an earlier chip wins.
+	// setAndForget reads statusBlocked. PR then pane blocks last: an earlier chip wins, the rest show as +N.
 	applyBlocks(agents, blocks)
 	applyPRBlocks(agents, prBlocks, finals, openPRs, now)
 	applyPaneBlocks(agents, paneBlocks, peek.cache, execOK, now)
@@ -1482,6 +1482,9 @@ func viewSignature(d dashboardData) string {
 			}
 			// The pane chip's title, and the picker's pane options (a pane going busy or idle repaints).
 			fmt.Fprintf(h, ":%q", a.BlockedOnPane)
+			for _, l := range a.BlockedAlso { // the chip's +N and its tooltip
+				fmt.Fprintf(h, ":%q", l)
+			}
 			for _, p := range a.BlockPanes {
 				fmt.Fprintf(h, ":%q:%q", p.ID, p.Label)
 			}
@@ -1645,6 +1648,8 @@ func demotePendingCI(agents []Agent) {
 // nothing done in its pane helps until the blocker lands. A permission prompt or
 // question is left alone, as in demotePendingCI, since it blocks on the user
 // regardless; it and a working/idle row keep their status and just get the chip.
+// The last holding block gets the chip and earlier ones go to BlockedAlso; only
+// the shown blocker nests, since nestBlocked keys on BlockedOnSession.
 func applyBlocks(agents []Agent, blocks []Block) {
 	idx := make(map[string]int, len(agents))
 	for i, a := range agents {
@@ -1655,6 +1660,9 @@ func applyBlocks(agents []Agent, blocks []Block) {
 		j, ok2 := idx[b.Blocker]
 		if !ok || !ok2 || agents[j].CIDone != "" {
 			continue
+		}
+		if agents[i].BlockedOn != "" {
+			agents[i].BlockedAlso = append(agents[i].BlockedAlso, agents[i].BlockedOn)
 		}
 		agents[i].BlockedOn = agents[j].BlockLabel()
 		agents[i].BlockedOnSession = b.Blocker
@@ -1729,7 +1737,7 @@ func relaxBlocked(a *Agent) {
 // `clodhopper block --on-pr`), relaxing it as applyBlocks does. A block lapses
 // only once finals (keyed "owner/repo#N", see lookupPRFinal) reports the PR
 // merged or closed: a failed lookup keeps it, so a gh hiccup cannot re-alert
-// the row. A session block already on the row keeps the chip. The chip's
+// the row. A session block already on the row keeps the chip, this one a +N. The chip's
 // tooltip takes the PR's title and author from open when it lists the PR; a
 // nil open (a non-exec peer's render) leaves a bare "PR #N" chip.
 func applyPRBlocks(agents []Agent, blocks []PRBlock, finals *cwdCache[ciResult], open *cwdCache[[]openPR], now time.Time) {
@@ -1752,6 +1760,7 @@ func applyPRBlocks(agents []Agent, blocks []PRBlock, finals *cwdCache[ciResult],
 		}
 		relaxBlocked(&agents[i])
 		if agents[i].BlockedOn != "" {
+			agents[i].BlockedAlso = append(agents[i].BlockedAlso, "PR #"+strconv.Itoa(b.PR))
 			continue
 		}
 		pr := openPR{Number: b.PR}
@@ -1793,7 +1802,7 @@ func setBlockPRs(agents []Agent, repos *cwdCache[string], open *cwdCache[[]openP
 // `a && b` and each command of a typed loop its own process group. Known gaps:
 // lapses live in memory, so a serve restart, or a shell gap shorter than one
 // poll, lets a later job hold the row again until the chip's ✕ clears it. An
-// earlier session or PR block keeps the chip. Only blocks on rows of agents are
+// earlier session or PR block keeps the chip, this one a +N. Only blocks on rows of agents are
 // judged, so one on a row off the roster is not (one on a row a filter hides
 // is, as filterRows runs later). This calls ps only when such a block has not
 // lapsed; setBlockPanes may call it anyway for an exec peer's picker. The chip
@@ -1822,12 +1831,13 @@ func applyPaneBlocks(agents []Agent, blocks []PaneBlock, cache *paneCache, named
 			continue
 		}
 		relaxBlocked(&agents[i])
-		if agents[i].BlockedOn != "" {
-			continue
-		}
 		label := "pane " + b.Pane
 		if named && listed {
 			label = paneBlockLabel(panes[agents[i].TmuxPane], p)
+		}
+		if agents[i].BlockedOn != "" {
+			agents[i].BlockedAlso = append(agents[i].BlockedAlso, label)
+			continue
 		}
 		agents[i].BlockedOn, agents[i].BlockedOnPane = label, b.Pane
 	}

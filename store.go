@@ -682,6 +682,7 @@ type Agent struct {
 	BlockedOnPR      openPR      // the PR a PR block holds this row on (see applyPRBlocks), BlockedOn then "PR #N"; zero otherwise
 	BlockedOnRepo    string      // that PR's GitHub "owner/repo"
 	BlockedOnPane    string      // the tmux pane id a pane block holds this row on (see applyPaneBlocks), BlockedOn then its label; "" otherwise
+	BlockedAlso      []string    // labels of blocks that also hold this row but lost the chip to BlockedOn, shown as its "+N"
 	BlockPRs         []openPR    // the block picker's PR options: BlockPRRepo's open PRs minus this row's own (see setBlockPRs)
 	BlockPRRepo      string      // this row's GitHub "owner/repo" when BlockPRs is non-empty
 	BlockPanes       []blockPane // the block picker's pane options: busy panes in this row's tmux session (see setBlockPanes)
