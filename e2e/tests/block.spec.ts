@@ -3,7 +3,7 @@ import { test, expect, abortUnstubbedExec, repaintEveryPoll, repaint, swaps } fr
 
 // The blocked-on chip and the row panel's block picker (#210), against
 // serve.sh's exec server; e2e_seed_test.go blocks fix-1234 and fix-2537 on fix-1235,
-// fix-1236 on the queued row, the queued row on fix-1235, and draft-conflict
+// fix-1236 on the queued row, the queued row on fix-1235, draft-conflict (and fix-1234)
 // on its repo's open PR #101 and pane-wait on serve.sh's busy non-roster pane %9005.
 
 const blocked = 'e2e-blocked-0000-1111-2222-333333333333';
@@ -41,6 +41,13 @@ test('a blocked row is relaxed and its chip names the blocker', async ({ page })
   await expect(page.locator(`#row-${blocked} td.status`)).toHaveClass(/\bbackground\b/);
   await expect(page.locator(`#row-${blocked} .ck-badge`)).toHaveText('blocked');
   await expect(page.locator(chip).getByRole('button', { name: 'blocked on fix-1235' })).toHaveText('fix-1235');
+});
+
+test('a second block on the row shows as +1 on its chip, named in the tooltip', async ({ page }) => {
+  const more = page.locator(`${chip} .blockmore`);
+  await expect(more).toHaveText('+1');
+  await expect(more).toHaveAttribute('title', 'also blocked on PR #101');
+  await expect(page.locator(chip).getByRole('button', { name: 'unblock fix-1234 from fix-1235' })).toHaveAttribute('title', 'clear all blocks');
 });
 
 test('blocked rows nest right after their blocker, an alerting one still alerting', async ({ page }) => {
@@ -292,6 +299,8 @@ test('a PR block relaxes the row and its chip links to the PR', async ({ page })
   await expect(link).toHaveAttribute('rel', /noopener/);
   await expect(link).toHaveAttribute('title', 'Land the parser by alice');
   await expect(page.locator(prChip).locator('.blockjump')).toHaveCount(0);
+  await expect(page.locator(`${prChip} .blockmore`)).toHaveCount(0);
+  await expect(page.locator(prChip).getByRole('button', { name: 'unblock mq-draft-conflict from PR #101' })).toHaveAttribute('title', 'clear this block');
 });
 
 test('the PR chip ✕ sends unblock for the blocked row', async ({ page }) => {

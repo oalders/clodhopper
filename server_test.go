@@ -4367,7 +4367,7 @@ func TestApplyBlocks(t *testing.T) {
 	}
 	applyBlocks(agents, []Block{
 		{"waiting", "blocker"}, {"needs", "blocker"}, {"approval", "blocker"}, {"input", "blocker"},
-		{"working", "0123456789abcdef"}, {"orphan", "gone"},
+		{"working", "0123456789abcdef"}, {"orphan", "gone"}, {"working", "blocker"},
 	})
 	got := map[string]Agent{}
 	for _, a := range agents {
@@ -4383,8 +4383,8 @@ func TestApplyBlocks(t *testing.T) {
 			t.Errorf("%s = %q on %q, want %q kept with the chip", id, a.Status, a.BlockedOn, want)
 		}
 	}
-	if a := got["working"]; a.Status != statusWorking || a.BlockedOn != "01234567" {
-		t.Errorf("working = %q on %q, want working on the blocker's id prefix", a.Status, a.BlockedOn)
+	if a := got["working"]; a.Status != statusWorking || a.BlockedOn != "fix-1235" || !slices.Equal(a.BlockedAlso, []string{"01234567"}) {
+		t.Errorf("working = %q on %q also %q, want working on fix-1235, the id-prefix blocker hidden behind it", a.Status, a.BlockedOn, a.BlockedAlso)
 	}
 	if a := got["orphan"]; a.Status != statusWaiting || a.BlockedOn != "" || a.BlockedOnSession != "" {
 		t.Errorf("orphan = %q on %q, want untouched (blocker absent)", a.Status, a.BlockedOn)
@@ -4627,6 +4627,11 @@ func TestContentTemplate_BlockControls(t *testing.T) {
 	if !strings.Contains(rw, `data-action="unblock"`) {
 		t.Error("exec board has no unblock ✕ on the chip")
 	}
+	agents[0].BlockedAlso = []string{"PR #7", "same window · npm"}
+	if more := render(true); !strings.Contains(more, `<span class="blockmore" title="also blocked on PR #7, same window · npm">+2</span>`) || !strings.Contains(more, `title="clear all blocks"`) {
+		t.Error("a row with hidden blocks lacks the chip's +2 naming them, or its ✕ clearing all")
+	}
+	agents[0].BlockedAlso = nil
 	_, panel, _ := strings.Cut(rw, `<span class="actgroup blockform" data-session="blocked">`)
 	panel, _, _ = strings.Cut(panel, "</select>")
 	if !strings.Contains(panel, `value="blocker"`) || strings.Contains(panel, `value="blocked"`) {
@@ -4799,8 +4804,8 @@ func TestApplyPRBlocks(t *testing.T) {
 	if a := got["failed"]; a.Status != statusBlocked || a.BlockedOnPR != (openPR{Number: 4}) {
 		t.Errorf("failed = %+v, want still blocked, untitled", a)
 	}
-	if a := got["both"]; a.BlockedOn != "fix-1" || a.BlockedOnPR.Number != 0 {
-		t.Errorf("both = %+v, want the session block's chip", a)
+	if a := got["both"]; a.BlockedOn != "fix-1" || a.BlockedOnPR.Number != 0 || !slices.Equal(a.BlockedAlso, []string{"PR #1"}) {
+		t.Errorf("both = %+v, want the session block's chip, PR #1 hidden behind it", a)
 	}
 	if a := got["evil"]; a.Status != statusWaiting || a.BlockedOn != "" {
 		t.Errorf("evil = %+v, want an invalid stored repo ignored", a)
@@ -5325,8 +5330,8 @@ func TestApplyPaneBlocks(t *testing.T) {
 			t.Errorf("%s = %+v, want the block lapsed", id, a)
 		}
 	}
-	if a := got["both"]; a.BlockedOn != "fix-1" || a.BlockedOnPane != "" {
-		t.Errorf("both = %+v, want the session block's chip", a)
+	if a := got["both"]; a.BlockedOn != "fix-1" || a.BlockedOnPane != "" || !slices.Equal(a.BlockedAlso, []string{"same window · npm"}) {
+		t.Errorf("both = %+v, want the session block's chip, the pane hidden behind it", a)
 	}
 
 	// A lapse is permanent: %4 busy again does not revive its block, but a re-block (new ts) holds.
@@ -5505,6 +5510,7 @@ func TestViewSignature_TracksBlockPanes(t *testing.T) {
 	}
 	for name, d := range map[string]dashboardData{
 		"chip pane":     vary(func(a *Agent) { a.BlockedOnPane = "%4" }),
+		"hidden block":  vary(func(a *Agent) { a.BlockedAlso = []string{"PR #7"} }),
 		"picker pane":   vary(func(a *Agent) { a.BlockPanes[0].ID = "%5" }),
 		"picker label":  vary(func(a *Agent) { a.BlockPanes[0].Label = "window 2 · cargo" }),
 		"picker opened": vary(func(a *Agent) { a.BlockPanes = append(a.BlockPanes, blockPane{ID: "%6", Label: "window 3 · npm"}) }),
